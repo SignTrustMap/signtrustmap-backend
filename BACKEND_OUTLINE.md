@@ -38,48 +38,38 @@ Recommended ownership:
 - PostgreSQL is the system of record. Redis is never the only source of business
   state. MinIO stores binary objects; PostgreSQL stores object keys and metadata.
 
-## 2. Suggested Source Layout
+## 2. Source Layout
 
-Use package-by-feature with conventional MVC/application/persistence layers inside
-each feature. This avoids global `controller`, `service`, and `repository` packages
-that become difficult to navigate as the project grows.
+Use a three-layered package layout with controllers, services, and repositories at
+the top level. Domain-specific classes remain grouped in subpackages inside each
+layer so the technical boundaries are clear without losing feature context.
 
 ```text
 src/main/java/com/signtrustmap/backend/
 |-- SignTrustMapBackendApplication.java
-|-- common/
-|   |-- api/                 # API envelope and pagination
-|   |-- config/              # Jackson, JPA, Redis, scheduling, OpenAPI
-|   |-- entity/              # BaseEntity and shared persistence types
-|   |-- exception/           # API exception handler and business exceptions
-|   |-- security/            # JWT, OAuth2, current user, authorization helpers
-|   `-- infrastructure/      # outbox, storage, external client foundations
-|-- identity/
-|-- catalog/
-|-- survey/
-|-- candidate/
-|-- review/
-|-- consensus/
-|-- signmap/
-|-- revalidation/
-|-- wallet/
-|-- payment/
-|-- navigation/
-|-- moderation/
-|-- mlops/
-|-- notification/
-`-- administration/
-```
-
-Each feature should normally contain:
-
-```text
-feature/
-|-- controller/              # @RestController classes
+|-- api/                     # API envelope and pagination
+|-- config/                  # Jackson, JPA, Redis, scheduling, OpenAPI
+|-- controller/              # HTTP presentation layer
+|   |-- catalog/
+|   |-- identity/
+|   `-- signmap/
+|-- service/                 # business use cases and transaction boundaries
+|   |-- catalog/
+|   |-- identity/
+|   `-- signmap/
+|-- repository/              # Spring Data JPA persistence layer
+|   |-- catalog/
+|   |-- identity/
+|   `-- signmap/
 |-- dto/                     # validated request and response records
-|-- entity/                  # JPA entities, enums, and business state
-|-- repository/              # Spring Data JPA repositories
-`-- service/                 # use cases and transaction boundaries
+|   |-- catalog/
+|   |-- identity/
+|   `-- signmap/
+|-- entity/                  # JPA entities, enums, and shared persistence types
+|   |-- catalog/
+|   |-- identity/
+|   `-- signmap/
+`-- exception/               # API exception handler and business exceptions
 ```
 
 Rules:
