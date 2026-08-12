@@ -55,8 +55,11 @@ src/main/java/com/signtrustmap/backend/
 |   `-- signmap/
 |-- service/                 # business use cases and transaction boundaries
 |   |-- catalog/
+|   |   `-- impl/
 |   |-- identity/
+|   |   `-- impl/
 |   `-- signmap/
+|       `-- impl/
 |-- repository/              # Spring Data JPA persistence layer
 |   |-- catalog/
 |   |-- identity/
@@ -76,7 +79,8 @@ Rules:
 
 - Controllers validate HTTP input and delegate; they do not implement business
   rules or access repositories directly.
-- Application services define use cases and transaction boundaries.
+- Service packages expose use-case interfaces. Implementation classes live in
+  `impl` subpackages and define transaction boundaries.
 - Domain objects enforce state transitions and invariants.
 - JPA entities are not returned from APIs. Map them to explicit response DTOs.
 - Cross-module work uses application interfaces or domain events, not another
