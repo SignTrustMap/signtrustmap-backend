@@ -1,0 +1,19 @@
+package com.signtrustmap.backend.dto.identity;
+
+import com.signtrustmap.backend.entity.identity.UserRole;
+import com.signtrustmap.backend.entity.identity.UserStatus;
+
+import java.time.Instant;
+import java.util.Set;
+import java.util.UUID;
+
+public record UserResponse(
+        UUID id,
+        String email,
+        String displayName,
+        UserStatus status,
+        Set<UserRole> roles,
+        Instant createdAt,
+        Instant updatedAt
+) {
+}
