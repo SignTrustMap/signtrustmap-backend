@@ -29,6 +29,11 @@ public class ApiExceptionHandler {
         return problem(HttpStatus.BAD_REQUEST, "Invalid request", exception.getMessage());
     }
 
+    @ExceptionHandler(ExternalServiceException.class)
+    ProblemDetail handleExternalService(ExternalServiceException exception) {
+        return problem(HttpStatus.BAD_GATEWAY, "External service failure", exception.getMessage());
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     ProblemDetail handleInvalidBody(MethodArgumentNotValidException exception) {
         Map<String, String> errors = new LinkedHashMap<>();

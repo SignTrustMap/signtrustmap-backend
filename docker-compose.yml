@@ -68,6 +68,9 @@ services:
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-admin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-supersecret}
       MINIO_BUCKET_NAME: ${MINIO_BUCKET_NAME:-signtrustmap}
+      ROUTING_PROVIDER: ${ROUTING_PROVIDER:-OSRM}
+      ROUTING_OSRM_BASE_URL: ${ROUTING_OSRM_BASE_URL:-https://router.project-osrm.org}
+      ROUTING_OSRM_PROFILE: ${ROUTING_OSRM_PROFILE:-driving}
     depends_on:
       postgres:
         condition: service_healthy
