@@ -1,0 +1,313 @@
+{
+  "info": {
+    "name": "STM Phase 1 - NestJS",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Phase 1: Auth (JWT+Google scaffold), Wallet/top-up, Daily Tasks claim. Global prefix /api/v1. Use Register/Login to obtain accessToken then set collection variable `token`."
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000/api/v1"
+    },
+    {
+      "key": "token",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Register",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "register"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"tester@example.com\",\n  \"password\": \"Password123\",\n  \"fullName\": \"Test User\",\n  \"phone\": \"0900000000\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var j=null;try{j=pm.response.json()}catch(e){}",
+                  "if(j&&j.accessToken){pm.collectionVariables.set('token',j.accessToken);console.log('saved token')}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"tester@example.com\",\n  \"password\": \"Password123\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var j=null;try{j=pm.response.json()}catch(e){}",
+                  "if(j&&j.accessToken){pm.collectionVariables.set('token',j.accessToken)}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Me (JWT)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "me"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Google OAuth - redirect",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/auth/google",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "google"
+              ]
+            },
+            "description": "Redirects to Google. Requires GOOGLE_CLIENT_ID/SECRET. Callback at /auth/google/callback."
+          }
+        },
+        {
+          "name": "Google OAuth - callback",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/auth/google/callback",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "google",
+                "callback"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Wallet",
+      "item": [
+        {
+          "name": "Get Wallet",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/wallet",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wallet"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Top-up (create PaymentOrder)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/wallet/top-up",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wallet",
+                "top-up"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"packageId\": 1\n}"
+            },
+            "description": "Creates PENDING payment_orders row (gateway=MOCK). Credit applied in future payment-callback (Flow 11). Needs topup_packages seeded."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Daily Tasks",
+      "item": [
+        {
+          "name": "List Active Tasks",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/daily-tasks",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "daily-tasks"
+              ]
+            }
+          }
+        },
+        {
+          "name": "My Completions (today)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/daily-tasks/completions/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "daily-tasks",
+                "completions",
+                "me"
+              ]
+            }
+          }
+        },
+        {
+          "name": "My Completions (by date)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/daily-tasks/completions/me?date=2026-08-28",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "daily-tasks",
+                "completions",
+                "me"
+              ],
+              "query": [
+                {
+                  "key": "date",
+                  "value": "2026-08-28"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Claim Reward",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/daily-tasks/1/claim",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "daily-tasks",
+                "1",
+                "claim"
+              ]
+            },
+            "description": "Requires daily_task_completions row for today with claimed=false. Claims atomically: marks claimed, credits wallet, creates credit_transactions DAILY_TASK_REWARD."
+          }
+        }
+      ]
+    }
+  ]
+}
