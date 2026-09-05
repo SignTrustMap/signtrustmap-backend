@@ -1,0 +1,213 @@
+services:
+  postgres:
+    build:
+      context: ./infra/postgres
+      dockerfile: Dockerfile
+    container_name: stm-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-stm_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-stm_password}
+      POSTGRES_DB: ${POSTGRES_DB:-signtrustmap}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./schema.postgres.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./schema.addendum.sql:/docker-entrypoint-initdb.d/02-addendum.sql:ro
+      - ./infra/postgres/init-extensions.sql:/docker-entrypoint-initdb.d/00-ext.sql:ro
+      - ./infra/postgres/seed-admin.sql:/docker-entrypoint-initdb.d/03-seed-admin.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-stm_user} -d $${POSTGRES_DB:-signtrustmap}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks: [stm-network]
+
+  redis:
+    image: redis:7-alpine
+    container_name: stm-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports: ["${REDIS_PORT:-6379}:6379"]
+    volumes: [redis_data:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [stm-network]
+
+  minio:
+    image: minio/minio:latest
+    container_name: stm-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-stm_minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-stm_minio_secret_123}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes: [minio_data:/data]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks: [stm-network]
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: stm-minio-init
+    depends_on:
+      minio: { condition: service_healthy }
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc alias set stm http://minio:9000 $${MINIO_ROOT_USER:-stm_minio} $${MINIO_ROOT_PASSWORD:-stm_minio_secret_123} &&
+      /usr/bin/mc mb stm/stm-raw-videos --ignore-existing &&
+      /usr/bin/mc mb stm/stm-gpx-logs --ignore-existing &&
+      /usr/bin/mc mb stm/stm-sign-crops --ignore-existing &&
+      /usr/bin/mc mb stm/stm-revalidation-evidence --ignore-existing &&
+      /usr/bin/mc mb stm/stm-catalog-images --ignore-existing &&
+      echo 'MinIO buckets ready.'
+      "
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-stm_minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-stm_minio_secret_123}
+    networks: [stm-network]
+    restart: "no"
+
+  api-nestjs:
+    build:
+      context: ./apps/nestjs
+      dockerfile: Dockerfile
+      target: development
+    container_name: stm-nestjs
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      DATABASE_URL: postgres://${POSTGRES_USER:-stm_user}:${POSTGRES_PASSWORD:-stm_password}@postgres:5432/${POSTGRES_DB:-signtrustmap}
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: 9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-stm_minio}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-stm_minio_secret_123}
+      JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_me}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-stm_internal_secret_dev}
+    ports: ["${NESTJS_PORT:-3000}:3000"]
+    volumes:
+      - ./apps/nestjs:/app
+      - /app/node_modules
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_healthy }
+    command: npm run start:dev
+    networks: [stm-network]
+  api-fastapi:
+    build:
+      context: ./apps/fastapi
+      dockerfile: Dockerfile
+    container_name: stm-fastapi
+    restart: unless-stopped
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-stm_user}:${POSTGRES_PASSWORD:-stm_password}@postgres:5432/${POSTGRES_DB:-signtrustmap}
+      SYNC_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-stm_user}:${POSTGRES_PASSWORD:-stm_password}@postgres:5432/${POSTGRES_DB:-signtrustmap}
+      REDIS_URL: redis://redis:6379/1
+      CELERY_BROKER_URL: redis://redis:6379/2
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-stm_minio}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-stm_minio_secret_123}
+      MINIO_SECURE: "false"
+      # NestJS service-to-service: must match INTERNAL_TOKEN on api-nestjs
+      INTERNAL_API_TOKEN: ${INTERNAL_TOKEN:-stm_internal_secret_dev}
+      NESTJS_INTERNAL_URL: http://nestjs:3000
+    ports: ["${FASTAPI_PORT:-8000}:8000"]
+    volumes: [./apps/fastapi:/app]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_healthy }
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    networks: [stm-network]
+
+  celery-worker:
+    build:
+      context: ./apps/fastapi
+      dockerfile: Dockerfile
+    container_name: stm-celery-worker
+    restart: unless-stopped
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-stm_user}:${POSTGRES_PASSWORD:-stm_password}@postgres:5432/${POSTGRES_DB:-signtrustmap}
+      SYNC_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-stm_user}:${POSTGRES_PASSWORD:-stm_password}@postgres:5432/${POSTGRES_DB:-signtrustmap}
+      CELERY_BROKER_URL: redis://redis:6379/2
+      CELERY_RESULT_BACKEND: redis://redis:6379/3
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-stm_minio}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-stm_minio_secret_123}
+      # NestJS service-to-service: must match INTERNAL_TOKEN on api-nestjs
+      INTERNAL_API_TOKEN: ${INTERNAL_TOKEN:-stm_internal_secret_dev}
+      NESTJS_INTERNAL_URL: http://nestjs:3000
+    volumes: [./apps/fastapi:/app]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_healthy }
+    command: celery -A app.celery_app worker --loglevel=info --concurrency=4 --queues=default,freshness,leaderboard,ai_pipeline
+    networks: [stm-network]
+
+  celery-beat:
+    build:
+      context: ./apps/fastapi
+      dockerfile: Dockerfile
+    container_name: stm-celery-beat
+    restart: unless-stopped
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/2
+      CELERY_RESULT_BACKEND: redis://redis:6379/3
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-stm_user}:${POSTGRES_PASSWORD:-stm_password}@postgres:5432/${POSTGRES_DB:-signtrustmap}
+      SYNC_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-stm_user}:${POSTGRES_PASSWORD:-stm_password}@postgres:5432/${POSTGRES_DB:-signtrustmap}
+    volumes: [./apps/fastapi:/app]
+    depends_on: [celery-worker, postgres, redis]
+    command: celery -A app.celery_app beat --loglevel=info
+    networks: [stm-network]
+
+  pgadmin:
+    image: dpage/pgadmin4:8
+    container_name: stm-pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@stm.dev
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+      PGADMIN_CONFIG_CONSOLE_LOG_LEVEL: 30
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+      - ./infra/pgadmin/servers.json:/pgadmin4/servers.json
+      - ./infra/pgadmin/pgpass:/tmp/pgpass.ro:ro
+    entrypoint: ["/bin/sh", "-c", "cp /tmp/pgpass.ro /tmp/pgpass && chmod 600 /tmp/pgpass && chown pgadmin:pgadmin /tmp/pgpass 2>/dev/null || true; exec /entrypoint.sh"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    networks: [stm-network]
+
+volumes:
+  postgres_data: { name: stm_postgres_data }
+  redis_data:    { name: stm_redis_data }
+  minio_data:    { name: stm_minio_data }
+  pgadmin_data:  { name: stm_pgadmin_data }
+
+networks:
+  stm-network:
+    name: stm-network
+    driver: bridge
+
+

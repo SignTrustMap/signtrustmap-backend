@@ -1,0 +1,28 @@
+# Normalize line endings: store LF in repo, checkout native per-OS
+* text=auto eol=lf
+
+# Windows shell/batch must stay CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Never touch binary assets
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.mp4 binary
+*.zip binary
+*.woff binary
+*.woff2 binary
+
+# Documents
+*.md text
+*.json text
+*.sql text
+*.yml text
+*.yaml text
+*.ts text
+*.tsx text
+*.py text

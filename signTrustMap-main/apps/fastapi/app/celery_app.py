@@ -1,0 +1,94 @@
+"""
+app.celery_app — Celery application factory for SignTrustMap (Phase 4).
+
+Centralises broker/backend config, queue definitions, task routing, and
+the Celery Beat periodic schedule.  All task modules listed in ``include``
+are imported at start-up so the worker discovers their ``@shared_task``
+decorators even when Beat sends a tick.
+
+Launch commands (see docker-compose.yml)::
+
+    # Worker — listens on all four queues (default, freshness, leaderboard, ai_pipeline)
+    celery -A app.celery_app worker --loglevel=info --concurrency=4 --queues=default,freshness,leaderboard,ai_pipeline
+
+    # Beat — periodic scheduler (single replica)
+    celery -A app.celery_app beat --loglevel=info
+
+Queue responsibilities
+---------------------
+default       General-purpose tasks; Celery fallback.
+freshness     Flow 8 — Freshness Monitor (30-min interval).
+leaderboard   Flow 11 — mv_community_leaderboard concurrent refresh (15-min interval).
+ai_pipeline   AI processing chain: YOLO12 -> BoT-SORT -> spatial estimation -> CLIP (stub chain).
+
+The broker and backend URLs come from ``app.config.settings`` so that a
+single ``.env`` / docker-compose environment controls all services.
+"""
+from __future__ import annotations
+
+from celery import Celery
+from celery.schedules import crontab
+from kombu import Queue
+
+from app.config import settings
+
+# ---------------------------------------------------------------------------
+# Application instance
+# ---------------------------------------------------------------------------
+celery_app = Celery("stm_worker")
+
+celery_app.conf.update(
+    broker_url=settings.CELERY_BROKER_URL,
+    result_backend=settings.CELERY_RESULT_BACKEND,
+    # Serialisation — JSON is sufficient for all current payloads.
+    task_serializer="json",
+    result_serializer="json",
+    accept_content=["json"],
+    timezone="UTC",
+    enable_utc=True,
+    # ------------------------------------------------------------------
+    # Queues & routing — each task family is pinned to its own queue so
+    # long-running AI jobs never starve the lightweight monitor tasks.
+    # ------------------------------------------------------------------
+    task_queues=(
+        Queue("default"),
+        Queue("freshness"),
+        Queue("leaderboard"),
+        Queue("ai_pipeline"),
+    ),
+    task_default_queue="default",
+    task_routes={
+        "app.tasks.freshness.*": {"queue": "freshness"},
+        "app.tasks.leaderboard.*": {"queue": "leaderboard"},
+        "app.tasks.ai_pipeline.*": {"queue": "ai_pipeline"},
+    },
+    # Reliability — acknowledge late so a crashing worker re-queues the task.
+    task_acks_late=True,
+    task_reject_on_worker_lost=True,
+    # Keep results for 24 hours (enough for dashboard polling).
+    result_expires=86400,
+    # Explicit imports — ensures Beat can dispatch even before a full scan.
+    include=[
+        "app.tasks.freshness",
+        "app.tasks.leaderboard",
+        "app.tasks.ai_pipeline",
+    ],
+)
+
+# ---------------------------------------------------------------------------
+# Celery Beat — periodic schedule
+# ---------------------------------------------------------------------------
+celery_app.conf.beat_schedule = {
+    # Flow 8 — scans verified_traffic_signs for staleness every 30 minutes.
+    "freshness-monitor-every-30min": {
+        "task": "app.tasks.freshness.task_check_freshness_and_spawn_revalidations",
+        "schedule": crontab(minute="*/30"),
+        "options": {"queue": "freshness"},
+    },
+    # Flow 11 — concurrent refresh of mv_community_leaderboard every 15 minutes.
+    "refresh-leaderboard-every-15min": {
+        "task": "app.tasks.leaderboard.task_refresh_community_leaderboard",
+        "schedule": crontab(minute="*/15"),
+        "options": {"queue": "leaderboard"},
+    },
+}
