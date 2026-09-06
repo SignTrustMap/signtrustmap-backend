@@ -408,7 +408,17 @@ For Heroku deployments, deploy from the repository root. The root npm workspace 
 | POST | `/catalog/categories` | ADMIN | Create a sign category |
 | PATCH | `/catalog/categories/:id` | ADMIN | Update a sign category |
 | DELETE | `/catalog/categories/:id` | ADMIN | Delete a sign category |
-| GET | `/catalog/sign-types` | JWT | List sign types. Query: `categoryId`, `isActive` |
+| GET | `/catalog/sign-types` | JWT | List sign types in a zero-based page envelope. Query: `categoryId`, `isActive` (default `true`), `search`/`q`, `page` (default `0`), `size`/`pageSize` (default `20`, max `100`) |
+| GET | `/catalog/sign-types/:id` | JWT | Get a sign type, including AI prompt, OSM mapping, and representative image metadata |
+| POST | `/catalog/sign-types` | ADMIN | Create a sign type and optional catalog metadata |
+| PATCH | `/catalog/sign-types/:id` | ADMIN | Update a sign type and optional catalog metadata |
+| DELETE | `/catalog/sign-types/:id` | ADMIN | Soft-delete a sign type |
+| GET | `/admin/system-parameters` | ADMIN | List tunable system parameters |
+| GET | `/admin/system-parameters/:key` | ADMIN | Get a system parameter |
+| PUT | `/admin/system-parameters/:key` | ADMIN | Upsert a system parameter |
+
+Sign-type create and update requests accept `aiLabelPrompt`, `representativeImageKey`, and `osmMapping` in addition to the existing bilingual, shape, and color fields. OSM mappings use `key=value` entries separated by semicolons.
+
 ### Revalidation — `revalidation`
 
 | Method | Path | Auth | Description |
@@ -469,6 +479,14 @@ For Heroku deployments, deploy from the repository root. The root npm workspace 
 | PATCH | `/signs/:id` | STAFF/ADMIN | Partially update a verified traffic sign |
 | POST | `/signs/along-route` | Public | Find ACTIVE verified signs inside the configured route corridor, filtered by travel heading and ordered by encounter distance |
 | POST | `/navigation/route-preview` | Public | Calculate directions and return route-aware signs for the shortest path in one response |
+
+### Sign Geolocation — `geolocation`
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| POST | `/geolocation/signs` | Public | Estimate a sign location from one or more camera observations. Uses triangulation when the rays and estimated sign height are plausible, otherwise falls back to an assumed 0.6 m sign height |
+
+Camera calibration defaults to a 90 degree horizontal field of view and a 640 pixel image width. Each observation contains the camera coordinates, compass bearing, and detection box.
 
 ### FastAPI — Spatial GIS — `spatial` (served at `http://localhost:8000`)
 

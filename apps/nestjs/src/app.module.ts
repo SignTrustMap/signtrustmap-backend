@@ -25,6 +25,7 @@ import { AdminModule } from './modules/admin/admin.module';
 import { LeaderboardModule } from './modules/leaderboard/leaderboard.module';
 import { PlacesModule } from './modules/places/places.module';
 import { GeocodingModule } from './modules/geocoding/geocoding.module';
+import { GeolocationModule } from './modules/geolocation/geolocation.module';
 import { NavigationModule } from './modules/navigation/navigation.module';
 import { SignMapModule } from './modules/sign-map/sign-map.module';
 
@@ -75,6 +76,7 @@ import { SignMapModule } from './modules/sign-map/sign-map.module';
     LeaderboardModule,
     PlacesModule,
     GeocodingModule,
+    GeolocationModule,
     SignMapModule,
     NavigationModule,
   ],
