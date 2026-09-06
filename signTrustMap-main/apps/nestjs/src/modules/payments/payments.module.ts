@@ -1,12 +1,12 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { PaymentOrder } from '../../entities/payment-order.entity';
-import { PaymentCallback } from '../../entities/payment-callback.entity';
-import { TopupPackage } from '../../entities/topup-package.entity';
-import { Wallet } from '../../entities/wallet.entity';
-import { CreditTransaction } from '../../entities/credit-transaction.entity';
-import { PaymentsService } from './payments.service';
-import { PaymentsController } from './payments.controller';
+import { PaymentsService } from './application/payments.service';
+import { PaymentCallback } from './infrastructure/persistence/payment-callback.entity';
+import { PaymentOrder } from './infrastructure/persistence/payment-order.entity';
+import { TopupPackage } from './infrastructure/persistence/topup-package.entity';
+import { PaymentsController } from './presentation/payments.controller';
+import { CreditTransaction } from '../wallet/infrastructure/persistence/credit-transaction.entity';
+import { Wallet } from '../wallet/infrastructure/persistence/wallet.entity';
 
 @Module({
   imports: [TypeOrmModule.forFeature([PaymentOrder, PaymentCallback, TopupPackage, Wallet, CreditTransaction])],

@@ -1,13 +1,22 @@
 ﻿import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { UnverifiedSignCandidate } from '../../entities/unverified-sign-candidate.entity';
-import { CandidateReview } from '../../entities/candidate-review.entity';
-import { TrafficSignType } from '../../entities/traffic-sign-type.entity';
-import { ReviewsService } from './reviews.service';
-import { ReviewsController } from './reviews.controller';
+import { ReviewsService } from './application/reviews.service';
+import { CandidateReview } from './infrastructure/persistence/candidate-review.entity';
+import { ReviewFlag } from './infrastructure/persistence/review-flag.entity';
+import { ReviewsController } from './presentation/reviews.controller';
+import { TrafficSignType } from '../catalog/traffic-sign-type.entity';
+import { UnverifiedSignCandidate } from '../survey/infrastructure/persistence/unverified-sign-candidate.entity';
 import { ConsensusModule } from '../consensus/consensus.module';
 @Module({
-  imports: [TypeOrmModule.forFeature([UnverifiedSignCandidate, CandidateReview, TrafficSignType]), ConsensusModule],
+  imports: [
+    TypeOrmModule.forFeature([
+      UnverifiedSignCandidate,
+      CandidateReview,
+      ReviewFlag,
+      TrafficSignType,
+    ]),
+    ConsensusModule,
+  ],
   controllers: [ReviewsController],
   providers: [ReviewsService],
   exports: [ReviewsService],

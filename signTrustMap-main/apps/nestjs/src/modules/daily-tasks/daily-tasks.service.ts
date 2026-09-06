@@ -1,10 +1,13 @@
 import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
-import { DailyTask } from '../../entities/daily-task.entity';
-import { DailyTaskCompletion } from '../../entities/daily-task-completion.entity';
-import { Wallet } from '../../entities/wallet.entity';
-import { CreditTransaction, TransactionType } from '../../entities/credit-transaction.entity';
+import { DailyTask } from './daily-task.entity';
+import { DailyTaskCompletion } from './daily-task-completion.entity';
+import { Wallet } from '../wallet/infrastructure/persistence/wallet.entity';
+import {
+  CreditTransaction,
+  TransactionType,
+} from '../wallet/infrastructure/persistence/credit-transaction.entity';
 
 @Injectable()
 export class DailyTasksService {
