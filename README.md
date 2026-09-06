@@ -188,6 +188,13 @@ curl http://localhost:3000/api/v1/auth/login `
 #           "accessToken": "...", "refreshToken": "..." }
 ```
 
+For mobile development, use the seeded **demo account**. It has the `DRIVER`, `SURVEYOR`, and `REVIEWER` roles, so one login can access navigation, survey submission, and sign review flows:
+
+```text
+Email:    demo@stm.dev
+Password: Demo@123
+```
+
 FastAPI — liveness probe:
 
 ```powershell

@@ -1,4 +1,5 @@
 export interface RouteDirectionsRequest {
+  vehicleMode?: 'DRIVING';
   originLatitude: number;
   originLongitude: number;
   destinationLatitude: number;

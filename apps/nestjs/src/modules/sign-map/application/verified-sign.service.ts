@@ -72,6 +72,26 @@ export class VerifiedSignService {
     return updated;
   }
 
+  async findInBounds(
+    minLatitude: number,
+    minLongitude: number,
+    maxLatitude: number,
+    maxLongitude: number,
+    limit: number,
+  ) {
+    if (minLatitude >= maxLatitude || minLongitude >= maxLongitude) {
+      throw new BadRequestException('Minimum bounds must be less than maximum bounds');
+    }
+    const signs = await this.repository.findActiveInBounds(
+      minLatitude,
+      minLongitude,
+      maxLatitude,
+      maxLongitude,
+      limit,
+    );
+    return { signs, count: signs.length };
+  }
+
   private async requireActiveSignType(id: number): Promise<void> {
     const signType = await this.catalog.getSignType(id);
     if (!signType.isActive) {
