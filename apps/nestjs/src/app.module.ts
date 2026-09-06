@@ -28,14 +28,19 @@ import { GeocodingModule } from './modules/geocoding/geocoding.module';
 import { GeolocationModule } from './modules/geolocation/geolocation.module';
 import { NavigationModule } from './modules/navigation/navigation.module';
 import { SignMapModule } from './modules/sign-map/sign-map.module';
-
-
+import { HealthModule } from './modules/health/health.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      load: [databaseConfig, jwtConfig, minioConfig, geocodingConfig, routingConfig],
+      load: [
+        databaseConfig,
+        jwtConfig,
+        minioConfig,
+        geocodingConfig,
+        routingConfig,
+      ],
     }),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
@@ -45,7 +50,10 @@ import { SignMapModule } from './modules/sign-map/sign-map.module';
           type: 'postgres' as const,
           autoLoadEntities: true,
           synchronize: false,
-          logging: config.get<string>('NODE_ENV') === 'development' ? (['error', 'warn'] as any) : (['error'] as any),
+          logging:
+            config.get<string>('NODE_ENV') === 'development'
+              ? (['error', 'warn'] as any)
+              : (['error'] as any),
           extra: { max: 20 },
         };
         if (url) {
@@ -79,6 +87,7 @@ import { SignMapModule } from './modules/sign-map/sign-map.module';
     GeolocationModule,
     SignMapModule,
     NavigationModule,
+    HealthModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },

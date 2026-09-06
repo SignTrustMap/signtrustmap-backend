@@ -9,7 +9,9 @@
     "build": "npm run build --workspace=stm-nestjs",
     "heroku-postbuild": "npm run build",
     "start": "npm run start:prod --workspace=stm-nestjs",
-    "test": "npm test --workspace=stm-nestjs -- --runInBand"
+    "test": "npm test --workspace=stm-nestjs -- --runInBand",
+    "test:cov": "npm run test:cov --workspace=stm-nestjs",
+    "migrate:spring-data": "bash scripts/migrate-spring-data.sh"
   },
   "engines": {
     "node": "22.x",
