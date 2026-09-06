@@ -98,7 +98,7 @@ export class ModerationService {
       const relatedReportId = reportId || (mc.caseType === 'CATALOG_PROPOSAL' as any ? mc.targetEntityId : null);
       if (relatedReportId) {
         const rep: any = await this.missing.findOne({ where: { id: relatedReportId } as any });
-        if (rep?.reporterId) await this.notificationsService.create(rep.reporterId, 'MODERATION_RESOLVED', 'Missing-type report ' + actionType, 'Your report \"' + rep.proposedName + '\" was ' + actionType.toLowerCase() + '.', 'moderation_case', mc.id);
+        if (rep?.reporterId) await this.notificationsService.create(rep.reporterId, 'MODERATION_RESOLVED', 'Missing-type report ' + actionType, 'Your report "' + rep.proposedName + '" was ' + actionType.toLowerCase() + '.', 'moderation_case', mc.id);
       }
     } catch {}
     return mc;
