@@ -2,7 +2,11 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { VerifiedSignRepository } from '../../domain/verified-sign.repository';
-import { VerifiedSign } from '../../domain/verified-sign';
+import {
+  CreateVerifiedSign,
+  UpdateVerifiedSign,
+  VerifiedSign,
+} from '../../domain/verified-sign';
 import { VerifiedSignOrmEntity } from './verified-sign.orm-entity';
 
 interface VerifiedSignRow {
@@ -33,17 +37,7 @@ interface VerifiedSignRow {
 
 @Injectable()
 export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
-  constructor(
-    @InjectRepository(VerifiedSignOrmEntity)
-    private readonly repository: Repository<VerifiedSignOrmEntity>,
-  ) {}
-
-  async findActiveAlongRoute(
-    routeWkt: string,
-    corridorWidthMeters: number,
-  ): Promise<VerifiedSign[]> {
-    const rows = (await this.repository.query(
-      `SELECT
+  private static readonly SELECT_SIGN = `SELECT
          sign.id,
          sign.sign_type_id,
          ST_X(sign.location::geometry) AS longitude,
@@ -69,7 +63,108 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
          category.name_en AS category_name_en
        FROM verified_traffic_signs sign
        JOIN traffic_sign_types sign_type ON sign_type.id = sign.sign_type_id
-       JOIN sign_categories category ON category.id = sign_type.category_id
+       JOIN sign_categories category ON category.id = sign_type.category_id`;
+
+  constructor(
+    @InjectRepository(VerifiedSignOrmEntity)
+    private readonly repository: Repository<VerifiedSignOrmEntity>,
+  ) {}
+
+  async findById(id: string): Promise<VerifiedSign | null> {
+    const rows = (await this.repository.query(
+      `${TypeOrmVerifiedSignRepository.SELECT_SIGN}
+       WHERE sign.id = $1`,
+      [id],
+    )) as VerifiedSignRow[];
+    return rows[0] ? this.toDomain(rows[0]) : null;
+  }
+
+  async create(sign: CreateVerifiedSign): Promise<VerifiedSign> {
+    const rows = (await this.repository.query(
+      `INSERT INTO verified_traffic_signs (
+         sign_type_id,
+         origin_candidate_id,
+         location,
+         traffic_direction,
+         sign_crop_url,
+         status,
+         freshness_score,
+         last_verified_at
+       ) VALUES (
+         $1,
+         $2,
+         ST_SetSRID(ST_MakePoint($3, $4), 4326),
+         $5,
+         $6,
+         'ACTIVE',
+         1,
+         $7
+       )
+       RETURNING id`,
+      [
+        sign.signTypeId,
+        sign.originCandidateId,
+        sign.longitude,
+        sign.latitude,
+        sign.trafficDirection,
+        sign.signCropUrl,
+        sign.lastVerifiedAt,
+      ],
+    )) as Array<{ id: string }>;
+    const created = rows[0] && (await this.findById(String(rows[0].id)));
+    if (!created) throw new Error('Created verified sign could not be loaded');
+    return created;
+  }
+
+  async update(id: string, sign: UpdateVerifiedSign): Promise<VerifiedSign | null> {
+    const assignments: string[] = [];
+    const parameters: unknown[] = [];
+    const parameter = (value: unknown): string => {
+      parameters.push(value);
+      return `$${parameters.length}`;
+    };
+
+    if (sign.signTypeId !== undefined) {
+      assignments.push(`sign_type_id = ${parameter(sign.signTypeId)}`);
+    }
+    if (sign.latitude !== undefined && sign.longitude !== undefined) {
+      const longitude = parameter(sign.longitude);
+      const latitude = parameter(sign.latitude);
+      assignments.push(`location = ST_SetSRID(ST_MakePoint(${longitude}, ${latitude}), 4326)`);
+    }
+    if (sign.trafficDirection !== undefined) {
+      assignments.push(`traffic_direction = ${parameter(sign.trafficDirection)}`);
+    }
+    if (sign.signCropUrl !== undefined) {
+      assignments.push(`sign_crop_url = ${parameter(sign.signCropUrl)}`);
+    }
+    if (sign.lastVerifiedAt !== undefined) {
+      assignments.push(`last_verified_at = ${parameter(sign.lastVerifiedAt)}`);
+    }
+    if (sign.status !== undefined) {
+      assignments.push(`status = ${parameter(sign.status)}::sign_lifecycle_status`);
+    }
+    if (assignments.length === 0) return this.findById(id);
+
+    assignments.push('updated_at = NOW()');
+    const idParameter = parameter(id);
+    const rows = (await this.repository.query(
+      `UPDATE verified_traffic_signs
+       SET ${assignments.join(', ')}
+       WHERE id = ${idParameter}
+       RETURNING id`,
+      parameters,
+    )) as Array<{ id: string }>;
+    if (!rows[0]) return null;
+    return this.findById(String(rows[0].id));
+  }
+
+  async findActiveAlongRoute(
+    routeWkt: string,
+    corridorWidthMeters: number,
+  ): Promise<VerifiedSign[]> {
+    const rows = (await this.repository.query(
+      `${TypeOrmVerifiedSignRepository.SELECT_SIGN}
        WHERE sign.status = 'ACTIVE'
          AND ST_DWithin(
            sign.location::geography,
