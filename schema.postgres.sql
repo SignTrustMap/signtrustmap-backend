@@ -838,6 +838,9 @@ CREATE INDEX ON "reviewer_reliability_history" ("reviewer_id");
 
 CREATE INDEX ON "verified_traffic_signs" USING GIST ("location");
 
+CREATE INDEX "idx_verified_traffic_signs_location_geography"
+  ON "verified_traffic_signs" USING GIST (("location"::geography));
+
 CREATE INDEX ON "verified_traffic_signs" ("status");
 
 CREATE INDEX ON "verified_sign_history" ("verified_sign_id");

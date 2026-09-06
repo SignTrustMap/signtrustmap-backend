@@ -26,6 +26,7 @@ import { LeaderboardModule } from './modules/leaderboard/leaderboard.module';
 import { PlacesModule } from './modules/places/places.module';
 import { GeocodingModule } from './modules/geocoding/geocoding.module';
 import { NavigationModule } from './modules/navigation/navigation.module';
+import { SignMapModule } from './modules/sign-map/sign-map.module';
 
 
 
@@ -74,6 +75,7 @@ import { NavigationModule } from './modules/navigation/navigation.module';
     LeaderboardModule,
     PlacesModule,
     GeocodingModule,
+    SignMapModule,
     NavigationModule,
   ],
   providers: [
