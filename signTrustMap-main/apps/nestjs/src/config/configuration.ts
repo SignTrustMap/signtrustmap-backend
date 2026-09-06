@@ -1,5 +1,21 @@
 import { registerAs } from '@nestjs/config';
 
+function durationMilliseconds(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+
+  const match = value.trim().match(/^(\d+(?:\.\d+)?)(ms|s|m|h)?$/i);
+  if (!match) return fallback;
+
+  const multipliers: Record<string, number> = {
+    ms: 1,
+    s: 1_000,
+    m: 60_000,
+    h: 3_600_000,
+  };
+  const milliseconds = Number(match[1]) * multipliers[(match[2] ?? 'ms').toLowerCase()];
+  return Number.isFinite(milliseconds) && milliseconds > 0 ? milliseconds : fallback;
+}
+
 export default registerAs('database', () => ({
   url: process.env.DATABASE_URL,
   host: process.env.DB_HOST || 'postgres',
@@ -24,4 +40,32 @@ export const minioConfig = registerAs('minio', () => ({
   useSSL: process.env.MINIO_USE_SSL === 'true',
   accessKey: process.env.MINIO_ACCESS_KEY || process.env.MINIO_ROOT_USER || 'stm_minio',
   secretKey: process.env.MINIO_SECRET_KEY || process.env.MINIO_ROOT_PASSWORD || 'stm_minio_secret_123',
+}));
+
+export const geocodingConfig = registerAs('geocoding', () => ({
+  nominatim: {
+    baseUrl: process.env.GEOCODING_NOMINATIM_BASE_URL || 'https://nominatim.openstreetmap.org',
+    timeoutMs: durationMilliseconds(process.env.GEOCODING_NOMINATIM_TIMEOUT, 5_000),
+    userAgent:
+      process.env.GEOCODING_NOMINATIM_USER_AGENT || 'SignTrustMap/0.1 (local development)',
+    acceptLanguage: process.env.GEOCODING_NOMINATIM_ACCEPT_LANGUAGE || 'vi,en',
+    cacheTtlMs: durationMilliseconds(process.env.GEOCODING_NOMINATIM_CACHE_TTL, 10 * 60_000),
+    minimumRequestIntervalMs: durationMilliseconds(
+      process.env.GEOCODING_NOMINATIM_MINIMUM_REQUEST_INTERVAL,
+      1_000,
+    ),
+    maximumCacheEntries: Math.min(
+      10_000,
+      Math.max(1, parseInt(process.env.GEOCODING_NOMINATIM_MAXIMUM_CACHE_ENTRIES || '1000', 10) || 1_000),
+    ),
+  },
+}));
+
+export const routingConfig = registerAs('routing', () => ({
+  provider: process.env.ROUTING_PROVIDER || 'OSRM',
+  osrm: {
+    baseUrl: process.env.ROUTING_OSRM_BASE_URL || 'https://router.project-osrm.org',
+    profile: process.env.ROUTING_OSRM_PROFILE || 'driving',
+    timeoutMs: durationMilliseconds(process.env.ROUTING_OSRM_TIMEOUT, 5_000),
+  },
 }));
