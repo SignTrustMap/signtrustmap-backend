@@ -186,6 +186,25 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
     return rows.map((row) => this.toDomain(row));
   }
 
+  async findActiveInBounds(
+    minLatitude: number,
+    minLongitude: number,
+    maxLatitude: number,
+    maxLongitude: number,
+    limit: number,
+  ): Promise<VerifiedSign[]> {
+    const rows = (await this.repository.query(
+      `${TypeOrmVerifiedSignRepository.SELECT_SIGN}
+       WHERE sign.status = 'ACTIVE'
+         AND sign.location && ST_MakeEnvelope($1, $2, $3, $4, 4326)
+       ORDER BY sign.updated_at DESC
+       LIMIT $5`,
+      [minLongitude, minLatitude, maxLongitude, maxLatitude, limit],
+    )) as VerifiedSignRow[];
+
+    return rows.map((row) => this.toDomain(row));
+  }
+
   private toDomain(row: VerifiedSignRow): VerifiedSign {
     return {
       id: String(row.id),
