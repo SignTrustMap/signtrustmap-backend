@@ -1,6 +1,6 @@
 import re, glob, os
 os.chdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "apps", "nestjs", "src", "modules"))
-for f in sorted(glob.glob("*/*.controller.ts")):
+for f in sorted(glob.glob("**/*.controller.ts", recursive=True)):
     s = open(f, encoding="utf-8").read()
     m = re.search(r"@Controller\(['\"]?([^'\"]*?)['\"]?\)", s)
     base = m.group(1).strip("/") if m else ""

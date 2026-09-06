@@ -1,3 +1,5 @@
+import { RouteSignsResponse } from '../../sign-map/domain/verified-sign';
+
 export interface RouteDirectionsRequest {
   originLatitude: number;
   originLongitude: number;
@@ -49,4 +51,9 @@ export interface RouteDirectionsResponse {
   snappedDestination: RouteSnapResponse;
   shortestPath: RoutePathResponse;
   alternatives: RoutePathResponse[];
+}
+
+export interface RoutePreviewResponse {
+  directions: RouteDirectionsResponse;
+  upcomingSigns: RouteSignsResponse;
 }

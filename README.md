@@ -460,6 +460,14 @@ For Heroku deployments, deploy from the repository root. The root npm workspace 
 | GET | `/leaderboard` | JWT | Paginated leaderboard ranked by total credits earned. Query: `page`, `pageSize` |
 | POST | `/leaderboard/refresh` | ADMIN | Trigger manual refresh of the leaderboard materialized view |
 
+### Route Planning — `routing`, `signs`, and `navigation`
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| POST | `/routing/directions` | Public | Calculate the shortest route and eligible alternatives through OSRM |
+| POST | `/signs/along-route` | Public | Find ACTIVE verified signs inside the configured route corridor, filtered by travel heading and ordered by encounter distance |
+| POST | `/navigation/route-preview` | Public | Calculate directions and return route-aware signs for the shortest path in one response |
+
 ### FastAPI — Spatial GIS — `spatial` (served at `http://localhost:8000`)
 
 No authentication — intended for map clients.
