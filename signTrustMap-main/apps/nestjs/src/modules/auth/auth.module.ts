@@ -3,14 +3,14 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { PassportModule } from '@nestjs/passport';
-import { User } from '../../entities/user.entity';
-import { UserRole } from '../../entities/user-role.entity';
-import { Role } from '../../entities/role.entity';
-import { Wallet } from '../../entities/wallet.entity';
-import { AuthService } from './auth.service';
-import { AuthController } from './auth.controller';
-import { JwtStrategy } from './strategies/jwt.strategy';
-import { GoogleStrategy } from './strategies/google.strategy';
+import { AuthService } from './application/auth.service';
+import { GoogleStrategy } from './infrastructure/google.strategy';
+import { JwtStrategy } from './infrastructure/jwt.strategy';
+import { Role } from './infrastructure/persistence/role.entity';
+import { UserRole } from './infrastructure/persistence/user-role.entity';
+import { User } from './infrastructure/persistence/user.entity';
+import { AuthController } from './presentation/auth.controller';
+import { Wallet } from '../wallet/infrastructure/persistence/wallet.entity';
 
 @Module({
   imports: [

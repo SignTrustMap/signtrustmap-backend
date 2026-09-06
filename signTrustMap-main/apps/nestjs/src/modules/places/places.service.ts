@@ -1,8 +1,8 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { SavedPlace } from '../../entities/saved-place.entity';
-import { RecentSearch } from '../../entities/recent-search.entity';
+import { SavedPlace } from './saved-place.entity';
+import { RecentSearch } from './recent-search.entity';
 
 @Injectable()
 export class PlacesService {

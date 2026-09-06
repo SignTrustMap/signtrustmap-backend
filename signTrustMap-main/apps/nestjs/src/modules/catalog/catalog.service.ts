@@ -1,9 +1,9 @@
 import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { SignCategory } from '../../entities/sign-category.entity';
-import { TrafficSignType } from '../../entities/traffic-sign-type.entity';
-import { SystemParameter } from '../../entities/system-parameter.entity';
+import { SignCategory } from './sign-category.entity';
+import { TrafficSignType } from './traffic-sign-type.entity';
+import { SystemParameter } from './system-parameter.entity';
 import { CreateSignCategoryDto, UpdateSignCategoryDto, CreateSignTypeDto, UpdateSignTypeDto, UpsertSystemParameterDto } from './dto/catalog.dto';
 
 @Injectable()
@@ -124,4 +124,3 @@ export class CatalogService {
     return this.par.save(this.par.create({ key, value: dto.value, description: dto.description ?? null, updatedBy: by } as any));
   }
 }
-

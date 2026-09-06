@@ -1,10 +1,11 @@
 import { Module } from '@nestjs/common';
-import { GeocodingController } from './geocoding.controller';
-import { NominatimGeocodingService } from './nominatim-geocoding.service';
+import { GeocodingService } from './application/geocoding.service';
+import { NominatimGeocodingClient } from './infrastructure/nominatim-geocoding.client';
+import { GeocodingController } from './presentation/geocoding.controller';
 
 @Module({
   controllers: [GeocodingController],
-  providers: [NominatimGeocodingService],
-  exports: [NominatimGeocodingService],
+  providers: [NominatimGeocodingClient, GeocodingService],
+  exports: [GeocodingService],
 })
 export class GeocodingModule {}
