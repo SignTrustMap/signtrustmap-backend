@@ -4,9 +4,6 @@ import {
   Column,
   CreateDateColumn,
   UpdateDateColumn,
-  OneToMany,
-  ManyToOne,
-  JoinColumn,
 } from 'typeorm';
 import { MediaFileType } from './submission-media-file.entity';
 

@@ -59,7 +59,7 @@ export class AuthService {
 
   async googleLogin(googleUser: { email: string; fullName: string; avatarUrl: string | null; providerUserId: string }) {
     if (!googleUser.email) throw new BadRequestException('Google profile has no email');
-    let user = await this.userRepo.findOne({ where: { email: googleUser.email } });
+    const user = await this.userRepo.findOne({ where: { email: googleUser.email } });
     if (!user) {
       return this.dataSource.transaction(async (manager) => {
         const newUser = manager.create(User, { email: googleUser.email, passwordHash: null, fullName: googleUser.fullName, avatarUrl: googleUser.avatarUrl, status: UserStatus.ACTIVE });
@@ -89,7 +89,7 @@ export class AuthService {
       const wRows: any[] = await this.dataSource.query('SELECT balance FROM wallets WHERE user_id=$1', [userId]);
       if (wRows.length) walletBalance = Number(wRows[0].balance);
     } catch {}
-    let profileStats: any = {};
+    const profileStats: any = {};
     try {
       const dRows: any[] = await this.dataSource.query('SELECT * FROM driver_profiles WHERE user_id=$1', [userId]);
       if (dRows.length) profileStats.driver = dRows[0];
@@ -138,7 +138,7 @@ export class AuthService {
       const wRows: any[] = await this.dataSource.query('SELECT balance FROM wallets WHERE user_id=$1', [userId]);
       if (wRows.length) walletBalance = Number(wRows[0].balance);
     } catch {}
-    let profileStats: any = {};
+    const profileStats: any = {};
     try {
       const dRows: any[] = await this.dataSource.query('SELECT * FROM driver_profiles WHERE user_id=$1', [userId]);
       if (dRows.length) profileStats.driver = dRows[0];

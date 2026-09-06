@@ -74,7 +74,7 @@ export class ConsensusService {
     try {
       await this.dataSource.query("INSERT INTO verified_traffic_signs (id, sign_type_id, origin_candidate_id, location, traffic_direction, sign_crop_url, status, freshness_score, last_verified_at) VALUES (gen_random_uuid(), $1, $2, ST_SetSRID(ST_MakePoint($3,$4),4326), $5, $6, 'ACTIVE', 1, now()) ON CONFLICT (origin_candidate_id) DO NOTHING", [signTypeId, candidate.id, lon, lat, bearing, candidate.signCropUrl]);
       const vRows: any[] = await this.dataSource.query('SELECT id FROM verified_traffic_signs WHERE origin_candidate_id=$1', [candidate.id]);
-      if (vRows.length > 0) { try { await this.dataSource.query('INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, note) VALUES (\,\'PUBLISHED\',\'Consensus APPROVED\')', [vRows[0].id]); } catch {} }
+      if (vRows.length > 0) { try { await this.dataSource.query('INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, note) VALUES ($1,\'PUBLISHED\',\'Consensus APPROVED\')', [vRows[0].id]); } catch {} }
     } catch (e: any) { this.logger.warn('verified_sign insert failed ' + candidate.id + ': ' + e?.message); }
     const rewardAmount = await this.walletService.resolveRewardAmount(TransactionType.REVIEW_REWARD, 5);
     for (const v of voterDetails) { const aligned = v.vote === winningVote ? 1 : 0; await this.updateReviewerProfile(v.reviewerId, aligned, config, log.id); if (aligned === 1) { try { await this.walletService.creditUser(v.reviewerId, rewardAmount, TransactionType.REVIEW_REWARD, 'consensus_log', log.id, 'Review reward (consensus APPROVED)'); } catch (e: any) { this.logger.warn('credit failed ' + v.reviewerId + ': ' + e?.message); } } }

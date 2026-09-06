@@ -63,7 +63,7 @@ export class RevalidationService {
   }
   private assertDecision(v: string): RevalDecision {
     const allowed = Object.values(RevalDecision);
-    if (!allowed.includes(v as RevalDecision)) throw new BadRequestException('decision must be one of ' + allowed.join(', ') + ', got \"' + v + '\"');
+    if (!allowed.includes(v as RevalDecision)) throw new BadRequestException('decision must be one of ' + allowed.join(', ') + ', got "' + v + '"');
     return v as RevalDecision;
   }
   async submitEvidence(taskId: string, userId: string, dto: { mediaUrl?: string; latitude: number; longitude: number }, file?: Express.Multer.File) {
@@ -99,14 +99,14 @@ export class RevalidationService {
     if (!await this.evidences.findOne({ where: { id: evidenceId } })) throw new NotFoundException('RevalidationEvidence ' + evidenceId + ' not found');
     return this.decisions.find({ where: { evidenceId }, order: { decidedAt: 'ASC' } });
   }
-  async finalizeTask(taskId: string, finalizedBy?: string) {
+  async finalizeTask(taskId: string, _finalizedBy?: string) {
     const task = await this.tasks.findOne({ where: { id: taskId } });
     if (!task) throw new NotFoundException('RevalidationTask ' + taskId + ' not found');
     if (task.status === TaskStatus.COMPLETED || task.status === TaskStatus.EXPIRED) throw new BadRequestException('Task ' + taskId + ' already finalized (status=' + task.status + ')');
     const evidences: any[] = await this.dataSource.query('SELECT id, user_id FROM revalidation_evidences WHERE task_id=$1', [taskId]);
     if (evidences.length === 0) throw new BadRequestException('Cannot finalize: no evidence submitted for this task');
     const evIds = evidences.map(e => e.id);
-    const decisions: any[] = await this.dataSource.query('SELECT decision, reviewer_id, evidence_id FROM revalidation_decisions WHERE evidence_id = ANY(\)', [evIds]);
+    const decisions: any[] = await this.dataSource.query('SELECT decision, reviewer_id, evidence_id FROM revalidation_decisions WHERE evidence_id = ANY($1)', [evIds]);
     if (decisions.length === 0) throw new BadRequestException('Cannot finalize: no reviewer decisions yet');
     const counts = new Map<string, number>();
     for (const d of decisions) counts.set(d.decision, (counts.get(d.decision) || 0) + 1);

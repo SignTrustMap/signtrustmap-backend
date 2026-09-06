@@ -354,6 +354,21 @@ GET /docs-json            OpenAPI JSON
 
 Run the NestJS Jest suite with an LCOV report using `npm run test:cov`.
 
+Run static analysis with `npm run lint`. Use `npm run lint:fix` locally to apply
+safe ESLint fixes.
+
+### Jenkins CI
+
+The root `Jenkinsfile` defines the CI pipeline. The Jenkins agent must provide
+Node.js 22 and npm 10, matching `package.json`. Each build performs a clean
+`npm ci`, then runs ESLint, Jest coverage, and the production build in parallel.
+The generated `apps/nestjs/coverage` directory is archived as a build artifact.
+
+Create a Pipeline or Multibranch Pipeline job pointed at this repository and
+select **Pipeline script from SCM** with `Jenkinsfile` as the script path. No
+application secrets or running infrastructure are required for the current
+unit-test pipeline.
+
 ### Migrating data from the Spring backend
 
 Once the NestJS schema has been initialized and its roles seeded, run the

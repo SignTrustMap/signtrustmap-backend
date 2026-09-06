@@ -16,6 +16,7 @@ yarn-error.log*
 pnpm-debug.log*
 .pnpm-store/
 coverage/
+.npm-cache/
 .nest-cli/
 
 # ---- Python / FastAPI ----

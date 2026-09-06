@@ -40,7 +40,6 @@ export class PaymentsService {
 
     // Always record the callback row first (audit)
     const normalizedStatus = dto.status.toUpperCase();
-    const isSuccess = normalizedStatus === 'SUCCESS';
     const isValid = true; // simulated gateway — treat as valid if order exists; optional signature check can be added later
 
     // Write callback row (outside tx so it is never rolled back even if later logic fails)
