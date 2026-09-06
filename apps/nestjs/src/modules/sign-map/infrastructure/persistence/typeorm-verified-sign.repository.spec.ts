@@ -15,6 +15,7 @@ describe('TypeOrmVerifiedSignRepository', () => {
     const [query, parameters] = (ormRepository.query as jest.Mock).mock.calls[0];
     expect(query).toContain('ST_DWithin');
     expect(query).toContain("sign.status = 'ACTIVE'");
+    expect(query).toContain("lower(mapping.osm_key) = 'maxspeed'");
     expect(parameters).toEqual(['LINESTRING (106 10, 107 11)', 30]);
     expect(signs[0]).toMatchObject({
       id: '7c283c24-e758-4496-8df0-7b892ee4e1c1',
@@ -25,6 +26,7 @@ describe('TypeOrmVerifiedSignRepository', () => {
       signType: {
         id: 12,
         signCode: 'P.102',
+        value: 50,
         category: { id: 2, code: 'PROHIBITORY' },
       },
     });
@@ -113,6 +115,7 @@ describe('TypeOrmVerifiedSignRepository', () => {
       shape: 'CIRCLE',
       color_scheme: 'RED_WHITE',
       is_active: true,
+      navigation_value: '50 km/h',
       category_code: 'PROHIBITORY',
       category_name_vi: 'Bien cam',
       category_name_en: 'Prohibitory',

@@ -165,17 +165,69 @@ export class OsrmRoutingClient {
 
   private parseStep(value: unknown): RouteStepResponse {
     const step = this.isObject(value) ? value : {};
+    const maneuver = this.isObject(step.maneuver) ? step.maneuver : {};
+    const type = this.text(maneuver.type) ?? 'continue';
+    const modifier = this.text(maneuver.modifier);
+    const roadName = this.text(step.name);
     const geometryValue = this.isObject(step.geometry) ? step.geometry.coordinates : undefined;
     return {
+      type,
+      instruction: this.instruction(type, modifier, roadName, maneuver.exit),
       edgeId: null,
       fromNodeId: null,
       toNodeId: null,
-      roadName: this.text(step.name),
+      roadName,
       roadClass: this.text(step.mode),
       distanceMeters: this.numberOrZero(step.distance),
       durationSeconds: Math.round(this.numberOrZero(step.duration)),
       geometry: this.coordinates(geometryValue),
     };
+  }
+
+  private instruction(
+    type: string,
+    modifier: string | null,
+    roadName: string | null,
+    exitValue: unknown,
+  ): string {
+    const direction = modifier ? ` ${modifier.replace(/-/g, ' ')}` : '';
+    const road = roadName ? ` onto ${roadName}` : '';
+    const exit = this.numberOrZero(exitValue);
+
+    switch (type) {
+      case 'depart':
+        return `Head${direction}${road}`;
+      case 'arrive':
+        return modifier ? `Arrive at your destination on the ${modifier}` : 'Arrive at your destination';
+      case 'turn':
+      case 'end of road':
+        return `Turn${direction}${road}`;
+      case 'continue':
+      case 'new name':
+        return `Continue${direction}${road}`;
+      case 'merge':
+        return `Merge${direction}${road}`;
+      case 'fork':
+        return `Keep${direction}${road}`;
+      case 'on ramp':
+      case 'off ramp':
+        return `Take the ramp${direction}${road}`;
+      case 'roundabout':
+      case 'rotary':
+      case 'roundabout turn':
+        return exit > 0
+          ? `Enter the roundabout and take exit ${exit}${road}`
+          : `Enter the roundabout${road}`;
+      case 'exit roundabout':
+      case 'exit rotary':
+        return `Exit the roundabout${road}`;
+      default:
+        return `${this.capitalize(type.replace(/-/g, ' '))}${direction}${road}`;
+    }
+  }
+
+  private capitalize(value: string): string {
+    return value ? value[0].toUpperCase() + value.slice(1) : 'Continue';
   }
 
   private toResponse(route: ParsedRoute, index: number, shortestDistance: number): RoutePathResponse {

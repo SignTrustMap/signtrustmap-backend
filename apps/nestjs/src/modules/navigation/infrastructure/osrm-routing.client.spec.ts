@@ -54,6 +54,7 @@ describe('OsrmRoutingClient', () => {
               {
                 name: 'Alternative Road',
                 mode: 'driving',
+                maneuver: { type: 'depart', modifier: 'straight' },
                 distance: 1200,
                 duration: 180,
                 geometry: { coordinates: [[106.6601, 10.7626], [106.7009, 10.7769]] },
@@ -79,6 +80,7 @@ describe('OsrmRoutingClient', () => {
               {
                 name: 'Shortest Road',
                 mode: 'driving',
+                maneuver: { type: 'turn', modifier: 'right' },
                 distance: 1000,
                 duration: 160,
                 geometry: { coordinates: [[106.6601, 10.7626], [106.7009, 10.7769]] },
@@ -102,6 +104,10 @@ describe('OsrmRoutingClient', () => {
     expect(response.shortestPath.distanceMeters).toBe(1000);
     expect(response.shortestPath.recommendation).toBe('Shortest route');
     expect(response.shortestPath.steps[0].roadName).toBe('Shortest Road');
+    expect(response.shortestPath.steps[0]).toMatchObject({
+      type: 'turn',
+      instruction: 'Turn right onto Shortest Road',
+    });
     expect(response.alternatives).toHaveLength(1);
     expect(response.alternatives[0].distanceMeters).toBe(1200);
     expect(response.alternatives[0].recommendation).toContain('20.0%');

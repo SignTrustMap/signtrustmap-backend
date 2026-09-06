@@ -25,6 +25,7 @@ export interface SignTypeSummary {
   shape: string | null;
   colorScheme: string | null;
   isActive: boolean;
+  value?: number | null;
   category: SignCategorySummary;
 }
 

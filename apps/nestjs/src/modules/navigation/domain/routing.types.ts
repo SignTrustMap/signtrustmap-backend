@@ -1,5 +1,3 @@
-import { RouteSignsResponse } from '../../sign-map/domain/verified-sign';
-
 export interface RouteDirectionsRequest {
   originLatitude: number;
   originLongitude: number;
@@ -21,6 +19,8 @@ export interface RouteSnapResponse extends RoutePointResponse {
 }
 
 export interface RouteStepResponse {
+  type: string;
+  instruction: string;
   edgeId: string | null;
   fromNodeId: string | null;
   toNodeId: string | null;
@@ -54,6 +54,22 @@ export interface RouteDirectionsResponse {
 }
 
 export interface RoutePreviewResponse {
-  directions: RouteDirectionsResponse;
-  upcomingSigns: RouteSignsResponse;
+  route: {
+    geometry: string;
+    distanceMeters: number;
+    durationSeconds: number;
+  };
+  steps: Array<{
+    type: string;
+    instruction: string;
+    distanceMeters: number;
+  }>;
+  trafficSigns: Array<{
+    id: string;
+    type: string;
+    value?: number;
+    lat: number;
+    lon: number;
+    routeOffsetMeters: number;
+  }>;
 }
