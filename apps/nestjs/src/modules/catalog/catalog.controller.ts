@@ -1,14 +1,35 @@
-import { Controller, Get, Post, Patch, Delete, Put, Param, Body, Query, ParseIntPipe } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  ParseIntPipe,
+  Patch,
+  Post,
+  Put,
+  Query,
+} from '@nestjs/common';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { CatalogService } from './catalog.service';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { CreateSignCategoryDto, UpdateSignCategoryDto, CreateSignTypeDto, UpdateSignTypeDto, UpsertSystemParameterDto } from './dto/catalog.dto';
+import {
+  CreateSignCategoryDto,
+  CreateSignTypeDto,
+  ListSignTypesQueryDto,
+  UpdateSignCategoryDto,
+  UpdateSignTypeDto,
+  UpsertSystemParameterDto,
+} from './dto/catalog.dto';
 
+@ApiTags('catalog')
+@ApiBearerAuth()
 @Controller()
 export class CatalogController {
   constructor(private readonly svc: CatalogService) {}
 
-  // ── Sign Categories: public read, ADMIN write ───────────────────────────
+  // Sign categories: authenticated read, ADMIN write.
   @Get('catalog/categories')
   listCategories() { return this.svc.listCategories(); }
 
@@ -27,13 +48,16 @@ export class CatalogController {
   @Delete('catalog/categories/:id')
   deleteCategory(@Param('id', ParseIntPipe) id: number) { return this.svc.deleteCategory(id); }
 
-  // ── Traffic Sign Types: public read, ADMIN write ────────────────────────
+  // Traffic sign types: authenticated read, ADMIN write.
   @Get('catalog/sign-types')
-  listSignTypes(@Query('categoryId') categoryId?: string, @Query('isActive') isActive?: string, @Query('search') search?: string, @Query('q') q?: string) {
-    const cid = categoryId !== undefined ? parseInt(categoryId, 10) : undefined;
-    const act = isActive !== undefined ? isActive === 'true' : undefined;
-    const term = (search ?? q ?? '').trim() || undefined;
-    return this.svc.listSignTypes(Number.isNaN(cid as any) ? undefined : cid, act, term);
+  listSignTypes(@Query() query: ListSignTypesQueryDto) {
+    return this.svc.listSignTypes({
+      categoryId: query.categoryId,
+      isActive: query.isActive === undefined ? true : query.isActive === 'true',
+      search: query.search || query.q,
+      page: query.page,
+      size: query.size ?? query.pageSize,
+    });
   }
 
   @Get('catalog/sign-types/:id')
@@ -51,7 +75,7 @@ export class CatalogController {
   @Delete('catalog/sign-types/:id')
   deleteSignType(@Param('id', ParseIntPipe) id: number) { return this.svc.deleteSignType(id); }
 
-  // ── System Parameters: ADMIN only (Flow 13) ─────────────────────────────
+  // System parameters: ADMIN only (Flow 13).
   @Roles('ADMIN')
   @Get('admin/system-parameters')
   listParams() { return this.svc.listParameters(); }
