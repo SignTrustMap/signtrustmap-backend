@@ -17,9 +17,39 @@ export class ReviewsService {
     @InjectRepository(TrafficSignType) private readonly signTypeRepo: Repository<TrafficSignType>,
     private readonly consensusService: ConsensusService,
   ) {}
-  async queue(page = 1, pageSize = 20) {
+  async queue(reviewerId: string, page = 1, pageSize = 20) {
     const safePage = Math.max(1, page); const safeSize = Math.min(Math.max(1, pageSize), 100);
-    const [items, total] = await this.candidateRepo.findAndCount({ where: { status: CandidateStatus.PENDING_REVIEW }, relations: ['predictedSignType'], order: { activeLearningPriority: 'DESC', createdAt: 'ASC' }, skip: (safePage - 1) * safeSize, take: safeSize });
+    const query = this.candidateRepo.createQueryBuilder('candidate')
+      .leftJoinAndSelect('candidate.predictedSignType', 'predictedSignType')
+      .leftJoinAndSelect('candidate.submission', 'submission')
+      .where('candidate.status IN (:...statuses)', {
+        statuses: [CandidateStatus.PENDING_REVIEW, CandidateStatus.IN_CONSENSUS],
+      })
+      .andWhere(
+        `NOT EXISTS (
+          SELECT 1 FROM candidate_reviews review
+          WHERE review.candidate_id = candidate.id AND review.reviewer_id = :reviewerId
+        )`,
+        { reviewerId },
+      )
+      .andWhere(
+        `NOT EXISTS (
+          SELECT 1
+          FROM moderation_cases moderation_case
+          JOIN moderation_actions moderation_action
+            ON moderation_action.case_id = moderation_case.id
+          WHERE moderation_case.target_entity_type = 'candidate'
+            AND moderation_case.target_entity_id = candidate.id
+            AND moderation_action.action_type = 'REPORT_FROM_REVIEW'
+            AND moderation_action.performed_by = :reviewerId
+        )`,
+        { reviewerId },
+      )
+      .orderBy('candidate.activeLearningPriority', 'DESC')
+      .addOrderBy('candidate.createdAt', 'ASC')
+      .skip((safePage - 1) * safeSize)
+      .take(safeSize);
+    const [items, total] = await query.getManyAndCount();
     return { items, total, page: safePage, pageSize: safeSize, totalPages: Math.ceil(total / safeSize) };
   }
   async vote(reviewerId: string, candidateId: string, dto: VoteDto) {
@@ -148,7 +178,7 @@ export class ReviewsService {
         [mc[0].id, reviewerId, note],
       );
       await (this.candidateRepo.manager as any).query(
-        `INSERT INTO review_flags (review_id, reason, note) SELECT id, 'FRAUD', $2 FROM candidate_reviews WHERE candidate_id=$1 AND reviewer_id=$2`,
+        `INSERT INTO review_flags (review_id, reason, note) SELECT id, 'FRAUD', $2 FROM candidate_reviews WHERE candidate_id=$1 AND reviewer_id=$3`,
         [candidateId, note, reviewerId],
       );
     } catch {}

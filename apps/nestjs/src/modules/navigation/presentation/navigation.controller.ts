@@ -6,6 +6,7 @@ import { RouteDirectionsRequestDto } from './dto/routing.dto';
 import { NavigationResponseDto } from './dto/navigation-response.dto';
 
 @ApiTags('navigation')
+@ApiTags('Navigation')
 @Public()
 @Controller('navigation')
 export class NavigationController {
@@ -13,6 +14,7 @@ export class NavigationController {
 
   @Post('route-preview')
   @ApiOperation({ summary: 'Get navigation directions and verified signs along the route' })
+  @ApiOperation({ summary: 'Preview navigation route and signs', description: 'Calculates route geometry and retrieves verified traffic signs located along the path in a single combined call' })
   @ApiOkResponse({ type: NavigationResponseDto })
   previewRoute(@Body() request: RouteDirectionsRequestDto) {
     return this.routePreview.previewRoute(request);

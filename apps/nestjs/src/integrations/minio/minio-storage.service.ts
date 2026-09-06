@@ -1,12 +1,19 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { createHash } from 'crypto';
 import * as Minio from 'minio';
+import { Readable } from 'stream';
 
 export const STM_BUCKETS = {
   VIDEO: 'stm-raw-videos',
   GPX: 'stm-gpx-logs',
   IMAGE: 'stm-sign-crops',
 } as const;
+
+export type StoredObjectReference = {
+  bucket: string;
+  objectName: string;
+};
 
 @Injectable()
 export class MinioStorageService {
@@ -60,6 +67,63 @@ export class MinioStorageService {
       this.logger.error(`MinIO putObject failed [${bucket}/${objectName}]: ${err?.message}`, err?.stack);
       throw err;
     }
+  }
+
+  async assembleObjects(
+    destination: StoredObjectReference,
+    sources: StoredObjectReference[],
+    expectedSizeBytes: number,
+    contentType?: string,
+  ): Promise<{ checksum: string; sizeBytes: number }> {
+    const hash = createHash('sha256');
+    let sizeBytes = 0;
+    const client = this.client;
+
+    async function* readSources() {
+      for (const source of sources) {
+        const objectStream = await client.getObject(source.bucket, source.objectName);
+
+        for await (const data of objectStream) {
+          const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
+          sizeBytes += chunk.length;
+          hash.update(chunk);
+          yield chunk;
+        }
+      }
+    }
+
+    const metadata: Record<string, string> = {};
+    if (contentType) metadata['Content-Type'] = contentType;
+
+    await this.client.putObject(
+      destination.bucket,
+      destination.objectName,
+      Readable.from(readSources()),
+      expectedSizeBytes,
+      metadata,
+    );
+
+    return { checksum: hash.digest('hex'), sizeBytes };
+  }
+
+  async removeObject(reference: StoredObjectReference): Promise<void> {
+    await this.client.removeObject(reference.bucket, reference.objectName);
+  }
+
+  async removeObjects(references: StoredObjectReference[]): Promise<void> {
+    const objectsByBucket = new Map<string, string[]>();
+
+    for (const reference of references) {
+      const objectNames = objectsByBucket.get(reference.bucket) ?? [];
+      objectNames.push(reference.objectName);
+      objectsByBucket.set(reference.bucket, objectNames);
+    }
+
+    await Promise.all(
+      [...objectsByBucket].map(([bucket, objectNames]) =>
+        this.client.removeObjects(bucket, objectNames),
+      ),
+    );
   }
 
   async presignedGetObject(bucket: string, objectName: string, expirySeconds = 3600): Promise<string> {

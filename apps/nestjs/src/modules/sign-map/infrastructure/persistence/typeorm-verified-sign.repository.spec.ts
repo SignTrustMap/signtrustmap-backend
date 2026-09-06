@@ -68,6 +68,22 @@ describe('TypeOrmVerifiedSignRepository', () => {
     expect(created.id).toBe(databaseRow().id);
   });
 
+  it('uses a parameterized PostGIS bounding-box query', async () => {
+    const ormRepository = {
+      query: jest.fn().mockResolvedValue([databaseRow()]),
+    } as unknown as Repository<VerifiedSignOrmEntity>;
+    const repository = new TypeOrmVerifiedSignRepository(ormRepository);
+
+    const signs = await repository.findActiveInBounds(10, 106, 11, 107, 200);
+
+    const [query, parameters] = (ormRepository.query as jest.Mock).mock.calls[0];
+    expect(query).toContain('ST_MakeEnvelope($1, $2, $3, $4, 4326)');
+    expect(query).toContain("sign.status = 'ACTIVE'");
+    expect(query).toContain('LIMIT $5');
+    expect(parameters).toEqual([106, 10, 107, 11, 200]);
+    expect(signs).toHaveLength(1);
+  });
+
   it('builds a parameterized partial update and reloads the updated sign', async () => {
     const ormRepository = {
       query: jest

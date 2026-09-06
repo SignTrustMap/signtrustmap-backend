@@ -8,6 +8,7 @@ import {
 } from './dto/sign-geolocation.dto';
 
 @ApiTags('geolocation')
+@ApiTags('Geolocation')
 @Public()
 @Controller('geolocation')
 export class SignGeolocationController {

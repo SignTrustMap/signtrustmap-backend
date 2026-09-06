@@ -1,5 +1,6 @@
--- seed-admin.sql — idempotent admin seed for SignTrustMap
--- Email: admin@stm.dev / Password: Admin@123 (bcrypt hash below)
+-- seed-admin.sql — idempotent development account seeds for SignTrustMap
+-- Admin: admin@stm.dev / Admin@123
+-- Demo:  demo@stm.dev  / Demo@123 (DRIVER, SURVEYOR, REVIEWER)
 -- Run: psql -U stm_user -d signtrustmap -f seed-admin.sql
 -- Or: docker exec -i stm-postgres psql -U stm_user -d signtrustmap -f /tmp/seed-admin.sql
 
@@ -67,12 +68,57 @@ BEGIN
   RAISE NOTICE 'Admin ready: % (id=%) role=ADMIN', 'admin@stm.dev', admin_id;
 END $$;
 
+DO $$
+DECLARE
+  demo_id uuid;
+BEGIN
+  -- This account can exercise every mobile application workflow.
+  INSERT INTO users (email, password_hash, full_name, status)
+  VALUES (
+    'demo@stm.dev',
+    '$2a$10$xUgSbuZ/BzQWPvtTAqAhd.xVBBWqq7NhIoywZP9G8jq3yHjiOiiuq',
+    'STM Demo User',
+    'ACTIVE'
+  )
+  ON CONFLICT (email) DO UPDATE
+    SET password_hash = EXCLUDED.password_hash,
+        full_name     = EXCLUDED.full_name,
+        status        = 'ACTIVE',
+        updated_at    = now()
+  RETURNING id INTO demo_id;
+
+  INSERT INTO user_roles (user_id, role_id, is_active, assigned_by)
+  SELECT demo_id, id, true, demo_id
+  FROM roles
+  WHERE code IN ('DRIVER', 'SURVEYOR', 'REVIEWER')
+  ON CONFLICT (user_id, role_id) DO UPDATE SET is_active = true;
+
+  INSERT INTO wallets (user_id, balance)
+  VALUES (demo_id, 0)
+  ON CONFLICT (user_id) DO NOTHING;
+
+  INSERT INTO driver_profiles (user_id)
+  VALUES (demo_id)
+  ON CONFLICT (user_id) DO NOTHING;
+
+  INSERT INTO surveyor_profiles (user_id)
+  VALUES (demo_id)
+  ON CONFLICT (user_id) DO NOTHING;
+
+  INSERT INTO reviewer_profiles (user_id)
+  VALUES (demo_id)
+  ON CONFLICT (user_id) DO NOTHING;
+
+  RAISE NOTICE 'Demo account ready: % (id=%) roles=DRIVER,SURVEYOR,REVIEWER',
+    'demo@stm.dev', demo_id;
+END $$;
+
 -- Verification query (shows result of seed)
 SELECT u.id, u.email, u.full_name, u.status, w.balance,
-       array_agg(r.code) FILTER (WHERE r.code IS NOT NULL) AS roles
+       array_agg(r.code ORDER BY r.code) FILTER (WHERE r.code IS NOT NULL) AS roles
 FROM users u
 LEFT JOIN wallets w ON w.user_id = u.id
 LEFT JOIN user_roles ur ON ur.user_id = u.id AND ur.is_active = true
 LEFT JOIN roles r ON r.id = ur.role_id
-WHERE u.email = 'admin@stm.dev'
+WHERE u.email IN ('admin@stm.dev', 'demo@stm.dev')
 GROUP BY u.id, w.balance;
