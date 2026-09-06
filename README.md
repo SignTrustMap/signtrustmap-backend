@@ -343,6 +343,34 @@ signTrustMap/
 
 NestJS endpoints are served at `http://localhost:3000/api/v1`. FastAPI endpoints at `http://localhost:8000/api/v1` (health probe also at `/health`). The global NestJS prefix is `/api/v1`; FastAPI's versioned prefix is the same.
 
+NestJS operational endpoints and API documentation:
+
+```text
+GET /api/v1/health        process liveness (public)
+GET /api/v1/health/ready  PostgreSQL readiness (public)
+GET /docs                 Swagger UI
+GET /docs-json            OpenAPI JSON
+```
+
+Run the NestJS Jest suite with an LCOV report using `npm run test:cov`.
+
+### Migrating data from the Spring backend
+
+Once the NestJS schema has been initialized and its roles seeded, run the
+read-only migration preflight:
+
+```bash
+SPRING_DATABASE_URL='postgres://spring-source/...' \
+DATABASE_URL='postgres://nestjs-target/...' \
+npm run migrate:spring-data -- --dry-run
+```
+
+Back up both databases, then omit `--dry-run` to stage and transform the data.
+The migration is rerunnable and records ID mappings, source snapshots, and
+lossy conversions under the target database's `spring_legacy` schema. See
+`apps/nestjs/src/database/migrations/README.md` for the conversion contract and
+audit queries.
+
 The NestJS OpenAPI documentation is available at `http://localhost:3000/docs`. The raw OpenAPI JSON document is available at `http://localhost:3000/docs-json`.
 
 For Heroku deployments, deploy from the repository root. The root npm workspace installs and builds `apps/nestjs`, and the `web` process starts its compiled application.
