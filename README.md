@@ -523,6 +523,37 @@ Sign-type create and update requests accept `aiLabelPrompt`, `representativeImag
 | POST | `/signs/along-route` | Public | Find ACTIVE verified signs inside the configured route corridor, filtered by travel heading and ordered by encounter distance |
 | POST | `/navigation/route-preview` | Public | Calculate directions and return route-aware signs for the shortest path in one response |
 
+`POST /navigation/route-preview` returns a mobile-oriented navigation payload. Route
+geometry uses the standard precision-5 encoded polyline format, and traffic signs
+are ordered by `routeOffsetMeters`:
+
+```json
+{
+  "route": {
+    "geometry": "a~l~Rjk~{fE_seK_seK",
+    "distanceMeters": 7300,
+    "durationSeconds": 1050
+  },
+  "steps": [
+    {
+      "type": "turn",
+      "instruction": "Turn right onto Nguyen Hue",
+      "distanceMeters": 120
+    }
+  ],
+  "trafficSigns": [
+    {
+      "id": "3cbdd8f6-f8f6-4999-bd2e-6b0934e42b0f",
+      "type": "SPEED_LIMIT",
+      "value": 50,
+      "lat": 10.77692,
+      "lon": 106.70032,
+      "routeOffsetMeters": 820
+    }
+  ]
+}
+```
+
 ### Sign Geolocation — `geolocation`
 
 | Method | Path | Auth | Description |

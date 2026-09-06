@@ -30,6 +30,7 @@ interface VerifiedSignRow {
   shape: string | null;
   color_scheme: string | null;
   is_active: boolean;
+  navigation_value: string | null;
   category_code: string;
   category_name_vi: string;
   category_name_en: string;
@@ -58,6 +59,14 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
          sign_type.shape,
          sign_type.color_scheme,
          sign_type.is_active,
+         (
+           SELECT mapping.osm_value
+           FROM sign_type_osm_mappings mapping
+           WHERE mapping.sign_type_id = sign_type.id
+             AND lower(mapping.osm_key) = 'maxspeed'
+           ORDER BY mapping.id
+           LIMIT 1
+         ) AS navigation_value,
          category.code AS category_code,
          category.name_vi AS category_name_vi,
          category.name_en AS category_name_en
@@ -191,6 +200,7 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
         shape: row.shape,
         colorScheme: row.color_scheme,
         isActive: row.is_active,
+        value: this.numericSpeedValue(row.navigation_value),
         category: {
           id: Number(row.category_id),
           code: row.category_code,
@@ -209,5 +219,12 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
+  }
+
+  private numericSpeedValue(value: string | null): number | null {
+    const match = value?.trim().match(/^(\d{1,3}(?:\.\d+)?)\s*(?:km\/?h|kph)?$/i);
+    if (!match) return null;
+    const speed = Number(match[1]);
+    return Number.isFinite(speed) ? speed : null;
   }
 }
