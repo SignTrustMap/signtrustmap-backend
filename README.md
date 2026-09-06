@@ -465,6 +465,8 @@ For Heroku deployments, deploy from the repository root. The root npm workspace 
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | POST | `/routing/directions` | Public | Calculate the shortest route and eligible alternatives through OSRM |
+| POST | `/signs` | STAFF/ADMIN | Create a verified traffic sign |
+| PATCH | `/signs/:id` | STAFF/ADMIN | Partially update a verified traffic sign |
 | POST | `/signs/along-route` | Public | Find ACTIVE verified signs inside the configured route corridor, filtered by travel heading and ordered by encounter distance |
 | POST | `/navigation/route-preview` | Public | Calculate directions and return route-aware signs for the shortest path in one response |
 

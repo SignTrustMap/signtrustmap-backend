@@ -42,6 +42,39 @@ export interface VerifiedSign {
   updatedAt: Date | string;
 }
 
+export enum VerifiedSignStatus {
+  ACTIVE = 'ACTIVE',
+  STALE = 'STALE',
+  RETIRED = 'RETIRED',
+  MODERATED_OVERRIDE = 'MODERATED_OVERRIDE',
+}
+
+export interface CreateVerifiedSign {
+  signTypeId: number;
+  originCandidateId: string;
+  latitude: number;
+  longitude: number;
+  trafficDirection: number | null;
+  signCropUrl: string;
+  lastVerifiedAt: Date;
+}
+
+export interface CreateVerifiedSignRequest
+  extends Omit<CreateVerifiedSign, 'trafficDirection' | 'lastVerifiedAt'> {
+  trafficDirection?: number | null;
+  lastVerifiedAt?: Date;
+}
+
+export interface UpdateVerifiedSign {
+  signTypeId?: number;
+  latitude?: number;
+  longitude?: number;
+  trafficDirection?: number | null;
+  signCropUrl?: string;
+  lastVerifiedAt?: Date;
+  status?: VerifiedSignStatus;
+}
+
 export interface UpcomingSign {
   sign: VerifiedSign;
   distanceAlongRouteMeters: number;

@@ -6,6 +6,9 @@ import { RouteSignQueryService } from './route-sign-query.service';
 
 describe('RouteSignQueryService', () => {
   const repository: jest.Mocked<VerifiedSignRepository> = {
+    findById: jest.fn(),
+    create: jest.fn(),
+    update: jest.fn(),
     findActiveAlongRoute: jest.fn(),
   };
 
