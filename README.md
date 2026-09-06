@@ -343,6 +343,8 @@ signTrustMap/
 
 NestJS endpoints are served at `http://localhost:3000/api/v1`. FastAPI endpoints at `http://localhost:8000/api/v1` (health probe also at `/health`). The global NestJS prefix is `/api/v1`; FastAPI's versioned prefix is the same.
 
+The NestJS OpenAPI documentation is available at `http://localhost:3000/docs`. The raw OpenAPI JSON document is available at `http://localhost:3000/docs-json`.
+
 **Auth legend**
 
 | Label | Meaning |
@@ -711,5 +713,4 @@ Copy-Item apps\nestjs\.env.example apps\nestjs\.env
 Để chạy query tự do: click vào `signtrustmap` → menu `Tools > Query Tool` → gõ SQL → F5.
 
 ---
-
 
