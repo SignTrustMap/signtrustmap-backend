@@ -9,6 +9,7 @@ describe('RouteSignQueryService', () => {
     findById: jest.fn(),
     create: jest.fn(),
     update: jest.fn(),
+    findActiveInBounds: jest.fn(),
     findActiveAlongRoute: jest.fn(),
   };
 

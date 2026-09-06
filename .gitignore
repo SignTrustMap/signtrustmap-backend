@@ -57,3 +57,7 @@ celerybeat.pid
 # ---- Logs ----
 logs/
 *.log
+
+# ---- Neon CLI ----
+.neon
+

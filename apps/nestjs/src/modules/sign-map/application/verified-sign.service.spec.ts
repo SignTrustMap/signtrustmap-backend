@@ -14,6 +14,7 @@ describe('VerifiedSignService', () => {
     findById: jest.fn(),
     create: jest.fn(),
     update: jest.fn(),
+    findActiveInBounds: jest.fn(),
     findActiveAlongRoute: jest.fn(),
   };
   const catalog = {
@@ -113,6 +114,23 @@ describe('VerifiedSignService', () => {
         'Verified sign 7c283c24-e758-4496-8df0-7b892ee4e1c1 was not found',
       ),
     );
+  });
+
+  it('returns active signs inside valid map bounds', async () => {
+    repository.findActiveInBounds.mockResolvedValue([sign()]);
+
+    await expect(service.findInBounds(10, 106, 11, 107, 50)).resolves.toMatchObject({
+      count: 1,
+      signs: [expect.objectContaining({ id: sign().id })],
+    });
+    expect(repository.findActiveInBounds).toHaveBeenCalledWith(10, 106, 11, 107, 50);
+  });
+
+  it('rejects inverted map bounds before querying storage', async () => {
+    await expect(service.findInBounds(11, 107, 10, 106, 50)).rejects.toEqual(
+      new BadRequestException('Minimum bounds must be less than maximum bounds'),
+    );
+    expect(repository.findActiveInBounds).not.toHaveBeenCalled();
   });
 
   it('maps duplicate candidate constraints to conflict', async () => {

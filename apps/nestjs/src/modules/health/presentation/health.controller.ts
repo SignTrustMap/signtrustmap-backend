@@ -9,6 +9,7 @@ import { Public } from '../../../common/decorators/public.decorator';
 import { HealthService } from '../application/health.service';
 
 @ApiTags('health')
+@ApiTags('Health')
 @Public()
 @Controller('health')
 export class HealthController {

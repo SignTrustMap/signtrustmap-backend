@@ -1,12 +1,17 @@
-﻿import { Controller, Get, Post, Body, Param, Query, ParseUUIDPipe, UseInterceptors, UploadedFile, BadRequestException } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Query, ParseUUIDPipe, UseInterceptors, UploadedFile, BadRequestException } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RevalidationService } from '../application/revalidation.service';
 import { SubmitEvidenceDto, EvidenceVoteDto } from './dto/revalidation.dto';
+
+@ApiTags('Revalidation')
 @Controller()
 export class RevalidationController {
   constructor(private readonly svc: RevalidationService) {}
+
+  @ApiOperation({ summary: 'List revalidation tasks in bounding box', description: 'Retrieve active on-site verification tasks inside a map bounding box' })
   @Get('revalidation/tasks/map')
   listTasksInBbox(
     @Query('min_lat') minLat?: string, @Query('min_lon') minLon?: string,
@@ -23,25 +28,46 @@ export class RevalidationController {
     const p = page ? parseInt(page, 10) : 1, ps = pageSize ? parseInt(pageSize, 10) : 20;
     return this.svc.listTasksInBbox({ minLat: min_lat, minLon: min_lon, maxLat: max_lat, maxLon: max_lon, status, priority, page: Number.isNaN(p) ? 1 : p, pageSize: Number.isNaN(ps) ? 20 : ps });
   }
+
+  @ApiOperation({ summary: 'List revalidation tasks', description: 'Paginated list of verification tasks filterable by status and priority' })
   @Get('revalidation/tasks')
   listTasks(@Query('page') page?: string, @Query('pageSize') ps?: string, @Query('status') status?: string, @Query('sort') sort?: string) {
     const p = page ? parseInt(page, 10) : 1, n = ps ? parseInt(ps, 10) : 20;
     return this.svc.listTasks(Number.isNaN(p) ? 1 : p, Number.isNaN(n) ? 20 : n, status, sort);
   }
+
+  @ApiOperation({ summary: 'Get revalidation task detail', description: 'Fetch task coordinates, target sign, and current verification progress' })
   @Get('revalidation/tasks/:taskId')
   getTask(@Param('taskId', ParseUUIDPipe) taskId: string) { return this.svc.getTask(taskId); }
+
+  @ApiOperation({ summary: 'List evidences for task', description: 'Retrieve surveyor evidence submissions and photos for a task' })
   @Get('revalidation/tasks/:taskId/evidences')
   listEvidences(@Param('taskId', ParseUUIDPipe) taskId: string) { return this.svc.listEvidencesForTask(taskId); }
+
+  @ApiBearerAuth()
+  @Roles('SURVEYOR', 'ADMIN')
+  @ApiOperation({ summary: 'Submit task evidence', description: 'Upload photo evidence and location verification from on-site inspection' })
+  @ApiConsumes('multipart/form-data')
   @Post('revalidation/tasks/:taskId/evidence')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 20 * 1024 * 1024 } }))
   @Roles('SURVEYOR', 'ADMIN')
   submitEvidence(@Param('taskId', ParseUUIDPipe) taskId: string, @CurrentUser() user: any, @Body() dto: SubmitEvidenceDto, @UploadedFile() file?: Express.Multer.File) { return this.svc.submitEvidence(taskId, user.id, dto, file); }
+
+  @ApiBearerAuth()
+  @Roles('STAFF', 'ADMIN')
+  @ApiOperation({ summary: 'Finalize revalidation task', description: 'Staff/Admin manually finalizes task status and awards bounty credits' })
   @Post('revalidation/tasks/:taskId/finalize')
   @Roles('STAFF', 'ADMIN')
   finalizeTask(@Param('taskId', ParseUUIDPipe) taskId: string, @CurrentUser() user: any) { return this.svc.finalizeTask(taskId, user.id); }
+
+  @ApiBearerAuth()
+  @Roles('REVIEWER', 'ADMIN')
+  @ApiOperation({ summary: 'Vote on evidence', description: 'Reviewers validate or reject submitted on-site evidence' })
   @Post('revalidation/evidence/:evidenceId/vote')
   @Roles('REVIEWER', 'ADMIN')
   vote(@Param('evidenceId', ParseUUIDPipe) evidenceId: string, @CurrentUser() user: any, @Body() dto: EvidenceVoteDto) { return this.svc.voteOnEvidence(evidenceId, user.id, dto); }
+
+  @ApiOperation({ summary: 'List evidence decisions', description: 'Retrieve history of consensus decisions for a specific evidence item' })
   @Get('revalidation/evidence/:evidenceId/decisions')
   listDecisions(@Param('evidenceId', ParseUUIDPipe) evidenceId: string) { return this.svc.listDecisions(evidenceId); }
 }

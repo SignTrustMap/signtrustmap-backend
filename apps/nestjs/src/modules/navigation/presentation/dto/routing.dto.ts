@@ -1,8 +1,12 @@
 import { Type } from 'class-transformer';
-import { IsInt, IsNumber, IsOptional, Max, Min } from 'class-validator';
+import { IsIn, IsInt, IsNumber, IsOptional, Max, Min } from 'class-validator';
 import { RouteDirectionsRequest } from '../../domain/routing.types';
 
 export class RouteDirectionsRequestDto implements RouteDirectionsRequest {
+  @IsOptional()
+  @IsIn(['DRIVING'])
+  vehicleMode?: 'DRIVING';
+
   @Type(() => Number)
   @IsNumber()
   @Min(-90)
