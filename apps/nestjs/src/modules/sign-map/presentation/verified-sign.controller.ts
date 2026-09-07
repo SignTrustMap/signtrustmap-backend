@@ -1,5 +1,4 @@
 import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Public } from '../../../common/decorators/public.decorator';
 import { Roles } from '../../../common/decorators/roles.decorator';
@@ -9,7 +8,6 @@ import { VerifiedSignService } from '../application/verified-sign.service';
 import { CreateVerifiedSignDto, UpdateVerifiedSignDto } from './dto/verified-sign.dto';
 import { SignBoundsQueryDto } from './dto/sign-bounds.dto';
 
-@ApiTags('sign map')
 @ApiTags('Sign Map')
 @Controller('signs')
 export class VerifiedSignController {
