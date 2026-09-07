@@ -355,7 +355,7 @@ NestJS operational endpoints and API documentation:
 ```text
 GET /api/v1/health        process liveness (public)
 GET /api/v1/health/ready  PostgreSQL readiness (public)
-GET /docs                 Swagger UI
+GET /docs                 Scalar API reference
 GET /docs-json            OpenAPI JSON
 ```
 
@@ -393,7 +393,7 @@ lossy conversions under the target database's `spring_legacy` schema. See
 `apps/nestjs/src/database/migrations/README.md` for the conversion contract and
 audit queries.
 
-The NestJS OpenAPI documentation is available at `http://localhost:3000/docs`. The raw OpenAPI JSON document is available at `http://localhost:3000/docs-json`.
+The NestJS OpenAPI documentation is rendered by Scalar at `http://localhost:3000/docs`. The raw OpenAPI JSON document is available at `http://localhost:3000/docs-json`.
 
 For Heroku deployments, deploy from the repository root. The root npm workspace installs and builds `apps/nestjs`, and the `web` process starts its compiled application.
 
