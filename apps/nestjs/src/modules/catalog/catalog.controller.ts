@@ -10,7 +10,6 @@ import {
   Put,
   Query,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CatalogService } from './catalog.service';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -24,7 +23,6 @@ import {
   UpsertSystemParameterDto,
 } from './dto/catalog.dto';
 
-@ApiTags('catalog')
 @ApiTags('Catalog')
 @ApiBearerAuth()
 @Controller()
