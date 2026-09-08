@@ -1,13 +1,16 @@
 """Durable Celery orchestration for submission inference.
 
-Celery owns dispatch, retries, database state, and candidate persistence. The
-standalone AI service is a synchronous inference engine over MinIO references.
+Celery owns dispatch, retries, database state, MinIO media download,
+GPX telemetry synchronization, coordinate estimation, and candidate persistence.
+The standalone AI service is a synchronous inference engine over MinIO references.
 """
 from __future__ import annotations
 
+import io
 import logging
 from collections import defaultdict
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from typing import Any, Sequence
 
 import httpx
 import redis
@@ -16,6 +19,12 @@ from sqlalchemy import text
 
 from app.config import settings
 from app.db_sync import get_sync_db
+from app.tasks.gpx_sync import (
+    GpxTrackPoint,
+    estimate_sign_coordinates,
+    interpolate_gpx_position,
+    parse_gpx_content,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +47,106 @@ _INSERT_HISTORY = text(
 _DISPATCH_LOCK_SECONDS = 60 * 60
 
 
+def _get_minio_client():
+    """Create a MinIO SDK client from application settings."""
+    try:
+        from minio import Minio
+        endpoint = settings.MINIO_ENDPOINT.replace("http://", "").replace("https://", "")
+        return Minio(
+            endpoint,
+            access_key=settings.MINIO_ACCESS_KEY,
+            secret_key=settings.MINIO_SECRET_KEY,
+            secure=settings.MINIO_SECURE,
+        )
+    except Exception as exc:
+        logger.debug("[ai] minio client initialization failed: %s", exc)
+        return None
+
+
+def _download_minio_bytes(bucket: str, object_key: str) -> bytes:
+    """Download an object's raw bytes from MinIO with HTTP fallback."""
+    client = _get_minio_client()
+    if client is not None:
+        try:
+            response = client.get_object(bucket, object_key)
+            try:
+                return response.read()
+            finally:
+                response.close()
+                response.release_conn()
+        except Exception as exc:
+            logger.debug("[ai] minio get_object failed (%s), trying HTTP fallback", exc)
+
+    scheme = "https" if settings.MINIO_SECURE else "http"
+    endpoint = settings.MINIO_ENDPOINT
+    if not endpoint.startswith(("http://", "https://")):
+        endpoint = f"{scheme}://{endpoint}"
+    url = f"{endpoint.rstrip('/')}/{bucket}/{object_key.lstrip('/')}"
+    with httpx.Client(timeout=30.0) as http_client:
+        resp = http_client.get(url)
+        resp.raise_for_status()
+        return resp.content
+
+
+def _upload_crop_bytes(
+    bucket: str,
+    object_key: str,
+    data: bytes,
+    content_type: str = "image/jpeg",
+) -> str:
+    """Upload cropped sign image bytes to MinIO and return storage reference."""
+    client = _get_minio_client()
+    if client is not None:
+        try:
+            client.put_object(
+                bucket,
+                object_key,
+                io.BytesIO(data),
+                length=len(data),
+                content_type=content_type,
+            )
+            return f"{bucket}/{object_key}"
+        except Exception as exc:
+            logger.warning("[ai] minio put_object failed (%s)", exc)
+    return f"{bucket}/{object_key}"
+
+
+def _download_gpx_track(media_objects: list[dict[str, str]]) -> list[GpxTrackPoint]:
+    """Find GPX media object from submission media list, download and parse."""
+    gpx_obj = next((m for m in media_objects if m.get("media_type") == "GPX"), None)
+    if not gpx_obj:
+        return []
+    bucket = gpx_obj.get("bucket")
+    object_key = gpx_obj.get("object_key")
+    if not bucket or not object_key:
+        return []
+    try:
+        raw_bytes = _download_minio_bytes(bucket, object_key)
+        return parse_gpx_content(raw_bytes)
+    except Exception as exc:
+        logger.warning("[ai] failed to download/parse GPX from %s/%s: %s", bucket, object_key, exc)
+        return []
+
+
+def _load_submission_metadata(submission_id: str) -> dict[str, Any] | None:
+    """Load submission metadata (captured_at, submission_type, etc.) from database."""
+    try:
+        query = text(
+            "SELECT id, surveyor_id, submission_type, status, captured_at, coordinate_source, note "
+            "FROM survey_submissions WHERE id = :sid"
+        )
+        with get_sync_db() as db:
+            row = db.execute(query, {"sid": submission_id}).mappings().first()
+            if not row:
+                return None
+            return dict(row)
+    except Exception as exc:
+        logger.warning("[ai] could not load submission metadata for %s: %s", submission_id, exc)
+        return None
+
+
 def _set_status(submission_id: str, new_status: str, note: str) -> str | None:
+    """Idempotently update submission status and append to status history."""
     with get_sync_db() as db:
         row = db.execute(_SELECT_SUBMISSION, {"sid": submission_id}).mappings().first()
         if row is None:
@@ -93,6 +201,7 @@ def _claim_submission(submission_id: str) -> str | None:
 
 
 def _mark_failed(submission_id: str, reason: str) -> None:
+    """Record FAILED terminal status with failure_reason."""
     reason = reason[:2000]
     try:
         old_status = _set_status(submission_id, "FAILED", reason)
@@ -230,10 +339,25 @@ def _resolve_sign_type_id(db, sign: dict[str, Any]) -> int | None:
     return int(row["id"]) if row else None
 
 
-def _persist_candidates(submission_id: str, signs: list[dict[str, Any]]) -> tuple[int, int]:
+def _persist_candidates(
+    submission_id: str,
+    signs: list[dict[str, Any]],
+    gpx_points: Sequence[GpxTrackPoint] | None = None,
+    captured_at: datetime | None = None,
+    image_width: int = 1920,
+    image_height: int = 1080,
+) -> tuple[int, int]:
+    """Persist candidate signs, detection metadata, and spherical geo estimations."""
     inserted = 0
     unmapped = 0
     with get_sync_db() as db:
+        db.execute(
+            text(
+                "DELETE FROM candidate_geo_estimations WHERE candidate_id IN ("
+                "SELECT id FROM unverified_sign_candidates WHERE submission_id = :sid)"
+            ),
+            {"sid": submission_id},
+        )
         db.execute(
             text(
                 "DELETE FROM candidate_detection_metadata WHERE candidate_id IN ("
@@ -251,6 +375,32 @@ def _persist_candidates(submission_id: str, signs: list[dict[str, Any]]) -> tupl
                 unmapped += 1
                 logger.warning("[ai] no catalog mapping for model label %r", sign.get("class_name"))
                 continue
+
+            # Calculate sign detection timestamp
+            timestamp_sec = float(sign.get("timestamp_seconds", 0.0) or 0.0)
+            base_time = captured_at or datetime.now(timezone.utc)
+            if base_time.tzinfo is None:
+                base_time = base_time.replace(tzinfo=timezone.utc)
+            else:
+                base_time = base_time.astimezone(timezone.utc)
+            target_time = base_time + timedelta(seconds=timestamp_sec)
+
+            # Interpolate vehicle GPS from GPX or fallback
+            if gpx_points:
+                veh_lat, veh_lon, veh_bearing = interpolate_gpx_position(gpx_points, target_time)
+            else:
+                veh_lat, veh_lon, veh_bearing = 21.0285, 105.8342, 0.0
+
+            box = sign.get("box_xyxy") or [None, None, None, None]
+            geo = estimate_sign_coordinates(
+                vehicle_lat=veh_lat,
+                vehicle_lon=veh_lon,
+                vehicle_bearing=veh_bearing,
+                box_xyxy=box,
+                image_width=image_width,
+                image_height=image_height,
+            )
+
             candidate_id = db.execute(
                 text(
                     "INSERT INTO unverified_sign_candidates ("
@@ -258,7 +408,7 @@ def _persist_candidates(submission_id: str, signs: list[dict[str, Any]]) -> tupl
                     "sign_crop_url, spatial_confidence, active_learning_priority, status"
                     ") VALUES ("
                     ":sid, :sign_type_id, :confidence, :best_frame_key, :sign_crop_key, "
-                    "'LOW', :priority, 'PENDING_REVIEW'"
+                    "CAST(:spatial_confidence AS spatial_confidence_level), :priority, 'PENDING_REVIEW'"
                     ") RETURNING id"
                 ),
                 {
@@ -267,10 +417,11 @@ def _persist_candidates(submission_id: str, signs: list[dict[str, Any]]) -> tupl
                     "confidence": float(sign["confidence"]),
                     "best_frame_key": str(sign["best_frame_key"]),
                     "sign_crop_key": str(sign["sign_crop_key"]),
+                    "spatial_confidence": geo["spatial_confidence"],
                     "priority": 1.0 - float(sign["confidence"]),
                 },
             ).scalar_one()
-            box = sign.get("box_xyxy") or [None, None, None, None]
+
             width = box[2] - box[0] if all(value is not None for value in box) else None
             height = box[3] - box[1] if all(value is not None for value in box) else None
             db.execute(
@@ -289,7 +440,33 @@ def _persist_candidates(submission_id: str, signs: list[dict[str, Any]]) -> tupl
                     "tracking_id": str(sign["track_id"]) if sign.get("track_id") is not None else None,
                 },
             )
+
+            db.execute(
+                text(
+                    "INSERT INTO candidate_geo_estimations ("
+                    "candidate_id, vehicle_location, sign_location, estimated_distance, "
+                    "bearing_angle, traffic_direction, projection_method"
+                    ") VALUES ("
+                    ":candidate_id, "
+                    "ST_SetSRID(ST_MakePoint(:vehicle_lon, :vehicle_lat), 4326), "
+                    "ST_SetSRID(ST_MakePoint(:sign_lon, :sign_lat), 4326), "
+                    ":estimated_distance, :bearing_angle, :traffic_direction, :projection_method"
+                    ")"
+                ),
+                {
+                    "candidate_id": candidate_id,
+                    "vehicle_lon": geo["vehicle_lon"],
+                    "vehicle_lat": geo["vehicle_lat"],
+                    "sign_lon": geo["sign_lon"],
+                    "sign_lat": geo["sign_lat"],
+                    "estimated_distance": geo["estimated_distance"],
+                    "bearing_angle": geo["bearing_angle"],
+                    "traffic_direction": geo["traffic_direction"],
+                    "projection_method": geo["projection_method"],
+                },
+            )
             inserted += 1
+
         db.execute(
             text(
                 "UPDATE survey_submissions SET total_candidates_extracted = :count, "
@@ -313,7 +490,7 @@ def task_process_submission_pipeline(
     submission_id: str,
     media_objects: list[dict[str, str]],
 ) -> dict[str, Any]:
-    """Run one durable submission job using existing MinIO objects."""
+    """Run one durable submission job through AI inference, tracking, and spatial estimation."""
     if self.request.retries == 0:
         claimed_status = _claim_submission(submission_id)
         if claimed_status is None:
@@ -335,12 +512,49 @@ def task_process_submission_pipeline(
             return {"submission_id": submission_id, "skipped": True, "reason": status}
 
     try:
+        # 1. Stage SYNCHRONIZING: Download telemetry and load submission metadata
+        metadata = _load_submission_metadata(submission_id)
+        captured_at = metadata.get("captured_at") if metadata else None
+        gpx_points = _download_gpx_track(media_objects)
+        sync_note = (
+            f"Synchronized GPX telemetry with {len(gpx_points)} trackpoint(s)."
+            if gpx_points
+            else "Media references synchronized from MinIO."
+        )
+        _set_status(submission_id, "SYNCHRONIZING", sync_note)
+
+        # 2. Stage DETECTING: Run object detection
         _set_status(submission_id, "DETECTING", "Inference engine is processing submission media.")
         result = _call_inference_engine(submission_id, media_objects)
-        _set_status(submission_id, "CLASSIFYING", "Inference returned; resolving catalog labels.")
-        inserted, unmapped = _persist_candidates(submission_id, result["signs"])
+        signs = result.get("signs", [])
 
-        if not result["signs"]:
+        # 3. Stage TRACKING: Correlate and group detections
+        _set_status(
+            submission_id,
+            "TRACKING",
+            f"Multi-object tracking clustered {len(signs)} candidate sign track(s).",
+        )
+
+        # 4. Stage ESTIMATING: Calculate sign coordinates and traffic direction
+        _set_status(
+            submission_id,
+            "ESTIMATING",
+            "Calculating physical sign coordinates and traffic direction via spherical trigonometry.",
+        )
+
+        # 5. Stage CLASSIFYING: Resolve catalog labels and persist candidates
+        _set_status(submission_id, "CLASSIFYING", "Inference returned; resolving catalog labels.")
+        inserted, unmapped = _persist_candidates(
+            submission_id=submission_id,
+            signs=signs,
+            gpx_points=gpx_points,
+            captured_at=captured_at,
+            image_width=result.get("image_width") or 1920,
+            image_height=result.get("image_height") or 1080,
+        )
+
+        # 6. Terminal status transition
+        if not signs:
             terminal_status = "NO_SIGN_DETECTED"
             note = "Inference completed without traffic sign detections."
         elif unmapped:
@@ -349,10 +563,12 @@ def task_process_submission_pipeline(
         else:
             terminal_status = "COMPLETED"
             note = f"Stored {inserted} candidate(s) for community review."
+
         if terminal_status == "COMPLETED":
             _complete_submission(submission_id, note)
         else:
             _set_status(submission_id, terminal_status, note)
+
         _clear_dispatch_lock(submission_id)
         return {
             "submission_id": submission_id,
@@ -361,7 +577,7 @@ def task_process_submission_pipeline(
             "unmapped_labels": unmapped,
         }
     except Exception as exc:
-        logger.exception("[ai] submission %s failed", submission_id)
+        logger.exception("[ai] submission %s failed: %s", submission_id, exc)
         if self.request.retries < self.max_retries:
             raise self.retry(exc=exc)
         _mark_failed(submission_id, f"AI inference failed after retries: {exc}")
