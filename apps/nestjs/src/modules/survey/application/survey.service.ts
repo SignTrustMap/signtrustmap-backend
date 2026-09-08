@@ -50,13 +50,17 @@ export class SurveyService {
     private readonly notificationsService: NotificationsService,
   ) {}
   async createSubmission(userId: string, dto: CreateSubmissionDto) {
+    let formattedNote = dto.note ?? null;
+    if (dto.latitude !== undefined && dto.longitude !== undefined) {
+      formattedNote = `GPS: ${dto.latitude}, ${dto.longitude}${dto.note ? '\n' + dto.note : ''}`;
+    }
     const submission = this.submissionRepo.create({
       surveyorId: userId,
       submissionType: dto.submissionType,
       status: SubmissionStatus.DRAFT,
       capturedAt: new Date(dto.capturedAt),
       coordinateSource: dto.coordinateSource,
-      note: dto.note ?? null,
+      note: formattedNote,
       validationErrors: [],
       correctionRequirements: [],
     });
@@ -71,7 +75,20 @@ export class SurveyService {
 
     if (dto.capturedAt !== undefined) submission.capturedAt = new Date(dto.capturedAt);
     if (dto.coordinateSource !== undefined) submission.coordinateSource = dto.coordinateSource;
-    if (dto.note !== undefined) submission.note = dto.note;
+
+    if (dto.latitude !== undefined && dto.longitude !== undefined) {
+      const existingUserNote = dto.note !== undefined
+        ? dto.note
+        : (submission.note?.match(/^GPS:\s*[-\d.]+,\s*[-\d.]+(?:\n([\s\S]*))?$/)?.[1] ?? submission.note ?? '');
+      submission.note = `GPS: ${dto.latitude}, ${dto.longitude}${existingUserNote ? '\n' + existingUserNote : ''}`;
+    } else if (dto.note !== undefined) {
+      const match = submission.note?.match(/^(GPS:\s*[-\d.]+,\s*[-\d.]+)(?:\n[\s\S]*)?$/);
+      if (match) {
+        submission.note = `${match[1]}${dto.note ? '\n' + dto.note : ''}`;
+      } else {
+        submission.note = dto.note;
+      }
+    }
 
     const saved = await this.submissionRepo.save(submission);
     return this.submissionResponse(saved);
@@ -658,8 +675,23 @@ export class SurveyService {
 
   private submissionResponse(submission: SurveySubmission) {
     const contract = SUBMISSION_TYPE_CONTRACTS[submission.submissionType];
+    let latitude: number | null = null;
+    let longitude: number | null = null;
+    let cleanNote = submission.note;
+    if (submission.note) {
+      const match = submission.note.match(/^GPS:\s*([-\d.]+),\s*([-\d.]+)(?:\n([\s\S]*))?$/);
+      if (match) {
+        latitude = parseFloat(match[1]);
+        longitude = parseFloat(match[2]);
+        cleanNote = match[3] ?? null;
+      }
+    }
     return {
       ...submission,
+      note: cleanNote,
+      latitude,
+      longitude,
+      gpsCoordinates: latitude !== null && longitude !== null ? { latitude, longitude } : null,
       requiredMediaTypes: contract.requiredMediaTypes,
       allowedCoordinateSources: contract.allowedCoordinateSources,
       validationErrors: submission.validationErrors ?? [],
@@ -688,7 +720,24 @@ export class SurveyService {
     if (!session) throw new NotFoundException('Upload session ' + sessionId + ' not found');
     if (session.userId !== userId) throw new BadRequestException('Session does not belong to the authenticated user');
     const chunks = await this.chunkRepo.find({ where: { sessionId: session.id }, order: { chunkIndex: 'ASC' } });
-    return { session, chunks };
+    const uploadedChunkIndices = chunks.map((c) => c.chunkIndex);
+    const uploadedSet = new Set(uploadedChunkIndices);
+    const missingChunkIndices: number[] = [];
+    for (let i = 0; i < session.totalChunks; i++) {
+      if (!uploadedSet.has(i)) missingChunkIndices.push(i);
+    }
+    const progressPercent = session.totalChunks > 0
+      ? Math.round((uploadedChunkIndices.length / session.totalChunks) * 100)
+      : 0;
+    return {
+      session,
+      chunks,
+      uploadedChunkIndices,
+      missingChunkIndices,
+      progressPercent,
+      isResumable: session.status !== UploadStatus.COMPLETED && session.status !== UploadStatus.FAILED,
+      readyToComplete: uploadedChunkIndices.length === session.totalChunks,
+    };
   }
   async getMySubmissions(userId: string, page = 1, pageSize = 20) {
     const p = Math.max(1, page); const ps = Math.min(Math.max(1, pageSize), 100);
@@ -704,19 +753,53 @@ export class SurveyService {
     let sessions: any[] = [];
     let mediaFiles: any[] = [];
     try { history = await this.dataSource.query('SELECT id, old_status, new_status, note, changed_at FROM submission_status_history WHERE submission_id=$1 ORDER BY changed_at ASC', [submissionId]); } catch (e: any) { this.logger.warn('history query failed: ' + e?.message); }
-    try { candidates = await this.dataSource.query('SELECT id, predicted_sign_type_id, status, confidence_score, best_frame_url, sign_crop_url, active_learning_priority, created_at FROM unverified_sign_candidates WHERE submission_id=$1 ORDER BY created_at ASC', [submissionId]); } catch (e: any) { this.logger.warn('candidate query failed: ' + e?.message); }
+    try {
+      candidates = await this.dataSource.query(
+        `SELECT c.id, c.predicted_sign_type_id, c.status, c.confidence_score, c.best_frame_url, c.sign_crop_url,
+                c.spatial_confidence, c.active_learning_priority, c.created_at,
+                t.sign_code, t.name_vi, t.name_en,
+                ST_AsGeoJSON(g.sign_location) AS sign_location_geojson,
+                ST_AsGeoJSON(g.vehicle_location) AS vehicle_location_geojson,
+                g.estimated_distance, g.bearing_angle, g.traffic_direction, g.projection_method
+         FROM unverified_sign_candidates c
+         LEFT JOIN traffic_sign_types t ON t.id = c.predicted_sign_type_id
+         LEFT JOIN candidate_geo_estimations g ON g.candidate_id = c.id
+         WHERE c.submission_id = $1
+         ORDER BY c.created_at ASC`,
+        [submissionId],
+      );
+    } catch {
+      try {
+        candidates = await this.dataSource.query(
+          'SELECT id, predicted_sign_type_id, status, confidence_score, best_frame_url, sign_crop_url, active_learning_priority, created_at FROM unverified_sign_candidates WHERE submission_id=$1 ORDER BY created_at ASC',
+          [submissionId],
+        );
+      } catch (e: any) {
+        this.logger.warn('candidate query failed: ' + e?.message);
+      }
+    }
     try { sessions = await this.dataSource.query('SELECT id, original_filename, media_type, total_chunks, received_chunks, status, created_at FROM upload_sessions WHERE submission_id=$1 ORDER BY created_at ASC', [submissionId]); } catch {}
     try { mediaFiles = await this.dataSource.query('SELECT id, upload_session_id, media_type, file_url, file_size_bytes, duration_seconds, checksum, uploaded_at FROM submission_media_files WHERE submission_id=$1 ORDER BY uploaded_at ASC', [submissionId]); } catch {}
     return { submission: this.submissionResponse(sub), history, candidates, totalCandidates: candidates.length, sessions, mediaFiles };
   }
-  async getMyPendingCount(userId: string) {
+  async getMyPendingCount(userId: string): Promise<{ total: number; pending: number; countsByStatus?: Record<string, number> }> {
     const count = await this.submissionRepo.count({ where: { surveyorId: userId } as any }).catch(() => 0);
     // Pending = not terminal
     const pending = await this.dataSource
       .query(`SELECT COUNT(*)::int AS cnt FROM survey_submissions WHERE surveyor_id=$1 AND status NOT IN ('COMPLETED','FAILED','PARTIALLY_PROCESSED','NO_SIGN_DETECTED','REJECTED')`, [userId])
       .then((rows: any[]) => rows[0]?.cnt ?? 0)
       .catch(() => 0);
-    return { total: count, pending };
+    const countsByStatus: Record<string, number> = {};
+    try {
+      const rows: any[] = await this.dataSource.query(
+        'SELECT status, COUNT(*)::int AS cnt FROM survey_submissions WHERE surveyor_id=$1 GROUP BY status',
+        [userId],
+      );
+      for (const r of rows) {
+        countsByStatus[r.status] = Number(r.cnt);
+      }
+    } catch {}
+    return { total: count, pending, countsByStatus };
   }
 
   async getMyStats(userId: string) {

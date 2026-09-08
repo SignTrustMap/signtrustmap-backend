@@ -1,4 +1,4 @@
-import { IsEnum, IsISO8601, IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsEnum, IsISO8601, IsNumber, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 import { CoordinateSource, SubmissionType } from '../../domain/submission-contract';
 
 export class CreateSubmissionDto {
@@ -15,4 +15,16 @@ export class CreateSubmissionDto {
   @IsString()
   @MaxLength(2000)
   note?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(-90)
+  @Max(90)
+  latitude?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(-180)
+  @Max(180)
+  longitude?: number;
 }
