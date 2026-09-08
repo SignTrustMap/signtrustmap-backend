@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     MINIO_ACCESS_KEY: str = Field(default="stm_minio")
     MINIO_SECRET_KEY: str = Field(default="stm_minio_secret_123")
     MINIO_SECURE: bool = Field(default=False)
+    AI_INFERENCE_URL: str = Field(default="http://localhost:8001")
+    AI_INFERENCE_TIMEOUT_SECONDS: float = Field(default=3600.0, gt=0)
+    INTERNAL_API_TOKEN: str = Field(default="stm_internal_secret_dev")
+    NESTJS_INTERNAL_URL: str = Field(default="http://localhost:3000")
 
     # ---- Spatial / Navigation tuning ----------------------------------------
     # Search radius (metres) for ST_DWithin when finding nearby signs.

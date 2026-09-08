@@ -19,7 +19,7 @@ Queue responsibilities
 default       General-purpose tasks; Celery fallback.
 freshness     Flow 8 — Freshness Monitor (30-min interval).
 leaderboard   Flow 11 — mv_community_leaderboard concurrent refresh (15-min interval).
-ai_pipeline   AI processing chain: YOLO12 -> BoT-SORT -> spatial estimation -> CLIP (stub chain).
+ai_pipeline   Durable submission orchestration backed by the AI inference service.
 
 The broker and backend URLs come from ``app.config.settings`` so that a
 single ``.env`` / docker-compose environment controls all services.
@@ -79,6 +79,12 @@ celery_app.conf.update(
 # Celery Beat — periodic schedule
 # ---------------------------------------------------------------------------
 celery_app.conf.beat_schedule = {
+    # Durable handoff from NestJS' QUEUED database state to the Celery broker.
+    "dispatch-queued-ai-submissions": {
+        "task": "app.tasks.ai_pipeline.task_dispatch_queued_submissions",
+        "schedule": 10.0,
+        "options": {"queue": "ai_pipeline"},
+    },
     # Flow 8 — scans verified_traffic_signs for staleness every 30 minutes.
     "freshness-monitor-every-30min": {
         "task": "app.tasks.freshness.task_check_freshness_and_spawn_revalidations",

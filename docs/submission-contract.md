@@ -23,6 +23,13 @@ A submission is created before any media upload. It remains editable while its s
 5. Correct metadata with `PATCH /api/v1/submissions/:submissionId`, attach or finish required
    media, and submit again.
 
+Celery Beat scans the durable `QUEUED` state and publishes
+`task_process_submission_pipeline(submission_id, media_objects)`. Each `media_objects` item contains
+only `media_type`, `bucket`, and `object_key`; media bytes are not uploaded again. The worker owns
+retries, lifecycle changes, catalog-label resolution, and candidate persistence. The standalone AI
+service only downloads those MinIO objects, runs inference synchronously, uploads candidate crops,
+and returns inference results.
+
 `validationErrors` describes each failed rule. `correctionRequirements` gives the corresponding
 action, including the affected `field` and `mediaType` where applicable. Internal pipeline status
 updates may also supply these arrays when later processing requires user correction.
