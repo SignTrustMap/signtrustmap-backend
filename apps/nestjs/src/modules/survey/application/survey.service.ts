@@ -1,4 +1,4 @@
-﻿import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash } from 'crypto';
 import { DataSource, EntityManager, Repository } from 'typeorm';
@@ -12,10 +12,20 @@ import {
 } from '../infrastructure/persistence/survey-submission.entity';
 import {
   CorrectionRequirementCode,
+  MEDIA_SIZE_LIMITS,
+  MAX_CHUNK_SIZE_BYTES,
+  MAX_CHUNKS_PER_SESSION,
+  REJECTED_VALIDATION_CODES,
   SUBMISSION_TYPE_CONTRACTS,
   SubmissionContractIssue,
   SubmissionValidationCode,
 } from '../domain/submission-contract';
+import {
+  decodeMedia,
+  parseGpx,
+  validateFileSignature,
+  validateGpxAndTrajectory,
+} from '../domain/media-validator';
 import { UploadChunk } from '../infrastructure/persistence/upload-chunk.entity';
 import { UploadSession, UploadStatus } from '../infrastructure/persistence/upload-session.entity';
 import { TransactionType } from '../../wallet/infrastructure/persistence/credit-transaction.entity';
@@ -77,6 +87,23 @@ export class SurveyService {
       );
     }
 
+    const limits = MEDIA_SIZE_LIMITS[dto.mediaType];
+    if (dto.totalSizeBytes <= 0 || dto.totalSizeBytes > limits.maxBytes) {
+      throw new BadRequestException(
+        `Total file size ${dto.totalSizeBytes} bytes is invalid for ${dto.mediaType}. Allowed range: 1 to ${limits.maxBytes} bytes.`,
+      );
+    }
+    if (dto.totalChunks < 1 || dto.totalChunks > MAX_CHUNKS_PER_SESSION) {
+      throw new BadRequestException(
+        `Total chunks ${dto.totalChunks} is invalid. Allowed range: 1 to ${MAX_CHUNKS_PER_SESSION}.`,
+      );
+    }
+    if (dto.totalSizeBytes > dto.totalChunks * MAX_CHUNK_SIZE_BYTES) {
+      throw new BadRequestException(
+        `Total file size cannot exceed totalChunks * ${MAX_CHUNK_SIZE_BYTES} bytes.`,
+      );
+    }
+
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
     const session = this.sessionRepo.create({ submissionId, userId, originalFilename: dto.originalFilename, mediaType: dto.mediaType, totalSizeBytes: String(dto.totalSizeBytes), totalChunks: dto.totalChunks, receivedChunks: 0, checksumExpected: dto.checksumExpected ?? null, status: UploadStatus.INITIATED, expiresAt } as any);
     const saved = await this.sessionRepo.save(session) as unknown as UploadSession;
@@ -84,9 +111,17 @@ export class SurveyService {
   }
   async uploadChunk(userId: string, sessionId: string, body: UploadChunkBodyDto, file: Express.Multer.File) {
     if (!file) throw new BadRequestException('File chunk (form field "file") is required');
+    if (file.size === 0) throw new BadRequestException('File chunk cannot be empty');
+    if (file.size > MAX_CHUNK_SIZE_BYTES) {
+      throw new BadRequestException(`Chunk size ${file.size} exceeds maximum allowed size of ${MAX_CHUNK_SIZE_BYTES} bytes`);
+    }
+
     const session = await this.sessionRepo.findOne({ where: { id: sessionId } });
     if (!session) throw new NotFoundException('Upload session ' + sessionId + ' not found');
     if (session.userId !== userId) throw new BadRequestException('Session does not belong to the authenticated user');
+    if (file.size > Number(session.totalSizeBytes)) {
+      throw new BadRequestException('Chunk size exceeds total declared file size');
+    }
     const submission = await this.findOwnedSubmission(userId, session.submissionId);
     this.assertEditableSubmission(submission);
     if (session.status === UploadStatus.COMPLETED) throw new BadRequestException('Upload session already completed');
@@ -95,7 +130,7 @@ export class SurveyService {
     if (session.status === UploadStatus.FAILED) throw new BadRequestException('Upload session is in FAILED state');
     if (session.expiresAt && new Date(session.expiresAt).getTime() < Date.now()) { await this.sessionRepo.update(session.id, { status: UploadStatus.EXPIRED } as any); throw new BadRequestException('Upload session has expired'); }
     const { chunkIndex } = body;
-    if (chunkIndex >= session.totalChunks) throw new BadRequestException('chunkIndex ' + chunkIndex + ' is out of range (totalChunks=' + session.totalChunks + ')');
+    if (chunkIndex < 0 || chunkIndex >= session.totalChunks) throw new BadRequestException('chunkIndex ' + chunkIndex + ' is out of range (totalChunks=' + session.totalChunks + ')');
     const chunkChecksum = createHash('sha256').update(file.buffer).digest('hex');
     if (body.checksum && this.normalizeChecksum(body.checksum) !== chunkChecksum) {
       throw new BadRequestException('Chunk checksum does not match uploaded content');
@@ -364,14 +399,26 @@ export class SurveyService {
         mediaFiles,
         uploadSessions,
       );
+
+      if (mediaFiles.length > 0) {
+        const mediaValidation = await this.validateMediaFiles(submission, mediaFiles, manager);
+        validationErrors.push(...mediaValidation.validationErrors);
+        correctionRequirements.push(...mediaValidation.correctionRequirements);
+      }
+
       const oldStatus = submission.status;
       const accepted = validationErrors.length === 0;
+      const hasUnrepairableError = validationErrors.some((err) =>
+        REJECTED_VALIDATION_CODES.has(err.code),
+      );
 
       submission.validationErrors = validationErrors;
       submission.correctionRequirements = correctionRequirements;
       submission.status = accepted
         ? SubmissionStatus.QUEUED
-        : SubmissionStatus.PENDING_CORRECTION;
+        : hasUnrepairableError
+          ? SubmissionStatus.REJECTED
+          : SubmissionStatus.PENDING_CORRECTION;
       const saved = await manager.save(SurveySubmission, submission);
       await manager.query(
         'INSERT INTO submission_status_history (submission_id, old_status, new_status, note) VALUES ($1, $2::submission_status, $3::submission_status, $4)',
@@ -379,7 +426,11 @@ export class SurveyService {
           saved.id,
           oldStatus,
           saved.status,
-          accepted ? 'Submission contract validated' : 'Submission requires correction',
+          accepted
+            ? 'Submission contract validated'
+            : hasUnrepairableError
+              ? 'Submission rejected: invalid file format or corrupted media'
+              : 'Submission requires correction',
         ],
       );
 
@@ -390,6 +441,135 @@ export class SurveyService {
         uploadSessions,
       };
     });
+  }
+
+  private async validateMediaFiles(
+    submission: SurveySubmission,
+    mediaFiles: SubmissionMediaFile[],
+    manager: EntityManager,
+  ): Promise<{
+    validationErrors: SubmissionContractIssue[];
+    correctionRequirements: SubmissionContractIssue[];
+  }> {
+    const validationErrors: SubmissionContractIssue[] = [];
+    const correctionRequirements: SubmissionContractIssue[] = [];
+
+    for (const mediaFile of mediaFiles) {
+      if (!mediaFile.fileUrl) continue;
+
+      let ref: StoredObjectReference;
+      try {
+        ref = this.parseStorageKey(mediaFile.fileUrl);
+      } catch {
+        continue;
+      }
+
+      let buffer: Buffer;
+      try {
+        if (!this.storageService.getObjectBuffer) {
+          continue;
+        }
+        buffer = await this.storageService.getObjectBuffer(ref, 2 * 1024 * 1024);
+      } catch (err: any) {
+        this.logger.warn(`Failed to read media from storage [${mediaFile.fileUrl}]: ${err?.message}`);
+        validationErrors.push({
+          code: SubmissionValidationCode.CORRUPTED_FILE,
+          field: 'mediaFiles',
+          mediaType: mediaFile.mediaType,
+          message: `Media file could not be read from storage: ${err?.message ?? 'unknown error'}`,
+        });
+        correctionRequirements.push({
+          code: CorrectionRequirementCode.REPLACE_FILE,
+          field: 'mediaFiles',
+          mediaType: mediaFile.mediaType,
+          message: `Re-upload the missing or corrupted ${mediaFile.mediaType} file`,
+        });
+        continue;
+      }
+
+      if (!buffer || buffer.length === 0) {
+        validationErrors.push({
+          code: SubmissionValidationCode.CORRUPTED_FILE,
+          field: 'mediaFiles',
+          mediaType: mediaFile.mediaType,
+          message: `Media file ${mediaFile.fileUrl} is empty`,
+        });
+        correctionRequirements.push({
+          code: CorrectionRequirementCode.REPLACE_FILE,
+          field: 'mediaFiles',
+          mediaType: mediaFile.mediaType,
+          message: `Re-upload the missing or corrupted ${mediaFile.mediaType} file`,
+        });
+        continue;
+      }
+
+      // 1. File Signature Check
+      const sigResult = validateFileSignature(mediaFile.mediaType, buffer);
+      if (!sigResult.valid) {
+        validationErrors.push({
+          code: SubmissionValidationCode.INVALID_FILE_SIGNATURE,
+          field: 'mediaFiles',
+          mediaType: mediaFile.mediaType,
+          message: sigResult.error || `File signature mismatch for declared type ${mediaFile.mediaType}`,
+        });
+        correctionRequirements.push({
+          code: CorrectionRequirementCode.REPLACE_FILE,
+          field: 'mediaFiles',
+          mediaType: mediaFile.mediaType,
+          message: `Upload a valid ${mediaFile.mediaType} file matching accepted file signatures`,
+        });
+        continue;
+      }
+
+      // 2. Media Decoding Check
+      const decodeResult = decodeMedia(mediaFile.mediaType, buffer);
+      if (!decodeResult.valid) {
+        validationErrors.push({
+          code: SubmissionValidationCode.MEDIA_DECODE_FAILED,
+          field: 'mediaFiles',
+          mediaType: mediaFile.mediaType,
+          message: decodeResult.error || `Media decoding failed for ${mediaFile.mediaType}`,
+        });
+        correctionRequirements.push({
+          code: CorrectionRequirementCode.REPLACE_FILE,
+          field: 'mediaFiles',
+          mediaType: mediaFile.mediaType,
+          message: `Upload an intact, decodable ${mediaFile.mediaType} file`,
+        });
+        continue;
+      }
+
+      if (decodeResult.durationSeconds && !mediaFile.durationSeconds) {
+        mediaFile.durationSeconds = decodeResult.durationSeconds;
+        await manager.save(SubmissionMediaFile, mediaFile);
+      }
+
+      // 3. GPX Trajectory Parsing, GPS Validation & Timestamp-Range Matching
+      if (mediaFile.mediaType === MediaFileType.GPX) {
+        const gpxParsed = parseGpx(buffer);
+        if (!gpxParsed.valid || !gpxParsed.result) {
+          validationErrors.push({
+            code: SubmissionValidationCode.MEDIA_DECODE_FAILED,
+            field: 'mediaFiles',
+            mediaType: MediaFileType.GPX,
+            message: gpxParsed.error || 'GPX XML parsing failed',
+          });
+          correctionRequirements.push({
+            code: CorrectionRequirementCode.REPLACE_FILE,
+            field: 'mediaFiles',
+            mediaType: MediaFileType.GPX,
+            message: 'Upload a valid XML GPX file',
+          });
+          continue;
+        }
+
+        const gpxIssues = validateGpxAndTrajectory(gpxParsed.result, submission.capturedAt);
+        validationErrors.push(...gpxIssues.validationErrors);
+        correctionRequirements.push(...gpxIssues.correctionRequirements);
+      }
+    }
+
+    return { validationErrors, correctionRequirements };
   }
 
   private validateSubmissionContract(
@@ -533,7 +713,7 @@ export class SurveyService {
     const count = await this.submissionRepo.count({ where: { surveyorId: userId } as any }).catch(() => 0);
     // Pending = not terminal
     const pending = await this.dataSource
-      .query(`SELECT COUNT(*)::int AS cnt FROM survey_submissions WHERE surveyor_id=$1 AND status NOT IN ('COMPLETED','FAILED','PARTIALLY_PROCESSED','NO_SIGN_DETECTED')`, [userId])
+      .query(`SELECT COUNT(*)::int AS cnt FROM survey_submissions WHERE surveyor_id=$1 AND status NOT IN ('COMPLETED','FAILED','PARTIALLY_PROCESSED','NO_SIGN_DETECTED','REJECTED')`, [userId])
       .then((rows: any[]) => rows[0]?.cnt ?? 0)
       .catch(() => 0);
     return { total: count, pending };
@@ -542,7 +722,7 @@ export class SurveyService {
   async getMyStats(userId: string) {
     const total = await this.submissionRepo.count({ where: { surveyorId: userId } as any }).catch(() => 0);
     const pending = await this.dataSource
-      .query(`SELECT COUNT(*)::int AS cnt FROM survey_submissions WHERE surveyor_id=$1 AND status NOT IN ('COMPLETED','FAILED','PARTIALLY_PROCESSED','NO_SIGN_DETECTED')`, [userId])
+      .query(`SELECT COUNT(*)::int AS cnt FROM survey_submissions WHERE surveyor_id=$1 AND status NOT IN ('COMPLETED','FAILED','PARTIALLY_PROCESSED','NO_SIGN_DETECTED','REJECTED')`, [userId])
       .then((rows: any[]) => rows[0]?.cnt ?? 0)
       .catch(() => 0);
     let creditScore: number | null = null;
@@ -573,11 +753,18 @@ export class SurveyService {
   ) {
     const sub = await this.submissionRepo.findOne({ where: { id: submissionId } });
     if (!sub) throw new NotFoundException('SurveySubmission ' + submissionId + ' not found');
-    const terminal: string[] = [SubmissionStatus.COMPLETED as string, SubmissionStatus.FAILED as string, SubmissionStatus.PARTIALLY_PROCESSED as string, SubmissionStatus.NO_SIGN_DETECTED as string];
+    const terminal: string[] = [
+      SubmissionStatus.COMPLETED as string,
+      SubmissionStatus.FAILED as string,
+      SubmissionStatus.PARTIALLY_PROCESSED as string,
+      SubmissionStatus.NO_SIGN_DETECTED as string,
+      SubmissionStatus.REJECTED as string,
+    ];
     if (terminal.includes(String(sub.status))) return { alreadyTerminal: true, submission: sub, status: sub.status };
     if (
       [SubmissionStatus.DRAFT, SubmissionStatus.PENDING_CORRECTION].includes(sub.status) &&
-      newStatus !== SubmissionStatus.PENDING_CORRECTION
+      newStatus !== SubmissionStatus.PENDING_CORRECTION &&
+      newStatus !== SubmissionStatus.REJECTED
     ) {
       throw new ConflictException('Submission must pass contract validation before processing');
     }

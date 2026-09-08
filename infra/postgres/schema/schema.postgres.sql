@@ -1,4 +1,4 @@
-﻿CREATE TYPE "user_status" AS ENUM (
+CREATE TYPE "user_status" AS ENUM (
   'ACTIVE',
   'SUSPENDED',
   'BANNED'
@@ -36,7 +36,8 @@ CREATE TYPE "submission_status" AS ENUM (
   'PARTIALLY_PROCESSED',
   'FAILED',
   'PENDING_CORRECTION',
-  'NO_SIGN_DETECTED'
+  'NO_SIGN_DETECTED',
+  'REJECTED'
 );
 
 CREATE TYPE "candidate_status" AS ENUM (

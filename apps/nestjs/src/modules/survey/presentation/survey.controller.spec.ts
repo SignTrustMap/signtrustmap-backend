@@ -190,4 +190,9 @@ describe('SurveyController (all 13 endpoints)', () => {
     expect(service.getSession).toHaveBeenCalledWith(mockUser.id, mockSessionId);
     expect(result).toBe(expected);
   });
+
+  it('14. guards controller endpoints with SURVEYOR and ADMIN roles', () => {
+    const roles = Reflect.getMetadata('roles', SurveyController);
+    expect(roles).toEqual(['SURVEYOR', 'ADMIN']);
+  });
 });

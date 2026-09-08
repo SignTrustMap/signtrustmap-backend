@@ -124,3 +124,18 @@ class AiPipelineContractTests(TestCase):
         )
         set_status.assert_any_call("submission-1", "DETECTING", "Inference engine is processing submission media.")
         set_status.assert_any_call("submission-1", "NO_SIGN_DETECTED", "Inference completed without traffic sign detections.")
+
+    def test_pipeline_skips_rejected_terminal_submission(self) -> None:
+        task = ai_pipeline.task_process_submission_pipeline
+
+        with (
+            patch.object(ai_pipeline, "_claim_submission", return_value="REJECTED"),
+            patch.object(ai_pipeline, "_clear_dispatch_lock") as clear_lock,
+            patch.object(ai_pipeline, "_call_inference_engine") as call_engine,
+        ):
+            result = task.apply(args=["submission-1", []]).get()
+
+        self.assertEqual(result, {"submission_id": "submission-1", "skipped": True, "reason": "REJECTED"})
+        clear_lock.assert_called_once_with("submission-1")
+        call_engine.assert_not_called()
+

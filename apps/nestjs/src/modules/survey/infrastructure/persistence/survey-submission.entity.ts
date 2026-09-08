@@ -20,6 +20,7 @@ export enum SubmissionStatus {
   FAILED = 'FAILED',
   PENDING_CORRECTION = 'PENDING_CORRECTION',
   NO_SIGN_DETECTED = 'NO_SIGN_DETECTED',
+  REJECTED = 'REJECTED',
 }
 
 @Entity('survey_submissions')
