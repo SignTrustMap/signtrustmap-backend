@@ -34,7 +34,7 @@ CREATE TABLE "upload_sessions" (
   "checksum_expected" varchar(128),
   "storage_key"       varchar(500),
   "status"            upload_status   NOT NULL DEFAULT 'INITIATED',
-  "submission_id"     uuid,
+  "submission_id"     uuid            NOT NULL,
   "expires_at"        timestamptz     NOT NULL,
   "created_at"        timestamptz     NOT NULL DEFAULT (now()),
   "updated_at"        timestamptz     NOT NULL DEFAULT (now()),
@@ -44,10 +44,10 @@ CREATE TABLE "upload_sessions" (
 COMMENT ON TABLE "upload_sessions" IS
   'Quan ly mot phien upload phan manh (chunked/resumable). '
   'Moi session anh xa toi mot file logic (video, GPX, anh). '
-  'Sau khi assembly hoan tat va validate xong, submission_id duoc gan (Flow 1).';
+  'Submission duoc tao truoc; moi session gan voi mot submission va mot media file logic.';
 
 COMMENT ON COLUMN "upload_sessions"."storage_key" IS
-  'MinIO object key cua file da ghep, dang: uploads/{user_id}/{session_id}/original_filename.';
+  'MinIO object key cua file da ghep, dang: uploads/{user_id}/{submission_id}/{session_id}/original_filename.';
 
 COMMENT ON COLUMN "upload_sessions"."checksum_expected" IS
   'SHA-256 do client tinh truoc; backend so sanh sau assembly de phat hien loi truyen.';
@@ -83,6 +83,11 @@ ALTER TABLE "upload_sessions"
   ADD FOREIGN KEY ("user_id") REFERENCES "users" ("id") DEFERRABLE INITIALLY IMMEDIATE;
 ALTER TABLE "upload_sessions"
   ADD FOREIGN KEY ("submission_id") REFERENCES "survey_submissions" ("id") DEFERRABLE INITIALLY IMMEDIATE;
+CREATE UNIQUE INDEX "uq_submission_media_files_upload_session"
+  ON "submission_media_files" ("upload_session_id")
+  WHERE "upload_session_id" IS NOT NULL;
+ALTER TABLE "submission_media_files"
+  ADD FOREIGN KEY ("upload_session_id") REFERENCES "upload_sessions" ("id") DEFERRABLE INITIALLY IMMEDIATE;
 ALTER TABLE "upload_chunks"
   ADD FOREIGN KEY ("session_id") REFERENCES "upload_sessions" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE;
 -- ---------------------------------------------------------------------------
@@ -211,4 +216,3 @@ RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
   REFRESH MATERIALIZED VIEW CONCURRENTLY "mv_community_leaderboard";
 END $$;
-

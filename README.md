@@ -402,13 +402,17 @@ For Heroku deployments, deploy from the repository root. The root npm workspace 
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/submissions/initialize` | JWT | Create an upload session for a dashcam video or GPX file. Returns `sessionId`, `totalChunks`, `expiresAt` |
-| POST | `/submissions/:sessionId/chunks` | JWT | Upload one file chunk. Multipart form with field `file` plus `chunkIndex` in body |
+| POST | `/submissions` | JWT | Create a `DRAFT` with `submissionType`, `capturedAt`, `coordinateSource`, and optional `note` |
+| PATCH | `/submissions/:submissionId` | JWT | Correct editable submission metadata |
+| POST | `/submissions/:submissionId/uploads` | JWT | Attach an upload session for a media type required by the submission contract |
+| POST | `/submissions/uploads/:sessionId/chunks` | JWT | Upload one file chunk. Multipart form with field `file` plus `chunkIndex` in body |
+| POST | `/submissions/uploads/:sessionId/complete` | JWT | Assemble chunks and attach the resulting media file to the submission |
+| GET | `/submissions/uploads/:sessionId` | JWT | Get an upload session and its received chunks |
+| POST | `/submissions/:submissionId/submit` | JWT | Validate required media and metadata; transition to `QUEUED` or `PENDING_CORRECTION` |
 | GET | `/submissions/me` | JWT | List own survey submissions. Query: `page`, `pageSize` |
-| GET | `/submissions/status/:submissionId` | JWT | Full submission detail: current status, `submission_status_history`, extracted candidates, upload sessions |
-| GET | `/submissions/:sessionId` | JWT | Get a single upload session by its ID |
+| GET | `/submissions/status/:submissionId` | JWT | Full submission detail, contract requirements, validation results, media, history, and candidates |
 | POST | `/submissions/internal/:submissionId/complete` | Internal | Mark submission COMPLETED, credit surveyor wallet, send notification |
-| PATCH | `/submissions/internal/:submissionId/status` | Internal | Advance AI pipeline status. Body: `{ status, note? }`. Allowed: `QUEUED`, `SYNCHRONIZING`, `DETECTING`, `TRACKING`, `ESTIMATING`, `CLASSIFYING`, `COMPLETED`, `PARTIALLY_PROCESSED`, `FAILED`, `PENDING_CORRECTION`, `NO_SIGN_DETECTED` |
+| PATCH | `/submissions/internal/:submissionId/status` | Internal | Advance AI status with optional structured `validationErrors` and `correctionRequirements` |
 
 ### Reviews — `reviews`
 
@@ -623,7 +627,7 @@ SignTrustMap is a comprehensive platform integrating Crowdsourcing, Artificial I
 ### 1. Ingestion & Tracking
 *   **Flow 1: Survey Submission**
     *   **Purpose:** Allow Surveyors to upload dashcam videos, GPX trajectory files, or sign images[cite: 2].
-    *   **API Implementation (NestJS):** Utilizes a highly optimized chunked upload mechanism. `POST /submissions/initialize` initiates the upload session[cite: 1]. Subsequently, `POST /submissions/{{sessionId}}/chunks` receives individual file chunks[cite: 1]. Upon completion of the final chunk, the system automatically aggregates the file and queues it for AI processing.
+    *   **API Implementation (NestJS):** `POST /submissions` creates the submission contract first. Each required file gets an upload session through `POST /submissions/{{submissionId}}/uploads`; chunks are sent to `POST /submissions/uploads/{{sessionId}}/chunks` and assembled separately. `POST /submissions/{{submissionId}}/submit` validates the complete media set before queueing AI processing.
 *   **Flow 2: Submission Tracking**
     *   **Purpose:** Help Surveyors track video processing status, view extracted candidate counts, and check contribution history[cite: 2].
     *   **API Implementation (NestJS):** `GET /submissions/me` lists the user's history[cite: 1]. `GET /submissions/status/{{submissionId}}` retrieves detailed progress states (e.g., `QUEUED` or `DETECTING`)[cite: 1].

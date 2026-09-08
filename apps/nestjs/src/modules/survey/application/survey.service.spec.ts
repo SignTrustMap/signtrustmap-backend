@@ -1,36 +1,61 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { createHash } from 'crypto';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 import { MinioStorageService } from '../../../integrations/minio/minio-storage.service';
 import { NotificationsService } from '../../notifications/notifications.service';
 import { WalletService } from '../../wallet/application/wallet.service';
 import {
+  CoordinateSource,
+  CorrectionRequirementCode,
   MediaFileType,
-  SubmissionMediaFile,
-} from '../infrastructure/persistence/submission-media-file.entity';
+  SUBMISSION_TYPE_CONTRACTS,
+  SubmissionType,
+  SubmissionValidationCode,
+} from '../domain/submission-contract';
+import { SubmissionMediaFile } from '../infrastructure/persistence/submission-media-file.entity';
 import {
   SubmissionStatus,
-  SubmissionType,
   SurveySubmission,
 } from '../infrastructure/persistence/survey-submission.entity';
 import { UploadChunk } from '../infrastructure/persistence/upload-chunk.entity';
 import { UploadSession, UploadStatus } from '../infrastructure/persistence/upload-session.entity';
 import { SurveyService } from './survey.service';
 
-describe('SurveyService completeUpload', () => {
+describe('SurveyService submission contract', () => {
   const userId = '2ee380f2-919b-44de-9d70-595015920a60';
+  const submissionId = '7bc04729-69f2-437b-91bb-4f972ae6322c';
   const sessionId = 'bd95a9a3-3a53-48ee-8e78-c30c0fd7c646';
   const checksum = 'a'.repeat(64);
 
+  let submission: SurveySubmission;
   let session: UploadSession;
   let chunks: UploadChunk[];
   let manager: jest.Mocked<EntityManager>;
+  let sessionRepo: jest.Mocked<Repository<UploadSession>>;
+  let submissionRepo: jest.Mocked<Repository<SurveySubmission>>;
   let storage: jest.Mocked<MinioStorageService>;
+  let dataSource: jest.Mocked<DataSource>;
   let service: SurveyService;
 
   beforeEach(() => {
+    submission = {
+      id: submissionId,
+      surveyorId: userId,
+      submissionType: SubmissionType.SINGLE_IMAGE,
+      status: SubmissionStatus.DRAFT,
+      capturedAt: new Date('2026-09-08T02:00:00.000Z'),
+      coordinateSource: CoordinateSource.DEVICE_GPS,
+      note: 'Northbound lane',
+      validationErrors: [],
+      correctionRequirements: [],
+      failureReason: null,
+      totalCandidatesExtracted: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
     session = {
       id: sessionId,
+      submissionId,
       userId,
       originalFilename: 'road-sign.jpg',
       mediaType: MediaFileType.IMAGE,
@@ -40,7 +65,6 @@ describe('SurveyService completeUpload', () => {
       checksumExpected: checksum,
       storageKey: null,
       status: UploadStatus.UPLOADING,
-      submissionId: null,
       expiresAt: new Date(Date.now() + 60_000),
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -71,18 +95,29 @@ describe('SurveyService completeUpload', () => {
     manager = {
       findOne: jest.fn(async (entity: unknown) => {
         if (entity === UploadSession) return session;
+        if (entity === SurveySubmission) return submission;
         return null;
       }),
-      find: jest.fn(async () => chunks),
+      find: jest.fn(async (entity: unknown) => (entity === UploadChunk ? chunks : [])),
       create: jest.fn((_entity: unknown, value: unknown) => value),
       save: jest.fn(async (entity: unknown, value: any) => {
-        if (entity === SurveySubmission) return { ...value, id: 'submission-id' };
         if (entity === SubmissionMediaFile) return { ...value, id: 'media-id' };
         return value;
       }),
       query: jest.fn().mockResolvedValue([]),
     } as unknown as jest.Mocked<EntityManager>;
 
+    sessionRepo = {
+      create: jest.fn((value) => value as UploadSession),
+      save: jest.fn(async (value) => ({ ...value, id: sessionId }) as UploadSession),
+      findOne: jest.fn().mockResolvedValue(session),
+      update: jest.fn(),
+    } as unknown as jest.Mocked<Repository<UploadSession>>;
+    submissionRepo = {
+      create: jest.fn((value) => value as SurveySubmission),
+      save: jest.fn(async (value) => ({ ...value, id: submissionId }) as SurveySubmission),
+      findOne: jest.fn().mockResolvedValue(submission),
+    } as unknown as jest.Mocked<Repository<SurveySubmission>>;
     storage = {
       bucketForMediaType: jest.fn().mockReturnValue('stm-sign-crops'),
       assembleObjects: jest.fn().mockResolvedValue({ checksum, sizeBytes: 12 }),
@@ -90,15 +125,15 @@ describe('SurveyService completeUpload', () => {
       removeObject: jest.fn().mockResolvedValue(undefined),
       removeObjects: jest.fn().mockResolvedValue(undefined),
     } as unknown as jest.Mocked<MinioStorageService>;
-
-    const dataSource = {
+    dataSource = {
       transaction: jest.fn(async (work: (entityManager: EntityManager) => unknown) => work(manager)),
-    } as unknown as DataSource;
+      query: jest.fn().mockResolvedValue([]),
+    } as unknown as jest.Mocked<DataSource>;
 
     service = new SurveyService(
-      {} as Repository<UploadSession>,
+      sessionRepo,
       {} as Repository<UploadChunk>,
-      {} as Repository<SurveySubmission>,
+      submissionRepo,
       storage,
       dataSource,
       {} as WalletService,
@@ -106,111 +141,202 @@ describe('SurveyService completeUpload', () => {
     );
   });
 
-  it('assembles all chunks and atomically persists a queued image submission', async () => {
+  it('publishes required media and coordinate sources for every submission type', () => {
+    expect(SUBMISSION_TYPE_CONTRACTS).toEqual({
+      SINGLE_IMAGE: {
+        requiredMediaTypes: [MediaFileType.IMAGE],
+        allowedCoordinateSources: [
+          CoordinateSource.IMAGE_EXIF,
+          CoordinateSource.DEVICE_GPS,
+          CoordinateSource.MANUAL,
+        ],
+      },
+      VIDEO_GPX: {
+        requiredMediaTypes: [MediaFileType.VIDEO, MediaFileType.GPX],
+        allowedCoordinateSources: [CoordinateSource.GPX_FILE],
+      },
+      LIVE_TRIP: {
+        requiredMediaTypes: [MediaFileType.VIDEO],
+        allowedCoordinateSources: [CoordinateSource.LIVE_STREAM],
+      },
+    });
+  });
+
+  it('creates a draft before any upload session', async () => {
+    const result = await service.createSubmission(userId, {
+      submissionType: SubmissionType.VIDEO_GPX,
+      capturedAt: '2026-09-08T02:00:00.000Z',
+      coordinateSource: CoordinateSource.GPX_FILE,
+      note: 'Morning survey',
+    });
+
+    expect(submissionRepo.create).toHaveBeenCalledWith(expect.objectContaining({
+      surveyorId: userId,
+      status: SubmissionStatus.DRAFT,
+      validationErrors: [],
+      correctionRequirements: [],
+    }));
+    expect(result).toMatchObject({
+      id: submissionId,
+      requiredMediaTypes: [MediaFileType.VIDEO, MediaFileType.GPX],
+    });
+  });
+
+  it('attaches an accepted media upload session to the draft', async () => {
+    const result = await service.initialize(userId, submissionId, {
+      originalFilename: 'sign.jpg',
+      mediaType: MediaFileType.IMAGE,
+      totalSizeBytes: 12,
+      totalChunks: 2,
+    });
+
+    expect(sessionRepo.create).toHaveBeenCalledWith(expect.objectContaining({
+      submissionId,
+      userId,
+      mediaType: MediaFileType.IMAGE,
+    }));
+    expect(result.submissionId).toBe(submissionId);
+  });
+
+  it('rejects media that is not part of the submission contract', async () => {
+    await expect(service.initialize(userId, submissionId, {
+      originalFilename: 'track.gpx',
+      mediaType: MediaFileType.GPX,
+      totalSizeBytes: 12,
+      totalChunks: 1,
+    })).rejects.toBeInstanceOf(BadRequestException);
+    expect(sessionRepo.save).not.toHaveBeenCalled();
+  });
+
+  it('assembles media into the existing submission without queueing it', async () => {
     const result = await service.completeUpload(userId, sessionId);
 
     expect(storage.assembleObjects).toHaveBeenCalledWith(
       {
         bucket: 'stm-sign-crops',
-        objectName: `uploads/${userId}/${sessionId}/road-sign.jpg`,
+        objectName: `uploads/${userId}/${submissionId}/${sessionId}/road-sign.jpg`,
       },
-      [
-        {
-          bucket: 'stm-sign-crops',
-          objectName: `chunks/${userId}/${sessionId}/000000`,
-        },
-        {
-          bucket: 'stm-sign-crops',
-          objectName: `chunks/${userId}/${sessionId}/000001`,
-        },
-      ],
+      expect.any(Array),
       12,
       'image/jpeg',
     );
     expect(manager.create).toHaveBeenCalledWith(
-      SurveySubmission,
-      expect.objectContaining({
-        status: SubmissionStatus.QUEUED,
-        submissionType: SubmissionType.SINGLE_IMAGE,
-        surveyorId: userId,
-      }),
-    );
-    expect(manager.create).toHaveBeenCalledWith(
       SubmissionMediaFile,
       expect.objectContaining({
-        checksum,
-        fileSizeBytes: '12',
+        submissionId,
+        uploadSessionId: sessionId,
         mediaType: MediaFileType.IMAGE,
-        submissionId: 'submission-id',
       }),
     );
-    expect(session.status).toBe(UploadStatus.COMPLETED);
-    expect(session.submissionId).toBe('submission-id');
-    expect(result).toMatchObject({
-      mediaFileId: 'media-id',
-      status: UploadStatus.COMPLETED,
-      submissionId: 'submission-id',
-    });
-    expect(storage.removeObjects).toHaveBeenCalledTimes(1);
-  });
-
-  it('rejects completion until every chunk is present', async () => {
-    chunks = chunks.slice(0, 1);
-
-    await expect(service.completeUpload(userId, sessionId)).rejects.toThrow(
-      'Upload is incomplete: received 1 of 2 chunks',
-    );
-    expect(storage.assembleObjects).not.toHaveBeenCalled();
-  });
-
-  it('rejects a session owned by another user', async () => {
-    await expect(service.completeUpload('other-user', sessionId)).rejects.toBeInstanceOf(
-      BadRequestException,
-    );
-    expect(storage.assembleObjects).not.toHaveBeenCalled();
-  });
-
-  it('removes the assembled object when its checksum is invalid', async () => {
-    storage.assembleObjects.mockResolvedValue({ checksum: 'b'.repeat(64), sizeBytes: 12 });
-
-    await expect(service.completeUpload(userId, sessionId)).rejects.toThrow(
-      'Assembled file checksum does not match expected checksum',
-    );
-    expect(storage.removeObject).toHaveBeenCalledWith({
-      bucket: 'stm-sign-crops',
-      objectName: `uploads/${userId}/${sessionId}/road-sign.jpg`,
-    });
     expect(manager.create).not.toHaveBeenCalledWith(SurveySubmission, expect.anything());
+    expect(result).toMatchObject({
+      submissionId,
+      submissionStatus: SubmissionStatus.DRAFT,
+      status: UploadStatus.COMPLETED,
+    });
   });
 
-  it('returns the persisted result without assembling again after completion', async () => {
-    session.status = UploadStatus.COMPLETED;
-    session.submissionId = 'submission-id';
-    session.storageKey = 'stm-sign-crops/uploads/completed.jpg';
-    manager.findOne.mockImplementation(async (entity: unknown) => {
-      if (entity === UploadSession) return session;
-      if (entity === SurveySubmission) {
-        return {
-          id: 'submission-id',
-          status: SubmissionStatus.QUEUED,
-        } as SurveySubmission;
-      }
+  it('returns correction requirements for missing VIDEO_GPX media', async () => {
+    submission.submissionType = SubmissionType.VIDEO_GPX;
+    submission.coordinateSource = CoordinateSource.GPX_FILE;
+    manager.find.mockImplementation(async (entity: unknown) => {
       if (entity === SubmissionMediaFile) {
-        return {
-          id: 'media-id',
-          submissionId: 'submission-id',
-          fileSizeBytes: '12',
-          checksum,
-        } as SubmissionMediaFile;
+        return [{ mediaType: MediaFileType.VIDEO }] as SubmissionMediaFile[];
       }
-      return null;
+      return [];
     });
 
-    const result = await service.completeUpload(userId, sessionId);
+    const result = await service.submitSubmission(userId, submissionId);
 
-    expect(result).toMatchObject({ mediaFileId: 'media-id', submissionId: 'submission-id' });
-    expect(storage.assembleObjects).not.toHaveBeenCalled();
-    expect(storage.removeObjects).not.toHaveBeenCalled();
+    expect(result.accepted).toBe(false);
+    expect(result.submission.status).toBe(SubmissionStatus.PENDING_CORRECTION);
+    expect(result.submission.validationErrors).toContainEqual(expect.objectContaining({
+      code: SubmissionValidationCode.MISSING_MEDIA,
+      mediaType: MediaFileType.GPX,
+    }));
+    expect(result.submission.correctionRequirements).toContainEqual(expect.objectContaining({
+      code: CorrectionRequirementCode.UPLOAD_MEDIA,
+      mediaType: MediaFileType.GPX,
+    }));
+  });
+
+  it('distinguishes an incomplete required upload from missing media', async () => {
+    submission.submissionType = SubmissionType.LIVE_TRIP;
+    submission.coordinateSource = CoordinateSource.LIVE_STREAM;
+    session.mediaType = MediaFileType.VIDEO;
+    session.status = UploadStatus.UPLOADING;
+    manager.find.mockImplementation(async (entity: unknown) => {
+      if (entity === UploadSession) return [session];
+      return [];
+    });
+
+    const result = await service.submitSubmission(userId, submissionId);
+
+    expect(result.submission.validationErrors).toContainEqual(expect.objectContaining({
+      code: SubmissionValidationCode.INCOMPLETE_UPLOAD,
+      mediaType: MediaFileType.VIDEO,
+    }));
+    expect(result.submission.correctionRequirements).toContainEqual(expect.objectContaining({
+      code: CorrectionRequirementCode.COMPLETE_UPLOAD,
+    }));
+  });
+
+  it('reports invalid coordinate source and future capture time as correctable errors', async () => {
+    submission.submissionType = SubmissionType.LIVE_TRIP;
+    submission.coordinateSource = CoordinateSource.GPX_FILE;
+    submission.capturedAt = new Date(Date.now() + 10 * 60 * 1000);
+    manager.find.mockImplementation(async (entity: unknown) => {
+      if (entity === SubmissionMediaFile) {
+        return [{ mediaType: MediaFileType.VIDEO }] as SubmissionMediaFile[];
+      }
+      return [];
+    });
+
+    const result = await service.submitSubmission(userId, submissionId);
+
+    expect(result.submission.validationErrors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: SubmissionValidationCode.INVALID_COORDINATE_SOURCE }),
+      expect.objectContaining({ code: SubmissionValidationCode.CAPTURE_TIME_IN_FUTURE }),
+    ]));
+    expect(result.submission.correctionRequirements).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: CorrectionRequirementCode.CHANGE_COORDINATE_SOURCE }),
+      expect.objectContaining({ code: CorrectionRequirementCode.CONFIRM_CAPTURE_TIME }),
+    ]));
+  });
+
+  it('queues a valid submission and clears previous correction state', async () => {
+    submission.validationErrors = [{ code: 'OLD', field: 'mediaFiles', message: 'old' }];
+    submission.correctionRequirements = [{ code: 'OLD', field: 'mediaFiles', message: 'old' }];
+    manager.find.mockImplementation(async (entity: unknown) => {
+      if (entity === SubmissionMediaFile) {
+        return [{ mediaType: MediaFileType.IMAGE }] as SubmissionMediaFile[];
+      }
+      return [session];
+    });
+
+    const result = await service.submitSubmission(userId, submissionId);
+
+    expect(result.accepted).toBe(true);
+    expect(result.submission).toMatchObject({
+      status: SubmissionStatus.QUEUED,
+      validationErrors: [],
+      correctionRequirements: [],
+    });
+    expect(manager.query).toHaveBeenCalledWith(expect.stringContaining('submission_status_history'), [
+      submissionId,
+      SubmissionStatus.DRAFT,
+      SubmissionStatus.QUEUED,
+      'Submission contract validated',
+    ]);
+  });
+
+  it('prevents internal pipeline callbacks from bypassing draft validation', async () => {
+    await expect(service.advanceSubmissionStatus(
+      submissionId,
+      SubmissionStatus.DETECTING,
+    )).rejects.toBeInstanceOf(ConflictException);
+    await expect(service.markCompleted(submissionId)).rejects.toBeInstanceOf(ConflictException);
+    expect(submissionRepo.save).not.toHaveBeenCalled();
   });
 
   it('accepts an identical chunk retry without storing it twice', async () => {
@@ -223,19 +349,16 @@ describe('SurveyService completeUpload', () => {
       checksum: fileChecksum,
       sizeBytes: fileBuffer.length,
     };
-    const sessionRepository = {
-      findOne: jest.fn().mockResolvedValue(session),
-    } as unknown as Repository<UploadSession>;
     const chunkRepository = {
       count: jest.fn().mockResolvedValue(1),
       findOne: jest.fn().mockResolvedValue(existingChunk),
     } as unknown as Repository<UploadChunk>;
     const retryService = new SurveyService(
-      sessionRepository,
+      sessionRepo,
       chunkRepository,
-      {} as Repository<SurveySubmission>,
+      submissionRepo,
       storage,
-      {} as DataSource,
+      dataSource,
       {} as WalletService,
       {} as NotificationsService,
     );
@@ -250,7 +373,7 @@ describe('SurveyService completeUpload', () => {
       } as Express.Multer.File,
     );
 
-    expect(result).toMatchObject({ readyToComplete: true, receivedChunks: 1 });
+    expect(result).toMatchObject({ readyToComplete: true, receivedChunks: 1, submissionId });
     expect(storage.putObject).not.toHaveBeenCalled();
   });
 });

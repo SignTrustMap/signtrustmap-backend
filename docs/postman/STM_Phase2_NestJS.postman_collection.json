@@ -18,6 +18,10 @@
       "value": ""
     },
     {
+      "key": "submissionId",
+      "value": ""
+    },
+    {
       "key": "candidateId",
       "value": ""
     }
@@ -69,6 +73,46 @@
       "name": "Survey - Submissions (Flow 1)",
       "item": [
         {
+          "name": "Create VIDEO_GPX Submission",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/submissions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "submissions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"submissionType\": \"VIDEO_GPX\",\n  \"capturedAt\": \"2026-09-08T02:00:00.000Z\",\n  \"coordinateSource\": \"GPX_FILE\",\n  \"note\": \"Morning road survey\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var j=null;try{j=pm.response.json()}catch(e){}",
+                  "if(j && j.id){pm.collectionVariables.set('submissionId',j.id)}"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "Initialize Upload Session",
           "request": {
             "method": "POST",
@@ -83,13 +127,14 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/submissions/initialize",
+              "raw": "{{baseUrl}}/submissions/{{submissionId}}/uploads",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "submissions",
-                "initialize"
+                "{{submissionId}}",
+                "uploads"
               ]
             },
             "body": {
@@ -120,12 +165,13 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/submissions/{{sessionId}}/chunks",
+              "raw": "{{baseUrl}}/submissions/uploads/{{sessionId}}/chunks",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "submissions",
+                "uploads",
                 "{{sessionId}}",
                 "chunks"
               ]
@@ -163,12 +209,13 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/submissions/{{sessionId}}/chunks",
+              "raw": "{{baseUrl}}/submissions/uploads/{{sessionId}}/chunks",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "submissions",
+                "uploads",
                 "{{sessionId}}",
                 "chunks"
               ]
@@ -201,12 +248,13 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/submissions/{{sessionId}}",
+              "raw": "{{baseUrl}}/submissions/uploads/{{sessionId}}",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "submissions",
+                "uploads",
                 "{{sessionId}}"
               ]
             }
