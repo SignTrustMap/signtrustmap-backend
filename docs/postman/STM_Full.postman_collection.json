@@ -3,7 +3,7 @@
     "_postman_id": "5a92e4c0-0500-43d9-8797-df303eb08e6d",
     "name": "STM Full - 14 Flows",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-    "description": "Unified STM collection ordered by 14 flows (SignTrustMap.md). NestJS {{baseUrl}}=http://localhost:3000/api/v1  FastAPI {{fastapiBaseUrl}}=http://localhost:8000/api/v1  WS {{wsBaseUrl}}=ws://localhost:8000/api/v1. Flow 5 is Celery-internal (no HTTP). Flows 3/14 need X-Internal-Token. Generated from 5 source collections."
+    "description": "Unified STM collection ordered by 14 flows (docs/project-specification.md). NestJS {{baseUrl}}=http://localhost:3000/api/v1  FastAPI {{fastapiBaseUrl}}=http://localhost:8000/api/v1  WS {{wsBaseUrl}}=ws://localhost:8000/api/v1. Flow 5 is Celery-internal (no HTTP). Flows 3/14 need X-Internal-Token. Generated from 5 source collections."
   },
   "variable": [
     {

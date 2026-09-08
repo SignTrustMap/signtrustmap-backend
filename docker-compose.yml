@@ -13,8 +13,8 @@ services:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./schema.postgres.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
-      - ./schema.addendum.sql:/docker-entrypoint-initdb.d/02-addendum.sql:ro
+      - ./infra/postgres/schema/schema.postgres.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./infra/postgres/schema/schema.addendum.sql:/docker-entrypoint-initdb.d/02-addendum.sql:ro
       - ./infra/postgres/init-extensions.sql:/docker-entrypoint-initdb.d/00-ext.sql:ro
       - ./infra/postgres/seed-admin.sql:/docker-entrypoint-initdb.d/03-seed-admin.sql:ro
     healthcheck:

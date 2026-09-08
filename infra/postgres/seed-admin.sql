@@ -5,7 +5,7 @@
 -- Or: docker exec -i stm-postgres psql -U stm_user -d signtrustmap -f /tmp/seed-admin.sql
 
 -- ---------------------------------------------------------------------------
--- Seed the application roles FIRST (schema.postgres.sql only creates the table,
+-- Seed the application roles FIRST (schema/schema.postgres.sql only creates the table,
 -- it does NOT populate it). Idempotent: ON CONFLICT keeps existing rows.
 -- These codes are referenced by @Roles(...) guards and by register() default role.
 -- ---------------------------------------------------------------------------
@@ -25,7 +25,7 @@ DECLARE
 BEGIN
   SELECT id INTO admin_role_id FROM roles WHERE code = 'ADMIN';
   IF admin_role_id IS NULL THEN
-    RAISE EXCEPTION 'Role ADMIN not found — check schema.postgres.sql seed for roles';
+    RAISE EXCEPTION 'Role ADMIN not found — check schema/schema.postgres.sql seed for roles';
   END IF;
 
   -- Upsert user (ON CONFLICT updates password/full_name, keeps id)

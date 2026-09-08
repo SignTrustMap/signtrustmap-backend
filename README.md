@@ -60,7 +60,7 @@ Drivers can use the Smart Navigation feature, which streams real-time proximity 
                 v
      +--------------------------------------------------------------+
      |  PostgreSQL 15 + PostGIS  :5432                               |
-     |  schema.postgres.sql + schema.addendum.sql  (auto-loaded)    |
+     |  infra/postgres/schema/*.sql  (auto-loaded)                  |
      +-----------------------------+------------------+---------------+
                                    |                  |
                     +--------------+                  +--------------+
@@ -271,79 +271,51 @@ npm install
 
 # 3. Start with hot-reload
 npm run start:dev
+```
+
 ---
 
 ## Project Structure
 
 ```
-signTrustMap/
-├── .env.example                     # Root env template (Docker Compose + local dev)
-├── docker-compose.yml               # 8 services: postgres, redis, minio (+minio-init),
-│                                    #   api-nestjs, api-fastapi, celery-worker, celery-beat
-├── schema.postgres.sql              # Primary DDL (tables, types, enums, indexes)
-├── schema.addendum.sql              # Addendum DDL (materialized views, extra indexes)
+signtrustmap-backend/
+├── .env.example                  # Docker Compose and local development template
+├── Jenkinsfile                   # CI pipeline
+├── Procfile                      # Heroku process entry point
+├── docker-compose.yml            # Local application and infrastructure stack
+├── package.json                  # Root npm workspace commands
+├── package-lock.json             # Root workspace dependency lock
+├── docs/
+│   ├── README.md                 # Documentation index
+│   ├── architecture.md           # NestJS architecture conventions
+│   ├── api-reference.md          # Detailed endpoint inventory
+│   ├── phase-4.md                # Phase 4 implementation notes
+│   ├── project-specification.md  # Full project specification
+│   └── postman/                  # Importable Postman collections
 ├── infra/
+│   ├── pgadmin/                  # Local pgAdmin connection setup
 │   └── postgres/
-│       ├── Dockerfile               # PostGIS-enabled Postgres image
-│       └── init-extensions.sql      # CREATE EXTENSION postgis, uuid-ossp
-├── postman/                         # Postman collections (import into Postman)
-│   └── *.postman_collection.json
-├── apps/
-│   ├── nestjs/                      # NestJS business API (port 3000)
-│   │   ├── .env.example
-│   │   ├── Dockerfile
-│   │   ├── package.json
-│   │   └── src/
-│   │       ├── main.ts              # Bootstrap, global prefix /api/v1, ValidationPipe, CORS
-│   │       ├── app.module.ts        # Root module — TypeORM, global JwtAuthGuard + RolesGuard
-│   │       ├── config/
-│   │       │   └── configuration.ts # DB / JWT / MinIO config factories
-│   │       ├── common/
-│   │       │   ├── decorators/      # @Public, @Roles, @CurrentUser
-│   │       │   └── guards/          # JwtAuthGuard, RolesGuard, InternalTokenGuard
-│   │       ├── entities/            # 25+ TypeORM entities
-│   │       │   ├── user.entity.ts
-│   │       │   ├── wallet.entity.ts
-│   │       │   ├── survey-submission.entity.ts
-│   │       │   ├── unverified-sign-candidate.entity.ts
-│   │       │   ├── candidate-review.entity.ts
-│   │       │   ├── verified-traffic-sign.entity.ts
-│   │       │   └── ...
-│   │       └── modules/
-│   │           ├── admin/           # User management, audit logs, sign export
-│   │           ├── auth/            # JWT register/login, Google OAuth2
-│   │           ├── catalog/         # Sign categories, sign types, system parameters
-│   │           ├── consensus/       # Consensus engine (quorum, approval threshold)
-│   │           ├── daily-tasks/     # Daily task definitions and reward claims
-│   │           ├── leaderboard/     # Rankings materialized view
-│   │           ├── moderation/      # Missing-type reports, moderation cases
-│   │           ├── notifications/   # In-app notification delivery
-│   │           ├── payments/        # Payment gateway webhook handler
-│   │           ├── revalidation/    # Sign freshness revalidation tasks & evidence
-│   │           ├── reviews/         # Review queue, voting, Active Learning hooks
-│   │           ├── storage/         # MinIO abstraction (upload / presign / delete)
-│   │           ├── survey/          # Chunked upload sessions, submission lifecycle
-│   │           └── wallet/          # Credit wallet, top-up, deduct
-│   └── fastapi/                     # FastAPI spatial + navigation service (port 8000)
-│       ├── Dockerfile
-│       ├── requirements.txt
-│       └── app/
-│           ├── main.py              # FastAPI app — CORS, lifespan, /health, /api/v1/health
-│           ├── config.py            # Pydantic Settings (DATABASE_URL, nav tuning)
-│           ├── database.py          # SQLAlchemy async engine + session factory
-│           ├── db_sync.py           # Sync session factory for Celery workers
-│           ├── celery_app.py        # Celery app, queue + beat schedule
-│           ├── api/
-│           │   └── v1/
-│           │       ├── router.py    # Aggregates spatial + navigation routers
-│           │       ├── spatial.py   # GET /spatial/signs, GET /spatial/signs/{id}
-│           │       └── navigation.py# POST/PATCH /navigation/sessions, WS /navigation/ws
-│           ├── models/              # SQLAlchemy ORM models (read path)
-│           ├── schemas/
-│           │   └── spatial.py       # Pydantic request/response schemas
-│           └── tasks/
-│               ├── ai_pipeline.py   # 6-stage AI submission pipeline
-│               ├── freshness.py     # Periodic sign freshness scoring
+│       ├── Dockerfile            # PostGIS-enabled PostgreSQL image
+│       ├── init-extensions.sql   # Required PostgreSQL extensions
+│       ├── seed-admin.sql        # Development roles and administrator
+│       └── schema/               # Primary and addendum database DDL
+├── scripts/                      # Maintained migration and API test utilities
+└── apps/
+    ├── nestjs/                   # NestJS business API (port 3000)
+    │   ├── Dockerfile
+    │   ├── package.json
+    │   ├── package-lock.json     # Standalone Docker build dependency lock
+    │   └── src/
+    │       ├── common/           # Shared guards, decorators, and pagination
+    │       ├── config/           # Database, JWT, MinIO, routing, and API docs
+    │       ├── database/         # Spring-to-NestJS data migration assets
+    │       ├── integrations/     # External service adapters
+    │       └── modules/          # Feature-first business modules
+    └── fastapi/                  # FastAPI spatial and task service (port 8000)
+        ├── Dockerfile
+        ├── requirements.txt
+        └── app/                  # API routes, models, schemas, and Celery tasks
+```
 ---
 
 ## API Documentation
@@ -406,7 +378,7 @@ For Heroku deployments, deploy from the repository root. The root npm workspace 
 | Internal | `X-Internal-Token: <INTERNAL_TOKEN>` — service-to-service (Celery to NestJS) |
 | ADMIN / STAFF / SURVEYOR / REVIEWER / DRIVER | JWT plus the named role (checked by `RolesGuard`) |
 
-> Tip: import the Postman collection from `postman/` — it contains pre-wired examples for every endpoint below.
+> Tip: import the Postman collection from `docs/postman/` — it contains pre-wired examples for every endpoint below.
 
 ### Authentication — `auth`
 
