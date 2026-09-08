@@ -25,7 +25,7 @@ Drivers can use the Smart Navigation feature, which streams real-time proximity 
 ## Key Features
 
 - **Chunked video/GPX upload** — resumable multi-part upload sessions for large dashcam files and GPS tracks.
-- **AI detection pipeline** — Celery workers orchestrate a 6-stage pipeline (QUEUED to SYNCHRONIZING to DETECTING to TRACKING to ESTIMATING to CLASSIFYING to COMPLETED). YOLO12/BoT-SORT/CLIP inference stubs are ready for teammate integration.
+- **AI detection pipeline** — Celery durably dispatches queued submissions by ID and MinIO object key. The standalone AI service performs synchronous YOLO/BoT-SORT/CLIP inference without receiving a duplicate upload; Celery persists candidates and terminal state.
 - **Community review & consensus** — reviewers vote APPROVE/REJECT/UNSURE on sign candidates. Configurable quorum and approval thresholds auto-promote candidates to verified signs.
 - **Active Learning integration** — internal endpoints let the AI pipeline set uncertainty-based priority scores so the review queue surfaces the most valuable candidates first.
 - **Credit wallet** — every user has a wallet. Survey completions, review votes, and daily tasks credit the wallet; navigation sessions can deduct a fee.
@@ -139,7 +139,8 @@ Open `.env` and review values. Defaults work for local development:
 
 ### Step 3 — Start with Docker Compose (recommended)
 
-This launches all 8 services — Postgres, Redis, MinIO, MinIO-init (one-time bucket creation), NestJS, FastAPI, Celery worker, and Celery beat — in one command:
+This launches the application stack: Postgres, Redis, MinIO, MinIO-init, NestJS, FastAPI, the
+Celery worker and beat scheduler, and the standalone AI inference service:
 
 ```powershell
 cd signTrustMap
@@ -641,7 +642,7 @@ SignTrustMap is a comprehensive platform integrating Crowdsourcing, Artificial I
     *   **API Implementation (NestJS):** `GET /reviews/queue` fetches pending candidates[cite: 1]. `POST /reviews/{{candidateId}}/vote` records the Reviewer's decision (Approve, Reject, or suggest a different type)[cite: 1].
 *   **Flow 5: Consensus Publishing**
     *   **Purpose:** Calculate a consensus score from votes based on Reviewer reliability[cite: 2]. If the threshold is met, the sign is published to the official map[cite: 2].
-    *   **API Implementation (Background Task):** No direct HTTP endpoint[cite: 1]. This logic is triggered internally within the Celery worker (`task_finalize_submission`) once the minimum vote requirement is met[cite: 1].
+    *   **API Implementation (Background Task):** No direct HTTP endpoint[cite: 1]. Consensus is handled by its own background workflow once the minimum vote requirement is met[cite: 1].
 *   **Flow 14: Active Learning**
     *   **Purpose:** Filter out signs with the highest AI uncertainty to prioritize for human review, improving YOLO12 and CLIP models in future iterations[cite: 2].
     *   **API Implementation (NestJS - Internal):** `GET /reviews/internal/unscored-candidates` allows the AI to fetch unscored candidates[cite: 1]. After calculating uncertainty margins, the AI uses `POST /reviews/internal/active-learning-priorities` to bulk-update priorities in the database[cite: 1].
