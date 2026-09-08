@@ -400,37 +400,45 @@ def build_phase5():
     it.append(make_req("PL8 Places: clear all recent-searches (200)", "DELETE", N, "places/recent-searches", auth="admin",
         tests=combine(eq(200), custom("cleared true", "pm.expect(j.cleared).to.eql(true);"))))
     # Submissions lifecycle
-    it.append(make_req("SB1 Submissions: initialize (201, capture sessionId)", "POST", N, "submissions/initialize", auth="admin",
+    it.append(make_req("SB1 Submissions: create draft (201, capture submissionId)", "POST", N, "submissions", auth="admin",
+        body={"submissionType": "VIDEO_GPX", "capturedAt": "2026-09-08T02:00:00.000Z", "coordinateSource": "GPX_FILE", "note": "Regression survey"},
+        tests=combine(eq(201), has_keys("id", "status", "requiredMediaTypes"),
+            custom("status DRAFT", "pm.expect(j.status).to.eql('DRAFT');"),
+            setvar("j.id", "submissionId"))))
+    it.append(make_req("SB2 Submissions: initialize upload (201, capture sessionId)", "POST", N, "submissions/{{submissionId}}/uploads", auth="admin",
         body={"originalFilename": "dashcam.mp4", "mediaType": "VIDEO", "totalSizeBytes": 1048576, "totalChunks": 2},
         tests=combine(eq(201), has_keys("sessionId", "status", "totalChunks"),
             custom("status INITIATED", "pm.expect(j.status).to.eql('INITIATED');"),
             custom("totalChunks 2", "pm.expect(j.totalChunks).to.eql(2);"),
             setvar("j.sessionId", "sessionId"))))
-    it.append(make_req("SB2 Submissions: get session", "GET", N, "submissions/{{sessionId}}", auth="admin",
+    it.append(make_req("SB3 Submissions: get upload session", "GET", N, "submissions/uploads/{{sessionId}}", auth="admin",
         tests=combine(eq(200), has_keys("session"),
             custom("session.id matches", "pm.expect(j.session.id).to.eql(pm.collectionVariables.get('sessionId'));"))))
-    it.append(make_req("SB3 Submissions: my list (paginated)", "GET", N, "submissions/me", auth="admin",
+    it.append(make_req("SB4 Submissions: submit incomplete contract", "POST", N, "submissions/{{submissionId}}/submit", auth="admin",
+        body={}, tests=combine(eq(200), has_keys("accepted", "submission"),
+            custom("requires correction", "pm.expect(j.accepted).to.eql(false); pm.expect(j.submission.status).to.eql('PENDING_CORRECTION');"))))
+    it.append(make_req("SB5 Submissions: my list (paginated)", "GET", N, "submissions/me", auth="admin",
         tests=combine(eq(200), paginated())))
-    it.append(make_req("SB4 Submissions: my pending", "GET", N, "submissions/me/pending", auth="admin",
+    it.append(make_req("SB6 Submissions: my pending", "GET", N, "submissions/me/pending", auth="admin",
         tests=combine(eq(200), has_keys("total", "pending"))))
-    it.append(make_req("SB5 Submissions: my stats", "GET", N, "submissions/me/stats", auth="admin",
+    it.append(make_req("SB7 Submissions: my stats", "GET", N, "submissions/me/stats", auth="admin",
         tests=combine(eq(200), has_keys("userId", "totalSubmissions"),
             custom("userId matches", "pm.expect(j.userId).to.eql(pm.collectionVariables.get('adminId'));"))))
-    it.append(make_req("SB6 Submissions: status unknown id -> 404", "GET", N,
+    it.append(make_req("SB8 Submissions: status unknown id -> 404", "GET", N,
         "submissions/status/00000000-0000-0000-0000-000000000000", auth="admin",
         tests=combine(eq(404))))
-    it.append(make_req("SB7 Submissions: init validation (bad mediaType) -> 400", "POST", N, "submissions/initialize", auth="admin",
+    it.append(make_req("SB9 Submissions: init validation (bad mediaType) -> 400", "POST", N, "submissions/{{submissionId}}/uploads", auth="admin",
         body={"originalFilename": "x.mp4", "mediaType": "UNKNOWN_TYPE", "totalSizeBytes": 1024, "totalChunks": 1},
         tests=combine(eq(400))))
-    it.append(make_req("SB8 Submissions: internal complete unknown -> 404", "POST", N,
+    it.append(make_req("SB10 Submissions: internal complete unknown -> 404", "POST", N,
         "submissions/internal/00000000-0000-0000-0000-000000000000/complete", auth="internal",
         body={},
         tests=combine(eq(404))))
-    it.append(make_req("SB9 Submissions: internal status advance unknown -> 404", "PATCH", N,
+    it.append(make_req("SB11 Submissions: internal status advance unknown -> 404", "PATCH", N,
         "submissions/internal/00000000-0000-0000-0000-000000000000/status", auth="internal",
         body={"status": "QUEUED"},
         tests=combine(eq(404))))
-    it.append(make_req("SB10 Submissions: internal no token -> 401", "PATCH", N,
+    it.append(make_req("SB12 Submissions: internal no token -> 401", "PATCH", N,
         "submissions/internal/00000000-0000-0000-0000-000000000000/status",
         body={"status": "QUEUED"}, tests=combine(eq(401))))
     return it
@@ -599,7 +607,7 @@ def main():
     print(f"Generated {len(all_items)} requests, ~{total_tests} pm.test assertions")
     COLL.write_text(json.dumps(coll, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"Wrote {COLL}")
-    print(f"\nRun: npx newman run {COLL.name} --folder \"{FOLDER_NAME}\" "
+    print(f"\nRun: npx newman run {COLL.relative_to(REPO)} --folder \"{FOLDER_NAME}\" "
           "--env-var baseUrl=http://localhost:3000/api/v1 "
           "--env-var fastapiBaseUrl=http://localhost:8000/api/v1 "
           "--env-var fastapiRoot=http://localhost:8000 "
@@ -608,6 +616,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
 

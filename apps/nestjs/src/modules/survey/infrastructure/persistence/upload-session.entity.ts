@@ -48,8 +48,8 @@ export class UploadSession {
   @Column({ type: 'enum', enum: UploadStatus, default: UploadStatus.INITIATED })
   status: UploadStatus;
 
-  @Column({ name: 'submission_id', type: 'uuid', nullable: true })
-  submissionId: string | null;
+  @Column({ name: 'submission_id', type: 'uuid' })
+  submissionId: string;
 
   @Column({ name: 'expires_at', type: 'timestamptz' })
   expiresAt: Date;
