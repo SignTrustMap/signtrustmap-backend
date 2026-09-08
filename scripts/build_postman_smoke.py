@@ -3,10 +3,10 @@
 build_postman_smoke.py
 ----------------------
 Appends (or replaces) a "Comprehensive Smoke Test (Full Backend)" folder to
-STM_Full.postman_collection.json. The folder is a self-contained regression
+docs/postman/STM_Full.postman_collection.json. The folder is a self-contained regression
 suite you can run with the Postman GUI Runner or `newman`:
 
-  newman run STM_Full.postman_collection.json -f "Comprehensive Smoke Test (Full Backend)" \
+  newman run docs/postman/STM_Full.postman_collection.json -f "Comprehensive Smoke Test (Full Backend)" \
         --env-var baseUrl=http://localhost:3000/api/v1 \
         --env-var fastapiBaseUrl=http://localhost:8000/api/v1 \
         --env-var internalToken=stm_internal_secret_dev
@@ -29,7 +29,7 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-COLL = REPO / "STM_Full.postman_collection.json"
+COLL = REPO / "docs" / "postman" / "STM_Full.postman_collection.json"
 FOLDER_NAME = "Comprehensive Smoke Test (Full Backend)"
 
 # --------------------------------------------------------------------------
@@ -234,4 +234,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-

@@ -307,6 +307,6 @@ Flow 7 — Cảnh báo biển báo theo thời gian thực khi driver đang di c
 | **Tổng** | **~100 endpoint** | — |
 
 **Tài liệu liên quan:**
-- README.md — API summary + Frontend Screen → API Mapping.
-- `STM_Full.postman_collection.json` — 133 requests, import vào Postman để test ngay.
-- `schema.postgres.sql` — DDL toàn bộ bảng, seed, indexes.
+- `../README.md` — API summary + Frontend Screen → API Mapping.
+- `postman/STM_Full.postman_collection.json` — 133 requests, import vào Postman để test ngay.
+- `../infra/postgres/schema/schema.postgres.sql` — DDL toàn bộ bảng, seed, indexes.

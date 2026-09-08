@@ -3,7 +3,7 @@
 build_postman_regression.py
 ---------------------------
 Generates (idempotently) the folder "Full Backend Regression" inside
-STM_Full.postman_collection.json. This is the definitive, exhaustive integration
+docs/postman/STM_Full.postman_collection.json. This is the definitive, exhaustive integration
 test suite for the SignTrustMap backend: it covers EVERY NestJS + FastAPI
 endpoint (frontend-facing, admin, internal/AI-pipeline and RBAC/guard negatives)
 and every request carries REAL logic assertions (exact status codes + response
@@ -14,7 +14,7 @@ Expected status codes were captured by probing the running services so the
 whole folder is deterministic-green against the seeded database.
 
 Run:  python scripts/build_postman_regression.py
-Then: newman run STM_Full.postman_collection.json -f "Full Backend Regression" \
+Then: newman run docs/postman/STM_Full.postman_collection.json -f "Full Backend Regression" \
         --env-var baseUrl=http://localhost:3000/api/v1 \
         --env-var fastapiBaseUrl=http://localhost:8000/api/v1 \
         --env-var fastapiRoot=http://localhost:8000 \
@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-COLL = REPO / "STM_Full.postman_collection.json"
+COLL = REPO / "docs" / "postman" / "STM_Full.postman_collection.json"
 FOLDER_NAME = "Full Backend Regression"
 OLD_SMOKE = "Comprehensive Smoke Test (Full Backend)"
 PREAMBLE = "let j = null; try { j = pm.response.json(); } catch (e) {}"
@@ -608,7 +608,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
 
 
