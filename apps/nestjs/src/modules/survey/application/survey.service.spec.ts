@@ -117,6 +117,7 @@ describe('SurveyService submission contract', () => {
       create: jest.fn((value) => value as SurveySubmission),
       save: jest.fn(async (value) => ({ ...value, id: submissionId }) as SurveySubmission),
       findOne: jest.fn().mockResolvedValue(submission),
+      count: jest.fn().mockResolvedValue(0),
     } as unknown as jest.Mocked<Repository<SurveySubmission>>;
     storage = {
       bucketForMediaType: jest.fn().mockReturnValue('stm-sign-crops'),
@@ -680,5 +681,107 @@ describe('SurveyService submission contract', () => {
     await expect(
       service.submitSubmission(userId, submissionId),
     ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('createSubmission accepts image GPS coordinates and returns structured gpsCoordinates', async () => {
+    submissionRepo.create.mockImplementation((data: any) => ({ ...data, id: 'new-sub-id' }));
+    submissionRepo.save.mockImplementation(async (entity: any) => entity);
+
+    const res = await service.createSubmission(userId, {
+      submissionType: SubmissionType.SINGLE_IMAGE,
+      capturedAt: '2026-09-08T02:00:00.000Z',
+      coordinateSource: CoordinateSource.DEVICE_GPS,
+      latitude: 10.762622,
+      longitude: 106.660172,
+      note: 'Dien Bien Phu road sign',
+    });
+
+    expect(res.latitude).toBe(10.762622);
+    expect(res.longitude).toBe(106.660172);
+    expect(res.gpsCoordinates).toEqual({ latitude: 10.762622, longitude: 106.660172 });
+    expect(res.note).toBe('Dien Bien Phu road sign');
+  });
+
+  it('updateSubmission updates GPS coordinates and note metadata', async () => {
+    submissionRepo.save.mockImplementation(async (entity: any) => entity);
+
+    const res = await service.updateSubmission(userId, submissionId, {
+      latitude: 21.0285,
+      longitude: 105.8342,
+      note: 'Updated Hanoi coordinate',
+    });
+
+    expect(res.latitude).toBe(21.0285);
+    expect(res.longitude).toBe(105.8342);
+    expect(res.gpsCoordinates).toEqual({ latitude: 21.0285, longitude: 105.8342 });
+    expect(res.note).toBe('Updated Hanoi coordinate');
+  });
+
+  it('getSession returns chunk indices, missing chunks, and progress percentage for resume support', async () => {
+    session.totalChunks = 4;
+    const chunk0 = { id: 'c0', sessionId: session.id, chunkIndex: 0, sizeBytes: 100, storageKey: 'k0' } as UploadChunk;
+    const chunk2 = { id: 'c2', sessionId: session.id, chunkIndex: 2, sizeBytes: 100, storageKey: 'k2' } as UploadChunk;
+
+    const chunkRepoMock = {
+      find: jest.fn().mockResolvedValue([chunk0, chunk2]),
+    };
+    (service as any).chunkRepo = chunkRepoMock;
+
+    const res = await service.getSession(userId, session.id);
+
+    expect(res.uploadedChunkIndices).toEqual([0, 2]);
+    expect(res.missingChunkIndices).toEqual([1, 3]);
+    expect(res.progressPercent).toBe(50);
+    expect(res.isResumable).toBe(true);
+    expect(res.readyToComplete).toBe(false);
+  });
+
+  it('getMyPendingCount returns total, pending, and breakdown by status', async () => {
+    submissionRepo.count.mockResolvedValue(10);
+    dataSource.query
+      .mockResolvedValueOnce([{ cnt: 4 }])
+      .mockResolvedValueOnce([
+        { status: 'QUEUED', cnt: 2 },
+        { status: 'PENDING_CORRECTION', cnt: 2 },
+        { status: 'COMPLETED', cnt: 6 },
+      ]);
+
+    const res = await service.getMyPendingCount(userId);
+
+    expect(res.total).toBe(10);
+    expect(res.pending).toBe(4);
+    expect(res.countsByStatus).toEqual({
+      QUEUED: 2,
+      PENDING_CORRECTION: 2,
+      COMPLETED: 6,
+    });
+  });
+
+  it('getSubmissionStatus retrieves pipeline status, status history, and candidates with geo estimations', async () => {
+    dataSource.query
+      .mockResolvedValueOnce([{ id: 1, old_status: 'QUEUED', new_status: 'SYNCHRONIZING', note: 'Sync', changed_at: new Date() }])
+      .mockResolvedValueOnce([
+        {
+          id: 'cand-1',
+          predicted_sign_type_id: 102,
+          sign_code: 'P.102',
+          confidence_score: 0.95,
+          sign_location_geojson: '{"type":"Point","coordinates":[106.66,10.76]}',
+          vehicle_location_geojson: '{"type":"Point","coordinates":[106.66,10.76]}',
+          estimated_distance: 12.5,
+          bearing_angle: 90.0,
+          traffic_direction: 90.0,
+        },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    const res = await service.getSubmissionStatus(userId, submissionId);
+
+    expect(res.submission.id).toBe(submissionId);
+    expect(res.history.length).toBe(1);
+    expect(res.candidates.length).toBe(1);
+    expect(res.candidates[0].sign_code).toBe('P.102');
+    expect(res.candidates[0].estimated_distance).toBe(12.5);
   });
 });

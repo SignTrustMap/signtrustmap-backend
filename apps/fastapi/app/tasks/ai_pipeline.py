@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
@@ -346,6 +347,7 @@ def _persist_candidates(
     captured_at: datetime | None = None,
     image_width: int = 1920,
     image_height: int = 1080,
+    metadata: dict[str, Any] | None = None,
 ) -> tuple[int, int]:
     """Persist candidate signs, detection metadata, and spherical geo estimations."""
     inserted = 0
@@ -385,11 +387,17 @@ def _persist_candidates(
                 base_time = base_time.astimezone(timezone.utc)
             target_time = base_time + timedelta(seconds=timestamp_sec)
 
-            # Interpolate vehicle GPS from GPX or fallback
+            # Interpolate vehicle GPS from GPX, note GPS metadata, or fallback
             if gpx_points:
                 veh_lat, veh_lon, veh_bearing = interpolate_gpx_position(gpx_points, target_time)
             else:
-                veh_lat, veh_lon, veh_bearing = 21.0285, 105.8342, 0.0
+                note_str = str(metadata.get("note") or "") if metadata else ""
+                gps_match = re.search(r"GPS:\s*([-\d.]+),\s*([-\d.]+)", note_str)
+                if gps_match:
+                    veh_lat, veh_lon = float(gps_match.group(1)), float(gps_match.group(2))
+                    veh_bearing = 0.0
+                else:
+                    veh_lat, veh_lon, veh_bearing = 21.0285, 105.8342, 0.0
 
             box = sign.get("box_xyxy") or [None, None, None, None]
             geo = estimate_sign_coordinates(
@@ -551,6 +559,7 @@ def task_process_submission_pipeline(
             captured_at=captured_at,
             image_width=result.get("image_width") or 1920,
             image_height=result.get("image_height") or 1080,
+            metadata=metadata,
         )
 
         # 6. Terminal status transition

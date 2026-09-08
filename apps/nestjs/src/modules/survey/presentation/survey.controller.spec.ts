@@ -114,7 +114,7 @@ describe('SurveyController (all 13 endpoints)', () => {
   });
 
   it('8. myPending delegates to surveyService.getMyPendingCount', async () => {
-    const expected = { total: 5, pending: 2 };
+    const expected = { total: 5, pending: 2, countsByStatus: { QUEUED: 1, DRAFT: 1 } };
     service.getMyPendingCount.mockResolvedValue(expected);
 
     const result = await controller.myPending(mockUser);
