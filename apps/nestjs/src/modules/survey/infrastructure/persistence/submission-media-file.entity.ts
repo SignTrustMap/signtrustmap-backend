@@ -7,12 +7,9 @@ import {
   CreateDateColumn,
 } from 'typeorm';
 import { SurveySubmission } from './survey-submission.entity';
+import { MediaFileType } from '../../domain/submission-contract';
 
-export enum MediaFileType {
-  VIDEO = 'VIDEO',
-  GPX = 'GPX',
-  IMAGE = 'IMAGE',
-}
+export { MediaFileType } from '../../domain/submission-contract';
 
 @Entity('submission_media_files')
 export class SubmissionMediaFile {
@@ -21,6 +18,9 @@ export class SubmissionMediaFile {
 
   @Column({ name: 'submission_id', type: 'uuid' })
   submissionId: string;
+
+  @Column({ name: 'upload_session_id', type: 'uuid', nullable: true, unique: true })
+  uploadSessionId: string | null;
 
   @Column({ name: 'media_type', type: 'enum', enum: MediaFileType })
   mediaType: MediaFileType;

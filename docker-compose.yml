@@ -13,16 +13,58 @@ services:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./infra/postgres/schema/schema.postgres.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
-      - ./infra/postgres/schema/schema.addendum.sql:/docker-entrypoint-initdb.d/02-addendum.sql:ro
-      - ./infra/postgres/init-extensions.sql:/docker-entrypoint-initdb.d/00-ext.sql:ro
-      - ./infra/postgres/seed-admin.sql:/docker-entrypoint-initdb.d/03-seed-admin.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-stm_user} -d $${POSTGRES_DB:-signtrustmap}"]
       interval: 10s
       timeout: 5s
       retries: 10
       start_period: 30s
+    networks: [stm-network]
+
+  postgres-migrate:
+    build:
+      context: ./infra/postgres
+      dockerfile: Dockerfile
+    container_name: stm-postgres-migrate
+    restart: "no"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-stm_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-stm_password}
+      POSTGRES_DB: ${POSTGRES_DB:-signtrustmap}
+    depends_on:
+      postgres: { condition: service_healthy }
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        export PGPASSWORD="$${POSTGRES_PASSWORD}"
+        TABLE_COUNT=$$(psql -X -A -t \
+          --host postgres \
+          --username "$${POSTGRES_USER}" \
+          --dbname "$${POSTGRES_DB}" \
+          -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public';")
+        if [ "$${TABLE_COUNT}" = "0" ]; then
+          echo "Initializing database schema..."
+          for init_file in /docker-entrypoint-initdb.d/*.sql; do
+            [ -e "$${init_file}" ] || continue
+            echo "Running $${init_file}"
+            psql -X --set ON_ERROR_STOP=1 \
+              --host postgres \
+              --username "$${POSTGRES_USER}" \
+              --dbname "$${POSTGRES_DB}" \
+              --file "$${init_file}"
+          done
+        fi
+        for migration_file in /migrations/*.sql; do
+          [ -e "$${migration_file}" ] || continue
+          echo "Applying $${migration_file}"
+          psql -X --set ON_ERROR_STOP=1 \
+            --host postgres \
+            --username "$${POSTGRES_USER}" \
+            --dbname "$${POSTGRES_DB}" \
+            --file "$${migration_file}"
+        done
+        echo "Database schema and migrations are up to date."
     networks: [stm-network]
 
   redis:
@@ -112,11 +154,8 @@ services:
       NAVIGATION_SIGN_CORRIDOR_WIDTH_METERS: ${NAVIGATION_SIGN_CORRIDOR_WIDTH_METERS:-30}
       NAVIGATION_SIGN_HEADING_TOLERANCE_DEGREES: ${NAVIGATION_SIGN_HEADING_TOLERANCE_DEGREES:-45}
     ports: ["${NESTJS_PORT:-3000}:3000"]
-    volumes:
-      - ./apps/nestjs:/app
-      - /app/node_modules
     depends_on:
-      postgres: { condition: service_healthy }
+      postgres-migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
       minio: { condition: service_healthy }
     healthcheck:
@@ -125,8 +164,12 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
-    command: npm run start:dev
-    networks: [stm-network]
+    networks:
+      stm-network:
+        aliases:
+          - nestjs
+          - api-nestjs
+
   api-fastapi:
     build:
       context: ./apps/fastapi
@@ -135,6 +178,7 @@ services:
     restart: unless-stopped
     environment:
       APP_ENV: development
+      PYTHONPATH: /app
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-stm_user}:${POSTGRES_PASSWORD:-stm_password}@postgres:5432/${POSTGRES_DB:-signtrustmap}
       SYNC_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-stm_user}:${POSTGRES_PASSWORD:-stm_password}@postgres:5432/${POSTGRES_DB:-signtrustmap}
       REDIS_URL: redis://redis:6379/1
@@ -145,14 +189,13 @@ services:
       MINIO_SECURE: "false"
       # NestJS service-to-service: must match INTERNAL_TOKEN on api-nestjs
       INTERNAL_API_TOKEN: ${INTERNAL_TOKEN:-stm_internal_secret_dev}
-      NESTJS_INTERNAL_URL: http://nestjs:3000
-    ports: ["${FASTAPI_PORT:-8000}:8000"]
-    volumes: [./apps/fastapi:/app]
+      NESTJS_INTERNAL_URL: http://api-nestjs:3000
+    ports: ["${FASTAPI_PORT:-8088}:8000"]
     depends_on:
-      postgres: { condition: service_healthy }
+      postgres-migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
       minio: { condition: service_healthy }
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     networks: [stm-network]
 
   celery-worker:
@@ -163,6 +206,7 @@ services:
     restart: unless-stopped
     environment:
       APP_ENV: development
+      PYTHONPATH: /app
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-stm_user}:${POSTGRES_PASSWORD:-stm_password}@postgres:5432/${POSTGRES_DB:-signtrustmap}
       SYNC_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-stm_user}:${POSTGRES_PASSWORD:-stm_password}@postgres:5432/${POSTGRES_DB:-signtrustmap}
       CELERY_BROKER_URL: redis://redis:6379/2
@@ -170,12 +214,13 @@ services:
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-stm_minio}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-stm_minio_secret_123}
+      AI_INFERENCE_URL: http://ai-inference:8000
+      AI_INFERENCE_TIMEOUT_SECONDS: ${AI_INFERENCE_TIMEOUT_SECONDS:-3600}
       # NestJS service-to-service: must match INTERNAL_TOKEN on api-nestjs
       INTERNAL_API_TOKEN: ${INTERNAL_TOKEN:-stm_internal_secret_dev}
-      NESTJS_INTERNAL_URL: http://nestjs:3000
-    volumes: [./apps/fastapi:/app]
+      NESTJS_INTERNAL_URL: http://api-nestjs:3000
     depends_on:
-      postgres: { condition: service_healthy }
+      postgres-migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
       minio: { condition: service_healthy }
     command: celery -A app.celery_app worker --loglevel=info --concurrency=4 --queues=default,freshness,leaderboard,ai_pipeline
@@ -188,17 +233,19 @@ services:
     container_name: stm-celery-beat
     restart: unless-stopped
     environment:
+      PYTHONPATH: /app
       CELERY_BROKER_URL: redis://redis:6379/2
       CELERY_RESULT_BACKEND: redis://redis:6379/3
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-stm_user}:${POSTGRES_PASSWORD:-stm_password}@postgres:5432/${POSTGRES_DB:-signtrustmap}
       SYNC_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-stm_user}:${POSTGRES_PASSWORD:-stm_password}@postgres:5432/${POSTGRES_DB:-signtrustmap}
-    volumes: [./apps/fastapi:/app]
     depends_on: [celery-worker, postgres, redis]
     command: celery -A app.celery_app beat --loglevel=info
     networks: [stm-network]
 
   pgadmin:
-    image: dpage/pgadmin4:8
+    build:
+      context: ./infra/pgadmin
+      dockerfile: Dockerfile
     container_name: stm-pgadmin
     restart: unless-stopped
     environment:
@@ -211,8 +258,6 @@ services:
       - "${PGADMIN_PORT:-5050}:80"
     volumes:
       - pgadmin_data:/var/lib/pgadmin
-      - ./infra/pgadmin/servers.json:/pgadmin4/servers.json
-      - ./infra/pgadmin/pgpass:/tmp/pgpass.ro:ro
     entrypoint: ["/bin/sh", "-c", "cp /tmp/pgpass.ro /tmp/pgpass && chmod 600 /tmp/pgpass && chown pgadmin:pgadmin /tmp/pgpass 2>/dev/null || true; exec /entrypoint.sh"]
     depends_on:
       postgres: { condition: service_healthy }

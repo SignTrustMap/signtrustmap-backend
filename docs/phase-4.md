@@ -17,13 +17,8 @@ docker compose up celery-worker
 Log phải chứa (thứ tự không quan trọng):
 ```
 [tasks]
-  . app.tasks.ai_pipeline.task_classify_signs_clip
-  . app.tasks.ai_pipeline.task_finalize_submission
-  . app.tasks.ai_pipeline.task_generate_clip_embeddings
+  . app.tasks.ai_pipeline.task_dispatch_queued_submissions
   . app.tasks.ai_pipeline.task_process_submission_pipeline
-  . app.tasks.ai_pipeline.task_run_botsort_tracking
-  . app.tasks.ai_pipeline.task_run_yolo_detection
-  . app.tasks.ai_pipeline.task_estimate_sign_locations
   . app.tasks.freshness.task_check_freshness_and_spawn_revalidations
   . app.tasks.leaderboard.task_refresh_community_leaderboard
 ```
@@ -38,6 +33,7 @@ Beat log phải có:
 beat: Starting...
 Scheduler: Sending due task freshness-monitor-every-30min
 Scheduler: Sending due task refresh-leaderboard-every-15min
+Scheduler: Sending due task dispatch-queued-ai-submissions
 ```
 
 ---
@@ -187,65 +183,61 @@ print(r.get())
 
 ### 3b. Test AI Pipeline (`task_process_submission_pipeline`)
 
-**Seed `survey_submissions`:**
+Create and submit a valid submission through the NestJS submission API first. The assembled
+`submission_media_files.file_url` values must point at objects that exist in MinIO. Beat will find
+the `QUEUED` row within ten seconds and pass this JSON-safe contract to the worker:
 
-```sql
--- user surveyor_profile cần tồn tại
-INSERT INTO surveyor_profiles (user_id, total_submissions, total_verified_signs, total_credits_earned)
-VALUES ('<user_id>', 0, 0, 0)
-ON CONFLICT DO NOTHING;
-
--- Submission ban đầu QUEUED
-INSERT INTO survey_submissions (
-    id, surveyor_id, submission_type, status, created_at, updated_at
-)
-VALUES (
-    gen_random_uuid(),
-    '<user_id>',
-    'VIDEO_GPX',
-    'QUEUED',
-    NOW(),
-    NOW()
-)
-RETURNING id;
--- Ghi lại <submission_id>
+```json
+{
+  "submission_id": "<submission_id>",
+  "media_objects": [
+    {"media_type": "VIDEO", "bucket": "stm-raw-videos", "object_key": "uploads/.../drive.mp4"},
+    {"media_type": "GPX", "bucket": "stm-gpx-logs", "object_key": "uploads/.../drive.gpx"}
+  ]
+}
 ```
 
-**Dispatch toàn bộ pipeline:**
+For a manual dispatch, use the same object references:
 
 ```bash
 docker compose exec celery-worker python -c "
 from app.tasks.ai_pipeline import task_process_submission_pipeline
-r = task_process_submission_pipeline.apply(args=['<submission_id>'])
+r = task_process_submission_pipeline.apply(kwargs={
+  'submission_id': '<submission_id>',
+  'media_objects': [
+    {'media_type': 'VIDEO', 'bucket': 'stm-raw-videos', 'object_key': 'uploads/.../drive.mp4'},
+    {'media_type': 'GPX', 'bucket': 'stm-gpx-logs', 'object_key': 'uploads/.../drive.gpx'},
+  ],
+})
 print(r.get())
 "
 ```
 
-Vì là stub, tất cả task chạy đồng bộ, chain tự hoàn tất. **Verify trong DB:**
+The AI service downloads the existing objects and responds synchronously. **Verify in DB:**
 
 ```sql
--- Status cuối phải là COMPLETED hoặc NO_SIGN_DETECTED (0 candidates vì là stub)
+-- Final status is COMPLETED, PARTIALLY_PROCESSED, NO_SIGN_DETECTED, or FAILED.
 SELECT status, total_candidates_extracted
 FROM survey_submissions
 WHERE id = '<submission_id>';
--- status=NO_SIGN_DETECTED (stub không insert candidates), total_candidates_extracted=0
+-- Candidate rows contain stable MinIO keys returned by the inference service.
+SELECT predicted_sign_type_id, confidence_score, best_frame_url, sign_crop_url
+FROM unverified_sign_candidates
+WHERE submission_id = '<submission_id>';
 
--- Lịch sử trạng thái đầy đủ
 SELECT old_status, new_status, note, changed_at
 FROM submission_status_history
 WHERE submission_id = '<submission_id>'
 ORDER BY changed_at;
 ```
 
-Chuỗi trạng thái mong đợi trong `submission_status_history`:
+Expected successful status sequence:
 
 | old_status | new_status |
 |---|---|
 | QUEUED | SYNCHRONIZING |
 | SYNCHRONIZING | DETECTING |
-| DETECTING | TRACKING |
-| TRACKING | ESTIMATING |
-| ESTIMATING | CLASSIFYING |
+| DETECTING | CLASSIFYING |
 | CLASSIFYING | NO_SIGN_DETECTED |
 
 **Test terminal guard (idempotency):**
@@ -254,7 +246,10 @@ Chuỗi trạng thái mong đợi trong `submission_status_history`:
 docker compose exec celery-worker python -c "
 # Dispatch thêm một lần, pipeline phải bị skip hoàn toàn
 from app.tasks.ai_pipeline import task_process_submission_pipeline
-r = task_process_submission_pipeline.apply(args=['<submission_id>'])
+r = task_process_submission_pipeline.apply(kwargs={
+  'submission_id': '<submission_id>',
+  'media_objects': [],
+})
 print(r.get())
 # Mong đợi: {'skipped': True, ...}
 "

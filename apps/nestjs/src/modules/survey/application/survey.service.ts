@@ -1,4 +1,4 @@
-﻿import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash } from 'crypto';
 import { DataSource, EntityManager, Repository } from 'typeorm';
@@ -8,9 +8,24 @@ import {
 } from '../infrastructure/persistence/submission-media-file.entity';
 import {
   SubmissionStatus,
-  SubmissionType,
   SurveySubmission,
 } from '../infrastructure/persistence/survey-submission.entity';
+import {
+  CorrectionRequirementCode,
+  MEDIA_SIZE_LIMITS,
+  MAX_CHUNK_SIZE_BYTES,
+  MAX_CHUNKS_PER_SESSION,
+  REJECTED_VALIDATION_CODES,
+  SUBMISSION_TYPE_CONTRACTS,
+  SubmissionContractIssue,
+  SubmissionValidationCode,
+} from '../domain/submission-contract';
+import {
+  decodeMedia,
+  parseGpx,
+  validateFileSignature,
+  validateGpxAndTrajectory,
+} from '../domain/media-validator';
 import { UploadChunk } from '../infrastructure/persistence/upload-chunk.entity';
 import { UploadSession, UploadStatus } from '../infrastructure/persistence/upload-session.entity';
 import { TransactionType } from '../../wallet/infrastructure/persistence/credit-transaction.entity';
@@ -20,6 +35,8 @@ import type { StoredObjectReference } from '../../../integrations/minio/minio-st
 import { WalletService } from '../../wallet/application/wallet.service';
 import { InitializeUploadDto } from '../presentation/dto/initialize-upload.dto';
 import { UploadChunkBodyDto } from '../presentation/dto/upload-chunk.dto';
+import { CreateSubmissionDto } from '../presentation/dto/create-submission.dto';
+import { UpdateSubmissionDto } from '../presentation/dto/update-submission.dto';
 @Injectable()
 export class SurveyService {
   private readonly logger = new Logger(SurveyService.name);
@@ -32,24 +49,105 @@ export class SurveyService {
     private readonly walletService: WalletService,
     private readonly notificationsService: NotificationsService,
   ) {}
-  async initialize(userId: string, dto: InitializeUploadDto) {
+  async createSubmission(userId: string, dto: CreateSubmissionDto) {
+    let formattedNote = dto.note ?? null;
+    if (dto.latitude !== undefined && dto.longitude !== undefined) {
+      formattedNote = `GPS: ${dto.latitude}, ${dto.longitude}${dto.note ? '\n' + dto.note : ''}`;
+    }
+    const submission = this.submissionRepo.create({
+      surveyorId: userId,
+      submissionType: dto.submissionType,
+      status: SubmissionStatus.DRAFT,
+      capturedAt: new Date(dto.capturedAt),
+      coordinateSource: dto.coordinateSource,
+      note: formattedNote,
+      validationErrors: [],
+      correctionRequirements: [],
+    });
+    const saved = await this.submissionRepo.save(submission);
+    await this.recordStatusChange(saved.id, null, SubmissionStatus.DRAFT, 'Submission created');
+    return this.submissionResponse(saved);
+  }
+
+  async updateSubmission(userId: string, submissionId: string, dto: UpdateSubmissionDto) {
+    const submission = await this.findOwnedSubmission(userId, submissionId);
+    this.assertEditableSubmission(submission);
+
+    if (dto.capturedAt !== undefined) submission.capturedAt = new Date(dto.capturedAt);
+    if (dto.coordinateSource !== undefined) submission.coordinateSource = dto.coordinateSource;
+
+    if (dto.latitude !== undefined && dto.longitude !== undefined) {
+      const existingUserNote = dto.note !== undefined
+        ? dto.note
+        : (submission.note?.match(/^GPS:\s*[-\d.]+,\s*[-\d.]+(?:\n([\s\S]*))?$/)?.[1] ?? submission.note ?? '');
+      submission.note = `GPS: ${dto.latitude}, ${dto.longitude}${existingUserNote ? '\n' + existingUserNote : ''}`;
+    } else if (dto.note !== undefined) {
+      const match = submission.note?.match(/^(GPS:\s*[-\d.]+,\s*[-\d.]+)(?:\n[\s\S]*)?$/);
+      if (match) {
+        submission.note = `${match[1]}${dto.note ? '\n' + dto.note : ''}`;
+      } else {
+        submission.note = dto.note;
+      }
+    }
+
+    const saved = await this.submissionRepo.save(submission);
+    return this.submissionResponse(saved);
+  }
+
+  async initialize(userId: string, submissionId: string, dto: InitializeUploadDto) {
+    const submission = await this.findOwnedSubmission(userId, submissionId);
+    this.assertEditableSubmission(submission);
+    const contract = SUBMISSION_TYPE_CONTRACTS[submission.submissionType];
+    if (!contract.requiredMediaTypes.includes(dto.mediaType)) {
+      throw new BadRequestException(
+        `${dto.mediaType} media is not accepted for ${submission.submissionType}`,
+      );
+    }
+
+    const limits = MEDIA_SIZE_LIMITS[dto.mediaType];
+    if (dto.totalSizeBytes <= 0 || dto.totalSizeBytes > limits.maxBytes) {
+      throw new BadRequestException(
+        `Total file size ${dto.totalSizeBytes} bytes is invalid for ${dto.mediaType}. Allowed range: 1 to ${limits.maxBytes} bytes.`,
+      );
+    }
+    if (dto.totalChunks < 1 || dto.totalChunks > MAX_CHUNKS_PER_SESSION) {
+      throw new BadRequestException(
+        `Total chunks ${dto.totalChunks} is invalid. Allowed range: 1 to ${MAX_CHUNKS_PER_SESSION}.`,
+      );
+    }
+    if (dto.totalSizeBytes > dto.totalChunks * MAX_CHUNK_SIZE_BYTES) {
+      throw new BadRequestException(
+        `Total file size cannot exceed totalChunks * ${MAX_CHUNK_SIZE_BYTES} bytes.`,
+      );
+    }
+
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
-    const session = this.sessionRepo.create({ userId, originalFilename: dto.originalFilename, mediaType: dto.mediaType as any, totalSizeBytes: String(dto.totalSizeBytes), totalChunks: dto.totalChunks, receivedChunks: 0, checksumExpected: dto.checksumExpected ?? null, status: UploadStatus.INITIATED, expiresAt } as any);
+    const session = this.sessionRepo.create({ submissionId, userId, originalFilename: dto.originalFilename, mediaType: dto.mediaType, totalSizeBytes: String(dto.totalSizeBytes), totalChunks: dto.totalChunks, receivedChunks: 0, checksumExpected: dto.checksumExpected ?? null, status: UploadStatus.INITIATED, expiresAt } as any);
     const saved = await this.sessionRepo.save(session) as unknown as UploadSession;
-    return { sessionId: saved.id, originalFilename: saved.originalFilename, mediaType: saved.mediaType, totalSizeBytes: saved.totalSizeBytes, totalChunks: saved.totalChunks, receivedChunks: saved.receivedChunks, status: saved.status, expiresAt: saved.expiresAt, createdAt: saved.createdAt };
+    return { sessionId: saved.id, submissionId: saved.submissionId, originalFilename: saved.originalFilename, mediaType: saved.mediaType, totalSizeBytes: saved.totalSizeBytes, totalChunks: saved.totalChunks, receivedChunks: saved.receivedChunks, status: saved.status, expiresAt: saved.expiresAt, createdAt: saved.createdAt };
   }
   async uploadChunk(userId: string, sessionId: string, body: UploadChunkBodyDto, file: Express.Multer.File) {
     if (!file) throw new BadRequestException('File chunk (form field "file") is required');
+    if (file.size === 0) throw new BadRequestException('File chunk cannot be empty');
+    if (file.size > MAX_CHUNK_SIZE_BYTES) {
+      throw new BadRequestException(`Chunk size ${file.size} exceeds maximum allowed size of ${MAX_CHUNK_SIZE_BYTES} bytes`);
+    }
+
     const session = await this.sessionRepo.findOne({ where: { id: sessionId } });
     if (!session) throw new NotFoundException('Upload session ' + sessionId + ' not found');
     if (session.userId !== userId) throw new BadRequestException('Session does not belong to the authenticated user');
+    if (file.size > Number(session.totalSizeBytes)) {
+      throw new BadRequestException('Chunk size exceeds total declared file size');
+    }
+    const submission = await this.findOwnedSubmission(userId, session.submissionId);
+    this.assertEditableSubmission(submission);
     if (session.status === UploadStatus.COMPLETED) throw new BadRequestException('Upload session already completed');
     if (session.status === UploadStatus.ASSEMBLING) throw new ConflictException('Upload session is being completed');
     if (session.status === UploadStatus.EXPIRED) throw new BadRequestException('Upload session has expired');
     if (session.status === UploadStatus.FAILED) throw new BadRequestException('Upload session is in FAILED state');
     if (session.expiresAt && new Date(session.expiresAt).getTime() < Date.now()) { await this.sessionRepo.update(session.id, { status: UploadStatus.EXPIRED } as any); throw new BadRequestException('Upload session has expired'); }
     const { chunkIndex } = body;
-    if (chunkIndex >= session.totalChunks) throw new BadRequestException('chunkIndex ' + chunkIndex + ' is out of range (totalChunks=' + session.totalChunks + ')');
+    if (chunkIndex < 0 || chunkIndex >= session.totalChunks) throw new BadRequestException('chunkIndex ' + chunkIndex + ' is out of range (totalChunks=' + session.totalChunks + ')');
     const chunkChecksum = createHash('sha256').update(file.buffer).digest('hex');
     if (body.checksum && this.normalizeChecksum(body.checksum) !== chunkChecksum) {
       throw new BadRequestException('Chunk checksum does not match uploaded content');
@@ -116,6 +214,13 @@ export class SurveyService {
         return this.completedUploadResult(manager, session);
       }
 
+      const submission = await manager.findOne(SurveySubmission, {
+        where: { id: session.submissionId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!submission) throw new ConflictException('Upload session has no valid submission');
+      this.assertEditableSubmission(submission);
+
       if (session.status === UploadStatus.EXPIRED) throw new BadRequestException('Upload session has expired');
       if (session.status === UploadStatus.FAILED) throw new BadRequestException('Upload session is in FAILED state');
       if (session.expiresAt && new Date(session.expiresAt).getTime() < Date.now()) {
@@ -158,15 +263,10 @@ export class SurveyService {
         throw new BadRequestException('Assembled file checksum does not match expected checksum');
       }
 
-      const submission = manager.create(SurveySubmission, {
-        surveyorId: session.userId,
-        submissionType: this.submissionTypeFor(session.mediaType),
-        status: SubmissionStatus.QUEUED,
-      });
-      const savedSubmission = await manager.save(SurveySubmission, submission);
       const storageKey = finalObject.bucket + '/' + finalObject.objectName;
       const media = manager.create(SubmissionMediaFile, {
-        submissionId: savedSubmission.id,
+        submissionId: submission.id,
+        uploadSessionId: session.id,
         mediaType: session.mediaType,
         fileUrl: storageKey,
         fileSizeBytes: String(assembled.sizeBytes),
@@ -177,20 +277,15 @@ export class SurveyService {
 
       session.receivedChunks = chunks.length;
       session.storageKey = storageKey;
-      session.submissionId = savedSubmission.id;
       session.status = UploadStatus.COMPLETED;
       await manager.save(UploadSession, session);
-      await manager.query(
-        'INSERT INTO submission_status_history (submission_id, new_status, note) VALUES ($1, $2::submission_status, $3)',
-        [savedSubmission.id, SubmissionStatus.QUEUED, 'Created from upload session ' + session.id],
-      );
 
       return {
         sessionId: session.id,
-        submissionId: savedSubmission.id,
+        submissionId: submission.id,
         mediaFileId: savedMedia.id,
         status: session.status,
-        submissionStatus: savedSubmission.status,
+        submissionStatus: submission.status,
         storageKey,
         sizeBytes: assembled.sizeBytes,
         checksum: assembled.checksum,
@@ -220,7 +315,10 @@ export class SurveyService {
       where: { id: session.submissionId },
     });
     const media = await manager.findOne(SubmissionMediaFile, {
-      where: { submissionId: session.submissionId },
+      where: [
+        { uploadSessionId: session.id },
+        { submissionId: session.submissionId, mediaType: session.mediaType },
+      ],
     });
     if (!submission || !media) {
       throw new ConflictException('Completed upload session is missing submission data');
@@ -266,13 +364,7 @@ export class SurveyService {
 
   private finalObjectName(session: UploadSession): string {
     const filename = session.originalFilename.replace(/[^a-zA-Z0-9._-]/g, '_');
-    return `uploads/${session.userId}/${session.id}/${filename || 'upload'}`;
-  }
-
-  private submissionTypeFor(mediaType: MediaFileType): SubmissionType {
-    return mediaType === MediaFileType.IMAGE
-      ? SubmissionType.SINGLE_IMAGE
-      : SubmissionType.VIDEO_GPX;
+    return `uploads/${session.userId}/${session.submissionId}/${session.id}/${filename || 'upload'}`;
   }
 
   private contentTypeFor(session: UploadSession): string {
@@ -298,17 +390,359 @@ export class SurveyService {
       this.logger.warn('assembled object cleanup failed: ' + error?.message);
     }
   }
+
+  async submitSubmission(userId: string, submissionId: string) {
+    return this.dataSource.transaction(async (manager) => {
+      const submission = await manager.findOne(SurveySubmission, {
+        where: { id: submissionId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!submission) throw new NotFoundException('SurveySubmission ' + submissionId + ' not found');
+      if (submission.surveyorId !== userId) {
+        throw new BadRequestException('Submission does not belong to the authenticated user');
+      }
+      this.assertEditableSubmission(submission);
+
+      const mediaFiles = await manager.find(SubmissionMediaFile, {
+        where: { submissionId },
+        order: { uploadedAt: 'ASC' },
+      });
+      const uploadSessions = await manager.find(UploadSession, {
+        where: { submissionId },
+        order: { createdAt: 'ASC' },
+      });
+      const { validationErrors, correctionRequirements } = this.validateSubmissionContract(
+        submission,
+        mediaFiles,
+        uploadSessions,
+      );
+
+      if (mediaFiles.length > 0) {
+        const mediaValidation = await this.validateMediaFiles(submission, mediaFiles, manager);
+        validationErrors.push(...mediaValidation.validationErrors);
+        correctionRequirements.push(...mediaValidation.correctionRequirements);
+      }
+
+      const oldStatus = submission.status;
+      const accepted = validationErrors.length === 0;
+      const hasUnrepairableError = validationErrors.some((err) =>
+        REJECTED_VALIDATION_CODES.has(err.code),
+      );
+
+      submission.validationErrors = validationErrors;
+      submission.correctionRequirements = correctionRequirements;
+      submission.status = accepted
+        ? SubmissionStatus.QUEUED
+        : hasUnrepairableError
+          ? SubmissionStatus.REJECTED
+          : SubmissionStatus.PENDING_CORRECTION;
+      const saved = await manager.save(SurveySubmission, submission);
+      await manager.query(
+        'INSERT INTO submission_status_history (submission_id, old_status, new_status, note) VALUES ($1, $2::submission_status, $3::submission_status, $4)',
+        [
+          saved.id,
+          oldStatus,
+          saved.status,
+          accepted
+            ? 'Submission contract validated'
+            : hasUnrepairableError
+              ? 'Submission rejected: invalid file format or corrupted media'
+              : 'Submission requires correction',
+        ],
+      );
+
+      return {
+        accepted,
+        submission: this.submissionResponse(saved),
+        mediaFiles,
+        uploadSessions,
+      };
+    });
+  }
+
+  private async validateMediaFiles(
+    submission: SurveySubmission,
+    mediaFiles: SubmissionMediaFile[],
+    manager: EntityManager,
+  ): Promise<{
+    validationErrors: SubmissionContractIssue[];
+    correctionRequirements: SubmissionContractIssue[];
+  }> {
+    const validationErrors: SubmissionContractIssue[] = [];
+    const correctionRequirements: SubmissionContractIssue[] = [];
+
+    for (const mediaFile of mediaFiles) {
+      if (!mediaFile.fileUrl) continue;
+
+      let ref: StoredObjectReference;
+      try {
+        ref = this.parseStorageKey(mediaFile.fileUrl);
+      } catch {
+        continue;
+      }
+
+      let buffer: Buffer;
+      try {
+        if (!this.storageService.getObjectBuffer) {
+          continue;
+        }
+        buffer = await this.storageService.getObjectBuffer(ref, 2 * 1024 * 1024);
+      } catch (err: any) {
+        this.logger.warn(`Failed to read media from storage [${mediaFile.fileUrl}]: ${err?.message}`);
+        validationErrors.push({
+          code: SubmissionValidationCode.CORRUPTED_FILE,
+          field: 'mediaFiles',
+          mediaType: mediaFile.mediaType,
+          message: `Media file could not be read from storage: ${err?.message ?? 'unknown error'}`,
+        });
+        correctionRequirements.push({
+          code: CorrectionRequirementCode.REPLACE_FILE,
+          field: 'mediaFiles',
+          mediaType: mediaFile.mediaType,
+          message: `Re-upload the missing or corrupted ${mediaFile.mediaType} file`,
+        });
+        continue;
+      }
+
+      if (!buffer || buffer.length === 0) {
+        validationErrors.push({
+          code: SubmissionValidationCode.CORRUPTED_FILE,
+          field: 'mediaFiles',
+          mediaType: mediaFile.mediaType,
+          message: `Media file ${mediaFile.fileUrl} is empty`,
+        });
+        correctionRequirements.push({
+          code: CorrectionRequirementCode.REPLACE_FILE,
+          field: 'mediaFiles',
+          mediaType: mediaFile.mediaType,
+          message: `Re-upload the missing or corrupted ${mediaFile.mediaType} file`,
+        });
+        continue;
+      }
+
+      // 1. File Signature Check
+      const sigResult = validateFileSignature(mediaFile.mediaType, buffer);
+      if (!sigResult.valid) {
+        validationErrors.push({
+          code: SubmissionValidationCode.INVALID_FILE_SIGNATURE,
+          field: 'mediaFiles',
+          mediaType: mediaFile.mediaType,
+          message: sigResult.error || `File signature mismatch for declared type ${mediaFile.mediaType}`,
+        });
+        correctionRequirements.push({
+          code: CorrectionRequirementCode.REPLACE_FILE,
+          field: 'mediaFiles',
+          mediaType: mediaFile.mediaType,
+          message: `Upload a valid ${mediaFile.mediaType} file matching accepted file signatures`,
+        });
+        continue;
+      }
+
+      // 2. Media Decoding Check
+      const decodeResult = decodeMedia(mediaFile.mediaType, buffer);
+      if (!decodeResult.valid) {
+        validationErrors.push({
+          code: SubmissionValidationCode.MEDIA_DECODE_FAILED,
+          field: 'mediaFiles',
+          mediaType: mediaFile.mediaType,
+          message: decodeResult.error || `Media decoding failed for ${mediaFile.mediaType}`,
+        });
+        correctionRequirements.push({
+          code: CorrectionRequirementCode.REPLACE_FILE,
+          field: 'mediaFiles',
+          mediaType: mediaFile.mediaType,
+          message: `Upload an intact, decodable ${mediaFile.mediaType} file`,
+        });
+        continue;
+      }
+
+      if (decodeResult.durationSeconds && !mediaFile.durationSeconds) {
+        mediaFile.durationSeconds = decodeResult.durationSeconds;
+        await manager.save(SubmissionMediaFile, mediaFile);
+      }
+
+      // 3. GPX Trajectory Parsing, GPS Validation & Timestamp-Range Matching
+      if (mediaFile.mediaType === MediaFileType.GPX) {
+        const gpxParsed = parseGpx(buffer);
+        if (!gpxParsed.valid || !gpxParsed.result) {
+          validationErrors.push({
+            code: SubmissionValidationCode.MEDIA_DECODE_FAILED,
+            field: 'mediaFiles',
+            mediaType: MediaFileType.GPX,
+            message: gpxParsed.error || 'GPX XML parsing failed',
+          });
+          correctionRequirements.push({
+            code: CorrectionRequirementCode.REPLACE_FILE,
+            field: 'mediaFiles',
+            mediaType: MediaFileType.GPX,
+            message: 'Upload a valid XML GPX file',
+          });
+          continue;
+        }
+
+        const gpxIssues = validateGpxAndTrajectory(gpxParsed.result, submission.capturedAt);
+        validationErrors.push(...gpxIssues.validationErrors);
+        correctionRequirements.push(...gpxIssues.correctionRequirements);
+      }
+    }
+
+    return { validationErrors, correctionRequirements };
+  }
+
+  private validateSubmissionContract(
+    submission: SurveySubmission,
+    mediaFiles: SubmissionMediaFile[],
+    uploadSessions: UploadSession[],
+  ): {
+    validationErrors: SubmissionContractIssue[];
+    correctionRequirements: SubmissionContractIssue[];
+  } {
+    const validationErrors: SubmissionContractIssue[] = [];
+    const correctionRequirements: SubmissionContractIssue[] = [];
+    const contract = SUBMISSION_TYPE_CONTRACTS[submission.submissionType];
+    const completedMedia = new Set(mediaFiles.map((media) => media.mediaType));
+
+    for (const mediaType of contract.requiredMediaTypes) {
+      if (completedMedia.has(mediaType)) continue;
+      const hasIncompleteUpload = uploadSessions.some(
+        (session) => session.mediaType === mediaType && session.status !== UploadStatus.COMPLETED,
+      );
+      validationErrors.push({
+        code: hasIncompleteUpload
+          ? SubmissionValidationCode.INCOMPLETE_UPLOAD
+          : SubmissionValidationCode.MISSING_MEDIA,
+        field: 'mediaFiles',
+        mediaType,
+        message: hasIncompleteUpload
+          ? `${mediaType} upload has not completed`
+          : `${mediaType} media is required for ${submission.submissionType}`,
+      });
+      correctionRequirements.push({
+        code: hasIncompleteUpload
+          ? CorrectionRequirementCode.COMPLETE_UPLOAD
+          : CorrectionRequirementCode.UPLOAD_MEDIA,
+        field: 'mediaFiles',
+        mediaType,
+        message: hasIncompleteUpload
+          ? `Complete the ${mediaType} upload`
+          : `Upload the required ${mediaType} media`,
+      });
+    }
+
+    if (!contract.allowedCoordinateSources.includes(submission.coordinateSource)) {
+      validationErrors.push({
+        code: SubmissionValidationCode.INVALID_COORDINATE_SOURCE,
+        field: 'coordinateSource',
+        message: `${submission.coordinateSource} is not valid for ${submission.submissionType}`,
+      });
+      correctionRequirements.push({
+        code: CorrectionRequirementCode.CHANGE_COORDINATE_SOURCE,
+        field: 'coordinateSource',
+        message: `Use one of: ${contract.allowedCoordinateSources.join(', ')}`,
+      });
+    }
+
+    if (submission.capturedAt.getTime() > Date.now() + 5 * 60 * 1000) {
+      validationErrors.push({
+        code: SubmissionValidationCode.CAPTURE_TIME_IN_FUTURE,
+        field: 'capturedAt',
+        message: 'Capture time cannot be more than five minutes in the future',
+      });
+      correctionRequirements.push({
+        code: CorrectionRequirementCode.CONFIRM_CAPTURE_TIME,
+        field: 'capturedAt',
+        message: 'Correct or confirm the media capture time',
+      });
+    }
+
+    return { validationErrors, correctionRequirements };
+  }
+
+  private async findOwnedSubmission(userId: string, submissionId: string) {
+    const submission = await this.submissionRepo.findOne({ where: { id: submissionId } });
+    if (!submission) throw new NotFoundException('SurveySubmission ' + submissionId + ' not found');
+    if (submission.surveyorId !== userId) {
+      throw new BadRequestException('Submission does not belong to the authenticated user');
+    }
+    return submission;
+  }
+
+  private assertEditableSubmission(submission: SurveySubmission) {
+    if (![SubmissionStatus.DRAFT, SubmissionStatus.PENDING_CORRECTION].includes(submission.status)) {
+      throw new ConflictException(`Submission cannot be edited while status is ${submission.status}`);
+    }
+  }
+
+  private submissionResponse(submission: SurveySubmission) {
+    const contract = SUBMISSION_TYPE_CONTRACTS[submission.submissionType];
+    let latitude: number | null = null;
+    let longitude: number | null = null;
+    let cleanNote = submission.note;
+    if (submission.note) {
+      const match = submission.note.match(/^GPS:\s*([-\d.]+),\s*([-\d.]+)(?:\n([\s\S]*))?$/);
+      if (match) {
+        latitude = parseFloat(match[1]);
+        longitude = parseFloat(match[2]);
+        cleanNote = match[3] ?? null;
+      }
+    }
+    return {
+      ...submission,
+      note: cleanNote,
+      latitude,
+      longitude,
+      gpsCoordinates: latitude !== null && longitude !== null ? { latitude, longitude } : null,
+      requiredMediaTypes: contract.requiredMediaTypes,
+      allowedCoordinateSources: contract.allowedCoordinateSources,
+      validationErrors: submission.validationErrors ?? [],
+      correctionRequirements: submission.correctionRequirements ?? [],
+    };
+  }
+
+  private async recordStatusChange(
+    submissionId: string,
+    oldStatus: SubmissionStatus | null,
+    newStatus: SubmissionStatus,
+    note: string,
+  ) {
+    try {
+      await this.dataSource.query(
+        'INSERT INTO submission_status_history (submission_id, old_status, new_status, note) VALUES ($1, $2::submission_status, $3::submission_status, $4)',
+        [submissionId, oldStatus, newStatus, note],
+      );
+    } catch (error: any) {
+      this.logger.warn('history insert failed: ' + error?.message);
+    }
+  }
+
   async getSession(userId: string, sessionId: string) {
     const session = await this.sessionRepo.findOne({ where: { id: sessionId } });
     if (!session) throw new NotFoundException('Upload session ' + sessionId + ' not found');
     if (session.userId !== userId) throw new BadRequestException('Session does not belong to the authenticated user');
     const chunks = await this.chunkRepo.find({ where: { sessionId: session.id }, order: { chunkIndex: 'ASC' } });
-    return { session, chunks };
+    const uploadedChunkIndices = chunks.map((c) => c.chunkIndex);
+    const uploadedSet = new Set(uploadedChunkIndices);
+    const missingChunkIndices: number[] = [];
+    for (let i = 0; i < session.totalChunks; i++) {
+      if (!uploadedSet.has(i)) missingChunkIndices.push(i);
+    }
+    const progressPercent = session.totalChunks > 0
+      ? Math.round((uploadedChunkIndices.length / session.totalChunks) * 100)
+      : 0;
+    return {
+      session,
+      chunks,
+      uploadedChunkIndices,
+      missingChunkIndices,
+      progressPercent,
+      isResumable: session.status !== UploadStatus.COMPLETED && session.status !== UploadStatus.FAILED,
+      readyToComplete: uploadedChunkIndices.length === session.totalChunks,
+    };
   }
   async getMySubmissions(userId: string, page = 1, pageSize = 20) {
     const p = Math.max(1, page); const ps = Math.min(Math.max(1, pageSize), 100);
     const [items, total] = await this.submissionRepo.findAndCount({ where: { surveyorId: userId } as any, order: { createdAt: 'DESC' }, skip: (p - 1) * ps, take: ps });
-    return { items, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
+    return { items: items.map((item) => this.submissionResponse(item)), total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
   }
   async getSubmissionStatus(userId: string, submissionId: string) {
     const sub = await this.submissionRepo.findOne({ where: { id: submissionId } as any });
@@ -317,25 +751,61 @@ export class SurveyService {
     let history: any[] = [];
     let candidates: any[] = [];
     let sessions: any[] = [];
+    let mediaFiles: any[] = [];
     try { history = await this.dataSource.query('SELECT id, old_status, new_status, note, changed_at FROM submission_status_history WHERE submission_id=$1 ORDER BY changed_at ASC', [submissionId]); } catch (e: any) { this.logger.warn('history query failed: ' + e?.message); }
-    try { candidates = await this.dataSource.query('SELECT id, predicted_sign_type_id, status, confidence_score, best_frame_url, sign_crop_url, active_learning_priority, created_at FROM unverified_sign_candidates WHERE submission_id=$1 ORDER BY created_at ASC', [submissionId]); } catch (e: any) { this.logger.warn('candidate query failed: ' + e?.message); }
+    try {
+      candidates = await this.dataSource.query(
+        `SELECT c.id, c.predicted_sign_type_id, c.status, c.confidence_score, c.best_frame_url, c.sign_crop_url,
+                c.spatial_confidence, c.active_learning_priority, c.created_at,
+                t.sign_code, t.name_vi, t.name_en,
+                ST_AsGeoJSON(g.sign_location) AS sign_location_geojson,
+                ST_AsGeoJSON(g.vehicle_location) AS vehicle_location_geojson,
+                g.estimated_distance, g.bearing_angle, g.traffic_direction, g.projection_method
+         FROM unverified_sign_candidates c
+         LEFT JOIN traffic_sign_types t ON t.id = c.predicted_sign_type_id
+         LEFT JOIN candidate_geo_estimations g ON g.candidate_id = c.id
+         WHERE c.submission_id = $1
+         ORDER BY c.created_at ASC`,
+        [submissionId],
+      );
+    } catch {
+      try {
+        candidates = await this.dataSource.query(
+          'SELECT id, predicted_sign_type_id, status, confidence_score, best_frame_url, sign_crop_url, active_learning_priority, created_at FROM unverified_sign_candidates WHERE submission_id=$1 ORDER BY created_at ASC',
+          [submissionId],
+        );
+      } catch (e: any) {
+        this.logger.warn('candidate query failed: ' + e?.message);
+      }
+    }
     try { sessions = await this.dataSource.query('SELECT id, original_filename, media_type, total_chunks, received_chunks, status, created_at FROM upload_sessions WHERE submission_id=$1 ORDER BY created_at ASC', [submissionId]); } catch {}
-    return { submission: sub, history, candidates, totalCandidates: candidates.length, sessions };
+    try { mediaFiles = await this.dataSource.query('SELECT id, upload_session_id, media_type, file_url, file_size_bytes, duration_seconds, checksum, uploaded_at FROM submission_media_files WHERE submission_id=$1 ORDER BY uploaded_at ASC', [submissionId]); } catch {}
+    return { submission: this.submissionResponse(sub), history, candidates, totalCandidates: candidates.length, sessions, mediaFiles };
   }
-  async getMyPendingCount(userId: string) {
+  async getMyPendingCount(userId: string): Promise<{ total: number; pending: number; countsByStatus?: Record<string, number> }> {
     const count = await this.submissionRepo.count({ where: { surveyorId: userId } as any }).catch(() => 0);
     // Pending = not terminal
     const pending = await this.dataSource
-      .query(`SELECT COUNT(*)::int AS cnt FROM survey_submissions WHERE surveyor_id=$1 AND status NOT IN ('COMPLETED','FAILED','PARTIALLY_PROCESSED','NO_SIGN_DETECTED')`, [userId])
+      .query(`SELECT COUNT(*)::int AS cnt FROM survey_submissions WHERE surveyor_id=$1 AND status NOT IN ('COMPLETED','FAILED','PARTIALLY_PROCESSED','NO_SIGN_DETECTED','REJECTED')`, [userId])
       .then((rows: any[]) => rows[0]?.cnt ?? 0)
       .catch(() => 0);
-    return { total: count, pending };
+    const countsByStatus: Record<string, number> = {};
+    try {
+      const rows: any[] = await this.dataSource.query(
+        'SELECT status, COUNT(*)::int AS cnt FROM survey_submissions WHERE surveyor_id=$1 GROUP BY status',
+        [userId],
+      );
+      for (const r of rows) {
+        countsByStatus[r.status] = Number(r.cnt);
+      }
+    } catch {}
+    return { total: count, pending, countsByStatus };
   }
 
   async getMyStats(userId: string) {
     const total = await this.submissionRepo.count({ where: { surveyorId: userId } as any }).catch(() => 0);
     const pending = await this.dataSource
-      .query(`SELECT COUNT(*)::int AS cnt FROM survey_submissions WHERE surveyor_id=$1 AND status NOT IN ('COMPLETED','FAILED','PARTIALLY_PROCESSED','NO_SIGN_DETECTED')`, [userId])
+      .query(`SELECT COUNT(*)::int AS cnt FROM survey_submissions WHERE surveyor_id=$1 AND status NOT IN ('COMPLETED','FAILED','PARTIALLY_PROCESSED','NO_SIGN_DETECTED','REJECTED')`, [userId])
       .then((rows: any[]) => rows[0]?.cnt ?? 0)
       .catch(() => 0);
     let creditScore: number | null = null;
@@ -357,13 +827,34 @@ export class SurveyService {
     return { userId, totalSubmissions: total, pendingSubmissions: pending, creditScore, revalidationAvailable: revalidationCount, dailyTasks };
   }
 
-  async advanceSubmissionStatus(submissionId: string, newStatus: SubmissionStatus, note?: string) {
+  async advanceSubmissionStatus(
+    submissionId: string,
+    newStatus: SubmissionStatus,
+    note?: string,
+    validationErrors?: SubmissionContractIssue[],
+    correctionRequirements?: SubmissionContractIssue[],
+  ) {
     const sub = await this.submissionRepo.findOne({ where: { id: submissionId } });
     if (!sub) throw new NotFoundException('SurveySubmission ' + submissionId + ' not found');
-    const terminal: string[] = [SubmissionStatus.COMPLETED as string, SubmissionStatus.FAILED as string, SubmissionStatus.PARTIALLY_PROCESSED as string, SubmissionStatus.NO_SIGN_DETECTED as string];
+    const terminal: string[] = [
+      SubmissionStatus.COMPLETED as string,
+      SubmissionStatus.FAILED as string,
+      SubmissionStatus.PARTIALLY_PROCESSED as string,
+      SubmissionStatus.NO_SIGN_DETECTED as string,
+      SubmissionStatus.REJECTED as string,
+    ];
     if (terminal.includes(String(sub.status))) return { alreadyTerminal: true, submission: sub, status: sub.status };
+    if (
+      [SubmissionStatus.DRAFT, SubmissionStatus.PENDING_CORRECTION].includes(sub.status) &&
+      newStatus !== SubmissionStatus.PENDING_CORRECTION &&
+      newStatus !== SubmissionStatus.REJECTED
+    ) {
+      throw new ConflictException('Submission must pass contract validation before processing');
+    }
     const oldStatus = sub.status;
     sub.status = newStatus;
+    if (validationErrors !== undefined) sub.validationErrors = validationErrors;
+    if (correctionRequirements !== undefined) sub.correctionRequirements = correctionRequirements;
     await this.submissionRepo.save(sub);
     try { await this.dataSource.query('INSERT INTO submission_status_history (submission_id, old_status, new_status, note) VALUES ($1, $2::submission_status, $3::submission_status, $4)', [sub.id, String(oldStatus), String(newStatus), note ?? 'Status advanced to ' + newStatus]); } catch (e: any) { this.logger.warn('history insert failed: ' + e?.message); }
     return { previousStatus: oldStatus, newStatus, submission: sub };
@@ -372,6 +863,9 @@ export class SurveyService {
     const sub = await this.submissionRepo.findOne({ where: { id: submissionId } });
     if (!sub) throw new NotFoundException('SurveySubmission ' + submissionId + ' not found');
     if (sub.status === SubmissionStatus.COMPLETED) return { alreadyCompleted: true, submission: sub };
+    if ([SubmissionStatus.DRAFT, SubmissionStatus.PENDING_CORRECTION].includes(sub.status)) {
+      throw new ConflictException('Submission must pass contract validation before completion');
+    }
     const oldStatus = sub.status;
     sub.status = SubmissionStatus.COMPLETED;
     await this.submissionRepo.save(sub);

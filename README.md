@@ -25,7 +25,7 @@ Drivers can use the Smart Navigation feature, which streams real-time proximity 
 ## Key Features
 
 - **Chunked video/GPX upload** — resumable multi-part upload sessions for large dashcam files and GPS tracks.
-- **AI detection pipeline** — Celery workers orchestrate a 6-stage pipeline (QUEUED to SYNCHRONIZING to DETECTING to TRACKING to ESTIMATING to CLASSIFYING to COMPLETED). YOLO12/BoT-SORT/CLIP inference stubs are ready for teammate integration.
+- **AI detection pipeline** — Celery durably dispatches queued submissions by ID and MinIO object key. The standalone AI service performs synchronous YOLO/BoT-SORT/CLIP inference without receiving a duplicate upload; Celery persists candidates and terminal state.
 - **Community review & consensus** — reviewers vote APPROVE/REJECT/UNSURE on sign candidates. Configurable quorum and approval thresholds auto-promote candidates to verified signs.
 - **Active Learning integration** — internal endpoints let the AI pipeline set uncertainty-based priority scores so the review queue surfaces the most valuable candidates first.
 - **Credit wallet** — every user has a wallet. Survey completions, review votes, and daily tasks credit the wallet; navigation sessions can deduct a fee.
@@ -139,7 +139,8 @@ Open `.env` and review values. Defaults work for local development:
 
 ### Step 3 — Start with Docker Compose (recommended)
 
-This launches all 8 services — Postgres, Redis, MinIO, MinIO-init (one-time bucket creation), NestJS, FastAPI, Celery worker, and Celery beat — in one command:
+This launches the application stack: Postgres, Redis, MinIO, MinIO-init, NestJS, FastAPI, the
+Celery worker and beat scheduler, and the standalone AI inference service:
 
 ```powershell
 cd signTrustMap
@@ -402,13 +403,17 @@ For Heroku deployments, deploy from the repository root. The root npm workspace 
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/submissions/initialize` | JWT | Create an upload session for a dashcam video or GPX file. Returns `sessionId`, `totalChunks`, `expiresAt` |
-| POST | `/submissions/:sessionId/chunks` | JWT | Upload one file chunk. Multipart form with field `file` plus `chunkIndex` in body |
+| POST | `/submissions` | JWT | Create a `DRAFT` with `submissionType`, `capturedAt`, `coordinateSource`, and optional `note` |
+| PATCH | `/submissions/:submissionId` | JWT | Correct editable submission metadata |
+| POST | `/submissions/:submissionId/uploads` | JWT | Attach an upload session for a media type required by the submission contract |
+| POST | `/submissions/uploads/:sessionId/chunks` | JWT | Upload one file chunk. Multipart form with field `file` plus `chunkIndex` in body |
+| POST | `/submissions/uploads/:sessionId/complete` | JWT | Assemble chunks and attach the resulting media file to the submission |
+| GET | `/submissions/uploads/:sessionId` | JWT | Get an upload session and its received chunks |
+| POST | `/submissions/:submissionId/submit` | JWT | Validate required media and metadata; transition to `QUEUED` or `PENDING_CORRECTION` |
 | GET | `/submissions/me` | JWT | List own survey submissions. Query: `page`, `pageSize` |
-| GET | `/submissions/status/:submissionId` | JWT | Full submission detail: current status, `submission_status_history`, extracted candidates, upload sessions |
-| GET | `/submissions/:sessionId` | JWT | Get a single upload session by its ID |
+| GET | `/submissions/status/:submissionId` | JWT | Full submission detail, contract requirements, validation results, media, history, and candidates |
 | POST | `/submissions/internal/:submissionId/complete` | Internal | Mark submission COMPLETED, credit surveyor wallet, send notification |
-| PATCH | `/submissions/internal/:submissionId/status` | Internal | Advance AI pipeline status. Body: `{ status, note? }`. Allowed: `QUEUED`, `SYNCHRONIZING`, `DETECTING`, `TRACKING`, `ESTIMATING`, `CLASSIFYING`, `COMPLETED`, `PARTIALLY_PROCESSED`, `FAILED`, `PENDING_CORRECTION`, `NO_SIGN_DETECTED` |
+| PATCH | `/submissions/internal/:submissionId/status` | Internal | Advance AI status with optional structured `validationErrors` and `correctionRequirements` |
 
 ### Reviews — `reviews`
 
@@ -623,7 +628,7 @@ SignTrustMap is a comprehensive platform integrating Crowdsourcing, Artificial I
 ### 1. Ingestion & Tracking
 *   **Flow 1: Survey Submission**
     *   **Purpose:** Allow Surveyors to upload dashcam videos, GPX trajectory files, or sign images[cite: 2].
-    *   **API Implementation (NestJS):** Utilizes a highly optimized chunked upload mechanism. `POST /submissions/initialize` initiates the upload session[cite: 1]. Subsequently, `POST /submissions/{{sessionId}}/chunks` receives individual file chunks[cite: 1]. Upon completion of the final chunk, the system automatically aggregates the file and queues it for AI processing.
+    *   **API Implementation (NestJS):** `POST /submissions` creates the submission contract first. Each required file gets an upload session through `POST /submissions/{{submissionId}}/uploads`; chunks are sent to `POST /submissions/uploads/{{sessionId}}/chunks` and assembled separately. `POST /submissions/{{submissionId}}/submit` validates the complete media set before queueing AI processing.
 *   **Flow 2: Submission Tracking**
     *   **Purpose:** Help Surveyors track video processing status, view extracted candidate counts, and check contribution history[cite: 2].
     *   **API Implementation (NestJS):** `GET /submissions/me` lists the user's history[cite: 1]. `GET /submissions/status/{{submissionId}}` retrieves detailed progress states (e.g., `QUEUED` or `DETECTING`)[cite: 1].
@@ -637,7 +642,7 @@ SignTrustMap is a comprehensive platform integrating Crowdsourcing, Artificial I
     *   **API Implementation (NestJS):** `GET /reviews/queue` fetches pending candidates[cite: 1]. `POST /reviews/{{candidateId}}/vote` records the Reviewer's decision (Approve, Reject, or suggest a different type)[cite: 1].
 *   **Flow 5: Consensus Publishing**
     *   **Purpose:** Calculate a consensus score from votes based on Reviewer reliability[cite: 2]. If the threshold is met, the sign is published to the official map[cite: 2].
-    *   **API Implementation (Background Task):** No direct HTTP endpoint[cite: 1]. This logic is triggered internally within the Celery worker (`task_finalize_submission`) once the minimum vote requirement is met[cite: 1].
+    *   **API Implementation (Background Task):** No direct HTTP endpoint[cite: 1]. Consensus is handled by its own background workflow once the minimum vote requirement is met[cite: 1].
 *   **Flow 14: Active Learning**
     *   **Purpose:** Filter out signs with the highest AI uncertainty to prioritize for human review, improving YOLO12 and CLIP models in future iterations[cite: 2].
     *   **API Implementation (NestJS - Internal):** `GET /reviews/internal/unscored-candidates` allows the AI to fetch unscored candidates[cite: 1]. After calculating uncertainty margins, the AI uses `POST /reviews/internal/active-learning-priorities` to bulk-update priorities in the database[cite: 1].

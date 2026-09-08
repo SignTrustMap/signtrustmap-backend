@@ -261,13 +261,17 @@ WHERE EXISTS (SELECT 1 FROM spring_legacy.verified_sign)
 ON CONFLICT (key) DO NOTHING;
 
 INSERT INTO survey_submissions (
-  id, surveyor_id, submission_type, status, total_candidates_extracted
+  id, surveyor_id, submission_type, status, captured_at, coordinate_source,
+  note, total_candidates_extracted
 )
 SELECT
   submission_state.value::uuid,
   user_state.value::uuid,
   'SINGLE_IMAGE',
   'COMPLETED',
+  now(),
+  'MANUAL',
+  'Synthetic submission created by the Spring data migration',
   (SELECT count(*) FROM spring_legacy.verified_sign)
 FROM spring_legacy.migration_state submission_state
 CROSS JOIN spring_legacy.migration_state user_state

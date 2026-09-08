@@ -1,4 +1,4 @@
-﻿CREATE TYPE "user_status" AS ENUM (
+CREATE TYPE "user_status" AS ENUM (
   'ACTIVE',
   'SUSPENDED',
   'BANNED'
@@ -16,7 +16,16 @@ CREATE TYPE "submission_type" AS ENUM (
   'LIVE_TRIP'
 );
 
+CREATE TYPE "coordinate_source" AS ENUM (
+  'IMAGE_EXIF',
+  'DEVICE_GPS',
+  'MANUAL',
+  'GPX_FILE',
+  'LIVE_STREAM'
+);
+
 CREATE TYPE "submission_status" AS ENUM (
+  'DRAFT',
   'QUEUED',
   'SYNCHRONIZING',
   'DETECTING',
@@ -27,7 +36,8 @@ CREATE TYPE "submission_status" AS ENUM (
   'PARTIALLY_PROCESSED',
   'FAILED',
   'PENDING_CORRECTION',
-  'NO_SIGN_DETECTED'
+  'NO_SIGN_DETECTED',
+  'REJECTED'
 );
 
 CREATE TYPE "candidate_status" AS ENUM (
@@ -370,7 +380,12 @@ CREATE TABLE "survey_submissions" (
   "id" uuid PRIMARY KEY DEFAULT (gen_random_uuid()),
   "surveyor_id" uuid NOT NULL,
   "submission_type" submission_type NOT NULL,
-  "status" submission_status NOT NULL DEFAULT 'QUEUED',
+  "status" submission_status NOT NULL DEFAULT 'DRAFT',
+  "captured_at" timestamptz NOT NULL,
+  "coordinate_source" coordinate_source NOT NULL,
+  "note" text,
+  "validation_errors" jsonb NOT NULL DEFAULT '[]'::jsonb,
+  "correction_requirements" jsonb NOT NULL DEFAULT '[]'::jsonb,
   "failure_reason" text,
   "total_candidates_extracted" int NOT NULL DEFAULT 0,
   "created_at" timestamptz NOT NULL DEFAULT (now()),
@@ -380,6 +395,7 @@ CREATE TABLE "survey_submissions" (
 CREATE TABLE "submission_media_files" (
   "id" uuid PRIMARY KEY DEFAULT (gen_random_uuid()),
   "submission_id" uuid NOT NULL,
+  "upload_session_id" uuid,
   "media_type" media_file_type NOT NULL,
   "file_url" varchar(500) NOT NULL,
   "file_size_bytes" bigint,

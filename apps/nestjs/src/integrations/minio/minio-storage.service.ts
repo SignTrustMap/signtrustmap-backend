@@ -134,6 +134,25 @@ export class MinioStorageService {
     return this.client.bucketExists(bucket);
   }
 
+  async getObjectBuffer(
+    reference: StoredObjectReference,
+    maxBytes?: number,
+  ): Promise<Buffer> {
+    const stream = await this.client.getObject(reference.bucket, reference.objectName);
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for await (const chunk of stream) {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      chunks.push(buf);
+      total += buf.length;
+      if (maxBytes && total >= maxBytes) {
+        stream.destroy();
+        break;
+      }
+    }
+    return Buffer.concat(chunks);
+  }
+
   getClient(): Minio.Client {
     return this.client;
   }
