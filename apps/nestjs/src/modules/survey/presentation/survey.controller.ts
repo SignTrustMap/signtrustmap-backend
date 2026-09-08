@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Query, Patch, UseGuards, BadRequestException } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Post, Query, Patch, UseGuards } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
@@ -8,7 +8,9 @@ import { InitializeUploadDto } from './dto/initialize-upload.dto';
 import { UploadChunkBodyDto } from './dto/upload-chunk.dto';
 import { InternalTokenGuard } from '../../../common/guards/internal-token.guard';
 import { UseInterceptors, UploadedFile } from '@nestjs/common';
-import { SubmissionStatus } from '../infrastructure/persistence/survey-submission.entity';
+import { CreateSubmissionDto } from './dto/create-submission.dto';
+import { UpdateSubmissionDto } from './dto/update-submission.dto';
+import { UpdateSubmissionStatusDto } from './dto/update-submission-status.dto';
 
 @ApiTags('Survey Submissions')
 @Controller('submissions')
@@ -16,21 +18,45 @@ export class SurveyController {
   constructor(private readonly surveyService: SurveyService) {}
 
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Initialize survey upload session', description: 'Begin a multipart dashcam video survey upload session' })
-  @Post('initialize')
-  async initialize(@CurrentUser() user: any, @Body() dto: InitializeUploadDto) { return this.surveyService.initialize(user.id, dto); }
+  @ApiOperation({ summary: 'Create submission draft', description: 'Define submission metadata and required media before starting uploads' })
+  @Post()
+  async createSubmission(@CurrentUser() user: any, @Body() dto: CreateSubmissionDto) {
+    return this.surveyService.createSubmission(user.id, dto);
+  }
+
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Update submission draft', description: 'Correct capture time, coordinate source, or note before resubmitting' })
+  @Patch(':submissionId')
+  async updateSubmission(@CurrentUser() user: any, @Param('submissionId', ParseUUIDPipe) submissionId: string, @Body() dto: UpdateSubmissionDto) {
+    return this.surveyService.updateSubmission(user.id, submissionId, dto);
+  }
+
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Initialize media upload', description: 'Attach a chunked media upload session to an existing submission draft' })
+  @Post(':submissionId/uploads')
+  async initialize(@CurrentUser() user: any, @Param('submissionId', ParseUUIDPipe) submissionId: string, @Body() dto: InitializeUploadDto) {
+    return this.surveyService.initialize(user.id, submissionId, dto);
+  }
 
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Upload video chunk', description: 'Upload a binary dashcam video chunk file for an active survey session' })
   @ApiConsumes('multipart/form-data')
-  @Post(':sessionId/chunks')
+  @Post('uploads/:sessionId/chunks')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 50 * 1024 * 1024 } }))
   async uploadChunk(@CurrentUser() user: any, @Param('sessionId', ParseUUIDPipe) sessionId: string, @Body() body: UploadChunkBodyDto, @UploadedFile() file: Express.Multer.File) { return this.surveyService.uploadChunk(user.id, sessionId, body, file); }
 
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Complete survey upload', description: 'Finalize all uploaded chunks and queue video for AI detection pipeline' })
-  @Post(':sessionId/complete')
+  @ApiOperation({ summary: 'Complete media upload', description: 'Assemble uploaded chunks and attach the resulting media file to its submission' })
+  @Post('uploads/:sessionId/complete')
   async completeUpload(@CurrentUser() user: any, @Param('sessionId', ParseUUIDPipe) sessionId: string) { return this.surveyService.completeUpload(user.id, sessionId); }
+
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Submit draft for processing', description: 'Validate required media and metadata, then queue or request correction' })
+  @Post(':submissionId/submit')
+  @HttpCode(200)
+  async submitSubmission(@CurrentUser() user: any, @Param('submissionId', ParseUUIDPipe) submissionId: string) {
+    return this.surveyService.submitSubmission(user.id, submissionId);
+  }
 
   @ApiBearerAuth()
   @ApiOperation({ summary: 'List my submissions', description: 'Paginated list of historical video submissions uploaded by current surveyor' })
@@ -71,14 +97,18 @@ export class SurveyController {
   @UseGuards(InternalTokenGuard)
   @ApiOperation({ summary: 'Internal advance submission status', description: 'AI pipeline step transition (SYNCHRONIZING, DETECTING, TRACKING, etc.)' })
   @Patch('internal/:submissionId/status')
-  async advanceStatus(@Param('submissionId', ParseUUIDPipe) submissionId: string, @Body() body: { status: string; note?: string }) {
-    const allowed: string[] = ['QUEUED', 'SYNCHRONIZING', 'DETECTING', 'TRACKING', 'ESTIMATING', 'CLASSIFYING', 'COMPLETED', 'PARTIALLY_PROCESSED', 'FAILED', 'PENDING_CORRECTION', 'NO_SIGN_DETECTED'];
-    if (!allowed.includes(String(body.status))) throw new BadRequestException('status must be one of ' + allowed.join(', '));
-    return this.surveyService.advanceSubmissionStatus(submissionId, body.status as SubmissionStatus, body.note);
+  async advanceStatus(@Param('submissionId', ParseUUIDPipe) submissionId: string, @Body() body: UpdateSubmissionStatusDto) {
+    return this.surveyService.advanceSubmissionStatus(
+      submissionId,
+      body.status,
+      body.note,
+      body.validationErrors,
+      body.correctionRequirements,
+    );
   }
 
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get survey upload session details', description: 'Retrieve metadata and chunk progress for an active upload session' })
-  @Get(':sessionId')
+  @Get('uploads/:sessionId')
   async getSession(@CurrentUser() user: any, @Param('sessionId', ParseUUIDPipe) sessionId: string) { return this.surveyService.getSession(user.id, sessionId); }
 }

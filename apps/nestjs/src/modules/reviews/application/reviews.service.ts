@@ -89,7 +89,7 @@ export class ReviewsService {
     let submissionExtra: any = null;
     try {
       const rows: any[] = await (this.candidateRepo.manager as any).query(
-        `SELECT s.surveyor_id, s.created_at AS captured_at, s.submission_type, s.status AS submission_status
+        `SELECT s.surveyor_id, s.captured_at, s.submission_type, s.status AS submission_status
          FROM survey_submissions s WHERE s.id = $1`, [candidate.submissionId]);
       if (rows.length) submissionExtra = rows[0];
     } catch {}

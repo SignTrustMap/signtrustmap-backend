@@ -1,12 +1,14 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn } from 'typeorm';
+import {
+  CoordinateSource,
+  SubmissionContractIssue,
+  SubmissionType,
+} from '../../domain/submission-contract';
 
-export enum SubmissionType {
-  VIDEO_GPX = 'VIDEO_GPX',
-  SINGLE_IMAGE = 'SINGLE_IMAGE',
-  LIVE_TRIP = 'LIVE_TRIP',
-}
+export { CoordinateSource, SubmissionType } from '../../domain/submission-contract';
 
 export enum SubmissionStatus {
+  DRAFT = 'DRAFT',
   QUEUED = 'QUEUED',
   SYNCHRONIZING = 'SYNCHRONIZING',
   DETECTING = 'DETECTING',
@@ -31,8 +33,23 @@ export class SurveySubmission {
   @Column({ name: 'submission_type', type: 'enum', enum: SubmissionType })
   submissionType: SubmissionType;
 
-  @Column({ type: 'enum', enum: SubmissionStatus, default: SubmissionStatus.QUEUED })
+  @Column({ type: 'enum', enum: SubmissionStatus, default: SubmissionStatus.DRAFT })
   status: SubmissionStatus;
+
+  @Column({ name: 'captured_at', type: 'timestamptz' })
+  capturedAt: Date;
+
+  @Column({ name: 'coordinate_source', type: 'enum', enum: CoordinateSource })
+  coordinateSource: CoordinateSource;
+
+  @Column({ type: 'text', nullable: true })
+  note: string | null;
+
+  @Column({ name: 'validation_errors', type: 'jsonb', default: () => "'[]'::jsonb" })
+  validationErrors: SubmissionContractIssue[];
+
+  @Column({ name: 'correction_requirements', type: 'jsonb', default: () => "'[]'::jsonb" })
+  correctionRequirements: SubmissionContractIssue[];
 
   @Column({ name: 'failure_reason', type: 'text', nullable: true })
   failureReason: string | null;

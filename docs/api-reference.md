@@ -95,13 +95,17 @@ Base: `http://localhost:3000/api/v1`
 
 | Method | Path | Auth | Mô tả chức năng |
 |---|---|---|---|
-| `POST` | `/submissions/initialize` | JWT (Surveyor) | Mở phiên upload. Body `{fileName, mediaType (IMAGE/VIDEO/GPX), totalSize, totalChunks, checksum?, latitude?, longitude?}` → tạo `upload_sessions`, trả `sessionId`. Màn Add Record. |
-| `POST` | `/submissions/:sessionId/chunks` | JWT (Surveyor) | Upload 1 chunk (`multipart/form-data`: `chunk`, `chunkIndex`). Lưu MinIO, ghi `upload_chunks`; đủ chunk → status `ASSEMBLING`. |
-| `GET` | `/submissions/:sessionId` | JWT (owner) | Xem tiến trình upload (metadata + danh sách chunk đã nhận). |
+| `POST` | `/submissions` | JWT (Surveyor) | Tạo submission `DRAFT` trước upload. Body `{submissionType, capturedAt, coordinateSource, note?}`. |
+| `PATCH` | `/submissions/:submissionId` | JWT (owner) | Sửa capture time, coordinate source hoặc note khi submission còn có thể chỉnh sửa. |
+| `POST` | `/submissions/:submissionId/uploads` | JWT (owner) | Tạo upload session cho media được phép bởi submission type. |
+| `POST` | `/submissions/uploads/:sessionId/chunks` | JWT (owner) | Upload 1 chunk (`multipart/form-data`: `file`, `chunkIndex`). |
+| `POST` | `/submissions/uploads/:sessionId/complete` | JWT (owner) | Ghép chunks và gắn media file vào submission hiện có. |
+| `GET` | `/submissions/uploads/:sessionId` | JWT (owner) | Xem tiến trình upload và danh sách chunk đã nhận. |
+| `POST` | `/submissions/:submissionId/submit` | JWT (owner) | Kiểm tra contract; chuyển `QUEUED` hoặc lưu lỗi và chuyển `PENDING_CORRECTION`. |
 | `GET` | `/submissions/me` | JWT (Surveyor) | Danh sách submission của tôi (phân trang). |
 | `GET` | `/submissions/me/pending` | JWT (Surveyor) | Đếm submission đang pending. Cho badge Surveyor Home. |
 | `GET` | `/submissions/me/stats` | JWT (Surveyor) | Thống kê Surveyor Home: `creditScore, totalSubmissions, pendingSubmissions, revalidationAvailable, dailyTasks`. |
-| `GET` | `/submissions/status/:submissionId` | JWT | Theo dõi trạng thái xử lý 1 submission (queued → processing → candidate_created...). Màn Record Success. |
+| `GET` | `/submissions/status/:submissionId` | JWT | Trả metadata, required media, validation errors, correction requirements, media files và pipeline history. |
 
 ### 3.4 Candidate Review — P2P Review Workspace (`/reviews`)
 
@@ -308,5 +312,5 @@ Flow 7 — Cảnh báo biển báo theo thời gian thực khi driver đang di c
 
 **Tài liệu liên quan:**
 - `../README.md` — API summary + Frontend Screen → API Mapping.
-- `postman/STM_Full.postman_collection.json` — 133 requests, import vào Postman để test ngay.
+- `postman/STM_Full.postman_collection.json` — collection đầy đủ, import vào Postman để test ngay.
 - `../infra/postgres/schema/schema.postgres.sql` — DDL toàn bộ bảng, seed, indexes.

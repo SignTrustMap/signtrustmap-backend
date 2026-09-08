@@ -25,6 +25,36 @@ services:
       start_period: 30s
     networks: [stm-network]
 
+  postgres-migrate:
+    build:
+      context: ./infra/postgres
+      dockerfile: Dockerfile
+    container_name: stm-postgres-migrate
+    restart: "no"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-stm_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-stm_password}
+      POSTGRES_DB: ${POSTGRES_DB:-signtrustmap}
+    volumes:
+      - ./infra/postgres/migrations:/migrations:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        export PGPASSWORD="$${POSTGRES_PASSWORD}"
+        for migration_file in /migrations/*.sql; do
+          [ -e "$${migration_file}" ] || continue
+          echo "Applying $${migration_file}"
+          psql -X --set ON_ERROR_STOP=1 \
+            --host postgres \
+            --username "$${POSTGRES_USER}" \
+            --dbname "$${POSTGRES_DB}" \
+            --file "$${migration_file}"
+        done
+    networks: [stm-network]
+
   redis:
     image: redis:7-alpine
     container_name: stm-redis
@@ -116,7 +146,7 @@ services:
       - ./apps/nestjs:/app
       - /app/node_modules
     depends_on:
-      postgres: { condition: service_healthy }
+      postgres-migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
       minio: { condition: service_healthy }
     healthcheck:
@@ -149,7 +179,7 @@ services:
     ports: ["${FASTAPI_PORT:-8000}:8000"]
     volumes: [./apps/fastapi:/app]
     depends_on:
-      postgres: { condition: service_healthy }
+      postgres-migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
       minio: { condition: service_healthy }
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
@@ -175,7 +205,7 @@ services:
       NESTJS_INTERNAL_URL: http://nestjs:3000
     volumes: [./apps/fastapi:/app]
     depends_on:
-      postgres: { condition: service_healthy }
+      postgres-migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
       minio: { condition: service_healthy }
     command: celery -A app.celery_app worker --loglevel=info --concurrency=4 --queues=default,freshness,leaderboard,ai_pipeline
