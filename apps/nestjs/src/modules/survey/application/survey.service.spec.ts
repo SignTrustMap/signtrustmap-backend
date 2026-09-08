@@ -376,4 +376,309 @@ describe('SurveyService submission contract', () => {
     expect(result).toMatchObject({ readyToComplete: true, receivedChunks: 1, submissionId });
     expect(storage.putObject).not.toHaveBeenCalled();
   });
+
+  it('enforces total-size and chunk count limits during upload initialization', async () => {
+    // Exceed max size for IMAGE (50MB)
+    await expect(
+      service.initialize(userId, submissionId, {
+        originalFilename: 'huge.jpg',
+        mediaType: MediaFileType.IMAGE,
+        totalSizeBytes: 60 * 1024 * 1024,
+        totalChunks: 2,
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    // Invalid totalSizeBytes <= 0
+    await expect(
+      service.initialize(userId, submissionId, {
+        originalFilename: 'zero.jpg',
+        mediaType: MediaFileType.IMAGE,
+        totalSizeBytes: 0,
+        totalChunks: 1,
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    // Invalid totalChunks > 5000
+    await expect(
+      service.initialize(userId, submissionId, {
+        originalFilename: 'many_chunks.jpg',
+        mediaType: MediaFileType.IMAGE,
+        totalSizeBytes: 1000,
+        totalChunks: 5001,
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('enforces chunk limits during uploadChunk', async () => {
+    // Empty chunk (0 bytes)
+    await expect(
+      service.uploadChunk(
+        userId,
+        sessionId,
+        { chunkIndex: 0 },
+        { buffer: Buffer.alloc(0), size: 0 } as Express.Multer.File,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    // Chunk size exceeds 50MB limit
+    await expect(
+      service.uploadChunk(
+        userId,
+        sessionId,
+        { chunkIndex: 0 },
+        { buffer: Buffer.alloc(5), size: 55 * 1024 * 1024 } as Express.Multer.File,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    // Chunk size exceeds total declared size
+    session.totalSizeBytes = '10';
+    await expect(
+      service.uploadChunk(
+        userId,
+        sessionId,
+        { chunkIndex: 0 },
+        { buffer: Buffer.alloc(20), size: 20 } as Express.Multer.File,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    // Negative chunk index
+    await expect(
+      service.uploadChunk(
+        userId,
+        sessionId,
+        { chunkIndex: -1 },
+        { buffer: Buffer.alloc(5), size: 5 } as Express.Multer.File,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('persists invalid file signature submission as REJECTED', async () => {
+    // Corrupt / invalid magic bytes for declared IMAGE
+    const fakeImage = {
+      id: 'media-1',
+      submissionId,
+      mediaType: MediaFileType.IMAGE,
+      fileUrl: 'stm-sign-crops/uploads/fake.jpg',
+    } as SubmissionMediaFile;
+
+    manager.find.mockImplementation(async (entity: unknown) => {
+      if (entity === SubmissionMediaFile) return [fakeImage];
+      return [session];
+    });
+
+    storage.getObjectBuffer = jest.fn().mockResolvedValue(Buffer.from('THIS_IS_NOT_AN_IMAGE_FILE'));
+
+    const result = await service.submitSubmission(userId, submissionId);
+
+    expect(result.accepted).toBe(false);
+    expect(result.submission.status).toBe(SubmissionStatus.REJECTED);
+    expect(result.submission.validationErrors).toContainEqual(
+      expect.objectContaining({
+        code: SubmissionValidationCode.INVALID_FILE_SIGNATURE,
+        mediaType: MediaFileType.IMAGE,
+      }),
+    );
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining('submission_status_history'),
+      expect.arrayContaining([SubmissionStatus.REJECTED]),
+    );
+  });
+
+  it('persists empty GPX track as PENDING_CORRECTION', async () => {
+    submission.submissionType = SubmissionType.VIDEO_GPX;
+    submission.coordinateSource = CoordinateSource.GPX_FILE;
+
+    const mp4Header = Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x6d, 0x70, 0x34, 0x32]);
+    const emptyGpx = Buffer.from('<?xml version="1.0"?><gpx version="1.1"><trk><name>empty</name></trk></gpx>');
+
+    const videoMedia = {
+      id: 'media-vid',
+      submissionId,
+      mediaType: MediaFileType.VIDEO,
+      fileUrl: 'stm-raw-videos/uploads/vid.mp4',
+    } as SubmissionMediaFile;
+
+    const gpxMedia = {
+      id: 'media-gpx',
+      submissionId,
+      mediaType: MediaFileType.GPX,
+      fileUrl: 'stm-gpx-logs/uploads/track.gpx',
+    } as SubmissionMediaFile;
+
+    manager.find.mockImplementation(async (entity: unknown) => {
+      if (entity === SubmissionMediaFile) return [videoMedia, gpxMedia];
+      return [session];
+    });
+
+    storage.getObjectBuffer = jest.fn().mockImplementation(async (ref: any) => {
+      if (ref.bucket === 'stm-raw-videos') return mp4Header;
+      return emptyGpx;
+    });
+
+    const result = await service.submitSubmission(userId, submissionId);
+
+    expect(result.accepted).toBe(false);
+    expect(result.submission.status).toBe(SubmissionStatus.PENDING_CORRECTION);
+    expect(result.submission.validationErrors).toContainEqual(
+      expect.objectContaining({
+        code: SubmissionValidationCode.GPX_EMPTY_TRACK,
+        mediaType: MediaFileType.GPX,
+      }),
+    );
+  });
+
+  it('persists out-of-bounds GPS coordinates as PENDING_CORRECTION', async () => {
+    submission.submissionType = SubmissionType.VIDEO_GPX;
+    submission.coordinateSource = CoordinateSource.GPX_FILE;
+
+    const mp4Header = Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x6d, 0x70, 0x34, 0x32]);
+    const invalidGpsGpx = Buffer.from(`<?xml version="1.0"?>
+      <gpx version="1.1">
+        <trk><trkseg>
+          <trkpt lat="999.0" lon="106.70"><time>2026-09-08T02:00:00Z</time></trkpt>
+        </trkseg></trk>
+      </gpx>`);
+
+    const videoMedia = {
+      id: 'media-vid',
+      submissionId,
+      mediaType: MediaFileType.VIDEO,
+      fileUrl: 'stm-raw-videos/uploads/vid.mp4',
+    } as SubmissionMediaFile;
+
+    const gpxMedia = {
+      id: 'media-gpx',
+      submissionId,
+      mediaType: MediaFileType.GPX,
+      fileUrl: 'stm-gpx-logs/uploads/track.gpx',
+    } as SubmissionMediaFile;
+
+    manager.find.mockImplementation(async (entity: unknown) => {
+      if (entity === SubmissionMediaFile) return [videoMedia, gpxMedia];
+      return [session];
+    });
+
+    storage.getObjectBuffer = jest.fn().mockImplementation(async (ref: any) => {
+      if (ref.bucket === 'stm-raw-videos') return mp4Header;
+      return invalidGpsGpx;
+    });
+
+    const result = await service.submitSubmission(userId, submissionId);
+
+    expect(result.accepted).toBe(false);
+    expect(result.submission.status).toBe(SubmissionStatus.PENDING_CORRECTION);
+    expect(result.submission.validationErrors).toContainEqual(
+      expect.objectContaining({
+        code: SubmissionValidationCode.INVALID_GPS_COORDINATES,
+        mediaType: MediaFileType.GPX,
+      }),
+    );
+  });
+
+  it('persists timestamp range mismatch as PENDING_CORRECTION', async () => {
+    submission.submissionType = SubmissionType.VIDEO_GPX;
+    submission.coordinateSource = CoordinateSource.GPX_FILE;
+    submission.capturedAt = new Date('2026-09-08T02:00:00.000Z');
+
+    const mp4Header = Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x6d, 0x70, 0x34, 0x32]);
+    // GPX timestamps from 2020 (6 years before capturedAt)
+    const mismatchedGpx = Buffer.from(`<?xml version="1.0"?>
+      <gpx version="1.1">
+        <trk><trkseg>
+          <trkpt lat="10.77" lon="106.70"><time>2020-01-01T10:00:00Z</time></trkpt>
+          <trkpt lat="10.78" lon="106.71"><time>2020-01-01T10:05:00Z</time></trkpt>
+        </trkseg></trk>
+      </gpx>`);
+
+    const videoMedia = {
+      id: 'media-vid',
+      submissionId,
+      mediaType: MediaFileType.VIDEO,
+      fileUrl: 'stm-raw-videos/uploads/vid.mp4',
+    } as SubmissionMediaFile;
+
+    const gpxMedia = {
+      id: 'media-gpx',
+      submissionId,
+      mediaType: MediaFileType.GPX,
+      fileUrl: 'stm-gpx-logs/uploads/track.gpx',
+    } as SubmissionMediaFile;
+
+    manager.find.mockImplementation(async (entity: unknown) => {
+      if (entity === SubmissionMediaFile) return [videoMedia, gpxMedia];
+      return [session];
+    });
+
+    storage.getObjectBuffer = jest.fn().mockImplementation(async (ref: any) => {
+      if (ref.bucket === 'stm-raw-videos') return mp4Header;
+      return mismatchedGpx;
+    });
+
+    const result = await service.submitSubmission(userId, submissionId);
+
+    expect(result.accepted).toBe(false);
+    expect(result.submission.status).toBe(SubmissionStatus.PENDING_CORRECTION);
+    expect(result.submission.validationErrors).toContainEqual(
+      expect.objectContaining({
+        code: SubmissionValidationCode.TIMESTAMP_RANGE_MISMATCH,
+        field: 'capturedAt',
+      }),
+    );
+  });
+
+  it('transitions valid VIDEO_GPX submission to QUEUED when media and telemetry align', async () => {
+    submission.submissionType = SubmissionType.VIDEO_GPX;
+    submission.coordinateSource = CoordinateSource.GPX_FILE;
+    submission.capturedAt = new Date('2026-09-08T02:00:00.000Z');
+
+    const mp4Header = Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x6d, 0x70, 0x34, 0x32]);
+    const validGpx = Buffer.from(`<?xml version="1.0"?>
+      <gpx version="1.1">
+        <trk><trkseg>
+          <trkpt lat="10.77" lon="106.70"><time>2026-09-08T02:00:00Z</time></trkpt>
+          <trkpt lat="10.78" lon="106.71"><time>2026-09-08T02:05:00Z</time></trkpt>
+        </trkseg></trk>
+      </gpx>`);
+
+    const videoMedia = {
+      id: 'media-vid',
+      submissionId,
+      mediaType: MediaFileType.VIDEO,
+      fileUrl: 'stm-raw-videos/uploads/vid.mp4',
+    } as SubmissionMediaFile;
+
+    const gpxMedia = {
+      id: 'media-gpx',
+      submissionId,
+      mediaType: MediaFileType.GPX,
+      fileUrl: 'stm-gpx-logs/uploads/track.gpx',
+    } as SubmissionMediaFile;
+
+    manager.find.mockImplementation(async (entity: unknown) => {
+      if (entity === SubmissionMediaFile) return [videoMedia, gpxMedia];
+      return [session];
+    });
+
+    storage.getObjectBuffer = jest.fn().mockImplementation(async (ref: any) => {
+      if (ref.bucket === 'stm-raw-videos') return mp4Header;
+      return validGpx;
+    });
+
+    const result = await service.submitSubmission(userId, submissionId);
+
+    expect(result.accepted).toBe(true);
+    expect(result.submission.status).toBe(SubmissionStatus.QUEUED);
+  });
+
+  it('prevents editing or resubmitting a REJECTED submission', async () => {
+    submission.status = SubmissionStatus.REJECTED;
+
+    await expect(
+      service.updateSubmission(userId, submissionId, { note: 'try editing' }),
+    ).rejects.toBeInstanceOf(ConflictException);
+
+    await expect(
+      service.submitSubmission(userId, submissionId),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
 });

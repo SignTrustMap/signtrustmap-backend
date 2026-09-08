@@ -8,11 +8,13 @@ import { InitializeUploadDto } from './dto/initialize-upload.dto';
 import { UploadChunkBodyDto } from './dto/upload-chunk.dto';
 import { InternalTokenGuard } from '../../../common/guards/internal-token.guard';
 import { UseInterceptors, UploadedFile } from '@nestjs/common';
+import { Roles } from '../../../common/decorators/roles.decorator';
 import { CreateSubmissionDto } from './dto/create-submission.dto';
 import { UpdateSubmissionDto } from './dto/update-submission.dto';
 import { UpdateSubmissionStatusDto } from './dto/update-submission-status.dto';
 
 @ApiTags('Survey Submissions')
+@Roles('SURVEYOR', 'ADMIN')
 @Controller('submissions')
 export class SurveyController {
   constructor(private readonly surveyService: SurveyService) {}

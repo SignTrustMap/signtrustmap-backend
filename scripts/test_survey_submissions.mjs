@@ -181,9 +181,11 @@ async function runAllTests() {
   // 3. Initialize media upload [POST /submissions/:submissionId/uploads]
   // ========================================================================
   console.log('\n--- 3. Initialize media upload [POST /submissions/:submissionId/uploads] ---');
-  const chunk0Data = Buffer.from('TEST_BINARY_CHUNK_0_IMAGE_STREAM_FOR_STM_API_AUTOMATION_TEST_PART_A');
-  const chunk1Data = Buffer.from('TEST_BINARY_CHUNK_1_IMAGE_STREAM_FOR_STM_API_AUTOMATION_TEST_PART_B');
-  const fullFileBuffer = Buffer.concat([chunk0Data, chunk1Data]);
+  const validJpegBase64 = '/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=';
+  const fullFileBuffer = Buffer.from(validJpegBase64, 'base64');
+  const halfLen = Math.floor(fullFileBuffer.length / 2);
+  const chunk0Data = fullFileBuffer.subarray(0, halfLen);
+  const chunk1Data = fullFileBuffer.subarray(halfLen);
   const fullChecksum = crypto.createHash('sha256').update(fullFileBuffer).digest('hex');
 
   {
@@ -203,6 +205,21 @@ async function runAllTests() {
     validSessionId = res.body?.sessionId;
     const pass = res.status === 201 && validSessionId && res.body.status === 'INITIATED' && res.body.totalChunks === 2;
     record('Initialize media upload', 'Happy Path: Initialize 2-chunk IMAGE upload', 'POST', `/submissions/${validSubmissionId}/uploads`, 201, res.status, pass, res.body);
+  }
+  {
+    // Negative Path: Exceed max totalSizeBytes limit for IMAGE
+    const payload = {
+      originalFilename: 'huge.jpg',
+      mediaType: 'IMAGE',
+      totalSizeBytes: 60 * 1024 * 1024,
+      totalChunks: 2,
+    };
+    const res = await request(`/submissions/${validSubmissionId}/uploads`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    record('Initialize media upload', 'Negative Path: Exceeding max size for mediaType returns 400', 'POST', `/submissions/${validSubmissionId}/uploads`, 400, res.status, res.status === 400, res.body);
   }
   {
     // Negative Path: Invalid media type for contract (e.g. VIDEO for SINGLE_IMAGE)
@@ -258,6 +275,18 @@ async function runAllTests() {
       body: formOutOfRange,
     });
     record('Upload video chunk', 'Negative Path: chunkIndex >= totalChunks returns 400', 'POST', `/submissions/uploads/${validSessionId}/chunks`, 400, res.status, res.status === 400, res.body);
+  }
+  {
+    // Negative Path: Empty chunk file
+    const formEmpty = new FormData();
+    formEmpty.append('chunkIndex', '0');
+    formEmpty.append('file', new Blob([Buffer.alloc(0)], { type: 'image/jpeg' }), 'empty.bin');
+
+    const res = await request(`/submissions/uploads/${validSessionId}/chunks`, {
+      method: 'POST',
+      body: formEmpty,
+    });
+    record('Upload video chunk', 'Negative Path: Empty chunk (0 bytes) returns 400', 'POST', `/submissions/uploads/${validSessionId}/chunks`, 400, res.status, res.status === 400, res.body);
   }
   {
     // Happy Path: Upload chunk 0
@@ -365,6 +394,52 @@ async function runAllTests() {
       method: 'POST',
     });
     record('Submit draft for processing', 'Conflict Path: Cannot submit submission that is already QUEUED (409 Conflict)', 'POST', `/submissions/${validSubmissionId}/submit`, 409, res.status, res.status === 409, res.body);
+  }
+  {
+    // Rejection Path: Submission with invalid file signature rejected into REJECTED
+    const badSubRes = await request('/submissions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        submissionType: 'SINGLE_IMAGE',
+        capturedAt: new Date().toISOString(),
+        coordinateSource: 'DEVICE_GPS',
+        note: 'Invalid file signature test',
+      }),
+    });
+    const badSubId = badSubRes.body?.id;
+    if (badSubId) {
+      const badInit = await request(`/submissions/${badSubId}/uploads`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          originalFilename: 'corrupt.jpg',
+          mediaType: 'IMAGE',
+          totalSizeBytes: 20,
+          totalChunks: 1,
+        }),
+      });
+      const badSessionId = badInit.body?.sessionId;
+      if (badSessionId) {
+        const badForm = new FormData();
+        badForm.append('chunkIndex', '0');
+        badForm.append('file', new Blob([Buffer.from('NOT_AN_IMAGE_PAYLOAD!')], { type: 'image/jpeg' }), 'corrupt.bin');
+        await request(`/submissions/uploads/${badSessionId}/chunks`, { method: 'POST', body: badForm });
+        await request(`/submissions/uploads/${badSessionId}/complete`, { method: 'POST' });
+
+        const submitBad = await request(`/submissions/${badSubId}/submit`, { method: 'POST' });
+        const passBad = submitBad.status === 200 && submitBad.body?.accepted === false && submitBad.body?.submission?.status === 'REJECTED';
+        record('Submit draft for processing', 'Rejection Path: Invalid file signature rejected into REJECTED', 'POST', `/submissions/${badSubId}/submit`, 200, submitBad.status, passBad, {
+          accepted: submitBad.body?.accepted,
+          status: submitBad.body?.submission?.status,
+          errors: submitBad.body?.submission?.validationErrors,
+        });
+
+        // Re-submitting REJECTED submission must fail with 409
+        const resubmitBad = await request(`/submissions/${badSubId}/submit`, { method: 'POST' });
+        record('Submit draft for processing', 'Rejection Path: Cannot re-submit REJECTED submission (409 Conflict)', 'POST', `/submissions/${badSubId}/submit`, 409, resubmitBad.status, resubmitBad.status === 409, resubmitBad.body);
+      }
+    }
   }
 
   // ========================================================================
