@@ -7,6 +7,7 @@ The standalone AI service is a synchronous inference engine over MinIO reference
 from __future__ import annotations
 
 import io
+import json
 import logging
 import re
 from collections import defaultdict
@@ -115,27 +116,52 @@ def _upload_crop_bytes(
 
 
 def _download_gpx_track(media_objects: list[dict[str, str]]) -> list[GpxTrackPoint]:
-    """Find GPX media object from submission media list, download and parse."""
+    """Find GPX or FRAME_SEQUENCE media object from submission media list, download and parse into trackpoints."""
     gpx_obj = next((m for m in media_objects if m.get("media_type") == "GPX"), None)
-    if not gpx_obj:
-        return []
-    bucket = gpx_obj.get("bucket")
-    object_key = gpx_obj.get("object_key")
-    if not bucket or not object_key:
-        return []
-    try:
-        raw_bytes = _download_minio_bytes(bucket, object_key)
-        return parse_gpx_content(raw_bytes)
-    except Exception as exc:
-        logger.warning("[ai] failed to download/parse GPX from %s/%s: %s", bucket, object_key, exc)
-        return []
+    if gpx_obj:
+        bucket = gpx_obj.get("bucket")
+        object_key = gpx_obj.get("object_key")
+        if bucket and object_key:
+            try:
+                raw_bytes = _download_minio_bytes(bucket, object_key)
+                points = parse_gpx_content(raw_bytes)
+                if points:
+                    return points
+            except Exception as exc:
+                logger.warning("[ai] failed to download/parse GPX from %s/%s: %s", bucket, object_key, exc)
+
+    frame_seq_obj = next((m for m in media_objects if m.get("media_type") == "FRAME_SEQUENCE"), None)
+    if frame_seq_obj:
+        bucket = frame_seq_obj.get("bucket")
+        object_key = frame_seq_obj.get("object_key")
+        if bucket and object_key:
+            try:
+                raw_bytes = _download_minio_bytes(bucket, object_key)
+                data = json.loads(raw_bytes.decode("utf-8"))
+                frames = data if isinstance(data, list) else data.get("frames", [])
+                points: list[GpxTrackPoint] = []
+                for f in frames:
+                    lat = float(f.get("latitude") or 0.0)
+                    lon = float(f.get("longitude") or 0.0)
+                    ts_ms = f.get("timestampMs") or f.get("timestamp_ms")
+                    if ts_ms:
+                        dt = datetime.fromtimestamp(float(ts_ms) / 1000.0, tz=timezone.utc)
+                    else:
+                        dt = datetime.now(timezone.utc)
+                    points.append(GpxTrackPoint(lat=lat, lon=lon, ele=None, time=dt))
+                points.sort(key=lambda p: p.time)
+                return points
+            except Exception as exc:
+                logger.warning("[ai] failed to download/parse FRAME_SEQUENCE from %s/%s: %s", bucket, object_key, exc)
+
+    return []
 
 
 def _load_submission_metadata(submission_id: str) -> dict[str, Any] | None:
-    """Load submission metadata (captured_at, submission_type, etc.) from database."""
+    """Load submission metadata (captured_at, submission_type, camera_profile_id, etc.) from database."""
     try:
         query = text(
-            "SELECT id, surveyor_id, submission_type, status, captured_at, coordinate_source, note "
+            "SELECT id, surveyor_id, submission_type, status, captured_at, coordinate_source, camera_profile_id, note "
             "FROM survey_submissions WHERE id = :sid"
         )
         with get_sync_db() as db:
@@ -146,6 +172,52 @@ def _load_submission_metadata(submission_id: str) -> dict[str, Any] | None:
     except Exception as exc:
         logger.warning("[ai] could not load submission metadata for %s: %s", submission_id, exc)
         return None
+
+
+def _load_camera_profile(
+    db,
+    surveyor_id: str | None,
+    camera_profile_id: str | None,
+) -> dict[str, float]:
+    """Load calibration profile from DB, fallback to surveyor default or system defaults."""
+    defaults = {
+        "camera_height_m": 1.35,
+        "pitch_deg": 0.0,
+        "yaw_offset_deg": 0.0,
+        "hfov_deg": 60.0,
+    }
+    if not surveyor_id and not camera_profile_id:
+        return defaults
+
+    try:
+        if camera_profile_id:
+            row = db.execute(
+                text(
+                    "SELECT camera_height_meters, pitch_angle_degrees, yaw_offset_degrees, hfov_degrees "
+                    "FROM camera_calibration_profiles WHERE id = :pid"
+                ),
+                {"pid": camera_profile_id},
+            ).mappings().first()
+        else:
+            row = db.execute(
+                text(
+                    "SELECT camera_height_meters, pitch_angle_degrees, yaw_offset_degrees, hfov_degrees "
+                    "FROM camera_calibration_profiles WHERE user_id = :uid AND is_default = TRUE LIMIT 1"
+                ),
+                {"uid": surveyor_id},
+            ).mappings().first()
+
+        if row:
+            return {
+                "camera_height_m": float(row.get("camera_height_meters") if row.get("camera_height_meters") is not None else 1.35),
+                "pitch_deg": float(row.get("pitch_angle_degrees") if row.get("pitch_angle_degrees") is not None else 0.0),
+                "yaw_offset_deg": float(row.get("yaw_offset_degrees") if row.get("yaw_offset_degrees") is not None else 0.0),
+                "hfov_deg": float(row.get("hfov_degrees") if row.get("hfov_degrees") is not None else 60.0),
+            }
+    except Exception as exc:
+        logger.warning("[ai] could not load camera profile: %s", exc)
+
+    return defaults
 
 
 def _set_status(submission_id: str, new_status: str, note: str) -> str | None:
@@ -396,6 +468,15 @@ def _persist_candidates(
             text("DELETE FROM unverified_sign_candidates WHERE submission_id = :sid"),
             {"sid": submission_id},
         )
+        calibration = (
+            _load_camera_profile(
+                db,
+                metadata.get("surveyor_id") if metadata else None,
+                metadata.get("camera_profile_id") if metadata else None,
+            )
+            if metadata
+            else {"camera_height_m": 1.35, "pitch_deg": 0.0, "yaw_offset_deg": 0.0, "hfov_deg": 60.0}
+        )
         for sign in signs:
             sign_type_id = _resolve_sign_type_id(db, sign)
             if sign_type_id is None:
@@ -432,6 +513,10 @@ def _persist_candidates(
                 box_xyxy=box,
                 image_width=image_width,
                 image_height=image_height,
+                hfov_deg=calibration.get("hfov_deg", 60.0),
+                camera_height_m=calibration.get("camera_height_m", 1.35),
+                pitch_deg=calibration.get("pitch_deg", 0.0),
+                yaw_offset_deg=calibration.get("yaw_offset_deg", 0.0),
             )
 
             candidate_id = db.execute(

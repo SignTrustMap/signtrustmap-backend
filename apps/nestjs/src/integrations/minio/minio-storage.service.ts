@@ -51,6 +51,7 @@ export class MinioStorageService {
   bucketForMediaType(mediaType: string): string {
     switch (mediaType) {
       case 'VIDEO':
+      case 'FRAME_SEQUENCE':
         return STM_BUCKETS.VIDEO;
       case 'GPX':
         return STM_BUCKETS.GPX;

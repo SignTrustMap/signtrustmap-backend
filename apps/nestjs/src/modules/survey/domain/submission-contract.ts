@@ -2,12 +2,14 @@ export enum MediaFileType {
   VIDEO = 'VIDEO',
   GPX = 'GPX',
   IMAGE = 'IMAGE',
+  FRAME_SEQUENCE = 'FRAME_SEQUENCE',
 }
 
 export enum SubmissionType {
   VIDEO_GPX = 'VIDEO_GPX',
   SINGLE_IMAGE = 'SINGLE_IMAGE',
   LIVE_TRIP = 'LIVE_TRIP',
+  FRAME_BATCH = 'FRAME_BATCH',
 }
 
 export enum CoordinateSource {
@@ -64,6 +66,10 @@ export const MEDIA_SIZE_LIMITS: Record<MediaFileType, { maxBytes: number; minByt
     maxBytes: 20 * 1024 * 1024, // 20 MB
     minBytes: 1,
   },
+  [MediaFileType.FRAME_SEQUENCE]: {
+    maxBytes: 500 * 1024 * 1024, // 500 MB
+    minBytes: 1,
+  },
 };
 
 export const MAX_CHUNK_SIZE_BYTES = 50 * 1024 * 1024; // 50 MB
@@ -99,5 +105,13 @@ export const SUBMISSION_TYPE_CONTRACTS: Readonly<
   [SubmissionType.LIVE_TRIP]: {
     requiredMediaTypes: [MediaFileType.VIDEO],
     allowedCoordinateSources: [CoordinateSource.LIVE_STREAM],
+  },
+  [SubmissionType.FRAME_BATCH]: {
+    requiredMediaTypes: [MediaFileType.FRAME_SEQUENCE],
+    allowedCoordinateSources: [
+      CoordinateSource.DEVICE_GPS,
+      CoordinateSource.GPX_FILE,
+      CoordinateSource.IMAGE_EXIF,
+    ],
   },
 };
