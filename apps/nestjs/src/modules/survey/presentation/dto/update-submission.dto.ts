@@ -12,6 +12,10 @@ export class UpdateSubmissionDto {
 
   @IsOptional()
   @IsString()
+  cameraProfileId?: string;
+
+  @IsOptional()
+  @IsString()
   @MaxLength(2000)
   note?: string;
 

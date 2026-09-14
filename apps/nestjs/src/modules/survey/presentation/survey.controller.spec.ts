@@ -17,6 +17,7 @@ describe('SurveyController (all 13 endpoints)', () => {
   beforeEach(() => {
     service = {
       createSubmission: jest.fn(),
+      createFrameBatchSession: jest.fn(),
       updateSubmission: jest.fn(),
       initialize: jest.fn(),
       uploadChunk: jest.fn(),
@@ -46,6 +47,28 @@ describe('SurveyController (all 13 endpoints)', () => {
 
     const result = await controller.createSubmission(mockUser, dto);
     expect(service.createSubmission).toHaveBeenCalledWith(mockUser.id, dto);
+    expect(result).toBe(expected);
+  });
+
+  it('1b. createFrameBatchSession delegates to surveyService.createFrameBatchSession', async () => {
+    const dto = {
+      capturedAt: '2026-09-08T00:00:00.000Z',
+      fps: 5.0,
+      frames: [
+        {
+          frameIndex: 0,
+          timestampMs: 1718000000000,
+          latitude: 21.0285,
+          longitude: 105.8544,
+          storageKey: 'stm-raw-videos/frames/user/f0.jpg',
+        },
+      ],
+    };
+    const expected = { submissionId: mockSubmissionId, totalFrames: 1 };
+    service.createFrameBatchSession.mockResolvedValue(expected as any);
+
+    const result = await controller.createFrameBatchSession(mockUser, dto as any);
+    expect(service.createFrameBatchSession).toHaveBeenCalledWith(mockUser.id, dto);
     expect(result).toBe(expected);
   });
 

@@ -11,6 +11,7 @@ import {
   SurveySubmission,
 } from '../infrastructure/persistence/survey-submission.entity';
 import {
+  CoordinateSource,
   CorrectionRequirementCode,
   MEDIA_SIZE_LIMITS,
   MAX_CHUNK_SIZE_BYTES,
@@ -18,6 +19,7 @@ import {
   REJECTED_VALIDATION_CODES,
   SUBMISSION_TYPE_CONTRACTS,
   SubmissionContractIssue,
+  SubmissionType,
   SubmissionValidationCode,
 } from '../domain/submission-contract';
 import {
@@ -37,6 +39,7 @@ import { InitializeUploadDto } from '../presentation/dto/initialize-upload.dto';
 import { UploadChunkBodyDto } from '../presentation/dto/upload-chunk.dto';
 import { CreateSubmissionDto } from '../presentation/dto/create-submission.dto';
 import { UpdateSubmissionDto } from '../presentation/dto/update-submission.dto';
+import { CreateFrameBatchSessionDto } from '../presentation/dto/create-frame-batch.dto';
 @Injectable()
 export class SurveyService {
   private readonly logger = new Logger(SurveyService.name);
@@ -98,6 +101,7 @@ export class SurveyService {
       status: SubmissionStatus.DRAFT,
       capturedAt: new Date(dto.capturedAt),
       coordinateSource: dto.coordinateSource,
+      cameraProfileId: dto.cameraProfileId ?? null,
       note: formattedNote,
       validationErrors: [],
       correctionRequirements: [],
@@ -116,6 +120,7 @@ export class SurveyService {
       submission.capturedAt = new Date(dto.capturedAt);
     }
     if (dto.coordinateSource !== undefined) submission.coordinateSource = dto.coordinateSource;
+    if (dto.cameraProfileId !== undefined) submission.cameraProfileId = dto.cameraProfileId;
 
     if (dto.latitude !== undefined && dto.longitude !== undefined) {
       this.validateCoordinates(dto.latitude, dto.longitude);
@@ -134,6 +139,107 @@ export class SurveyService {
 
     const saved = await this.submissionRepo.save(submission);
     return this.submissionResponse(saved);
+  }
+
+  async createFrameBatchSession(userId: string, dto: CreateFrameBatchSessionDto) {
+    this.validateCapturedAt(dto.capturedAt);
+    if (!dto.frames || dto.frames.length === 0) {
+      throw new BadRequestException('At least one frame is required in a frame batch session');
+    }
+
+    const firstFrame = dto.frames[0];
+    this.validateCoordinates(firstFrame.latitude, firstFrame.longitude);
+
+    const startOfDay = new Date();
+    startOfDay.setUTCHours(0, 0, 0, 0);
+    const countToday = await this.submissionRepo.count({
+      where: {
+        surveyorId: userId,
+        createdAt: MoreThanOrEqual(startOfDay),
+      } as any,
+    });
+    if (countToday >= 30) {
+      throw new BadRequestException('Daily submission quota exceeded (maximum 30 submissions per day). Please try again tomorrow.');
+    }
+
+    const sortedFrames = [...dto.frames].sort((a, b) => a.frameIndex - b.frameIndex);
+    const formattedNote = `GPS: ${firstFrame.latitude}, ${firstFrame.longitude}\n[FrameBatch: ${sortedFrames.length} frames, fps=${dto.fps ?? 5}]${dto.note ? '\n' + dto.note : ''}`;
+
+    return this.dataSource.transaction(async (manager) => {
+      const submission = manager.create(SurveySubmission, {
+        surveyorId: userId,
+        submissionType: SubmissionType.FRAME_BATCH,
+        status: SubmissionStatus.DRAFT,
+        capturedAt: new Date(dto.capturedAt),
+        coordinateSource: dto.coordinateSource ?? CoordinateSource.DEVICE_GPS,
+        cameraProfileId: dto.cameraProfileId ?? null,
+        note: formattedNote,
+        validationErrors: [],
+        correctionRequirements: [],
+      });
+      const savedSubmission = await manager.save(SurveySubmission, submission);
+
+      const manifestPayload = {
+        submissionId: savedSubmission.id,
+        fps: dto.fps ?? 5.0,
+        totalFrames: sortedFrames.length,
+        frames: sortedFrames,
+      };
+      const manifestJson = JSON.stringify(manifestPayload, null, 2);
+      const manifestBuffer = Buffer.from(manifestJson, 'utf-8');
+      const manifestChecksum = createHash('sha256').update(manifestBuffer).digest('hex');
+
+      const bucket = this.storageService.bucketForMediaType(MediaFileType.FRAME_SEQUENCE);
+      const objectName = `uploads/${userId}/${savedSubmission.id}/frame_manifest.json`;
+      const storageKey = `${bucket}/${objectName}`;
+
+      try {
+        await this.storageService.putObject(bucket, objectName, manifestBuffer, 'application/json');
+      } catch (err: any) {
+        this.logger.warn(`Failed to store frame manifest in MinIO: ${err?.message}`);
+      }
+
+      const session = manager.create(UploadSession, {
+        submissionId: savedSubmission.id,
+        userId,
+        originalFilename: 'frame_manifest.json',
+        mediaType: MediaFileType.FRAME_SEQUENCE,
+        totalSizeBytes: String(manifestBuffer.length),
+        totalChunks: 1,
+        receivedChunks: 1,
+        storageKey,
+        checksumExpected: manifestChecksum,
+        status: UploadStatus.COMPLETED,
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      } as any);
+      const savedSession = await manager.save(UploadSession, session) as unknown as UploadSession;
+
+      const media = manager.create(SubmissionMediaFile, {
+        submissionId: savedSubmission.id,
+        uploadSessionId: savedSession.id,
+        mediaType: MediaFileType.FRAME_SEQUENCE,
+        fileUrl: storageKey,
+        fileSizeBytes: String(manifestBuffer.length),
+        durationSeconds: sortedFrames.length / (dto.fps ?? 5.0),
+        checksum: manifestChecksum,
+      });
+      const savedMedia = await manager.save(SubmissionMediaFile, media);
+
+      await manager.query(
+        'INSERT INTO submission_status_history (submission_id, old_status, new_status, note) VALUES ($1, NULL, $2::submission_status, $3)',
+        [savedSubmission.id, SubmissionStatus.DRAFT, 'Frame batch submission session created'],
+      );
+
+      return {
+        sessionId: savedSession.id,
+        submissionId: savedSubmission.id,
+        mediaFileId: savedMedia.id,
+        totalFrames: sortedFrames.length,
+        fps: dto.fps ?? 5.0,
+        status: savedSubmission.status,
+        submission: this.submissionResponse(savedSubmission),
+      };
+    });
   }
 
   async initialize(userId: string, submissionId: string, dto: InitializeUploadDto) {
