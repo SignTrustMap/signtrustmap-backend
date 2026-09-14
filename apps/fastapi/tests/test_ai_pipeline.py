@@ -292,3 +292,45 @@ class AiPipelineContractTests(TestCase):
         self.assertIn("AI inference failed after retries", mark_failed.call_args[0][1])
         clear_lock.assert_called_once_with("submission-err")
 
+    def test_estimate_sign_coordinates_with_camera_calibration(self) -> None:
+        veh_lat, veh_lon, veh_bearing = 21.0285, 105.8342, 90.0
+        box = [960.0, 500.0, 1060.0, 600.0]
+        geo = estimate_sign_coordinates(
+            vehicle_lat=veh_lat,
+            vehicle_lon=veh_lon,
+            vehicle_bearing=veh_bearing,
+            box_xyxy=box,
+            camera_height_m=1.8,
+            pitch_deg=-3.0,
+            yaw_offset_deg=5.0,
+        )
+        self.assertEqual(geo["camera_height_m"], 1.8)
+        self.assertEqual(geo["pitch_deg"], -3.0)
+        self.assertEqual(geo["yaw_offset_deg"], 5.0)
+        self.assertIn("estimated_ground_height_m", geo)
+        self.assertGreater(geo["estimated_ground_height_m"], 0.5)
+
+    def test_download_gpx_track_from_frame_sequence(self) -> None:
+        manifest = json.dumps({
+            "fps": 5.0,
+            "totalFrames": 2,
+            "frames": [
+                {"frameIndex": 0, "timestampMs": 1718000000000, "latitude": 21.03, "longitude": 105.84},
+                {"frameIndex": 1, "timestampMs": 1718000000200, "latitude": 21.0301, "longitude": 105.8402},
+            ],
+        }).encode("utf-8")
+        media_objects = [{"media_type": "FRAME_SEQUENCE", "bucket": "stm-raw-videos", "object_key": "manifest.json"}]
+        with patch.object(ai_pipeline, "_download_minio_bytes", return_value=manifest):
+            points = ai_pipeline._download_gpx_track(media_objects)
+        self.assertEqual(len(points), 2)
+        self.assertAlmostEqual(points[0].lat, 21.03)
+        self.assertAlmostEqual(points[1].lat, 21.0301)
+
+    def test_load_camera_profile_fallback(self) -> None:
+        db = MagicMock()
+        db.execute.return_value.mappings.return_value.first.return_value = None
+        profile = ai_pipeline._load_camera_profile(db, "user-1", None)
+        self.assertEqual(profile["camera_height_m"], 1.35)
+        self.assertEqual(profile["pitch_deg"], 0.0)
+        self.assertEqual(profile["yaw_offset_deg"], 0.0)
+

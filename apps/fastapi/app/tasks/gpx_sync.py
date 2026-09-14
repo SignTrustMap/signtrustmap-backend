@@ -156,21 +156,28 @@ def estimate_sign_coordinates(
     image_height: int = 1080,
     hfov_deg: float = 60.0,
     real_sign_height_m: float = 0.7,
+    camera_height_m: float = 1.35,
+    pitch_deg: float = 0.0,
+    yaw_offset_deg: float = 0.0,
 ) -> dict[str, Any]:
     """Estimate traffic sign physical coordinates and traffic direction.
 
-    Uses camera pinhole projection heuristics to determine estimated distance,
-    lateral camera offset angle, and spherical Earth Great-Circle projection.
+    Uses camera pinhole projection and calibration profile heuristics
+    (camera height, pitch tilt angle, yaw offset angle, and HFOV)
+    to determine estimated 3D distance, ground elevation, and spherical Earth
+    Great-Circle projection.
 
     Returns:
         Dict with keys: vehicle_lat, vehicle_lon, sign_lat, sign_lon,
         estimated_distance, bearing_angle, traffic_direction, spatial_confidence,
-        projection_method.
+        projection_method, camera_height_m, pitch_deg, yaw_offset_deg,
+        estimated_ground_height_m.
     """
     if box_xyxy and len(box_xyxy) == 4 and all(v is not None for v in box_xyxy):
         x1, y1, x2, y2 = box_xyxy
         box_h = max(1.0, float(y2 - y1))
         x_center = float(x1 + x2) / 2.0
+        y_center = float(y1 + y2) / 2.0
 
         # Normalized horizontal offset from optical center in [-1.0, 1.0]
         w = max(1.0, float(image_width))
@@ -178,17 +185,31 @@ def estimate_sign_coordinates(
         norm_x = max(-1.0, min(1.0, norm_x))
         lateral_angle_deg = norm_x * (hfov_deg / 2.0)
 
+        # Normalized vertical offset from optical center in [-1.0, 1.0]
+        h = max(1.0, float(image_height))
+        norm_y = ((h / 2.0) - y_center) / (h / 2.0)
+        norm_y = max(-1.0, min(1.0, norm_y))
+        vfov_deg = hfov_deg * (h / w)
+        vertical_angle_deg = norm_y * (vfov_deg / 2.0)
+        elevation_angle_deg = vertical_angle_deg + pitch_deg
+
         # Distance estimation: d = f_norm * real_height / norm_h
-        norm_h = box_h / max(1.0, float(image_height))
+        norm_h = box_h / h
         f_norm = 1.0 / (2.0 * math.tan(math.radians(hfov_deg / 2.0)))
-        estimated_distance = (f_norm * real_sign_height_m) / max(0.01, norm_h)
-        estimated_distance = max(3.0, min(50.0, estimated_distance))
+        los_distance = (f_norm * real_sign_height_m) / max(0.01, norm_h)
+        los_distance = max(3.0, min(50.0, los_distance))
+
+        # Ground distance accounting for pitch and elevation angle
+        horizontal_distance = max(1.0, los_distance * math.cos(math.radians(elevation_angle_deg)))
+        estimated_ground_height = max(0.5, camera_height_m + los_distance * math.sin(math.radians(elevation_angle_deg)))
+        estimated_distance = horizontal_distance
     else:
         lateral_angle_deg = 0.0
         estimated_distance = 12.0
+        estimated_ground_height = 2.5
 
-    # True bearing from vehicle to physical sign
-    sign_bearing_deg = (vehicle_bearing + lateral_angle_deg + 360.0) % 360.0
+    # True bearing from vehicle to physical sign, taking yaw offset into account
+    sign_bearing_deg = (vehicle_bearing + yaw_offset_deg + lateral_angle_deg + 360.0) % 360.0
 
     # Great-circle destination on spherical Earth
     earth_radius = 6_371_000.0  # meters
@@ -221,4 +242,8 @@ def estimate_sign_coordinates(
         "traffic_direction": round(vehicle_bearing, 2),
         "spatial_confidence": spatial_confidence,
         "projection_method": "spherical_trig",
+        "camera_height_m": round(camera_height_m, 2),
+        "pitch_deg": round(pitch_deg, 2),
+        "yaw_offset_deg": round(yaw_offset_deg, 2),
+        "estimated_ground_height_m": round(estimated_ground_height, 2),
     }

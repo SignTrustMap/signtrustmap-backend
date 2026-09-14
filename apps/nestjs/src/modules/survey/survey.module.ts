@@ -1,4 +1,7 @@
-﻿import { Module } from '@nestjs/common';
+import { CameraCalibrationProfile } from './infrastructure/persistence/camera-calibration-profile.entity';
+import { CameraProfileService } from './application/camera-profile.service';
+import { CameraProfileController } from './presentation/camera-profile.controller';
+import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { SurveyService } from './application/survey.service';
 import { SubmissionMediaFile } from './infrastructure/persistence/submission-media-file.entity';
@@ -18,12 +21,13 @@ import { NotificationsModule } from '../notifications/notifications.module';
       SurveySubmission,
       SubmissionMediaFile,
       UnverifiedSignCandidate,
+      CameraCalibrationProfile,
     ]),
     WalletModule,
     NotificationsModule,
   ],
-  controllers: [SurveyController],
-  providers: [SurveyService],
-  exports: [SurveyService],
+  controllers: [SurveyController, CameraProfileController],
+  providers: [SurveyService, CameraProfileService],
+  exports: [SurveyService, CameraProfileService],
 })
 export class SurveyModule {}

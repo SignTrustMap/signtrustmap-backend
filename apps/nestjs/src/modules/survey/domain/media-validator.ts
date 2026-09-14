@@ -128,6 +128,31 @@ export function validateFileSignature(
     };
   }
 
+  if (mediaType === MediaFileType.FRAME_SEQUENCE) {
+    const head = buffer.toString('utf8', 0, Math.min(buffer.length, 1024)).trim();
+    if (head.startsWith('{') || head.startsWith('[')) {
+      try {
+        JSON.parse(buffer.toString('utf8'));
+        return { valid: true, detectedFormat: 'JSON_FRAME_MANIFEST' };
+      } catch {
+        return { valid: false, error: 'Frame sequence manifest is not valid JSON' };
+      }
+    }
+    if (
+      buffer.length >= 4 &&
+      buffer[0] === 0x50 &&
+      buffer[1] === 0x4b &&
+      buffer[2] === 0x03 &&
+      buffer[3] === 0x04
+    ) {
+      return { valid: true, detectedFormat: 'ZIP' };
+    }
+    return {
+      valid: false,
+      error: 'File does not match any accepted frame sequence format (JSON manifest or ZIP archive)',
+    };
+  }
+
   return { valid: false, error: `Unknown media type: ${mediaType}` };
 }
 
@@ -165,6 +190,18 @@ export function decodeMedia(mediaType: MediaFileType, buffer: Buffer): MediaDeco
       const gpx = parseGpx(buffer);
       if (!gpx.valid) {
         return { valid: false, error: gpx.error };
+      }
+      return { valid: true };
+    }
+
+    if (mediaType === MediaFileType.FRAME_SEQUENCE) {
+      if (sig.detectedFormat === 'JSON_FRAME_MANIFEST') {
+        const manifest = JSON.parse(buffer.toString('utf8'));
+        const frames = Array.isArray(manifest) ? manifest : manifest?.frames;
+        if (!Array.isArray(frames) || frames.length === 0) {
+          return { valid: false, error: 'Frame sequence manifest contains no frames' };
+        }
+        return { valid: true };
       }
       return { valid: true };
     }

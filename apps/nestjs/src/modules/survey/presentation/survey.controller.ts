@@ -12,12 +12,20 @@ import { Roles } from '../../../common/decorators/roles.decorator';
 import { CreateSubmissionDto } from './dto/create-submission.dto';
 import { UpdateSubmissionDto } from './dto/update-submission.dto';
 import { UpdateSubmissionStatusDto } from './dto/update-submission-status.dto';
+import { CreateFrameBatchSessionDto } from './dto/create-frame-batch.dto';
 
 @ApiTags('Survey Submissions')
 @Roles('SURVEYOR', 'ADMIN')
 @Controller('submissions')
 export class SurveyController {
   constructor(private readonly surveyService: SurveyService) {}
+
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Create frame batch survey session', description: 'Submit reduced FPS sampled frames with GPS telemetry and camera calibration metadata in a single session' })
+  @Post('sessions')
+  async createFrameBatchSession(@CurrentUser() user: any, @Body() dto: CreateFrameBatchSessionDto) {
+    return this.surveyService.createFrameBatchSession(user.id, dto);
+  }
 
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Create submission draft', description: 'Define submission metadata and required media before starting uploads' })
