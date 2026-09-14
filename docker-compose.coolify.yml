@@ -23,10 +23,15 @@ services:
     labels:
       - "coolify.managed=true"
       - "traefik.enable=true"
-      - "traefik.http.routers.stm-gateway.rule=Host(`${API_DOMAIN:-api.signtrustmap.site}`)"
-      - "traefik.http.routers.stm-gateway.entrypoints=websecure"
+      - "traefik.docker.network=stm-network"
+      - "traefik.http.routers.stm-gateway.rule=Host(`${API_DOMAIN:-api.signmap.site}`)"
+      - "traefik.http.routers.stm-gateway.entrypoints=https"
+      - "traefik.http.routers.stm-gateway.tls=true"
       - "traefik.http.routers.stm-gateway.tls.certresolver=letsencrypt"
       - "traefik.http.services.stm-gateway.loadbalancer.server.port=80"
+      - "traefik.http.routers.stm-gateway-http.rule=Host(`${API_DOMAIN:-api.signmap.site}`)"
+      - "traefik.http.routers.stm-gateway-http.entrypoints=http"
+      - "traefik.http.services.stm-gateway-http.loadbalancer.server.port=80"
 
   api-nestjs:
     build:
