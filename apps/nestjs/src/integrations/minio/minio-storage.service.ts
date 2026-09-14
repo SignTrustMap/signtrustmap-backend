@@ -26,16 +26,26 @@ export class MinioStorageService {
     const useSSL = this.configService.get<boolean>('minio.useSSL') ?? false;
     const accessKey = this.configService.get<string>('minio.accessKey') ?? 'stm_minio';
     const secretKey = this.configService.get<string>('minio.secretKey') ?? 'stm_minio_secret_123';
+    const isR2 = endpoint.includes('r2.cloudflarestorage.com');
+    const region =
+      this.configService.get<string>('minio.region') ?? (isR2 ? 'auto' : undefined);
 
-    this.client = new Minio.Client({
+    const clientOptions: Minio.ClientOptions = {
       endPoint: endpoint,
       port,
       useSSL,
       accessKey,
       secretKey,
-    });
+    };
+    if (region) {
+      clientOptions.region = region;
+    }
 
-    this.logger.log(`MinIO client configured: ${endpoint}:${port} (SSL=${useSSL})`);
+    this.client = new Minio.Client(clientOptions);
+
+    this.logger.log(
+      `MinIO client configured: ${endpoint}:${port} (SSL=${useSSL}, region=${region ?? 'none'})`,
+    );
   }
 
   bucketForMediaType(mediaType: string): string {

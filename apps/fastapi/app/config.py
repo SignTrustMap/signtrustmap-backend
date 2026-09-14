@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     MINIO_ACCESS_KEY: str = Field(default="stm_minio")
     MINIO_SECRET_KEY: str = Field(default="stm_minio_secret_123")
     MINIO_SECURE: bool = Field(default=False)
+    MINIO_REGION: str | None = Field(default=None)
     AI_INFERENCE_URL: str = Field(default="http://localhost:8001")
     AI_INFERENCE_TIMEOUT_SECONDS: float = Field(default=3600.0, gt=0)
     INTERNAL_API_TOKEN: str = Field(default="stm_internal_secret_dev")
@@ -59,9 +60,25 @@ class Settings(BaseSettings):
     def validate_database_url(cls, v: str) -> str:
         if not v:
             raise ValueError("DATABASE_URL must not be empty")
-        # Accept both bare postgres:// and postgresql+asyncpg:// forms.
+        # Accept postgres://, postgresql://, and postgresql+asyncpg:// forms.
         if v.startswith("postgres://"):
             v = v.replace("postgres://", "postgresql+asyncpg://", 1)
+        elif v.startswith("postgresql://") and not v.startswith("postgresql+"):
+            v = v.replace("postgresql://", "postgresql+asyncpg://", 1)
+        # asyncpg uses 'ssl' instead of 'sslmode'
+        if "sslmode=" in v:
+            v = v.replace("sslmode=", "ssl=")
+        return v
+
+    @field_validator("SYNC_DATABASE_URL")
+    @classmethod
+    def validate_sync_database_url(cls, v: str) -> str:
+        if not v:
+            return v
+        if v.startswith("postgres://"):
+            v = v.replace("postgres://", "postgresql+psycopg://", 1)
+        elif v.startswith("postgresql://") and not v.startswith("postgresql+"):
+            v = v.replace("postgresql://", "postgresql+psycopg://", 1)
         return v
 
 
