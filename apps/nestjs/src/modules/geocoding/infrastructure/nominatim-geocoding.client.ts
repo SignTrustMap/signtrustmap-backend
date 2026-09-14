@@ -58,6 +58,43 @@ export class NominatimGeocodingClient {
     return parsed;
   }
 
+  async reverse(
+    latitude: number,
+    longitude: number,
+  ): Promise<{ displayLocation: string; roadName: string | null }> {
+    const latRounded = Number(latitude.toFixed(4));
+    const lonRounded = Number(longitude.toFixed(4));
+    const key = `rev:${latRounded}:${lonRounded}`;
+    const cached = this.cache.get(key);
+    if (cached && cached.expiresAt > Date.now()) {
+      return (cached as any).reverseResult;
+    }
+
+    try {
+      await this.awaitUpstreamRequestSlot();
+      const url = new URL(`${this.baseUrl.replace(/\/$/, '')}/reverse`);
+      url.searchParams.set('format', 'jsonv2');
+      url.searchParams.set('lat', String(latitude));
+      url.searchParams.set('lon', String(longitude));
+      url.searchParams.set('addressdetails', '1');
+
+      const responseText = await this.fetchResponse(url);
+      const data = JSON.parse(responseText);
+      const addr = data.address || {};
+      const roadName = addr.road || addr.street || addr.neighbourhood || addr.suburb || null;
+      const displayLocation = data.display_name || `${latRounded}, ${lonRounded}`;
+
+      const result = { displayLocation, roadName };
+      this.cache.set(key, { response: null as any, reverseResult: result, expiresAt: Date.now() + this.cacheTtlMs } as any);
+      return result;
+    } catch {
+      return {
+        displayLocation: `${latRounded}, ${lonRounded}`,
+        roadName: null,
+      };
+    }
+  }
+
   parseResponse(query: string, body: string): GeocodingSearchResponse {
     let root: unknown;
     try {

@@ -76,5 +76,9 @@ describe('ConsensusService', () => {
       expect.stringContaining("VALUES ($1,'PUBLISHED'"),
       ['verified-sign-id'],
     );
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('UPDATE reviewer_profiles SET reliability_score=$1'),
+      [1, 1, 1, 1, 1, 'reviewer-id'],
+    );
   });
 });

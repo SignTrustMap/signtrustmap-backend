@@ -717,6 +717,41 @@ describe('SurveyService submission contract', () => {
     expect(res.note).toBe('Updated Hanoi coordinate');
   });
 
+  it('rejects createSubmission when daily quota is exceeded', async () => {
+    submissionRepo.count.mockResolvedValueOnce(30);
+
+    await expect(
+      service.createSubmission(userId, {
+        submissionType: SubmissionType.SINGLE_IMAGE,
+        capturedAt: '2026-09-08T02:00:00.000Z',
+        coordinateSource: CoordinateSource.DEVICE_GPS,
+      }),
+    ).rejects.toThrow('Daily submission quota exceeded');
+  });
+
+  it('rejects createSubmission when coordinates are outside Vietnam', async () => {
+    await expect(
+      service.createSubmission(userId, {
+        submissionType: SubmissionType.SINGLE_IMAGE,
+        capturedAt: '2026-09-08T02:00:00.000Z',
+        coordinateSource: CoordinateSource.DEVICE_GPS,
+        latitude: 48.8566, // Paris
+        longitude: 2.3522,
+      }),
+    ).rejects.toThrow('Coordinates fall outside Vietnam territory bounds');
+  });
+
+  it('rejects createSubmission when capturedAt is in the future', async () => {
+    const futureDate = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    await expect(
+      service.createSubmission(userId, {
+        submissionType: SubmissionType.SINGLE_IMAGE,
+        capturedAt: futureDate,
+        coordinateSource: CoordinateSource.DEVICE_GPS,
+      }),
+    ).rejects.toThrow('capturedAt cannot be more than five minutes in the future');
+  });
+
   it('getSession returns chunk indices, missing chunks, and progress percentage for resume support', async () => {
     session.totalChunks = 4;
     const chunk0 = { id: 'c0', sessionId: session.id, chunkIndex: 0, sizeBytes: 100, storageKey: 'k0' } as UploadChunk;

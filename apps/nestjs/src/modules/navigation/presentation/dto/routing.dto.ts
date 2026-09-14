@@ -1,11 +1,31 @@
 import { Type } from 'class-transformer';
-import { IsIn, IsInt, IsNumber, IsOptional, Max, Min } from 'class-validator';
+import { IsArray, IsIn, IsInt, IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
 import { RouteDirectionsRequest } from '../../domain/routing.types';
+
+export class UpdateNavigationPreferencesDto {
+  @IsOptional()
+  @IsIn(['CAR', 'MOTORCYCLE', 'TRUCK'])
+  vehicleType?: 'CAR' | 'MOTORCYCLE' | 'TRUCK';
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  enabledCategoryCodes?: string[];
+}
 
 export class RouteDirectionsRequestDto implements RouteDirectionsRequest {
   @IsOptional()
   @IsIn(['DRIVING'])
   vehicleMode?: 'DRIVING';
+
+  @IsOptional()
+  @IsIn(['CAR', 'MOTORCYCLE', 'TRUCK'])
+  vehicleType?: 'CAR' | 'MOTORCYCLE' | 'TRUCK';
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  enabledCategoryCodes?: string[];
 
   @Type(() => Number)
   @IsNumber()
