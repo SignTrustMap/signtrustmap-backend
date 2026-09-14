@@ -64,7 +64,42 @@ export class RouteSignQueryService {
       route.wkt,
       this.corridorWidthMeters,
     );
+
+    const vehicleType = request.vehicleType;
+    const enabledCategoryCodes = request.enabledCategoryCodes;
+
     const signs = candidates
+      .filter((sign) => {
+        // 1. Category filter
+        if (enabledCategoryCodes && enabledCategoryCodes.length > 0) {
+          const catCode = sign.signType.category.code?.toUpperCase();
+          const matches = enabledCategoryCodes.some(
+            (c) => c.toUpperCase() === catCode,
+          );
+          if (!matches) return false;
+        }
+
+        // 2. Vehicle filter
+        if (vehicleType === 'MOTORCYCLE') {
+          const code = sign.signType.signCode?.toUpperCase() || '';
+          const isCarOrTruckOnly =
+            /^P\.?103[A-C]?/i.test(code) || // Cam o to
+            /^P\.?106[A-B]?/i.test(code) || // Cam xe tai
+            /^P\.?107/i.test(code) ||       // Cam o to khach va xe tai
+            /^P\.?108/i.test(code) ||       // Cam o to keo ro-mooc
+            /^P\.?115/i.test(code) ||       // Han che tai trong
+            /^P\.?116/i.test(code);         // Han che tai trong truc
+          if (isCarOrTruckOnly) return false;
+        } else if (vehicleType === 'CAR') {
+          const code = sign.signType.signCode?.toUpperCase() || '';
+          const isMotorcycleOnly =
+            /^P\.?104/i.test(code) ||       // Cam xe mo to
+            /^R\.?403B/i.test(code);        // Duong danh cho xe may
+          if (isMotorcycleOnly) return false;
+        }
+
+        return true;
+      })
       .map((sign) => this.upcomingSign(sign, route))
       .filter((match) =>
         appliesToTrafficHeading(

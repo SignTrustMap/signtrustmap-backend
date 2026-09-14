@@ -1,5 +1,7 @@
 export interface RouteDirectionsRequest {
   vehicleMode?: 'DRIVING';
+  vehicleType?: 'CAR' | 'MOTORCYCLE' | 'TRUCK';
+  enabledCategoryCodes?: string[];
   originLatitude: number;
   originLongitude: number;
   destinationLatitude: number;

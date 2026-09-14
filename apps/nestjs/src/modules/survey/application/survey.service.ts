@@ -1,7 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash } from 'crypto';
-import { DataSource, EntityManager, Repository } from 'typeorm';
+import { DataSource, EntityManager, MoreThanOrEqual, Repository } from 'typeorm';
 import {
   MediaFileType,
   SubmissionMediaFile,
@@ -49,7 +49,45 @@ export class SurveyService {
     private readonly walletService: WalletService,
     private readonly notificationsService: NotificationsService,
   ) {}
+
+  private validateCapturedAt(capturedAt: string) {
+    const captured = new Date(capturedAt);
+    if (Number.isNaN(captured.getTime())) {
+      throw new BadRequestException('capturedAt must be a valid ISO8601 date string');
+    }
+    if (captured.getTime() > Date.now() + 5 * 60 * 1000) {
+      throw new BadRequestException('capturedAt cannot be more than five minutes in the future');
+    }
+    if (captured.getTime() < Date.now() - 30 * 86400 * 1000) {
+      throw new BadRequestException('capturedAt cannot be older than 30 days');
+    }
+  }
+
+  private validateCoordinates(latitude?: number, longitude?: number) {
+    if (latitude !== undefined && longitude !== undefined) {
+      const inVietnam = latitude >= 8.18 && latitude <= 23.39 && longitude >= 102.14 && longitude <= 109.46;
+      if (!inVietnam) {
+        throw new BadRequestException('Coordinates fall outside Vietnam territory bounds (lat: 8.18-23.39, lon: 102.14-109.46)');
+      }
+    }
+  }
+
   async createSubmission(userId: string, dto: CreateSubmissionDto) {
+    this.validateCapturedAt(dto.capturedAt);
+    this.validateCoordinates(dto.latitude, dto.longitude);
+
+    const startOfDay = new Date();
+    startOfDay.setUTCHours(0, 0, 0, 0);
+    const countToday = await this.submissionRepo.count({
+      where: {
+        surveyorId: userId,
+        createdAt: MoreThanOrEqual(startOfDay),
+      } as any,
+    });
+    if (countToday >= 30) {
+      throw new BadRequestException('Daily submission quota exceeded (maximum 30 submissions per day). Please try again tomorrow.');
+    }
+
     let formattedNote = dto.note ?? null;
     if (dto.latitude !== undefined && dto.longitude !== undefined) {
       formattedNote = `GPS: ${dto.latitude}, ${dto.longitude}${dto.note ? '\n' + dto.note : ''}`;
@@ -73,10 +111,14 @@ export class SurveyService {
     const submission = await this.findOwnedSubmission(userId, submissionId);
     this.assertEditableSubmission(submission);
 
-    if (dto.capturedAt !== undefined) submission.capturedAt = new Date(dto.capturedAt);
+    if (dto.capturedAt !== undefined) {
+      this.validateCapturedAt(dto.capturedAt);
+      submission.capturedAt = new Date(dto.capturedAt);
+    }
     if (dto.coordinateSource !== undefined) submission.coordinateSource = dto.coordinateSource;
 
     if (dto.latitude !== undefined && dto.longitude !== undefined) {
+      this.validateCoordinates(dto.latitude, dto.longitude);
       const existingUserNote = dto.note !== undefined
         ? dto.note
         : (submission.note?.match(/^GPS:\s*[-\d.]+,\s*[-\d.]+(?:\n([\s\S]*))?$/)?.[1] ?? submission.note ?? '');

@@ -39,5 +39,30 @@ describe('ReviewsService queue', () => {
       expect.stringContaining('moderation_action.performed_by = :reviewerId'),
       { reviewerId: 'reviewer-1' },
     );
+    expect(query.andWhere).toHaveBeenCalledWith(
+      expect.stringContaining('reviewer_skipped_candidates'),
+      { reviewerId: 'reviewer-1' },
+    );
+  });
+
+  it('skipCandidate records the skip in database', async () => {
+    const rawQuery = jest.fn().mockResolvedValue([]);
+    const candidates = {
+      findOne: jest.fn().mockResolvedValue({ id: 'candidate-99' }),
+      manager: { query: rawQuery },
+    } as unknown as Repository<UnverifiedSignCandidate>;
+    const service = new ReviewsService(
+      candidates,
+      {} as Repository<CandidateReview>,
+      {} as Repository<TrafficSignType>,
+      {} as ConsensusService,
+    );
+
+    const result = await service.skipCandidate('reviewer-1', 'candidate-99');
+    expect(result).toEqual({ skipped: true, candidateId: 'candidate-99', reviewerId: 'reviewer-1' });
+    expect(rawQuery).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO reviewer_skipped_candidates'),
+      ['reviewer-1', 'candidate-99'],
+    );
   });
 });

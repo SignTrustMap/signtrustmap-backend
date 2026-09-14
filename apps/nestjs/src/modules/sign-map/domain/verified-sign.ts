@@ -5,6 +5,8 @@ export interface RoutePoint {
 
 export interface RouteSignsRequest {
   geometry: RoutePoint[];
+  vehicleType?: 'CAR' | 'MOTORCYCLE' | 'TRUCK';
+  enabledCategoryCodes?: string[];
 }
 
 export interface SignCategorySummary {
