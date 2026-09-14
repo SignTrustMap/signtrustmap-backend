@@ -144,4 +144,43 @@ describe('RouteSignQueryService', () => {
       },
     };
   }
+
+  it('filters out signs when category is not enabled', async () => {
+    const pSign = sign('prohibition-1', 10.00005, 106.002, 90);
+    repository.findActiveAlongRoute.mockResolvedValue([pSign]);
+
+    const response = await service().findAlongRoute({
+      geometry: route({ latitude: 10, longitude: 106 }, { latitude: 10, longitude: 106.01 }),
+      enabledCategoryCodes: ['WARNING'], // Only WARNING enabled
+    });
+
+    expect(response.signCount).toBe(0);
+    expect(response.signs).toHaveLength(0);
+  });
+
+  it('filters out car-only signs when vehicleType is MOTORCYCLE', async () => {
+    const carOnlySign = sign('car-only', 10.00005, 106.002, 90);
+    carOnlySign.signType.signCode = 'P.103a'; // Cam o to
+    repository.findActiveAlongRoute.mockResolvedValue([carOnlySign]);
+
+    const response = await service().findAlongRoute({
+      geometry: route({ latitude: 10, longitude: 106 }, { latitude: 10, longitude: 106.01 }),
+      vehicleType: 'MOTORCYCLE',
+    });
+
+    expect(response.signCount).toBe(0);
+  });
+
+  it('filters out motorcycle-only signs when vehicleType is CAR', async () => {
+    const motoSign = sign('moto-only', 10.00005, 106.002, 90);
+    motoSign.signType.signCode = 'P.104'; // Cam xe mo to
+    repository.findActiveAlongRoute.mockResolvedValue([motoSign]);
+
+    const response = await service().findAlongRoute({
+      geometry: route({ latitude: 10, longitude: 106 }, { latitude: 10, longitude: 106.01 }),
+      vehicleType: 'CAR',
+    });
+
+    expect(response.signCount).toBe(0);
+  });
 });

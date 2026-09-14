@@ -49,6 +49,13 @@ export class ReviewsController {
   }
 
   @ApiBearerAuth()
+  @ApiOperation({ summary: 'Skip candidate sign', description: 'Skip a difficult or ambiguous candidate without voting, temporarily removing it from queue' })
+  @Post('candidates/:candidateId/skip')
+  async skipCandidate(@CurrentUser() user: any, @Param('candidateId', ParseUUIDPipe) candidateId: string) {
+    return this.reviewsService.skipCandidate(user.id, candidateId);
+  }
+
+  @ApiBearerAuth()
   @ApiOperation({ summary: 'Mark sign as unidentifiable', description: 'Skip candidate and mark as cannot identify when sign is obscured or ambiguous' })
   @Post('candidates/:candidateId/can-not-identify')
   async canNotIdentify(@CurrentUser() user: any, @Param('candidateId', ParseUUIDPipe) candidateId: string, @Body() body?: { note?: string }) {

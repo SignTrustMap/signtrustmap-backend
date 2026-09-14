@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException, BadRequestException, Optional, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { CandidateReview } from '../infrastructure/persistence/candidate-review.entity';
@@ -9,14 +9,33 @@ import {
 import { TrafficSignType } from '../../catalog/traffic-sign-type.entity';
 import { VoteDto } from '../presentation/dto/vote.dto';
 import { ConsensusService } from '../../consensus/application/consensus.service';
+import { GeocodingService } from '../../geocoding/application/geocoding.service';
+import { ReviewerSkippedCandidate } from '../infrastructure/persistence/reviewer-skipped-candidate.entity';
+
 @Injectable()
-export class ReviewsService {
+export class ReviewsService implements OnModuleInit {
   constructor(
     @InjectRepository(UnverifiedSignCandidate) private readonly candidateRepo: Repository<UnverifiedSignCandidate>,
     @InjectRepository(CandidateReview) private readonly reviewRepo: Repository<CandidateReview>,
     @InjectRepository(TrafficSignType) private readonly signTypeRepo: Repository<TrafficSignType>,
     private readonly consensusService: ConsensusService,
+    @Optional() private readonly geocodingService?: GeocodingService,
+    @Optional() @InjectRepository(ReviewerSkippedCandidate) private readonly skippedRepo?: Repository<ReviewerSkippedCandidate>,
   ) {}
+
+  async onModuleInit() {
+    try {
+      await (this.candidateRepo.manager as any).query(`
+        CREATE TABLE IF NOT EXISTS reviewer_skipped_candidates (
+          reviewer_id uuid NOT NULL,
+          candidate_id uuid NOT NULL,
+          skipped_at timestamptz NOT NULL DEFAULT now(),
+          PRIMARY KEY (reviewer_id, candidate_id)
+        );
+      `);
+    } catch {}
+  }
+
   async queue(reviewerId: string, page = 1, pageSize = 20) {
     const safePage = Math.max(1, page); const safeSize = Math.min(Math.max(1, pageSize), 100);
     const query = this.candidateRepo.createQueryBuilder('candidate')
@@ -42,6 +61,13 @@ export class ReviewsService {
             AND moderation_case.target_entity_id = candidate.id
             AND moderation_action.action_type = 'REPORT_FROM_REVIEW'
             AND moderation_action.performed_by = :reviewerId
+        )`,
+        { reviewerId },
+      )
+      .andWhere(
+        `NOT EXISTS (
+          SELECT 1 FROM reviewer_skipped_candidates rsc
+          WHERE rsc.candidate_id = candidate.id AND rsc.reviewer_id = :reviewerId
         )`,
         { reviewerId },
       )
@@ -82,21 +108,89 @@ export class ReviewsService {
     return { review: saved, consensusLog };
   }
 
+  async skipCandidate(reviewerId: string, candidateId: string) {
+    const candidate = await this.candidateRepo.findOne({ where: { id: candidateId } });
+    if (!candidate) throw new NotFoundException('Candidate ' + candidateId + ' not found');
+    await (this.candidateRepo.manager as any).query(`
+      CREATE TABLE IF NOT EXISTS reviewer_skipped_candidates (
+        reviewer_id uuid NOT NULL,
+        candidate_id uuid NOT NULL,
+        skipped_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (reviewer_id, candidate_id)
+      );
+    `);
+    await (this.candidateRepo.manager as any).query(
+      `INSERT INTO reviewer_skipped_candidates (reviewer_id, candidate_id, skipped_at)
+       VALUES ($1, $2, now())
+       ON CONFLICT (reviewer_id, candidate_id) DO UPDATE SET skipped_at = now()`,
+      [reviewerId, candidateId],
+    );
+    return { skipped: true, candidateId, reviewerId };
+  }
+
   async getCandidateDetail(candidateId: string) {
     const candidate = await this.candidateRepo.findOne({ where: { id: candidateId }, relations: ['predictedSignType', 'submission'] });
     if (!candidate) throw new NotFoundException('Candidate ' + candidateId + ' not found');
-    // enrich with survey submission location if available via raw query
     let submissionExtra: any = null;
     try {
       const rows: any[] = await (this.candidateRepo.manager as any).query(
-        `SELECT s.surveyor_id, s.captured_at, s.submission_type, s.status AS submission_status
+        `SELECT s.surveyor_id, s.captured_at, s.submission_type, s.status AS submission_status, s.note
          FROM survey_submissions s WHERE s.id = $1`, [candidate.submissionId]);
       if (rows.length) submissionExtra = rows[0];
     } catch {}
-    // Try to get verified sign location if already exists (from verified_traffic_signs via candidate id link)
+
     let voteCount = 0;
     try { voteCount = await this.reviewRepo.count({ where: { candidateId } }); } catch {}
-    return { candidate, submission: submissionExtra, voteCount };
+
+    let locationContext: {
+      coordinates: { latitude: number; longitude: number } | null;
+      displayLocation: string;
+      nearbyRoad: string | null;
+      direction: number | null;
+    } | null = null;
+
+    try {
+      let lat: number | null = null;
+      let lon: number | null = null;
+      let direction: number | null = null;
+
+      const geoRows: any[] = await (this.candidateRepo.manager as any).query(
+        `SELECT ST_X(sign_location::geometry) AS lon, ST_Y(sign_location::geometry) AS lat, traffic_direction
+         FROM candidate_geo_estimations WHERE candidate_id = $1`,
+        [candidateId],
+      );
+      if (geoRows.length > 0 && geoRows[0].lat != null && geoRows[0].lon != null) {
+        lat = parseFloat(geoRows[0].lat);
+        lon = parseFloat(geoRows[0].lon);
+        direction = geoRows[0].traffic_direction != null ? Number(geoRows[0].traffic_direction) : null;
+      } else if (submissionExtra?.note) {
+        const m = String(submissionExtra.note).match(/GPS:\s*([-\d.]+),\s*([-\d.]+)/);
+        if (m) {
+          lat = parseFloat(m[1]);
+          lon = parseFloat(m[2]);
+        }
+      }
+
+      if (lat != null && lon != null) {
+        let displayLocation = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+        let nearbyRoad: string | null = null;
+        if (this.geocodingService) {
+          try {
+            const rev = await this.geocodingService.reverse(lat, lon);
+            if (rev?.displayLocation) displayLocation = rev.displayLocation;
+            if (rev?.roadName) nearbyRoad = rev.roadName;
+          } catch {}
+        }
+        locationContext = {
+          coordinates: { latitude: lat, longitude: lon },
+          displayLocation,
+          nearbyRoad,
+          direction,
+        };
+      }
+    } catch {}
+
+    return { candidate, submission: submissionExtra, voteCount, locationContext };
   }
 
   async getMyHistory(reviewerId: string, page = 1, pageSize = 20, status?: string, search?: string, surveyorId?: string) {
