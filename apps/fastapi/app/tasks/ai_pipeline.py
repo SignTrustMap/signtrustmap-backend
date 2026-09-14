@@ -53,11 +53,13 @@ def _get_minio_client():
     try:
         from minio import Minio
         endpoint = settings.MINIO_ENDPOINT.replace("http://", "").replace("https://", "")
+        region = settings.MINIO_REGION or ("auto" if "r2.cloudflarestorage.com" in endpoint else None)
         return Minio(
             endpoint,
             access_key=settings.MINIO_ACCESS_KEY,
             secret_key=settings.MINIO_SECRET_KEY,
             secure=settings.MINIO_SECURE,
+            region=region,
         )
     except Exception as exc:
         logger.debug("[ai] minio client initialization failed: %s", exc)
@@ -254,7 +256,14 @@ def _load_queued_media(limit: int) -> dict[str, list[dict[str, str]]]:
 
 
 def _broker_client() -> redis.Redis:
-    return redis.Redis.from_url(settings.CELERY_BROKER_URL)
+    url = settings.CELERY_BROKER_URL
+    if "ssl_cert_reqs=CERT_NONE" in url:
+        url = url.replace("ssl_cert_reqs=CERT_NONE", "ssl_cert_reqs=none")
+    elif "ssl_cert_reqs=CERT_REQUIRED" in url:
+        url = url.replace("ssl_cert_reqs=CERT_REQUIRED", "ssl_cert_reqs=required")
+    elif "ssl_cert_reqs=CERT_OPTIONAL" in url:
+        url = url.replace("ssl_cert_reqs=CERT_OPTIONAL", "ssl_cert_reqs=optional")
+    return redis.Redis.from_url(url)
 
 
 def _lock_key(submission_id: str) -> str:

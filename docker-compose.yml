@@ -1,4 +1,30 @@
 services:
+  gateway:
+    build:
+      context: ./infra/gateway
+      dockerfile: Dockerfile
+    container_name: stm-gateway
+    restart: unless-stopped
+    ports:
+      - "${GATEWAY_PORT:-80}:80"
+    depends_on:
+      api-nestjs: { condition: service_healthy }
+      api-fastapi: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:80/health || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+    networks:
+      - stm-network
+    labels:
+      - "coolify.managed=true"
+      - "traefik.enable=true"
+      - "traefik.http.routers.stm-api.rule=Host(`${API_DOMAIN:-api.signtrustmap.site}`)"
+      - "traefik.http.routers.stm-api.entrypoints=websecure"
+      - "traefik.http.routers.stm-api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.stm-api.loadbalancer.server.port=80"
+
   postgres:
     build:
       context: ./infra/postgres
@@ -82,7 +108,7 @@ services:
     networks: [stm-network]
 
   minio:
-    image: minio/minio:latest
+    image: quay.io/minio/minio:latest
     container_name: stm-minio
     restart: unless-stopped
     command: server /data --console-address ":9001"
@@ -92,16 +118,28 @@ services:
     ports:
       - "${MINIO_API_PORT:-9000}:9000"
       - "${MINIO_CONSOLE_PORT:-9001}:9001"
-    volumes: [minio_data:/data]
+    volumes:
+      - minio_data:/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 15s
       timeout: 5s
       retries: 5
     networks: [stm-network]
+    labels:
+      - "coolify.managed=true"
+      - "traefik.enable=true"
+      - "traefik.http.routers.stm-s3.rule=Host(`${S3_DOMAIN:-s3.signtrustmap.site}`)"
+      - "traefik.http.routers.stm-s3.entrypoints=websecure"
+      - "traefik.http.routers.stm-s3.tls.certresolver=letsencrypt"
+      - "traefik.http.services.stm-s3.loadbalancer.server.port=9000"
+      - "traefik.http.routers.stm-minio-console.rule=Host(`${MINIO_CONSOLE_DOMAIN:-minio.signtrustmap.site}`)"
+      - "traefik.http.routers.stm-minio-console.entrypoints=websecure"
+      - "traefik.http.routers.stm-minio-console.tls.certresolver=letsencrypt"
+      - "traefik.http.services.stm-minio-console.loadbalancer.server.port=9001"
 
   minio-init:
-    image: minio/mc:latest
+    image: quay.io/minio/mc:latest
     container_name: stm-minio-init
     depends_on:
       minio: { condition: service_healthy }
@@ -125,11 +163,11 @@ services:
     build:
       context: ./apps/nestjs
       dockerfile: Dockerfile
-      target: development
+      target: ${NESTJS_BUILD_TARGET:-development}
     container_name: stm-nestjs
     restart: unless-stopped
     environment:
-      NODE_ENV: development
+      NODE_ENV: ${NODE_ENV:-development}
       PORT: 3000
       DATABASE_URL: postgres://${POSTGRES_USER:-stm_user}:${POSTGRES_PASSWORD:-stm_password}@postgres:5432/${POSTGRES_DB:-signtrustmap}
       REDIS_URL: redis://redis:6379/0
@@ -137,6 +175,7 @@ services:
       MINIO_PORT: 9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-stm_minio}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-stm_minio_secret_123}
+      MINIO_USE_SSL: ${MINIO_USE_SSL:-false}
       JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_me}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
       INTERNAL_TOKEN: ${INTERNAL_TOKEN:-stm_internal_secret_dev}
@@ -177,7 +216,7 @@ services:
     container_name: stm-fastapi
     restart: unless-stopped
     environment:
-      APP_ENV: development
+      APP_ENV: ${APP_ENV:-development}
       PYTHONPATH: /app
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-stm_user}:${POSTGRES_PASSWORD:-stm_password}@postgres:5432/${POSTGRES_DB:-signtrustmap}
       SYNC_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-stm_user}:${POSTGRES_PASSWORD:-stm_password}@postgres:5432/${POSTGRES_DB:-signtrustmap}
@@ -187,7 +226,6 @@ services:
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-stm_minio}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-stm_minio_secret_123}
       MINIO_SECURE: "false"
-      # NestJS service-to-service: must match INTERNAL_TOKEN on api-nestjs
       INTERNAL_API_TOKEN: ${INTERNAL_TOKEN:-stm_internal_secret_dev}
       NESTJS_INTERNAL_URL: http://api-nestjs:3000
     ports: ["${FASTAPI_PORT:-8088}:8000"]
@@ -196,16 +234,26 @@ services:
       redis: { condition: service_healthy }
       minio: { condition: service_healthy }
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
-    networks: [stm-network]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      stm-network:
+        aliases:
+          - fastapi
+          - api-fastapi
 
   celery-worker:
     build:
       context: ./apps/fastapi
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.worker
     container_name: stm-celery-worker
     restart: unless-stopped
     environment:
-      APP_ENV: development
+      APP_ENV: ${APP_ENV:-development}
       PYTHONPATH: /app
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-stm_user}:${POSTGRES_PASSWORD:-stm_password}@postgres:5432/${POSTGRES_DB:-signtrustmap}
       SYNC_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-stm_user}:${POSTGRES_PASSWORD:-stm_password}@postgres:5432/${POSTGRES_DB:-signtrustmap}
@@ -214,9 +262,8 @@ services:
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-stm_minio}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-stm_minio_secret_123}
-      AI_INFERENCE_URL: http://ai-inference:8000
+      AI_INFERENCE_URL: ${AI_INFERENCE_URL:-http://ai-inference:8000}
       AI_INFERENCE_TIMEOUT_SECONDS: ${AI_INFERENCE_TIMEOUT_SECONDS:-3600}
-      # NestJS service-to-service: must match INTERNAL_TOKEN on api-nestjs
       INTERNAL_API_TOKEN: ${INTERNAL_TOKEN:-stm_internal_secret_dev}
       NESTJS_INTERNAL_URL: http://api-nestjs:3000
     depends_on:
@@ -263,13 +310,30 @@ services:
       postgres: { condition: service_healthy }
     networks: [stm-network]
 
+  cloudbeaver:
+    image: dbeaver/cloudbeaver:latest
+    container_name: stm-cloudbeaver
+    restart: unless-stopped
+    ports:
+      - "${CLOUDBEAVER_PORT:-8978}:8978"
+    environment:
+      CB_SERVER_NAME: "SignTrustMap Database"
+      CB_SERVER_URL: "https://${CLOUDBEAVER_DOMAIN:-db.signmap.site}"
+      CLOUDBEAVER_APP_FORWARD_PROXY: "true"
+    volumes:
+      - cloudbeaver_data:/opt/cloudbeaver/workspace
+    depends_on:
+      postgres: { condition: service_healthy }
+    networks: [stm-network]
+
 volumes:
   postgres_data: { name: stm_postgres_data }
   redis_data:    { name: stm_redis_data }
   minio_data:    { name: stm_minio_data }
   pgadmin_data:  { name: stm_pgadmin_data }
+  cloudbeaver_data: { name: stm_cloudbeaver_data }
 
 networks:
   stm-network:
-    name: stm-network
+    name: ${DOCKER_NETWORK:-stm-network}
     driver: bridge
