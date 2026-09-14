@@ -333,6 +333,22 @@ def _complete_submission(submission_id: str, note: str) -> None:
         response.raise_for_status()
 
 
+def _notify_no_signs(submission_id: str, note: str) -> None:
+    """Notify NestJS of NO_SIGN_DETECTED status so history and notifications trigger."""
+    url = (
+        f"{settings.NESTJS_INTERNAL_URL.rstrip('/')}"
+        f"/api/v1/submissions/internal/{submission_id}/status"
+    )
+    with httpx.Client(timeout=15.0) as client:
+        response = client.patch(
+            url,
+            json={"status": "NO_SIGN_DETECTED", "note": note},
+            headers={"X-Internal-Token": settings.INTERNAL_API_TOKEN},
+        )
+        response.raise_for_status()
+
+
+
 def _resolve_sign_type_id(db, sign: dict[str, Any]) -> int | None:
     class_name = str(sign.get("class_name", "")).strip()
     row = db.execute(
@@ -545,6 +561,34 @@ def task_process_submission_pipeline(
         result = _call_inference_engine(submission_id, media_objects)
         signs = result.get("signs", [])
 
+        # Server-side early "No Sign Detected" filter:
+        # If no signs were detected, bypass tracking, 3D coordinate estimation,
+        # catalog mapping, and candidate persistence entirely (Task 7).
+        if not signs:
+            terminal_status = "NO_SIGN_DETECTED"
+            note = "Inference completed without traffic sign detections."
+            _set_status(submission_id, terminal_status, note)
+            with get_sync_db() as db:
+                db.execute(
+                    text(
+                        "UPDATE survey_submissions SET total_candidates_extracted = 0, "
+                        "failure_reason = NULL, updated_at = NOW() WHERE id = :sid"
+                    ),
+                    {"sid": submission_id},
+                )
+                db.commit()
+            try:
+                _notify_no_signs(submission_id, note)
+            except Exception as exc:
+                logger.debug("[ai] could not notify NestJS of NO_SIGN_DETECTED for %s: %s", submission_id, exc)
+            _clear_dispatch_lock(submission_id)
+            return {
+                "submission_id": submission_id,
+                "status": terminal_status,
+                "total_candidates": 0,
+                "unmapped_labels": 0,
+            }
+
         # 3. Stage TRACKING: Correlate and group detections
         _set_status(
             submission_id,
@@ -572,15 +616,13 @@ def task_process_submission_pipeline(
         )
 
         # 6. Terminal status transition
-        if not signs:
-            terminal_status = "NO_SIGN_DETECTED"
-            note = "Inference completed without traffic sign detections."
-        elif unmapped:
+        if unmapped:
             terminal_status = "PARTIALLY_PROCESSED"
             note = f"Stored {inserted} candidate(s); {unmapped} model label(s) were not in the catalog."
         else:
             terminal_status = "COMPLETED"
             note = f"Stored {inserted} candidate(s) for community review."
+
 
         if terminal_status == "COMPLETED":
             _complete_submission(submission_id, note)

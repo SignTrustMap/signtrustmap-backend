@@ -899,6 +899,18 @@ export class SurveyService {
     if (correctionRequirements !== undefined) sub.correctionRequirements = correctionRequirements;
     await this.submissionRepo.save(sub);
     try { await this.dataSource.query('INSERT INTO submission_status_history (submission_id, old_status, new_status, note) VALUES ($1, $2::submission_status, $3::submission_status, $4)', [sub.id, String(oldStatus), String(newStatus), note ?? 'Status advanced to ' + newStatus]); } catch (e: any) { this.logger.warn('history insert failed: ' + e?.message); }
+    if (newStatus === SubmissionStatus.NO_SIGN_DETECTED) {
+      try {
+        await this.notificationsService.create(
+          sub.surveyorId,
+          'SURVEY_NO_SIGNS',
+          'No signs detected',
+          'Your submission ' + sub.id.slice(0, 8) + ' was processed, but no traffic signs were detected.',
+          'survey_submission',
+          sub.id,
+        );
+      } catch {}
+    }
     return { previousStatus: oldStatus, newStatus, submission: sub };
   }
   async markCompleted(submissionId: string, note?: string) {

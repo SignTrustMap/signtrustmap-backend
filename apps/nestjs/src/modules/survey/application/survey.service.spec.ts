@@ -35,6 +35,7 @@ describe('SurveyService submission contract', () => {
   let submissionRepo: jest.Mocked<Repository<SurveySubmission>>;
   let storage: jest.Mocked<MinioStorageService>;
   let dataSource: jest.Mocked<DataSource>;
+  let notificationsService: jest.Mocked<NotificationsService>;
   let service: SurveyService;
 
   beforeEach(() => {
@@ -131,6 +132,11 @@ describe('SurveyService submission contract', () => {
       query: jest.fn().mockResolvedValue([]),
     } as unknown as jest.Mocked<DataSource>;
 
+    notificationsService = {
+      create: jest.fn().mockResolvedValue(undefined),
+      createBulk: jest.fn().mockResolvedValue(undefined),
+    } as unknown as jest.Mocked<NotificationsService>;
+
     service = new SurveyService(
       sessionRepo,
       {} as Repository<UploadChunk>,
@@ -138,7 +144,7 @@ describe('SurveyService submission contract', () => {
       storage,
       dataSource,
       {} as WalletService,
-      {} as NotificationsService,
+      notificationsService,
     );
   });
 
@@ -818,5 +824,33 @@ describe('SurveyService submission contract', () => {
     expect(res.candidates.length).toBe(1);
     expect(res.candidates[0].sign_code).toBe('P.102');
     expect(res.candidates[0].estimated_distance).toBe(12.5);
+  });
+
+  it('advances submission status to NO_SIGN_DETECTED and sends surveyor notification', async () => {
+    submission.status = SubmissionStatus.DETECTING;
+    submissionRepo.findOne.mockResolvedValue(submission);
+
+    const res = await service.advanceSubmissionStatus(
+      submissionId,
+      SubmissionStatus.NO_SIGN_DETECTED,
+      'Inference completed without traffic sign detections.',
+    );
+
+    expect(res.previousStatus).toBe(SubmissionStatus.DETECTING);
+    expect(res.newStatus).toBe(SubmissionStatus.NO_SIGN_DETECTED);
+    expect(submission.status).toBe(SubmissionStatus.NO_SIGN_DETECTED);
+    expect(submissionRepo.save).toHaveBeenCalledWith(submission);
+    expect(dataSource.query).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO submission_status_history'),
+      expect.arrayContaining([submissionId, 'DETECTING', 'NO_SIGN_DETECTED']),
+    );
+    expect(notificationsService.create).toHaveBeenCalledWith(
+      userId,
+      'SURVEY_NO_SIGNS',
+      'No signs detected',
+      expect.stringContaining('no traffic signs were detected'),
+      'survey_submission',
+      submissionId,
+    );
   });
 });
