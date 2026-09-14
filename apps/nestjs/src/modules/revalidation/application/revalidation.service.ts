@@ -1,9 +1,9 @@
-﻿import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, In } from 'typeorm';
 import { RevalidationDecision, RevalDecision } from '../infrastructure/persistence/revalidation-decision.entity';
 import { RevalidationEvidence } from '../infrastructure/persistence/revalidation-evidence.entity';
-import { RevalidationTask, TaskStatus } from '../infrastructure/persistence/revalidation-task.entity';
+import { RevalidationTask, TaskPriority, TaskStatus } from '../infrastructure/persistence/revalidation-task.entity';
 import { MinioStorageService } from '../../../integrations/minio/minio-storage.service';
 import { WalletService } from '../../wallet/application/wallet.service';
 import { TransactionType } from '../../wallet/infrastructure/persistence/credit-transaction.entity';
@@ -153,4 +153,51 @@ export class RevalidationService {
     } catch {}
     return { taskId: task.id, verifiedSignId: task.verifiedSignId, winningDecision, voteCounts: Object.fromEntries(counts), signAction, creditedSubmitters: creditedCount, rewardPerSubmitter: rewardAmount };
   }
+
+  async createOrEscalateDisputeTask(
+    signId: string,
+    userId: string,
+    photoUrl?: string,
+    location?: { latitude: number; longitude: number },
+    _note?: string,
+  ): Promise<RevalidationTask> {
+    let task = await this.tasks.findOne({
+      where: {
+        verifiedSignId: signId,
+        status: In([TaskStatus.OPEN, TaskStatus.EVALUATING]),
+      },
+    });
+
+    if (task) {
+      task.priority = TaskPriority.HIGH;
+      task.rewardCredits = Math.max(task.rewardCredits, 15);
+      task = await this.tasks.save(task);
+    } else {
+      task = this.tasks.create({
+        verifiedSignId: signId,
+        priority: TaskPriority.HIGH,
+        rewardCredits: 15,
+        status: TaskStatus.OPEN,
+      });
+      task = await this.tasks.save(task);
+    }
+
+    if (photoUrl) {
+      const evidenceId = randomUUID();
+      const lat = location?.latitude ?? 0;
+      const lon = location?.longitude ?? 0;
+      try {
+        await this.dataSource.query(
+          `INSERT INTO revalidation_evidences (id, task_id, user_id, media_url, location)
+           VALUES ($1, $2, $3, $4, ST_SetSRID(ST_MakePoint($5, $6), 4326))`,
+          [evidenceId, task.id, userId, photoUrl, lon, lat],
+        );
+      } catch (e: any) {
+        this.logger.warn(`Failed to attach evidence for dispute task ${task.id}: ${e?.message}`);
+      }
+    }
+
+    return task;
+  }
 }
+

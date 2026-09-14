@@ -31,6 +31,9 @@ export class VerifiedSignOrmEntity {
   @Column({ name: 'freshness_score', type: 'double precision', default: 1 })
   freshnessScore: number;
 
+  @Column({ name: 'confirmation_count', type: 'int', default: 0 })
+  confirmationCount: number;
+
   @Column({ name: 'last_verified_at', type: 'timestamptz' })
   lastVerifiedAt: Date;
 

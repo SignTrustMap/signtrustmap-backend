@@ -11,6 +11,7 @@ describe('RouteSignQueryService', () => {
     update: jest.fn(),
     findActiveInBounds: jest.fn(),
     findActiveAlongRoute: jest.fn(),
+    findNearbyCandidates: jest.fn(),
   };
 
   beforeEach(() => jest.resetAllMocks());

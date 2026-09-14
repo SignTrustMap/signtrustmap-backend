@@ -16,6 +16,7 @@ describe('VerifiedSignService', () => {
     update: jest.fn(),
     findActiveInBounds: jest.fn(),
     findActiveAlongRoute: jest.fn(),
+    findNearbyCandidates: jest.fn(),
   };
   const catalog = {
     getSignType: jest.fn(),
@@ -157,6 +158,137 @@ describe('VerifiedSignService', () => {
       ),
     );
   });
+
+  describe('findNearbyCandidates', () => {
+    it('rejects coordinates out of geographical range', async () => {
+      await expect(service.findNearbyCandidates(95, 106)).rejects.toThrow(BadRequestException);
+      await expect(service.findNearbyCandidates(10, 195)).rejects.toThrow(BadRequestException);
+    });
+
+    it('delegates to repository with clamped radius and returns candidates with count', async () => {
+      const candidates = [{ sign: sign(), distanceMeters: 12.3 }];
+      repository.findNearbyCandidates.mockResolvedValue(candidates);
+
+      const result = await service.findNearbyCandidates(10.77, 106.69, 150, 90);
+      // 150 should be clamped to 100
+      expect(repository.findNearbyCandidates).toHaveBeenCalledWith(10.77, 106.69, 100, 90);
+      expect(result).toEqual({ candidates, count: 1 });
+    });
+  });
+
+  describe('confirmSign (anti-farming and verification)', () => {
+    const dataSource = {
+      query: jest.fn(),
+    } as any;
+    const walletService = {
+      creditUser: jest.fn(),
+    } as any;
+    const revalidationService = {
+      createOrEscalateDisputeTask: jest.fn(),
+    } as any;
+    const testService = new VerifiedSignService(
+      repository,
+      catalog,
+      dataSource,
+      walletService,
+      revalidationService,
+    );
+
+    it('throws NotFoundException when sign does not exist', async () => {
+      repository.findById.mockResolvedValue(null);
+      await expect(
+        testService.confirmSign('user-1', 'non-existent', { isPresent: true }),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('awards credits based on age when sign is confirmed present and user is not on cooldown', async () => {
+      const twentyDaysAgo = new Date(Date.now() - 20 * 24 * 60 * 60 * 1000);
+      const targetSign = sign({ id: 'target-sign', lastVerifiedAt: twentyDaysAgo });
+      repository.findById.mockResolvedValue(targetSign);
+
+      // No recent confirmations found for cooldown
+      dataSource.query
+        .mockResolvedValueOnce([]) // ensureTables
+        .mockResolvedValueOnce([]) // cooldown check
+        .mockResolvedValueOnce([]) // update verified_traffic_signs
+        .mockResolvedValueOnce([]) // insert sign_confirmations
+        .mockResolvedValueOnce([]); // insert sign_lifecycle_events
+
+      const result = await testService.confirmSign('user-1', 'target-sign', {
+        isPresent: true,
+        latitude: 10.77,
+        longitude: 106.69,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.isPresent).toBe(true);
+      expect(result.cooldownActive).toBe(false);
+      // 20 days falls in [14, 30) -> 10 credits
+      expect(result.creditsAwarded).toBe(10);
+      expect(walletService.creditUser).toHaveBeenCalledWith(
+        'user-1',
+        10,
+        'REVALIDATION_REWARD',
+        'verified_sign',
+        'target-sign',
+        expect.stringContaining('P.102'),
+      );
+    });
+
+    it('awards 0 credits when user confirms the same sign within 7-day cooldown', async () => {
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      const targetSign = sign({ id: 'target-sign', lastVerifiedAt: thirtyDaysAgo });
+      repository.findById.mockResolvedValue(targetSign);
+
+      dataSource.query
+        .mockResolvedValueOnce([]) // ensureTables
+        .mockResolvedValueOnce([{ id: 'recent-conf-id' }]) // cooldown check matches!
+        .mockResolvedValueOnce([]) // update verified_traffic_signs
+        .mockResolvedValueOnce([]) // insert sign_confirmations
+        .mockResolvedValueOnce([]); // insert sign_lifecycle_events
+
+      const result = await testService.confirmSign('user-1', 'target-sign', { isPresent: true });
+
+      expect(result.success).toBe(true);
+      expect(result.cooldownActive).toBe(true);
+      expect(result.creditsAwarded).toBe(0);
+      expect(walletService.creditUser).not.toHaveBeenCalled();
+    });
+
+    it('creates high-priority revalidation dispute task when isPresent is false', async () => {
+      const targetSign = sign({ id: 'target-sign' });
+      repository.findById.mockResolvedValue(targetSign);
+
+      dataSource.query
+        .mockResolvedValueOnce([]) // ensureTables
+        .mockResolvedValueOnce([]) // insert sign_confirmations
+        .mockResolvedValueOnce([]); // insert sign_lifecycle_events
+
+      revalidationService.createOrEscalateDisputeTask.mockResolvedValue({ id: 'reval-task-999' });
+
+      const result = await testService.confirmSign('user-1', 'target-sign', {
+        isPresent: false,
+        latitude: 10.77,
+        longitude: 106.69,
+        photoEvidenceUrl: 'crops/dispute.jpg',
+        note: 'Sign was knocked down by construction',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.isPresent).toBe(false);
+      expect(result.creditsAwarded).toBe(0);
+      expect(result.revalidationTaskId).toBe('reval-task-999');
+      expect(revalidationService.createOrEscalateDisputeTask).toHaveBeenCalledWith(
+        'target-sign',
+        'user-1',
+        'crops/dispute.jpg',
+        { latitude: 10.77, longitude: 106.69 },
+        'Sign was knocked down by construction',
+      );
+      expect(walletService.creditUser).not.toHaveBeenCalled();
+    });
+  });
+
 
   function sign(overrides: Partial<VerifiedSign> = {}): VerifiedSign {
     return {

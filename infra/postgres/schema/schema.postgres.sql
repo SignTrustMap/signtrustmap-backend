@@ -543,9 +543,19 @@ CREATE TABLE "verified_traffic_signs" (
   "sign_crop_url" varchar(500) NOT NULL,
   "status" sign_lifecycle_status NOT NULL DEFAULT 'ACTIVE',
   "freshness_score" float NOT NULL DEFAULT 1,
+  "confirmation_count" int NOT NULL DEFAULT 0,
   "last_verified_at" timestamptz NOT NULL DEFAULT (now()),
   "created_at" timestamptz NOT NULL DEFAULT (now()),
   "updated_at" timestamptz NOT NULL DEFAULT (now())
+);
+
+CREATE TABLE "sign_confirmations" (
+  "id" uuid PRIMARY KEY DEFAULT (gen_random_uuid()),
+  "sign_id" uuid NOT NULL,
+  "user_id" uuid NOT NULL,
+  "is_present" boolean NOT NULL,
+  "credits_awarded" int NOT NULL DEFAULT 0,
+  "created_at" timestamptz NOT NULL DEFAULT (now())
 );
 
 CREATE TABLE "verified_sign_history" (
