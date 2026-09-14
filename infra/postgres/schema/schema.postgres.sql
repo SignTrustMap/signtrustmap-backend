@@ -7,13 +7,15 @@ CREATE TYPE "user_status" AS ENUM (
 CREATE TYPE "media_file_type" AS ENUM (
   'VIDEO',
   'GPX',
-  'IMAGE'
+  'IMAGE',
+  'FRAME_SEQUENCE'
 );
 
 CREATE TYPE "submission_type" AS ENUM (
   'VIDEO_GPX',
   'SINGLE_IMAGE',
-  'LIVE_TRIP'
+  'LIVE_TRIP',
+  'FRAME_BATCH'
 );
 
 CREATE TYPE "coordinate_source" AS ENUM (
@@ -376,6 +378,22 @@ CREATE TABLE "missing_sign_type_report_evidences" (
   "uploaded_at" timestamptz NOT NULL DEFAULT (now())
 );
 
+CREATE TABLE "camera_calibration_profiles" (
+  "id" uuid PRIMARY KEY DEFAULT (gen_random_uuid()),
+  "user_id" uuid NOT NULL,
+  "device_model" varchar(100) NOT NULL,
+  "camera_height_meters" float NOT NULL DEFAULT 1.35,
+  "pitch_angle_degrees" float NOT NULL DEFAULT 0.0,
+  "yaw_offset_degrees" float NOT NULL DEFAULT 0.0,
+  "hfov_degrees" float NOT NULL DEFAULT 60.0,
+  "focal_length_px" float,
+  "is_default" boolean NOT NULL DEFAULT true,
+  "created_at" timestamptz NOT NULL DEFAULT (now()),
+  "updated_at" timestamptz NOT NULL DEFAULT (now())
+);
+
+CREATE INDEX "idx_camera_calibration_user" ON "camera_calibration_profiles"("user_id");
+
 CREATE TABLE "survey_submissions" (
   "id" uuid PRIMARY KEY DEFAULT (gen_random_uuid()),
   "surveyor_id" uuid NOT NULL,
@@ -383,6 +401,7 @@ CREATE TABLE "survey_submissions" (
   "status" submission_status NOT NULL DEFAULT 'DRAFT',
   "captured_at" timestamptz NOT NULL,
   "coordinate_source" coordinate_source NOT NULL,
+  "camera_profile_id" uuid,
   "note" text,
   "validation_errors" jsonb NOT NULL DEFAULT '[]'::jsonb,
   "correction_requirements" jsonb NOT NULL DEFAULT '[]'::jsonb,
@@ -987,7 +1006,11 @@ ALTER TABLE "missing_sign_type_reports" ADD FOREIGN KEY ("reviewed_by") REFERENC
 
 ALTER TABLE "missing_sign_type_report_evidences" ADD FOREIGN KEY ("report_id") REFERENCES "missing_sign_type_reports" ("id") DEFERRABLE INITIALLY IMMEDIATE;
 
+ALTER TABLE "camera_calibration_profiles" ADD FOREIGN KEY ("user_id") REFERENCES "users" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE;
+
 ALTER TABLE "survey_submissions" ADD FOREIGN KEY ("surveyor_id") REFERENCES "users" ("id") DEFERRABLE INITIALLY IMMEDIATE;
+
+ALTER TABLE "survey_submissions" ADD FOREIGN KEY ("camera_profile_id") REFERENCES "camera_calibration_profiles" ("id") ON DELETE SET NULL DEFERRABLE INITIALLY IMMEDIATE;
 
 ALTER TABLE "submission_media_files" ADD FOREIGN KEY ("submission_id") REFERENCES "survey_submissions" ("id") DEFERRABLE INITIALLY IMMEDIATE;
 

@@ -43,6 +43,9 @@ export class SurveySubmission {
   @Column({ name: 'coordinate_source', type: 'enum', enum: CoordinateSource })
   coordinateSource: CoordinateSource;
 
+  @Column({ name: 'camera_profile_id', type: 'uuid', nullable: true })
+  cameraProfileId?: string | null;
+
   @Column({ type: 'text', nullable: true })
   note: string | null;
 

@@ -166,7 +166,69 @@ describe('SurveyService submission contract', () => {
         requiredMediaTypes: [MediaFileType.VIDEO],
         allowedCoordinateSources: [CoordinateSource.LIVE_STREAM],
       },
+      FRAME_BATCH: {
+        requiredMediaTypes: [MediaFileType.FRAME_SEQUENCE],
+        allowedCoordinateSources: [
+          CoordinateSource.DEVICE_GPS,
+          CoordinateSource.GPX_FILE,
+          CoordinateSource.IMAGE_EXIF,
+        ],
+      },
     });
+  });
+
+  it('creates a frame batch survey session and stores manifest in MinIO', async () => {
+    submissionRepo.count.mockResolvedValue(0);
+    const mockCreatedSub = {
+      id: 'sub-frame-1',
+      surveyorId: userId,
+      submissionType: SubmissionType.FRAME_BATCH,
+      status: SubmissionStatus.DRAFT,
+      capturedAt: new Date('2026-09-08T02:00:00.000Z'),
+      coordinateSource: CoordinateSource.DEVICE_GPS,
+      note: 'GPS: 21.0285, 105.8544\n[FrameBatch: 2 frames, fps=5]',
+      validationErrors: [],
+      correctionRequirements: [],
+    };
+    manager.create
+      .mockReturnValueOnce(mockCreatedSub as any)
+      .mockReturnValueOnce({ id: 'sess-1', submissionId: 'sub-frame-1' } as any)
+      .mockReturnValueOnce({ id: 'media-1', submissionId: 'sub-frame-1' } as any);
+
+    manager.save
+      .mockResolvedValueOnce(mockCreatedSub as any)
+      .mockResolvedValueOnce({ id: 'sess-1', submissionId: 'sub-frame-1' } as any)
+      .mockResolvedValueOnce({ id: 'media-1', submissionId: 'sub-frame-1' } as any);
+
+    const result = await service.createFrameBatchSession(userId, {
+      capturedAt: '2026-09-08T02:00:00.000Z',
+      fps: 5.0,
+      frames: [
+        {
+          frameIndex: 0,
+          timestampMs: 1718000000000,
+          latitude: 21.0285,
+          longitude: 105.8544,
+          storageKey: 'stm-raw-videos/frames/user/f0.jpg',
+        },
+        {
+          frameIndex: 1,
+          timestampMs: 1718000000200,
+          latitude: 21.0286,
+          longitude: 105.8545,
+          storageKey: 'stm-raw-videos/frames/user/f1.jpg',
+        },
+      ],
+    });
+
+    expect(storage.putObject).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.stringContaining('frame_manifest.json'),
+      expect.any(Buffer),
+      'application/json',
+    );
+    expect(result.totalFrames).toBe(2);
+    expect(result.fps).toBe(5.0);
   });
 
   it('creates a draft before any upload session', async () => {

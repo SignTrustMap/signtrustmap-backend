@@ -16,6 +16,7 @@ import { PlacesController } from '../modules/places/places.controller';
 import { RevalidationController } from '../modules/revalidation/presentation/revalidation.controller';
 import { ReviewsController } from '../modules/reviews/presentation/reviews.controller';
 import { VerifiedSignController } from '../modules/sign-map/presentation/verified-sign.controller';
+import { CameraProfileController } from '../modules/survey/presentation/camera-profile.controller';
 import { SurveyController } from '../modules/survey/presentation/survey.controller';
 import { WalletController } from '../modules/wallet/presentation/wallet.controller';
 import { OPENAPI_TAGS } from './swagger.config';
@@ -34,6 +35,7 @@ const CONTROLLER_GROUPS = [
   { controller: VerifiedSignController, tag: 'Sign Map' },
   { controller: SignGeolocationController, tag: 'Geolocation' },
   { controller: SurveyController, tag: 'Survey Submissions' },
+  { controller: CameraProfileController, tag: 'Survey Submissions' },
   { controller: ReviewsController, tag: 'Reviews' },
   { controller: RevalidationController, tag: 'Revalidation' },
   { controller: CatalogController, tag: 'Catalog' },
