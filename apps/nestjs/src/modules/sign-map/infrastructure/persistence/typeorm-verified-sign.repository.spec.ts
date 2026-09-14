@@ -109,6 +109,32 @@ describe('TypeOrmVerifiedSignRepository', () => {
     expect(updated?.status).toBe('STALE');
   });
 
+  it('queries nearby candidates using ST_DWithin and ST_Distance, filtering by heading when provided', async () => {
+    const rowEast = { ...databaseRow(), id: 'sign-east', traffic_direction: 90, distance_meters: '15.4' };
+    const rowWest = { ...databaseRow(), id: 'sign-west', traffic_direction: 270, distance_meters: '8.2' };
+    const ormRepository = {
+      query: jest.fn().mockResolvedValue([rowWest, rowEast]),
+    } as unknown as Repository<VerifiedSignOrmEntity>;
+    const repository = new TypeOrmVerifiedSignRepository(ormRepository);
+
+    // Query without heading
+    const allNearby = await repository.findNearbyCandidates(10.7725, 106.698, 20);
+    expect(allNearby).toHaveLength(2);
+    expect(allNearby[0].distanceMeters).toBe(8.2);
+    expect(allNearby[1].distanceMeters).toBe(15.4);
+
+    const [query, parameters] = (ormRepository.query as jest.Mock).mock.calls[0];
+    expect(query).toContain('ST_DWithin');
+    expect(query).toContain('ST_Distance');
+    expect(parameters).toEqual([106.698, 10.7725, 20]);
+
+    // Query with heading = 95 degrees (matches rowEast with heading 90, within 45 deg; rejects rowWest with 270)
+    const headingFiltered = await repository.findNearbyCandidates(10.7725, 106.698, 20, 95);
+    expect(headingFiltered).toHaveLength(1);
+    expect(headingFiltered[0].sign.id).toBe('sign-east');
+  });
+
+
   function databaseRow() {
     return {
       id: '7c283c24-e758-4496-8df0-7b892ee4e1c1',

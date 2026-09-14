@@ -115,9 +115,11 @@ class AiPipelineContractTests(TestCase):
                 "_call_inference_engine",
                 return_value={"submission_id": "submission-1", "signs": []},
             ),
-            patch.object(ai_pipeline, "_persist_candidates", return_value=(0, 0)),
+            patch.object(ai_pipeline, "_persist_candidates") as persist_candidates,
+            patch.object(ai_pipeline, "get_sync_db") as get_sync_db,
             patch.object(ai_pipeline, "_clear_dispatch_lock"),
         ):
+            get_sync_db.return_value.__enter__.return_value = MagicMock()
             result = task.apply(args=["submission-1", []]).get()
 
         self.assertEqual(
@@ -129,6 +131,7 @@ class AiPipelineContractTests(TestCase):
                 "unmapped_labels": 0,
             },
         )
+        persist_candidates.assert_not_called()
         set_status.assert_any_call("submission-1", "DETECTING", "Inference engine is processing submission media.")
         set_status.assert_any_call("submission-1", "NO_SIGN_DETECTED", "Inference completed without traffic sign detections.")
 

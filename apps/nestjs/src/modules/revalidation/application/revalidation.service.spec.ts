@@ -61,4 +61,75 @@ describe('RevalidationService', () => {
       [['evidence-id']],
     );
   });
+
+  describe('createOrEscalateDisputeTask', () => {
+    it('creates a new high-priority OPEN revalidation task when none exists', async () => {
+      const tasks = {
+        findOne: jest.fn().mockResolvedValue(null),
+        create: jest.fn((val) => ({ ...val, id: 'new-dispute-task-id' })),
+        save: jest.fn(async (val) => val),
+      } as unknown as Repository<RevalidationTask>;
+
+      const query = jest.fn().mockResolvedValue([]);
+      const service = new RevalidationService(
+        tasks,
+        {} as Repository<RevalidationEvidence>,
+        {} as Repository<RevalidationDecision>,
+        { query } as unknown as DataSource,
+        {} as MinioStorageService,
+        {} as WalletService,
+        {} as NotificationsService,
+      );
+
+      const task = await service.createOrEscalateDisputeTask(
+        'sign-123',
+        'user-456',
+        'evidence/dispute.jpg',
+        { latitude: 10.77, longitude: 106.69 },
+        'Sign missing',
+      );
+
+      expect(task.id).toBe('new-dispute-task-id');
+      expect(task.verifiedSignId).toBe('sign-123');
+      expect(task.priority).toBe('HIGH');
+      expect(task.rewardCredits).toBe(15);
+      expect(task.status).toBe('OPEN');
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining('INSERT INTO revalidation_evidences'),
+        expect.arrayContaining(['new-dispute-task-id', 'user-456', 'evidence/dispute.jpg', 106.69, 10.77]),
+      );
+    });
+
+    it('escalates an existing open task to HIGH priority and 15 credits', async () => {
+      const existingTask = {
+        id: 'existing-task-id',
+        verifiedSignId: 'sign-123',
+        priority: 'LOW',
+        rewardCredits: 10,
+        status: TaskStatus.OPEN,
+      } as RevalidationTask;
+
+      const tasks = {
+        findOne: jest.fn().mockResolvedValue(existingTask),
+        save: jest.fn(async (val) => val),
+      } as unknown as Repository<RevalidationTask>;
+
+      const service = new RevalidationService(
+        tasks,
+        {} as Repository<RevalidationEvidence>,
+        {} as Repository<RevalidationDecision>,
+        {} as DataSource,
+        {} as MinioStorageService,
+        {} as WalletService,
+        {} as NotificationsService,
+      );
+
+      const task = await service.createOrEscalateDisputeTask('sign-123', 'user-456');
+
+      expect(task.id).toBe('existing-task-id');
+      expect(task.priority).toBe('HIGH');
+      expect(task.rewardCredits).toBe(15);
+      expect(tasks.save).toHaveBeenCalledWith(existingTask);
+    });
+  });
 });

@@ -40,6 +40,7 @@ export interface VerifiedSign {
   signCropUrl: string;
   status: string;
   freshnessScore: number;
+  confirmationCount?: number;
   lastVerifiedAt: Date | string | null;
   createdAt: Date | string;
   updatedAt: Date | string;
@@ -89,4 +90,27 @@ export interface RouteSignsResponse {
   corridorWidthMeters: number;
   signCount: number;
   signs: UpcomingSign[];
+}
+
+export interface NearbySignCandidate {
+  sign: VerifiedSign;
+  distanceMeters: number;
+}
+
+export interface ConfirmSignRequest {
+  isPresent: boolean;
+  latitude?: number;
+  longitude?: number;
+  photoEvidenceUrl?: string;
+  note?: string;
+}
+
+export interface ConfirmSignResponse {
+  success: boolean;
+  signId: string;
+  isPresent: boolean;
+  creditsAwarded: number;
+  cooldownActive: boolean;
+  revalidationTaskId?: string;
+  message: string;
 }
