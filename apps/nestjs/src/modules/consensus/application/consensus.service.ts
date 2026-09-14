@@ -1,4 +1,4 @@
-﻿import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { ConsensusConfig } from '../infrastructure/persistence/consensus-config.entity';
@@ -100,8 +100,9 @@ export class ConsensusService {
       if (rows.length > 0) { oldScore = Number(rows[0].reliability_score ?? 0.5); totalReviews = Number(rows[0].total_reviews ?? 0); correctReviews = Number(rows[0].correct_reviews ?? 0); currentStreak = Number(rows[0].current_streak ?? 0); }
       else await this.dataSource.query('INSERT INTO reviewer_profiles (user_id, reliability_score, total_reviews, correct_reviews, accuracy_rate, current_streak) VALUES ($1, 0.5, 0, 0, 0, 0) ON CONFLICT (user_id) DO NOTHING', [reviewerId]);
       const newTotal = totalReviews + 1; const newCorrect = correctReviews + (aligned === 1 ? 1 : 0); const newAccuracy = newTotal > 0 ? newCorrect / newTotal : 0;
-      const alpha = Number.isFinite(Number(config.alphaSmoothingFactor)) ? Number(config.alphaSmoothingFactor) : 0.1;
-      const newScore = (1 - alpha) * oldScore + alpha * aligned; const newStreak = isEscalated ? 0 : (aligned === 1 ? currentStreak + 1 : 0);
+      // Real observation convergence: if newTotal is 0, default to 0.5; once real observations exist, converge directly to true accuracy.
+      const newScore = newTotal === 0 ? 0.5 : Math.max(0, Math.min(1, Number(newAccuracy.toFixed(4))));
+      const newStreak = isEscalated ? 0 : (aligned === 1 ? currentStreak + 1 : 0);
       await this.dataSource.query('UPDATE reviewer_profiles SET reliability_score=$1, total_reviews=$2, correct_reviews=$3, accuracy_rate=$4, current_streak=$5, last_reviewed_at=now(), updated_at=now() WHERE user_id=$6', [newScore, newTotal, newCorrect, newAccuracy, newStreak, reviewerId]);
       await this.dataSource.query('INSERT INTO reviewer_reliability_history (reviewer_id, consensus_log_id, old_score, new_score, alignment_value) VALUES ($1,$2,$3,$4,$5)', [reviewerId, consensusLogId, oldScore, newScore, aligned === 0.5 ? 0 : (aligned === 1 ? 1 : -1)]);
     } catch (e: any) { this.logger.warn('updateReviewerProfile ' + reviewerId + ': ' + e?.message); }

@@ -121,4 +121,25 @@ describe('NominatimGeocodingClient', () => {
   it('rejects malformed upstream JSON', () => {
     expect(() => service().parseResponse('test', '{')).toThrow(BadGatewayException);
   });
+
+  it('performs reverse geocoding and returns road name and display location', async () => {
+    const fetchMock = jest.spyOn(global, 'fetch').mockImplementation(async () => ({
+      ok: true,
+      text: async () => JSON.stringify({
+        display_name: 'Xa Lo Ha Noi, Hiep Phu, Thu Duc City, Ho Chi Minh City, Vietnam',
+        address: { road: 'Xa Lo Ha Noi', city: 'Ho Chi Minh City' },
+      }),
+    } as unknown as Response));
+
+    const client = service();
+    const result = await client.reverse(10.8491, 106.7723);
+
+    expect(result).toEqual({
+      displayLocation: 'Xa Lo Ha Noi, Hiep Phu, Thu Duc City, Ho Chi Minh City, Vietnam',
+      roadName: 'Xa Lo Ha Noi',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/reverse?format=jsonv2&lat=10.8491&lon=106.7723&addressdetails=1');
+  });
 });

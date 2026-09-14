@@ -16,6 +16,8 @@ export class RoutePreviewService {
     const directions = await this.routing.findDirections(request);
     const upcomingSigns = await this.routeSigns.findAlongRoute({
       geometry: directions.shortestPath.geometry,
+      vehicleType: request.vehicleType,
+      enabledCategoryCodes: request.enabledCategoryCodes,
     });
     const route = directions.shortestPath;
 

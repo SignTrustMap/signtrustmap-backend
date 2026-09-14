@@ -1,4 +1,4 @@
-﻿import { Module } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ReviewsService } from './application/reviews.service';
 import { CandidateReview } from './infrastructure/persistence/candidate-review.entity';
@@ -7,6 +7,9 @@ import { ReviewsController } from './presentation/reviews.controller';
 import { TrafficSignType } from '../catalog/traffic-sign-type.entity';
 import { UnverifiedSignCandidate } from '../survey/infrastructure/persistence/unverified-sign-candidate.entity';
 import { ConsensusModule } from '../consensus/consensus.module';
+import { GeocodingModule } from '../geocoding/geocoding.module';
+import { ReviewerSkippedCandidate } from './infrastructure/persistence/reviewer-skipped-candidate.entity';
+
 @Module({
   imports: [
     TypeOrmModule.forFeature([
@@ -14,8 +17,10 @@ import { ConsensusModule } from '../consensus/consensus.module';
       CandidateReview,
       ReviewFlag,
       TrafficSignType,
+      ReviewerSkippedCandidate,
     ]),
     ConsensusModule,
+    GeocodingModule,
   ],
   controllers: [ReviewsController],
   providers: [ReviewsService],
