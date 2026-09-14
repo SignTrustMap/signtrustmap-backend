@@ -4,9 +4,11 @@ import { Repository } from 'typeorm';
 import { VerifiedSignRepository } from '../../domain/verified-sign.repository';
 import {
   CreateVerifiedSign,
+  NearbySignCandidate,
   UpdateVerifiedSign,
   VerifiedSign,
 } from '../../domain/verified-sign';
+import { appliesToTrafficHeading } from '../../domain/traffic-direction';
 import { VerifiedSignOrmEntity } from './verified-sign.orm-entity';
 
 interface VerifiedSignRow {
@@ -18,6 +20,7 @@ interface VerifiedSignRow {
   sign_crop_url: string;
   status: string;
   freshness_score: number | string;
+  confirmation_count?: number | string | null;
   last_verified_at: Date | string | null;
   created_at: Date | string;
   updated_at: Date | string;
@@ -38,7 +41,7 @@ interface VerifiedSignRow {
 
 @Injectable()
 export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
-  private static readonly SELECT_SIGN = `SELECT
+  private static readonly SELECT_COLUMNS = `
          sign.id,
          sign.sign_type_id,
          ST_X(sign.location::geometry) AS longitude,
@@ -47,6 +50,7 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
          sign.sign_crop_url,
          sign.status,
          sign.freshness_score,
+         COALESCE(sign.confirmation_count, 0) AS confirmation_count,
          sign.last_verified_at,
          sign.created_at,
          sign.updated_at,
@@ -69,10 +73,14 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
          ) AS navigation_value,
          category.code AS category_code,
          category.name_vi AS category_name_vi,
-         category.name_en AS category_name_en
+         category.name_en AS category_name_en`;
+
+  private static readonly FROM_JOIN_SIGN = `
        FROM verified_traffic_signs sign
        JOIN traffic_sign_types sign_type ON sign_type.id = sign.sign_type_id
        JOIN sign_categories category ON category.id = sign_type.category_id`;
+
+  private static readonly SELECT_SIGN = `SELECT ${TypeOrmVerifiedSignRepository.SELECT_COLUMNS} ${TypeOrmVerifiedSignRepository.FROM_JOIN_SIGN}`;
 
   constructor(
     @InjectRepository(VerifiedSignOrmEntity)
@@ -205,6 +213,44 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
     return rows.map((row) => this.toDomain(row));
   }
 
+  async findNearbyCandidates(
+    latitude: number,
+    longitude: number,
+    radiusMeters: number,
+    headingDegrees?: number,
+  ): Promise<NearbySignCandidate[]> {
+    const rows = (await this.repository.query(
+      `SELECT
+         ${TypeOrmVerifiedSignRepository.SELECT_COLUMNS},
+         ST_Distance(
+           sign.location::geography,
+           ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography
+         ) AS distance_meters
+       ${TypeOrmVerifiedSignRepository.FROM_JOIN_SIGN}
+       WHERE sign.status = 'ACTIVE'
+         AND ST_DWithin(
+           sign.location::geography,
+           ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
+           $3
+         )
+       ORDER BY distance_meters ASC`,
+      [longitude, latitude, radiusMeters],
+    )) as Array<VerifiedSignRow & { distance_meters: number | string }>;
+
+    let candidates: NearbySignCandidate[] = rows.map((row) => ({
+      sign: this.toDomain(row),
+      distanceMeters: Math.round(Number(row.distance_meters) * 10) / 10,
+    }));
+
+    if (headingDegrees !== undefined && headingDegrees !== null) {
+      candidates = candidates.filter((candidate) =>
+        appliesToTrafficHeading(candidate.sign.trafficDirection, headingDegrees, 45),
+      );
+    }
+
+    return candidates;
+  }
+
   private toDomain(row: VerifiedSignRow): VerifiedSign {
     return {
       id: String(row.id),
@@ -234,6 +280,7 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
       signCropUrl: row.sign_crop_url,
       status: row.status,
       freshnessScore: Number(row.freshness_score),
+      confirmationCount: Number(row.confirmation_count ?? 0),
       lastVerifiedAt: row.last_verified_at,
       createdAt: row.created_at,
       updatedAt: row.updated_at,

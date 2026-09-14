@@ -1,4 +1,9 @@
-import { CreateVerifiedSign, UpdateVerifiedSign, VerifiedSign } from './verified-sign';
+import {
+  CreateVerifiedSign,
+  NearbySignCandidate,
+  UpdateVerifiedSign,
+  VerifiedSign,
+} from './verified-sign';
 
 export const VERIFIED_SIGN_REPOSITORY = Symbol('VERIFIED_SIGN_REPOSITORY');
 
@@ -14,4 +19,11 @@ export interface VerifiedSignRepository {
     limit: number,
   ): Promise<VerifiedSign[]>;
   findActiveAlongRoute(routeWkt: string, corridorWidthMeters: number): Promise<VerifiedSign[]>;
+  findNearbyCandidates(
+    latitude: number,
+    longitude: number,
+    radiusMeters: number,
+    headingDegrees?: number,
+  ): Promise<NearbySignCandidate[]>;
 }
+
