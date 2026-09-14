@@ -1,0 +1,173 @@
+# =============================================================================
+# SignTrustMap — Production Backend & Gateway Stack for Coolify
+# =============================================================================
+services:
+  gateway:
+    build:
+      context: ./infra/gateway
+      dockerfile: Dockerfile
+    container_name: stm-gateway
+    restart: unless-stopped
+    ports:
+      - "${GATEWAY_PORT:-8082}:80"
+    depends_on:
+      api-nestjs: { condition: service_healthy }
+      api-fastapi: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:80/health || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+    networks:
+      - stm-network
+    labels:
+      - "coolify.managed=true"
+      - "traefik.enable=true"
+      - "traefik.http.routers.stm-gateway.rule=Host(`${API_DOMAIN:-api.signtrustmap.site}`)"
+      - "traefik.http.routers.stm-gateway.entrypoints=websecure"
+      - "traefik.http.routers.stm-gateway.tls.certresolver=letsencrypt"
+      - "traefik.http.services.stm-gateway.loadbalancer.server.port=80"
+
+  api-nestjs:
+    build:
+      context: ./apps/nestjs
+      dockerfile: Dockerfile
+      target: ${NESTJS_BUILD_TARGET:-production}
+    container_name: stm-nestjs
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: 3000
+      DATABASE_URL: postgres://${POSTGRES_USER:-stm_user}:${POSTGRES_PASSWORD:-stm_password}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-signtrustmap}
+      REDIS_URL: redis://${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/0
+      MINIO_ENDPOINT: ${MINIO_HOST:-minio}
+      MINIO_PORT: ${MINIO_API_PORT:-9000}
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-stm_minio}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-stm_minio_secret_123}
+      MINIO_USE_SSL: ${MINIO_USE_SSL:-false}
+      MINIO_REGION: ${MINIO_REGION:-}
+      JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_me_super_secret_32_chars}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-stm_internal_secret_dev}
+      GEOCODING_NOMINATIM_BASE_URL: ${GEOCODING_NOMINATIM_BASE_URL:-https://nominatim.openstreetmap.org}
+      GEOCODING_NOMINATIM_TIMEOUT: ${GEOCODING_NOMINATIM_TIMEOUT:-5s}
+      GEOCODING_NOMINATIM_USER_AGENT: ${GEOCODING_NOMINATIM_USER_AGENT:-SignTrustMap/0.1 (coolify)}
+      GEOCODING_NOMINATIM_ACCEPT_LANGUAGE: ${GEOCODING_NOMINATIM_ACCEPT_LANGUAGE:-vi,en}
+      GEOCODING_NOMINATIM_CACHE_TTL: ${GEOCODING_NOMINATIM_CACHE_TTL:-10m}
+      GEOCODING_NOMINATIM_MINIMUM_REQUEST_INTERVAL: ${GEOCODING_NOMINATIM_MINIMUM_REQUEST_INTERVAL:-1s}
+      GEOCODING_NOMINATIM_MAXIMUM_CACHE_ENTRIES: ${GEOCODING_NOMINATIM_MAXIMUM_CACHE_ENTRIES:-1000}
+      ROUTING_PROVIDER: ${ROUTING_PROVIDER:-OSRM}
+      ROUTING_OSRM_BASE_URL: ${ROUTING_OSRM_BASE_URL:-https://router.project-osrm.org}
+      ROUTING_OSRM_PROFILE: ${ROUTING_OSRM_PROFILE:-driving}
+      ROUTING_OSRM_TIMEOUT: ${ROUTING_OSRM_TIMEOUT:-5s}
+      NAVIGATION_SIGN_CORRIDOR_WIDTH_METERS: ${NAVIGATION_SIGN_CORRIDOR_WIDTH_METERS:-30}
+      NAVIGATION_SIGN_HEADING_TOLERANCE_DEGREES: ${NAVIGATION_SIGN_HEADING_TOLERANCE_DEGREES:-45}
+    ports:
+      - "${NESTJS_PORT:-3000}:3000"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - "-e"
+        - "fetch('http://localhost:3000/api/v1/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      stm-network:
+        aliases:
+          - api-nestjs
+          - nestjs
+          - stm-nestjs
+
+  api-fastapi:
+    build:
+      context: ./apps/fastapi
+      dockerfile: Dockerfile
+    container_name: stm-fastapi
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      PYTHONPATH: /app
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-stm_user}:${POSTGRES_PASSWORD:-stm_password}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-signtrustmap}
+      SYNC_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-stm_user}:${POSTGRES_PASSWORD:-stm_password}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-signtrustmap}
+      REDIS_URL: redis://${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/1
+      CELERY_BROKER_URL: redis://${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/2
+      MINIO_ENDPOINT: ${MINIO_HOST:-minio}:${MINIO_API_PORT:-9000}
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-stm_minio}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-stm_minio_secret_123}
+      MINIO_SECURE: ${MINIO_USE_SSL:-false}
+      MINIO_REGION: ${MINIO_REGION:-}
+      INTERNAL_API_TOKEN: ${INTERNAL_TOKEN:-stm_internal_secret_dev}
+      NESTJS_INTERNAL_URL: http://api-nestjs:3000
+    ports:
+      - "${FASTAPI_PORT:-8088}:8000"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      stm-network:
+        aliases:
+          - api-fastapi
+          - fastapi
+          - stm-fastapi
+
+  celery-worker:
+    build:
+      context: ./apps/fastapi
+      dockerfile: Dockerfile.worker
+    container_name: stm-celery-worker
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      PYTHONPATH: /app
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-stm_user}:${POSTGRES_PASSWORD:-stm_password}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-signtrustmap}
+      SYNC_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-stm_user}:${POSTGRES_PASSWORD:-stm_password}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-signtrustmap}
+      CELERY_BROKER_URL: redis://${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/2
+      CELERY_RESULT_BACKEND: redis://${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/3
+      MINIO_ENDPOINT: ${MINIO_HOST:-minio}:${MINIO_API_PORT:-9000}
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-stm_minio}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-stm_minio_secret_123}
+      MINIO_SECURE: ${MINIO_USE_SSL:-false}
+      MINIO_REGION: ${MINIO_REGION:-}
+      AI_INFERENCE_URL: ${AI_INFERENCE_URL:-https://ai.signmap.site}
+      AI_INFERENCE_TIMEOUT_SECONDS: ${AI_INFERENCE_TIMEOUT_SECONDS:-3600}
+      INTERNAL_API_TOKEN: ${INTERNAL_TOKEN:-stm_internal_secret_dev}
+      NESTJS_INTERNAL_URL: http://api-nestjs:3000
+    command: celery -A app.celery_app worker --loglevel=info --concurrency=4 --queues=default,freshness,leaderboard,ai_pipeline
+    networks:
+      stm-network:
+        aliases:
+          - celery-worker
+          - stm-celery-worker
+
+  celery-beat:
+    build:
+      context: ./apps/fastapi
+      dockerfile: Dockerfile
+    container_name: stm-celery-beat
+    restart: unless-stopped
+    environment:
+      PYTHONPATH: /app
+      CELERY_BROKER_URL: redis://${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/2
+      CELERY_RESULT_BACKEND: redis://${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/3
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-stm_user}:${POSTGRES_PASSWORD:-stm_password}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-signtrustmap}
+      SYNC_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-stm_user}:${POSTGRES_PASSWORD:-stm_password}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-signtrustmap}
+    command: celery -A app.celery_app beat --loglevel=info
+    networks:
+      stm-network:
+        aliases:
+          - celery-beat
+          - stm-celery-beat
+
+networks:
+  stm-network:
+    name: ${DOCKER_NETWORK:-stm-network}
+    external: true

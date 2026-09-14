@@ -7,4 +7,5 @@ export default registerAs('minio', () => ({
   accessKey: process.env.MINIO_ACCESS_KEY || process.env.MINIO_ROOT_USER || 'stm_minio',
   secretKey:
     process.env.MINIO_SECRET_KEY || process.env.MINIO_ROOT_PASSWORD || 'stm_minio_secret_123',
+  region: process.env.MINIO_REGION,
 }));
