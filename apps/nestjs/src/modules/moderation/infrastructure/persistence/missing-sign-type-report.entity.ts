@@ -35,6 +35,12 @@ export class MissingSignTypeReport {
   @Column({ type: 'text', nullable: true })
   description: string | null;
 
+  @Column({ name: 'suggested_shape', type: 'varchar', length: 30, nullable: true })
+  suggestedShape: string | null;
+
+  @Column({ name: 'suggested_color_scheme', type: 'varchar', length: 30, nullable: true })
+  suggestedColorScheme: string | null;
+
   @Column({ type: 'enum', enum: MissingTypeStatus, default: MissingTypeStatus.PENDING })
   status: MissingTypeStatus;
 

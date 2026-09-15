@@ -27,6 +27,9 @@ export class RevalidationDecision {
   @Column({ type: 'enum', enum: RevalDecision })
   decision: RevalDecision;
 
+  @Column({ name: 'suggested_sign_type_id', type: 'int', nullable: true })
+  suggestedSignTypeId: number | null;
+
   @Column({ type: 'text', nullable: true })
   note: string | null;
 

@@ -16,6 +16,7 @@ export enum TaskStatus {
   EVALUATING = 'EVALUATING',
   COMPLETED = 'COMPLETED',
   EXPIRED = 'EXPIRED',
+  ESCALATED_MODERATION = 'ESCALATED_MODERATION',
 }
 
 @Entity('revalidation_tasks')

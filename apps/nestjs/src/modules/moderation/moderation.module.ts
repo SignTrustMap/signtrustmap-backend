@@ -9,8 +9,10 @@ import { SignCategory } from '../catalog/sign-category.entity';
 import { TrafficSignType } from '../catalog/traffic-sign-type.entity';
 import { UnverifiedSignCandidate } from '../survey/infrastructure/persistence/unverified-sign-candidate.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { CatalogModule } from '../catalog/catalog.module';
+import { CatalogSyncModule } from '../../integrations/catalog-sync/catalog-sync.module';
 @Module({
-  imports: [TypeOrmModule.forFeature([ModerationCase, ModerationAction, MissingSignTypeReport, SignCategory, TrafficSignType, UnverifiedSignCandidate]), NotificationsModule],
+  imports: [TypeOrmModule.forFeature([ModerationCase, ModerationAction, MissingSignTypeReport, SignCategory, TrafficSignType, UnverifiedSignCandidate]), NotificationsModule, CatalogModule, CatalogSyncModule],
   controllers: [ModerationController],
   providers: [ModerationService],
   exports: [ModerationService],
