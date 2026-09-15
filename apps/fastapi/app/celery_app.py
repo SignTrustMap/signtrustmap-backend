@@ -61,6 +61,7 @@ celery_app.conf.update(
         "app.tasks.freshness.*": {"queue": "freshness"},
         "app.tasks.leaderboard.*": {"queue": "leaderboard"},
         "app.tasks.ai_pipeline.*": {"queue": "ai_pipeline"},
+        "app.tasks.catalog_sync.*": {"queue": "default"},
     },
     # Reliability — acknowledge late so a crashing worker re-queues the task.
     task_acks_late=True,
@@ -72,6 +73,7 @@ celery_app.conf.update(
         "app.tasks.freshness",
         "app.tasks.leaderboard",
         "app.tasks.ai_pipeline",
+        "app.tasks.catalog_sync",
     ],
 )
 

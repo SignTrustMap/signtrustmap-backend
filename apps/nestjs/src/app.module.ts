@@ -7,12 +7,14 @@ import geocodingConfig from './config/geocoding.config';
 import jwtConfig from './config/jwt.config';
 import minioConfig from './config/minio.config';
 import routingConfig from './config/routing.config';
+import catalogSyncConfig from './config/catalog-sync.config';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { AuthModule } from './modules/auth/auth.module';
 import { WalletModule } from './modules/wallet/wallet.module';
 import { DailyTasksModule } from './modules/daily-tasks/daily-tasks.module';
 import { MinioModule } from './integrations/minio/minio.module';
+import { CatalogSyncModule } from './integrations/catalog-sync/catalog-sync.module';
 import { SurveyModule } from './modules/survey/survey.module';
 import { ReviewsModule } from './modules/reviews/reviews.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
@@ -40,6 +42,7 @@ import { HealthModule } from './modules/health/health.module';
         minioConfig,
         geocodingConfig,
         routingConfig,
+        catalogSyncConfig,
       ],
     }),
     TypeOrmModule.forRootAsync({
@@ -69,6 +72,7 @@ import { HealthModule } from './modules/health/health.module';
       },
     }),
     MinioModule,
+    CatalogSyncModule,
     AuthModule,
     WalletModule,
     DailyTasksModule,

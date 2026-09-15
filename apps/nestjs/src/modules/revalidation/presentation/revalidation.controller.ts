@@ -67,6 +67,16 @@ export class RevalidationController {
   @Roles('REVIEWER', 'ADMIN')
   vote(@Param('evidenceId', ParseUUIDPipe) evidenceId: string, @CurrentUser() user: any, @Body() dto: EvidenceVoteDto) { return this.svc.voteOnEvidence(evidenceId, user.id, dto); }
 
+  @ApiBearerAuth()
+  @Roles('REVIEWER', 'ADMIN')
+  @ApiOperation({ summary: 'Reviewer evidence queue', description: 'Paginated queue of evidence awaiting decision, excluding items the reviewer has already judged' })
+  @Get('revalidation/evidence/queue')
+  @Roles('REVIEWER', 'ADMIN')
+  evidenceQueue(@CurrentUser() user: any, @Query('page') page?: string, @Query('pageSize') pageSize?: string) {
+    const p = page ? parseInt(page, 10) : 1, n = pageSize ? parseInt(pageSize, 10) : 20;
+    return this.svc.listEvidenceQueue(user.id, Number.isNaN(p) ? 1 : p, Number.isNaN(n) ? 20 : n);
+  }
+
   @ApiOperation({ summary: 'List evidence decisions', description: 'Retrieve history of consensus decisions for a specific evidence item' })
   @Get('revalidation/evidence/:evidenceId/decisions')
   listDecisions(@Param('evidenceId', ParseUUIDPipe) evidenceId: string) { return this.svc.listDecisions(evidenceId); }
