@@ -3,6 +3,7 @@ import { AuthGuard } from '@nestjs/passport';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthService } from '../application/auth.service';
 import { RegisterDto, LoginDto, UpdateProfileDto, ForgotPasswordDto, VerifyOtpDto, ResetPasswordDto, ResendOtpDto } from './dto/auth.dto';
+import { GoogleLoginDto } from './dto/google-login.dto';
 import { Public } from '../../../common/decorators/public.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 
@@ -60,6 +61,13 @@ export class AuthController {
   @UseGuards(AuthGuard('google'))
   async googleAuth() {
     // Passport redirects to Google – handler never reached
+  }
+
+  @Public()
+  @ApiOperation({ summary: 'Google OAuth2 token verification', description: 'Verify a Google ID token from a mobile app and log in or auto-register the user' })
+  @Post('google')
+  async googleTokenLogin(@Body() dto: GoogleLoginDto) {
+    return this.authService.googleTokenLogin(dto.token);
   }
 
   @Public()

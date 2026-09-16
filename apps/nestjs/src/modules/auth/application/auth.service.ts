@@ -1,9 +1,11 @@
 import { Injectable, UnauthorizedException, ConflictException, BadRequestException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
 import { randomInt } from 'crypto';
+import { OAuth2Client } from 'google-auth-library';
 import { User, UserStatus } from '../infrastructure/persistence/user.entity';
 import { UserRole } from '../infrastructure/persistence/user-role.entity';
 import { Role } from '../infrastructure/persistence/role.entity';
@@ -20,6 +22,7 @@ export class AuthService {
     @InjectRepository(Wallet) private readonly walletRepo: Repository<Wallet>,
     private readonly jwtService: JwtService,
     private readonly dataSource: DataSource,
+    private readonly configService: ConfigService,
   ) {}
 
   private async getRolesForUser(userId: string): Promise<string[]> {
@@ -55,6 +58,26 @@ export class AuthService {
     if (!valid) throw new UnauthorizedException('Invalid credentials');
     const roles = await this.getRolesForUser(user.id);
     return { user: { id: user.id, email: user.email, fullName: user.fullName, roles }, accessToken: this.signToken(user, roles) };
+  }
+
+  async googleTokenLogin(token: string) {
+    const clientId = this.configService.get<string>('jwt.googleClientId');
+    if (!clientId) throw new UnauthorizedException('Google login is not configured');
+    const client = new OAuth2Client(clientId);
+    let payload;
+    try {
+      const ticket = await client.verifyIdToken({ idToken: token, audience: clientId });
+      payload = ticket.getPayload();
+    } catch {
+      throw new UnauthorizedException('Invalid or expired Google token');
+    }
+    if (!payload?.email) throw new UnauthorizedException('Google token contains no email');
+    return this.googleLogin({
+      email: payload.email,
+      fullName: payload.name || payload.given_name || payload.email,
+      avatarUrl: payload.picture || null,
+      providerUserId: payload.sub,
+    });
   }
 
   async googleLogin(googleUser: { email: string; fullName: string; avatarUrl: string | null; providerUserId: string }) {
