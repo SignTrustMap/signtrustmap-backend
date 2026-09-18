@@ -145,4 +145,76 @@ describe('OsrmRoutingClient', () => {
       new BadGatewayException('OSRM routing service returned HTTP 503'),
     );
   });
+
+  it('routes with bicycle profile and calibrates duration to cycling speed', async () => {
+    const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => fixture,
+    } as Response);
+
+    const bicycleRequest: RouteDirectionsRequestDto = {
+      ...request,
+      vehicleType: 'BICYCLE',
+    };
+
+    const response = await client().findDirections(bicycleRequest, 25, 3);
+
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toContain('/route/v1/bike/');
+    expect(response.shortestPath.recommendation).toBe('Shortest route (Bicycle)');
+    // 1000m at 4.17 m/s (~15 km/h) = ~240s, compared to 160s car driving
+    expect(response.shortestPath.durationSeconds).toBe(240);
+    expect(response.shortestPath.steps[0].roadClass).toBe('cycling');
+  });
+
+  it('routes with pedestrian profile and calibrates duration to walking speed', async () => {
+    const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => fixture,
+    } as Response);
+
+    const pedestrianRequest: RouteDirectionsRequestDto = {
+      ...request,
+      vehicleType: 'PEDESTRIAN',
+    };
+
+    const response = await client().findDirections(pedestrianRequest, 25, 3);
+
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toContain('/route/v1/foot/');
+    expect(response.shortestPath.recommendation).toBe('Shortest route (Pedestrian)');
+    // 1000m at 1.33 m/s (~4.8 km/h) = ~752s
+    expect(response.shortestPath.durationSeconds).toBe(752);
+    expect(response.shortestPath.steps[0].roadClass).toBe('walking');
+  });
+
+  it('falls back to driving profile when a specialized profile returns an error', async () => {
+    const fetchMock = jest
+      .spyOn(global, 'fetch')
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        text: async () => 'Profile not found',
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => fixture,
+      } as Response);
+
+    const bicycleRequest: RouteDirectionsRequestDto = {
+      ...request,
+      vehicleType: 'BICYCLE',
+    };
+
+    const response = await client().findDirections(bicycleRequest, 25, 3);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/route/v1/bike/');
+    expect(String(fetchMock.mock.calls[1][0])).toContain('/route/v1/driving/');
+    expect(response.shortestPath.distanceMeters).toBe(1000);
+    expect(response.shortestPath.durationSeconds).toBe(240);
+  });
 });
