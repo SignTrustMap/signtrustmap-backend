@@ -90,8 +90,32 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
     private readonly repository: Repository<VerifiedSignOrmEntity>,
   ) {}
 
+  private async queryWithHealing<T>(sql: string, parameters?: unknown[]): Promise<T> {
+    try {
+      return (await this.repository.query(sql, parameters)) as T;
+    } catch (error: any) {
+      if (
+        error?.code === '42703' &&
+        (String(error?.message).includes('allowed_vehicles') ||
+          String(error?.message).includes('column sign_type.allowed_vehicles does not exist'))
+      ) {
+        try {
+          await this.repository.query(`
+            ALTER TABLE "traffic_sign_types"
+              ADD COLUMN IF NOT EXISTS "allowed_vehicles" text[]
+                NOT NULL DEFAULT ARRAY['CAR','MOTORCYCLE','TRUCK','BUS','BICYCLE','PEDESTRIAN']::text[];
+          `);
+          return (await this.repository.query(sql, parameters)) as T;
+        } catch {
+          throw error;
+        }
+      }
+      throw error;
+    }
+  }
+
   async findById(id: string): Promise<VerifiedSign | null> {
-    const rows = (await this.repository.query(
+    const rows = (await this.queryWithHealing(
       `${TypeOrmVerifiedSignRepository.SELECT_SIGN}
        WHERE sign.id = $1`,
       [id],
@@ -183,7 +207,7 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
     routeWkt: string,
     corridorWidthMeters: number,
   ): Promise<VerifiedSign[]> {
-    const rows = (await this.repository.query(
+    const rows = (await this.queryWithHealing(
       `${TypeOrmVerifiedSignRepository.SELECT_SIGN}
        WHERE sign.status = 'ACTIVE'
          AND ST_DWithin(
@@ -204,7 +228,7 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
     maxLongitude: number,
     limit: number,
   ): Promise<VerifiedSign[]> {
-    const rows = (await this.repository.query(
+    const rows = (await this.queryWithHealing(
       `${TypeOrmVerifiedSignRepository.SELECT_SIGN}
        WHERE sign.status = 'ACTIVE'
          AND sign.location && ST_MakeEnvelope($1, $2, $3, $4, 4326)
@@ -222,7 +246,7 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
     radiusMeters: number,
     headingDegrees?: number,
   ): Promise<NearbySignCandidate[]> {
-    const rows = (await this.repository.query(
+    const rows = (await this.queryWithHealing(
       `SELECT
          ${TypeOrmVerifiedSignRepository.SELECT_COLUMNS},
          ST_Distance(

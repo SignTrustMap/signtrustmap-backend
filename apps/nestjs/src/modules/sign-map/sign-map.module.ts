@@ -11,6 +11,8 @@ import { VerifiedSignOrmEntity } from './infrastructure/persistence/verified-sig
 import { SignConfirmationEntity } from './infrastructure/persistence/sign-confirmation.entity';
 import { VerifiedSignController } from './presentation/verified-sign.controller';
 
+import { SignMapSchemaInitializer } from './infrastructure/sign-map-schema.initializer';
+
 @Module({
   imports: [
     TypeOrmModule.forFeature([VerifiedSignOrmEntity, SignConfirmationEntity]),
@@ -22,6 +24,7 @@ import { VerifiedSignController } from './presentation/verified-sign.controller'
   providers: [
     RouteSignQueryService,
     VerifiedSignService,
+    SignMapSchemaInitializer,
     {
       provide: VERIFIED_SIGN_REPOSITORY,
       useClass: TypeOrmVerifiedSignRepository,

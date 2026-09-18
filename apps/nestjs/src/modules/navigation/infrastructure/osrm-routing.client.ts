@@ -1,5 +1,6 @@
 import { BadGatewayException, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { VehicleType } from '../../../common/vehicle-types';
 import {
   RouteDirectionsRequest,
   RouteDirectionsResponse,
@@ -23,6 +24,18 @@ type JsonObject = Record<string, unknown>;
 export class OsrmRoutingClient {
   private static readonly SAME_POINT_TOLERANCE_METERS = 0.01;
 
+  // Typical speeds in m/s:
+  // Walking: ~4.8 km/h = 1.33 m/s
+  private static readonly PEDESTRIAN_SPEED_MPS = 1.33;
+  // Cycling: ~15 km/h = 4.17 m/s
+  private static readonly BICYCLE_SPEED_MPS = 4.17;
+  // Commercial truck deceleration and turning factor vs standard driving
+  private static readonly TRUCK_DURATION_FACTOR = 1.25;
+  // Bus transit speed factor
+  private static readonly BUS_DURATION_FACTOR = 1.15;
+  // Motorcycle urban speed factor
+  private static readonly MOTORCYCLE_DURATION_FACTOR = 0.95;
+
   private readonly baseUrl: string;
   private readonly profile: string;
   private readonly timeoutMs: number;
@@ -38,8 +51,28 @@ export class OsrmRoutingClient {
     thresholdPercent: number,
     maxAlternatives: number,
   ): Promise<RouteDirectionsResponse> {
-    const body = await this.fetchResponse(this.routeUrl(request, maxAlternatives));
+    const profile = this.resolveProfile(request.vehicleType, request.vehicleMode);
+    let body: string;
+    try {
+      body = await this.fetchResponse(this.routeUrl(request, maxAlternatives, profile));
+    } catch (error) {
+      if (profile !== this.profile) {
+        body = await this.fetchResponse(this.routeUrl(request, maxAlternatives, this.profile));
+      } else {
+        throw error;
+      }
+    }
     return this.parseResponse(request, thresholdPercent, maxAlternatives, body);
+  }
+
+  private resolveProfile(vehicleType?: VehicleType, vehicleMode?: string): string {
+    if (vehicleType === 'BICYCLE' || vehicleMode === 'CYCLING') {
+      return 'bike';
+    }
+    if (vehicleType === 'PEDESTRIAN' || vehicleMode === 'WALKING') {
+      return 'foot';
+    }
+    return this.profile || 'driving';
   }
 
   parseResponse(
@@ -78,7 +111,7 @@ export class OsrmRoutingClient {
     const snappedOrigin = this.waypoint(root.waypoints, 0, origin);
     const snappedDestination = this.waypoint(root.waypoints, 1, destination);
     const parsedRoutes = root.routes
-      .map((route) => this.parseRoute(route))
+      .map((route) => this.parseRoute(route, request.vehicleType, request.vehicleMode))
       .sort((left, right) => left.distanceMeters - right.distanceMeters);
 
     const shortestDistanceMeters = parsedRoutes[0].distanceMeters;
@@ -86,7 +119,9 @@ export class OsrmRoutingClient {
     const acceptedRoutes: RoutePathResponse[] = [];
     for (const route of parsedRoutes) {
       if (route.distanceMeters > maxDistanceMeters) continue;
-      acceptedRoutes.push(this.toResponse(route, acceptedRoutes.length, shortestDistanceMeters));
+      acceptedRoutes.push(
+        this.toResponse(route, acceptedRoutes.length, shortestDistanceMeters, request.vehicleType),
+      );
       if (acceptedRoutes.length >= maxAlternatives + 1) break;
     }
 
@@ -124,13 +159,18 @@ export class OsrmRoutingClient {
     }
   }
 
-  private routeUrl(request: RouteDirectionsRequest, maxAlternatives: number): URL {
+  private routeUrl(
+    request: RouteDirectionsRequest,
+    maxAlternatives: number,
+    profileOverride?: string,
+  ): URL {
+    const profile = profileOverride ?? this.resolveProfile(request.vehicleType, request.vehicleMode);
     const coordinates = [
       `${request.originLongitude.toFixed(7)},${request.originLatitude.toFixed(7)}`,
       `${request.destinationLongitude.toFixed(7)},${request.destinationLatitude.toFixed(7)}`,
     ].join(';');
     const url = new URL(
-      `${this.baseUrl.replace(/\/$/, '')}/route/v1/${this.profile}/${coordinates}`,
+      `${this.baseUrl.replace(/\/$/, '')}/route/v1/${profile}/${coordinates}`,
     );
     url.searchParams.set('alternatives', maxAlternatives <= 0 ? 'false' : String(maxAlternatives));
     url.searchParams.set('steps', 'true');
@@ -139,7 +179,11 @@ export class OsrmRoutingClient {
     return url;
   }
 
-  private parseRoute(value: unknown): ParsedRoute {
+  private parseRoute(
+    value: unknown,
+    vehicleType?: VehicleType,
+    vehicleMode?: string,
+  ): ParsedRoute {
     const route = this.isObject(value) ? value : {};
     const geometryValue = this.isObject(route.geometry) ? route.geometry.coordinates : undefined;
     const geometry = this.coordinates(geometryValue);
@@ -155,12 +199,76 @@ export class OsrmRoutingClient {
         for (const point of step.geometry) this.appendCoordinate(geometry, point);
       }
     }
-    return {
-      distanceMeters: this.numberOrZero(route.distance),
-      durationSeconds: Math.round(this.numberOrZero(route.duration)),
-      geometry,
+    const rawDistance = this.numberOrZero(route.distance);
+    const rawDuration = Math.round(this.numberOrZero(route.duration));
+    const calibrated = this.calibrateDuration(
+      rawDistance,
+      rawDuration,
       steps,
+      vehicleType,
+      vehicleMode,
+    );
+
+    return {
+      distanceMeters: rawDistance,
+      durationSeconds: calibrated.durationSeconds,
+      geometry,
+      steps: calibrated.steps,
     };
+  }
+
+  private calibrateDuration(
+    distanceMeters: number,
+    durationSeconds: number,
+    steps: RouteStepResponse[],
+    vehicleType?: VehicleType,
+    vehicleMode?: string,
+  ): { durationSeconds: number; steps: RouteStepResponse[] } {
+    if (distanceMeters <= 0 || !vehicleType) {
+      return { durationSeconds, steps };
+    }
+
+    let targetDuration = durationSeconds;
+    let factor = 1.0;
+
+    if (vehicleType === 'PEDESTRIAN' || vehicleMode === 'WALKING') {
+      const impliedSpeed = durationSeconds > 0 ? distanceMeters / durationSeconds : 0;
+      if (impliedSpeed > 1.8) {
+        targetDuration = Math.max(1, Math.round(distanceMeters / OsrmRoutingClient.PEDESTRIAN_SPEED_MPS));
+        factor = durationSeconds > 0 ? targetDuration / durationSeconds : 1.0;
+      }
+    } else if (vehicleType === 'BICYCLE' || vehicleMode === 'CYCLING') {
+      const impliedSpeed = durationSeconds > 0 ? distanceMeters / durationSeconds : 0;
+      if (impliedSpeed > 5.5) {
+        targetDuration = Math.max(1, Math.round(distanceMeters / OsrmRoutingClient.BICYCLE_SPEED_MPS));
+        factor = durationSeconds > 0 ? targetDuration / durationSeconds : 1.0;
+      }
+    } else if (vehicleType === 'TRUCK') {
+      targetDuration = Math.max(1, Math.round(durationSeconds * OsrmRoutingClient.TRUCK_DURATION_FACTOR));
+      factor = OsrmRoutingClient.TRUCK_DURATION_FACTOR;
+    } else if (vehicleType === 'BUS') {
+      targetDuration = Math.max(1, Math.round(durationSeconds * OsrmRoutingClient.BUS_DURATION_FACTOR));
+      factor = OsrmRoutingClient.BUS_DURATION_FACTOR;
+    } else if (vehicleType === 'MOTORCYCLE') {
+      targetDuration = Math.max(1, Math.round(durationSeconds * OsrmRoutingClient.MOTORCYCLE_DURATION_FACTOR));
+      factor = OsrmRoutingClient.MOTORCYCLE_DURATION_FACTOR;
+    }
+
+    const calibratedSteps = steps.map((step) => {
+      const stepDuration = Math.max(1, Math.round(step.durationSeconds * factor));
+      return {
+        ...step,
+        durationSeconds: stepDuration,
+        roadClass:
+          vehicleType === 'PEDESTRIAN' || vehicleMode === 'WALKING'
+            ? 'walking'
+            : vehicleType === 'BICYCLE' || vehicleMode === 'CYCLING'
+              ? 'cycling'
+              : step.roadClass,
+      };
+    });
+
+    return { durationSeconds: targetDuration, steps: calibratedSteps };
   }
 
   private parseStep(value: unknown): RouteStepResponse {
@@ -230,14 +338,22 @@ export class OsrmRoutingClient {
     return value ? value[0].toUpperCase() + value.slice(1) : 'Continue';
   }
 
-  private toResponse(route: ParsedRoute, index: number, shortestDistance: number): RoutePathResponse {
+  private toResponse(
+    route: ParsedRoute,
+    index: number,
+    shortestDistance: number,
+    vehicleType?: VehicleType,
+  ): RoutePathResponse {
     const ratio = shortestDistance === 0 ? 1 : route.distanceMeters / shortestDistance;
+    const typeLabel = vehicleType && vehicleType !== 'CAR'
+      ? ` (${this.capitalize(vehicleType.toLowerCase())})`
+      : '';
     return {
       rank: index + 1,
       primary: index === 0,
       recommendation:
         index === 0
-          ? 'Shortest route'
+          ? `Shortest route${typeLabel}`
           : `Alternative ${Math.max(0, (ratio - 1) * 100).toFixed(1)}% longer than shortest route`,
       distanceMeters: route.distanceMeters,
       durationSeconds: route.durationSeconds,

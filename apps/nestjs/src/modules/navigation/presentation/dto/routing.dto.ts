@@ -16,8 +16,8 @@ export class UpdateNavigationPreferencesDto {
 
 export class RouteDirectionsRequestDto implements RouteDirectionsRequest {
   @IsOptional()
-  @IsIn(['DRIVING'])
-  vehicleMode?: 'DRIVING';
+  @IsIn(['DRIVING', 'CYCLING', 'WALKING'])
+  vehicleMode?: 'DRIVING' | 'CYCLING' | 'WALKING';
 
   @IsOptional()
   @IsIn(Object.values(VEHICLE_TYPES))
