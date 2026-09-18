@@ -3,11 +3,15 @@ import {
   ArrayMaxSize,
   ArrayMinSize,
   IsArray,
+  IsIn,
   IsNumber,
+  IsOptional,
+  IsString,
   Max,
   Min,
   ValidateNested,
 } from 'class-validator';
+import { VEHICLE_TYPES, VehicleType } from '../../../../common/vehicle-types';
 import { RoutePoint, RouteSignsRequest } from '../../domain/verified-sign';
 
 export class RoutePointDto implements RoutePoint {
@@ -25,6 +29,15 @@ export class RoutePointDto implements RoutePoint {
 }
 
 export class RouteSignsRequestDto implements RouteSignsRequest {
+  @IsOptional()
+  @IsIn(Object.values(VEHICLE_TYPES))
+  vehicleType?: VehicleType;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  enabledCategoryCodes?: string[];
+
   @IsArray()
   @ArrayMinSize(2)
   @ArrayMaxSize(5_000)

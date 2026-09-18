@@ -1,6 +1,8 @@
+import { VehicleType } from '../../../common/vehicle-types';
+
 export interface RouteDirectionsRequest {
   vehicleMode?: 'DRIVING';
-  vehicleType?: 'CAR' | 'MOTORCYCLE' | 'TRUCK';
+  vehicleType?: VehicleType;
   enabledCategoryCodes?: string[];
   originLatitude: number;
   originLongitude: number;

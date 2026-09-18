@@ -216,3 +216,12 @@ RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
   REFRESH MATERIALIZED VIEW CONCURRENTLY "mv_community_leaderboard";
 END $$;
+
+-- ---------------------------------------------------------------------------
+-- 4. Traffic sign routing: per-vehicle allowed signs (FR: vehicle-type routing)
+--    Empty array  = sign is strictly prohibited for every vehicle
+--    NULL         = not set / legacy rows with no restriction
+-- ---------------------------------------------------------------------------
+ALTER TABLE "traffic_sign_types"
+  ADD COLUMN IF NOT EXISTS "allowed_vehicles" text[]
+    NOT NULL DEFAULT ARRAY['CAR','MOTORCYCLE','TRUCK','BUS','BICYCLE','PEDESTRIAN']::text[];

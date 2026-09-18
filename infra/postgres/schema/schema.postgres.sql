@@ -309,6 +309,7 @@ CREATE TABLE "traffic_sign_types" (
   "shape" varchar(30),
   "color_scheme" varchar(30),
   "is_active" boolean NOT NULL DEFAULT true,
+  "allowed_vehicles" text[] NOT NULL DEFAULT ARRAY['CAR','MOTORCYCLE','TRUCK','BUS','BICYCLE','PEDESTRIAN']::text[],
   "created_at" timestamptz NOT NULL DEFAULT (now()),
   "updated_at" timestamptz NOT NULL DEFAULT (now())
 );
