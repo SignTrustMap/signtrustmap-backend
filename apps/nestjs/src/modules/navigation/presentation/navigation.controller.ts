@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Put } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Logger, Post, Put } from '@nestjs/common';
 import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { DataSource } from 'typeorm';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
@@ -10,6 +10,8 @@ import { NavigationResponseDto } from './dto/navigation-response.dto';
 @ApiTags('Navigation')
 @Controller('navigation')
 export class NavigationController {
+  private readonly logger = new Logger(NavigationController.name);
+
   constructor(
     private readonly routePreview: RoutePreviewService,
     private readonly dataSource: DataSource,
@@ -34,10 +36,11 @@ export class NavigationController {
     description: 'Retrieve current user preference for vehicle type and enabled sign categories',
   })
   async getPreferences(@CurrentUser() user: any) {
+    const userId = user?.id ?? user?.sub;
     try {
       const rows: any[] = await this.dataSource.query(
         'SELECT default_vehicle_type, enabled_categories FROM driver_profiles WHERE user_id = $1',
-        [user.id],
+        [userId],
       );
       if (rows.length > 0) {
         return {
@@ -45,7 +48,9 @@ export class NavigationController {
           enabledCategoryCodes: rows[0].enabled_categories || ['SPEED_LIMIT', 'WARNING', 'PROHIBITION', 'MANDATORY', 'INFORMATION'],
         };
       }
-    } catch {}
+    } catch (error: any) {
+      this.logger.warn(`Could not fetch driver preferences for ${userId}: ${error?.message || error}`);
+    }
     return {
       vehicleType: 'CAR',
       enabledCategoryCodes: ['SPEED_LIMIT', 'WARNING', 'PROHIBITION', 'MANDATORY', 'INFORMATION'],
@@ -59,6 +64,7 @@ export class NavigationController {
     description: 'Save user preferences for vehicle type and enabled sign categories',
   })
   async updatePreferences(@CurrentUser() user: any, @Body() dto: UpdateNavigationPreferencesDto) {
+    const userId = user?.id ?? user?.sub;
     const vehicleType = dto.vehicleType || 'CAR';
     const enabledCategories = dto.enabledCategoryCodes || ['SPEED_LIMIT', 'WARNING', 'PROHIBITION', 'MANDATORY', 'INFORMATION'];
     try {
@@ -71,14 +77,20 @@ export class NavigationController {
           created_at timestamptz NOT NULL DEFAULT now(),
           updated_at timestamptz NOT NULL DEFAULT now()
         );
+        ALTER TABLE driver_profiles
+          ADD COLUMN IF NOT EXISTS enabled_categories text[]
+            DEFAULT ARRAY['SPEED_LIMIT','WARNING','PROHIBITION','MANDATORY','INFORMATION'];
       `);
       await this.dataSource.query(
         `INSERT INTO driver_profiles (user_id, default_vehicle_type, enabled_categories, updated_at)
          VALUES ($1, $2, $3, now())
          ON CONFLICT (user_id) DO UPDATE SET default_vehicle_type = $2, enabled_categories = $3, updated_at = now()`,
-        [user.id, vehicleType, enabledCategories],
+        [userId, vehicleType, enabledCategories],
       );
-    } catch {}
+    } catch (error: any) {
+      this.logger.error(`Could not update driver preferences for ${userId}: ${error?.message || error}`);
+      throw new BadRequestException('Failed to update navigation preferences');
+    }
     return {
       vehicleType,
       enabledCategoryCodes: enabledCategories,
