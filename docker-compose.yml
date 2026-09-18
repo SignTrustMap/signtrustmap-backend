@@ -20,7 +20,7 @@ services:
     labels:
       - "coolify.managed=true"
       - "traefik.enable=true"
-      - "traefik.http.routers.stm-api.rule=Host(`${API_DOMAIN:-api.signtrustmap.site}`)"
+      - "traefik.http.routers.stm-api.rule=Host(`${API_DOMAIN:-api.signmap.site}`)"
       - "traefik.http.routers.stm-api.entrypoints=websecure"
       - "traefik.http.routers.stm-api.tls.certresolver=letsencrypt"
       - "traefik.http.services.stm-api.loadbalancer.server.port=80"
@@ -129,11 +129,11 @@ services:
     labels:
       - "coolify.managed=true"
       - "traefik.enable=true"
-      - "traefik.http.routers.stm-s3.rule=Host(`${S3_DOMAIN:-s3.signtrustmap.site}`)"
+      - "traefik.http.routers.stm-s3.rule=Host(`${S3_DOMAIN:-s3.signmap.site}`)"
       - "traefik.http.routers.stm-s3.entrypoints=websecure"
       - "traefik.http.routers.stm-s3.tls.certresolver=letsencrypt"
       - "traefik.http.services.stm-s3.loadbalancer.server.port=9000"
-      - "traefik.http.routers.stm-minio-console.rule=Host(`${MINIO_CONSOLE_DOMAIN:-minio.signtrustmap.site}`)"
+      - "traefik.http.routers.stm-minio-console.rule=Host(`${MINIO_CONSOLE_DOMAIN:-minio.signmap.site}`)"
       - "traefik.http.routers.stm-minio-console.entrypoints=websecure"
       - "traefik.http.routers.stm-minio-console.tls.certresolver=letsencrypt"
       - "traefik.http.services.stm-minio-console.loadbalancer.server.port=9001"
@@ -149,8 +149,10 @@ services:
       /usr/bin/mc mb stm/stm-raw-videos --ignore-existing &&
       /usr/bin/mc mb stm/stm-gpx-logs --ignore-existing &&
       /usr/bin/mc mb stm/stm-sign-crops --ignore-existing &&
+      /usr/bin/mc anonymous set download stm/stm-sign-crops &&
       /usr/bin/mc mb stm/stm-revalidation-evidence --ignore-existing &&
       /usr/bin/mc mb stm/stm-catalog-images --ignore-existing &&
+      /usr/bin/mc anonymous set download stm/stm-catalog-images &&
       echo 'MinIO buckets ready.'
       "
     environment:
