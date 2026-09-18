@@ -1,11 +1,12 @@
 import { Type } from 'class-transformer';
 import { IsArray, IsIn, IsInt, IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
+import { VEHICLE_TYPES, VehicleType } from '../../../../common/vehicle-types';
 import { RouteDirectionsRequest } from '../../domain/routing.types';
 
 export class UpdateNavigationPreferencesDto {
   @IsOptional()
-  @IsIn(['CAR', 'MOTORCYCLE', 'TRUCK'])
-  vehicleType?: 'CAR' | 'MOTORCYCLE' | 'TRUCK';
+  @IsIn(Object.values(VEHICLE_TYPES))
+  vehicleType?: VehicleType;
 
   @IsOptional()
   @IsArray()
@@ -19,8 +20,8 @@ export class RouteDirectionsRequestDto implements RouteDirectionsRequest {
   vehicleMode?: 'DRIVING';
 
   @IsOptional()
-  @IsIn(['CAR', 'MOTORCYCLE', 'TRUCK'])
-  vehicleType?: 'CAR' | 'MOTORCYCLE' | 'TRUCK';
+  @IsIn(Object.values(VEHICLE_TYPES))
+  vehicleType?: VehicleType;
 
   @IsOptional()
   @IsArray()

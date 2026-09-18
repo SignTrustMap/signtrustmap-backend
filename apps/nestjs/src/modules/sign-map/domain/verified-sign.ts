@@ -1,3 +1,5 @@
+import { VehicleType } from '../../../common/vehicle-types';
+
 export interface RoutePoint {
   latitude: number;
   longitude: number;
@@ -5,7 +7,7 @@ export interface RoutePoint {
 
 export interface RouteSignsRequest {
   geometry: RoutePoint[];
-  vehicleType?: 'CAR' | 'MOTORCYCLE' | 'TRUCK';
+  vehicleType?: VehicleType;
   enabledCategoryCodes?: string[];
 }
 
@@ -27,6 +29,7 @@ export interface SignTypeSummary {
   shape: string | null;
   colorScheme: string | null;
   isActive: boolean;
+  allowedVehicles?: VehicleType[];
   value?: number | null;
   category: SignCategorySummary;
 }

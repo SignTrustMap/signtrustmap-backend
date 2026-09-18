@@ -189,6 +189,7 @@ export class CatalogService {
           shape: this.trimToNull(dto.shape),
           colorScheme: this.trimToNull(dto.colorScheme),
           isActive: dto.isActive ?? true,
+          allowedVehicles: dto.allowedVehicles ?? undefined,
           createdAt: now,
           updatedAt: now,
           category,
@@ -240,6 +241,9 @@ export class CatalogService {
         signType.colorScheme = this.trimToNull(dto.colorScheme);
       }
       if (dto.isActive !== undefined) signType.isActive = dto.isActive;
+      if (dto.allowedVehicles !== undefined) {
+        signType.allowedVehicles = dto.allowedVehicles;
+      }
       signType.updatedAt = new Date();
 
       await signTypes.save(signType);

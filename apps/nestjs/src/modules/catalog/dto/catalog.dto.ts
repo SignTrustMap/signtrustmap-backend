@@ -1,5 +1,6 @@
 import { Transform, Type } from 'class-transformer';
 import {
+  IsArray,
   IsBoolean,
   IsIn,
   IsInt,
@@ -11,6 +12,7 @@ import {
   Min,
   MinLength,
 } from 'class-validator';
+import { VEHICLE_TYPES, VehicleType } from '../../../common/vehicle-types';
 
 const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
@@ -150,6 +152,11 @@ export class CreateSignTypeDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @IsOptional()
+  @IsArray()
+  @IsIn(Object.values(VEHICLE_TYPES), { each: true })
+  allowedVehicles?: VehicleType[];
 }
 
 export class UpdateSignTypeDto {
@@ -219,6 +226,11 @@ export class UpdateSignTypeDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @IsOptional()
+  @IsArray()
+  @IsIn(Object.values(VEHICLE_TYPES), { each: true })
+  allowedVehicles?: VehicleType[];
 }
 
 export class UpsertSystemParameterDto {

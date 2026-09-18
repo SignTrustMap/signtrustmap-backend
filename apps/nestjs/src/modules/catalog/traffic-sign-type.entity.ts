@@ -1,4 +1,5 @@
 import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn } from 'typeorm';
+import { VehicleType } from '../../common/vehicle-types';
 import { SignCategory } from './sign-category.entity';
 
 @Entity('traffic_sign_types')
@@ -32,6 +33,15 @@ export class TrafficSignType {
 
   @Column({ name: 'is_active', type: 'boolean', default: true })
   isActive: boolean;
+
+  @Column({
+    name: 'allowed_vehicles',
+    type: 'text',
+    array: true,
+    default: () =>
+      "ARRAY['CAR','MOTORCYCLE','TRUCK','BUS','BICYCLE','PEDESTRIAN']::text[]",
+  })
+  allowedVehicles: VehicleType[];
 
   @Column({ name: 'created_at', type: 'timestamptz', default: () => 'now()' })
   createdAt: Date;

@@ -1,5 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { VEHICLE_TYPES } from '../../../common/vehicle-types';
 import { VerifiedSignRepository } from '../domain/verified-sign.repository';
 import { RoutePoint, VerifiedSign } from '../domain/verified-sign';
 import { RouteSignQueryService } from './route-sign-query.service';
@@ -141,6 +142,7 @@ describe('RouteSignQueryService', () => {
         shape: null,
         colorScheme: null,
         isActive: true,
+        allowedVehicles: [...VEHICLE_TYPES],
         category: { id: 1, code: 'PROHIBITORY', nameVi: 'Bien cam', nameEn: 'Prohibitory' },
       },
     };
@@ -159,23 +161,10 @@ describe('RouteSignQueryService', () => {
     expect(response.signs).toHaveLength(0);
   });
 
-  it('filters out car-only signs when vehicleType is MOTORCYCLE', async () => {
-    const carOnlySign = sign('car-only', 10.00005, 106.002, 90);
-    carOnlySign.signType.signCode = 'P.103a'; // Cam o to
-    repository.findActiveAlongRoute.mockResolvedValue([carOnlySign]);
-
-    const response = await service().findAlongRoute({
-      geometry: route({ latitude: 10, longitude: 106 }, { latitude: 10, longitude: 106.01 }),
-      vehicleType: 'MOTORCYCLE',
-    });
-
-    expect(response.signCount).toBe(0);
-  });
-
-  it('filters out motorcycle-only signs when vehicleType is CAR', async () => {
-    const motoSign = sign('moto-only', 10.00005, 106.002, 90);
-    motoSign.signType.signCode = 'P.104'; // Cam xe mo to
-    repository.findActiveAlongRoute.mockResolvedValue([motoSign]);
+  it('excludes signs banned for all vehicles when a vehicleType is requested', async () => {
+    const bannedSign = sign('banned', 10.00005, 106.002, 90);
+    bannedSign.signType.allowedVehicles = []; // e.g. id 3 – Báo nguy hiểm
+    repository.findActiveAlongRoute.mockResolvedValue([bannedSign]);
 
     const response = await service().findAlongRoute({
       geometry: route({ latitude: 10, longitude: 106 }, { latitude: 10, longitude: 106.01 }),
@@ -183,5 +172,51 @@ describe('RouteSignQueryService', () => {
     });
 
     expect(response.signCount).toBe(0);
+  });
+
+  it('excludes signs whose allowed vehicles do not include the request vehicle', async () => {
+    const carOnlySign = sign('car-only', 10.00005, 106.002, 90);
+    carOnlySign.signType.allowedVehicles = ['CAR', 'TRUCK', 'BUS']; // e.g. id 26/106/107
+    repository.findActiveAlongRoute.mockResolvedValue([carOnlySign]);
+
+    const motorcycle = await service().findAlongRoute({
+      geometry: route({ latitude: 10, longitude: 106 }, { latitude: 10, longitude: 106.01 }),
+      vehicleType: 'MOTORCYCLE',
+    });
+
+    const pedestrian = await service().findAlongRoute({
+      geometry: route({ latitude: 10, longitude: 106 }, { latitude: 10, longitude: 106.01 }),
+      vehicleType: 'PEDESTRIAN',
+    });
+
+    expect(motorcycle.signCount).toBe(0);
+    expect(pedestrian.signCount).toBe(0);
+  });
+
+  it('includes signs whose allowed vehicles include the request vehicle', async () => {
+    const carOnlySign = sign('car-only', 10.00005, 106.002, 90);
+    carOnlySign.signType.allowedVehicles = ['CAR', 'TRUCK', 'BUS'];
+    repository.findActiveAlongRoute.mockResolvedValue([carOnlySign]);
+
+    const response = await service().findAlongRoute({
+      geometry: route({ latitude: 10, longitude: 106 }, { latitude: 10, longitude: 106.01 }),
+      vehicleType: 'CAR',
+    });
+
+    expect(response.signCount).toBe(1);
+    expect(response.signs[0].sign.id).toBe('car-only');
+  });
+
+  it('keeps signs with no allowedVehicles restriction (legacy) regardless of vehicleType', async () => {
+    const legacySign = sign('legacy', 10.00005, 106.002, 90);
+    legacySign.signType.allowedVehicles = undefined;
+    repository.findActiveAlongRoute.mockResolvedValue([legacySign]);
+
+    const response = await service().findAlongRoute({
+      geometry: route({ latitude: 10, longitude: 106 }, { latitude: 10, longitude: 106.01 }),
+      vehicleType: 'BICYCLE',
+    });
+
+    expect(response.signCount).toBe(1);
   });
 });

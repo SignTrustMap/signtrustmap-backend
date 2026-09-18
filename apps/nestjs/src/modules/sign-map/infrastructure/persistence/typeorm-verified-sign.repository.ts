@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { VehicleType } from '../../../../common/vehicle-types';
 import { VerifiedSignRepository } from '../../domain/verified-sign.repository';
 import {
   CreateVerifiedSign,
@@ -33,6 +34,7 @@ interface VerifiedSignRow {
   shape: string | null;
   color_scheme: string | null;
   is_active: boolean;
+  allowed_vehicles: string[] | null;
   navigation_value: string | null;
   category_code: string;
   category_name_vi: string;
@@ -63,6 +65,7 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
          sign_type.shape,
          sign_type.color_scheme,
          sign_type.is_active,
+         sign_type.allowed_vehicles,
          (
            SELECT mapping.osm_value
            FROM sign_type_osm_mappings mapping
@@ -265,6 +268,7 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
         shape: row.shape,
         colorScheme: row.color_scheme,
         isActive: row.is_active,
+        allowedVehicles: row.allowed_vehicles as VehicleType[] | undefined,
         value: this.numericSpeedValue(row.navigation_value),
         category: {
           id: Number(row.category_id),
