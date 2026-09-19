@@ -816,7 +816,7 @@ export class SurveyService {
   }
 
   private assertEditableSubmission(submission: SurveySubmission) {
-    if (![SubmissionStatus.DRAFT, SubmissionStatus.PENDING_CORRECTION].includes(submission.status)) {
+    if (![SubmissionStatus.DRAFT, SubmissionStatus.PENDING_CORRECTION, SubmissionStatus.FAILED].includes(submission.status)) {
       throw new ConflictException(`Submission cannot be edited while status is ${submission.status}`);
     }
   }
