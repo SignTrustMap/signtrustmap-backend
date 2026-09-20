@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, HttpException, HttpStatus, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ForbiddenException, HttpException, HttpStatus, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, In } from 'typeorm';
 import { RevalidationDecision, RevalDecision } from '../infrastructure/persistence/revalidation-decision.entity';
@@ -180,7 +180,7 @@ export class RevalidationService {
       `SELECT COUNT(*)::int AS cnt
        FROM revalidation_evidences ev
        JOIN revalidation_tasks rt ON rt.id = ev.task_id
-       WHERE rt.status IN ('OPEN', 'EVALUATING') AND ${notVotedClause}`,
+       WHERE rt.status IN ('OPEN', 'EVALUATING') AND ${notVotedClause} AND (ev.user_id IS NULL OR ev.user_id != $1)`,
       [reviewerId],
     );
     const total = countRows[0]?.cnt ?? 0;
@@ -208,7 +208,7 @@ export class RevalidationService {
        JOIN revalidation_tasks rt ON rt.id = ev.task_id
        JOIN verified_traffic_signs vts ON vts.id = rt.verified_sign_id
        LEFT JOIN traffic_sign_types tst ON tst.id = vts.sign_type_id
-       WHERE rt.status IN ('OPEN', 'EVALUATING') AND ${notVotedClause}
+       WHERE rt.status IN ('OPEN', 'EVALUATING') AND ${notVotedClause} AND (ev.user_id IS NULL OR ev.user_id != $1)
        ORDER BY ev.submitted_at ASC
        LIMIT $2 OFFSET $3`,
       [reviewerId, ps, (p - 1) * ps],
@@ -242,6 +242,9 @@ export class RevalidationService {
   async voteOnEvidence(evidenceId: string, reviewerId: string, dto: { decision: string; suggestedSignTypeId?: number; note?: string }) {
     const ev = await this.evidences.findOne({ where: { id: evidenceId } });
     if (!ev) throw new NotFoundException('RevalidationEvidence ' + evidenceId + ' not found');
+    if (ev.userId === reviewerId) {
+      throw new ForbiddenException('You cannot vote on your own submitted evidence');
+    }
     const decision = this.assertDecision(dto.decision);
     if (decision === RevalDecision.CHANGED && dto.suggestedSignTypeId == null) {
       throw new BadRequestException('suggestedSignTypeId is required when decision is CHANGED');
