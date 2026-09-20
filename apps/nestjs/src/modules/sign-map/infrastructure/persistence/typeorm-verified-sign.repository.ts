@@ -116,6 +116,24 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
           throw error;
         }
       }
+      if (
+        error?.code === '42703' &&
+        (String(error?.message).includes('commune_code') ||
+          String(error?.message).includes('road_name') ||
+          String(error?.message).includes('display_address'))
+      ) {
+        try {
+          await this.repository.query(`
+            ALTER TABLE "verified_traffic_signs"
+              ADD COLUMN IF NOT EXISTS "commune_code" VARCHAR(5),
+              ADD COLUMN IF NOT EXISTS "road_name" VARCHAR(255),
+              ADD COLUMN IF NOT EXISTS "display_address" TEXT;
+          `);
+          return (await this.repository.query(sql, parameters)) as T;
+        } catch {
+          throw error;
+        }
+      }
       throw error;
     }
   }
