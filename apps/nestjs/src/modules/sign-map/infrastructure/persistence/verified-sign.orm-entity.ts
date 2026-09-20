@@ -37,6 +37,15 @@ export class VerifiedSignOrmEntity {
   @Column({ name: 'last_verified_at', type: 'timestamptz' })
   lastVerifiedAt: Date;
 
+  @Column({ name: 'commune_code', type: 'varchar', length: 5, nullable: true })
+  communeCode: string | null;
+
+  @Column({ name: 'road_name', type: 'varchar', length: 255, nullable: true })
+  roadName: string | null;
+
+  @Column({ name: 'display_address', type: 'text', nullable: true })
+  displayAddress: string | null;
+
   @Column({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 

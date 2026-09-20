@@ -1,4 +1,4 @@
-﻿import { Module } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { APP_GUARD } from '@nestjs/core';
@@ -31,6 +31,7 @@ import { GeolocationModule } from './modules/geolocation/geolocation.module';
 import { NavigationModule } from './modules/navigation/navigation.module';
 import { SignMapModule } from './modules/sign-map/sign-map.module';
 import { HealthModule } from './modules/health/health.module';
+import { SpatialAdminModule } from './modules/spatial-admin/spatial-admin.module';
 
 @Module({
   imports: [
@@ -91,6 +92,7 @@ import { HealthModule } from './modules/health/health.module';
     GeolocationModule,
     SignMapModule,
     NavigationModule,
+    SpatialAdminModule,
     HealthModule,
   ],
   providers: [

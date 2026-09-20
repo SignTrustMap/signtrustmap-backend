@@ -45,6 +45,9 @@ export interface VerifiedSign {
   freshnessScore: number;
   confirmationCount?: number;
   lastVerifiedAt: Date | string | null;
+  communeCode?: string | null;
+  roadName?: string | null;
+  displayAddress?: string | null;
   createdAt: Date | string;
   updatedAt: Date | string;
 }
@@ -64,6 +67,9 @@ export interface CreateVerifiedSign {
   trafficDirection: number | null;
   signCropUrl: string;
   lastVerifiedAt: Date;
+  communeCode?: string | null;
+  roadName?: string | null;
+  displayAddress?: string | null;
 }
 
 export interface CreateVerifiedSignRequest
@@ -80,6 +86,9 @@ export interface UpdateVerifiedSign {
   signCropUrl?: string;
   lastVerifiedAt?: Date;
   status?: VerifiedSignStatus;
+  communeCode?: string | null;
+  roadName?: string | null;
+  displayAddress?: string | null;
 }
 
 export interface UpcomingSign {
