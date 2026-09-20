@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { CatalogModule } from '../catalog/catalog.module';
 import { WalletModule } from '../wallet/wallet.module';
 import { RevalidationModule } from '../revalidation/revalidation.module';
+import { SpatialAdminModule } from '../spatial-admin/spatial-admin.module';
 import { RouteSignQueryService } from './application/route-sign-query.service';
 import { VerifiedSignService } from './application/verified-sign.service';
 import { VERIFIED_SIGN_REPOSITORY } from './domain/verified-sign.repository';
@@ -19,6 +20,7 @@ import { SignMapSchemaInitializer } from './infrastructure/sign-map-schema.initi
     CatalogModule,
     WalletModule,
     RevalidationModule,
+    SpatialAdminModule,
   ],
   controllers: [VerifiedSignController],
   providers: [

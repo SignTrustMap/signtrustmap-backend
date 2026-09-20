@@ -23,6 +23,9 @@ interface VerifiedSignRow {
   freshness_score: number | string;
   confirmation_count?: number | string | null;
   last_verified_at: Date | string | null;
+  commune_code?: string | null;
+  road_name?: string | null;
+  display_address?: string | null;
   created_at: Date | string;
   updated_at: Date | string;
   category_id: number | string;
@@ -54,6 +57,9 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
          sign.freshness_score,
          COALESCE(sign.confirmation_count, 0) AS confirmation_count,
          sign.last_verified_at,
+         sign.commune_code,
+         sign.road_name,
+         sign.display_address,
          sign.created_at,
          sign.updated_at,
          sign_type.category_id,
@@ -133,7 +139,10 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
          sign_crop_url,
          status,
          freshness_score,
-         last_verified_at
+         last_verified_at,
+         commune_code,
+         road_name,
+         display_address
        ) VALUES (
          $1,
          $2,
@@ -142,7 +151,10 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
          $6,
          'ACTIVE',
          1,
-         $7
+         $7,
+         $8,
+         $9,
+         $10
        )
        RETURNING id`,
       [
@@ -153,6 +165,9 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
         sign.trafficDirection,
         sign.signCropUrl,
         sign.lastVerifiedAt,
+        sign.communeCode ?? null,
+        sign.roadName ?? null,
+        sign.displayAddress ?? null,
       ],
     )) as Array<{ id: string }>;
     const created = rows[0] && (await this.findById(String(rows[0].id)));
@@ -187,6 +202,15 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
     }
     if (sign.status !== undefined) {
       assignments.push(`status = ${parameter(sign.status)}::sign_lifecycle_status`);
+    }
+    if (sign.communeCode !== undefined) {
+      assignments.push(`commune_code = ${parameter(sign.communeCode)}`);
+    }
+    if (sign.roadName !== undefined) {
+      assignments.push(`road_name = ${parameter(sign.roadName)}`);
+    }
+    if (sign.displayAddress !== undefined) {
+      assignments.push(`display_address = ${parameter(sign.displayAddress)}`);
     }
     if (assignments.length === 0) return this.findById(id);
 
@@ -310,6 +334,9 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
       freshnessScore: Number(row.freshness_score),
       confirmationCount: Number(row.confirmation_count ?? 0),
       lastVerifiedAt: row.last_verified_at,
+      communeCode: row.commune_code ?? null,
+      roadName: row.road_name ?? null,
+      displayAddress: row.display_address ?? null,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };

@@ -25,6 +25,7 @@ import { calculateConfirmationReward } from '../domain/sign-freshness';
 import { WalletService } from '../../wallet/application/wallet.service';
 import { TransactionType } from '../../wallet/infrastructure/persistence/credit-transaction.entity';
 import { RevalidationService } from '../../revalidation/application/revalidation.service';
+import { SpatialAdminService } from '../../spatial-admin/application/spatial-admin.service';
 
 interface PostgreSqlError {
   code?: string;
@@ -45,11 +46,31 @@ export class VerifiedSignService {
     private readonly walletService?: WalletService,
     @Optional()
     private readonly revalidationService?: RevalidationService,
+    @Optional()
+    private readonly spatialAdminService?: SpatialAdminService,
   ) {}
 
   async create(request: CreateVerifiedSignRequest): Promise<VerifiedSign> {
     await this.requireActiveSignType(request.signTypeId);
     try {
+      let communeCode = request.communeCode ?? null;
+      let roadName = request.roadName ?? null;
+      let displayAddress = request.displayAddress ?? null;
+
+      if (!displayAddress && this.spatialAdminService) {
+        try {
+          const resolved = await this.spatialAdminService.resolveLocation(
+            request.latitude,
+            request.longitude,
+          );
+          communeCode = resolved.communeCode;
+          roadName = resolved.roadName;
+          displayAddress = resolved.displayAddress;
+        } catch (spatialErr: any) {
+          this.logger.warn(`Failed to resolve spatial address for sign: ${spatialErr?.message}`);
+        }
+      }
+
       return await this.repository.create({
         signTypeId: request.signTypeId,
         originCandidateId: request.originCandidateId,
@@ -58,6 +79,9 @@ export class VerifiedSignService {
         trafficDirection: request.trafficDirection ?? null,
         signCropUrl: request.signCropUrl.trim(),
         lastVerifiedAt: request.lastVerifiedAt ?? new Date(),
+        communeCode,
+        roadName,
+        displayAddress,
       });
     } catch (error) {
       this.rethrowConstraintError(error, request.originCandidateId);
@@ -76,7 +100,23 @@ export class VerifiedSignService {
     if (request.latitude != null && request.longitude != null) {
       changes.latitude = request.latitude;
       changes.longitude = request.longitude;
+      if (request.displayAddress === undefined && this.spatialAdminService) {
+        try {
+          const resolved = await this.spatialAdminService.resolveLocation(
+            request.latitude,
+            request.longitude,
+          );
+          changes.communeCode = resolved.communeCode;
+          changes.roadName = resolved.roadName;
+          changes.displayAddress = resolved.displayAddress;
+        } catch (spatialErr: any) {
+          this.logger.warn(`Failed to resolve spatial address on update: ${spatialErr?.message}`);
+        }
+      }
     }
+    if (request.communeCode !== undefined) changes.communeCode = request.communeCode;
+    if (request.roadName !== undefined) changes.roadName = request.roadName;
+    if (request.displayAddress !== undefined) changes.displayAddress = request.displayAddress;
     if (request.trafficDirection !== undefined) {
       changes.trafficDirection = request.trafficDirection;
     }
