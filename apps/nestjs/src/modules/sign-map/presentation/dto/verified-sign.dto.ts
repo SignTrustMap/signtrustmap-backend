@@ -59,6 +59,20 @@ export class CreateVerifiedSignDto implements CreateVerifiedSignRequest {
   @IsDate()
   @MaxDate(() => new Date())
   lastVerifiedAt?: Date;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(5)
+  communeCode?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  roadName?: string | null;
+
+  @IsOptional()
+  @IsString()
+  displayAddress?: string | null;
 }
 
 export class UpdateVerifiedSignDto implements UpdateVerifiedSign {
@@ -106,4 +120,18 @@ export class UpdateVerifiedSignDto implements UpdateVerifiedSign {
   @IsOptional()
   @IsEnum(VerifiedSignStatus)
   status?: VerifiedSignStatus;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(5)
+  communeCode?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  roadName?: string | null;
+
+  @IsOptional()
+  @IsString()
+  displayAddress?: string | null;
 }
