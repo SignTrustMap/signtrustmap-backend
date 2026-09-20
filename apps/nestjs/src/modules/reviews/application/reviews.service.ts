@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, NotFoundException, BadRequestException, Optional, OnModuleInit } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException, BadRequestException, ForbiddenException, Optional, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { CandidateReview } from '../infrastructure/persistence/candidate-review.entity';
@@ -45,6 +45,10 @@ export class ReviewsService implements OnModuleInit {
         statuses: [CandidateStatus.PENDING_REVIEW, CandidateStatus.IN_CONSENSUS],
       })
       .andWhere(
+        '(submission.surveyor_id IS NULL OR submission.surveyor_id != :reviewerId)',
+        { reviewerId },
+      )
+      .andWhere(
         `NOT EXISTS (
           SELECT 1 FROM candidate_reviews review
           WHERE review.candidate_id = candidate.id AND review.reviewer_id = :reviewerId
@@ -79,8 +83,14 @@ export class ReviewsService implements OnModuleInit {
     return { items, total, page: safePage, pageSize: safeSize, totalPages: Math.ceil(total / safeSize) };
   }
   async vote(reviewerId: string, candidateId: string, dto: VoteDto) {
-    const candidate = await this.candidateRepo.findOne({ where: { id: candidateId } });
+    const candidate = await this.candidateRepo.findOne({
+      where: { id: candidateId },
+      relations: ['submission'],
+    });
     if (!candidate) throw new NotFoundException('Candidate ' + candidateId + ' not found');
+    if (candidate.submission && candidate.submission.surveyorId === reviewerId) {
+      throw new ForbiddenException('You cannot review sign candidates from your own survey submission');
+    }
     if (candidate.status !== CandidateStatus.PENDING_REVIEW && candidate.status !== CandidateStatus.IN_CONSENSUS) throw new BadRequestException('Candidate ' + candidateId + ' is not pending review (status=' + candidate.status + ')');
     const existing = await this.reviewRepo.findOne({ where: { candidateId, reviewerId } });
     if (existing) throw new ConflictException('You have already voted on this candidate');

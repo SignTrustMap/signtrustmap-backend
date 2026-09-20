@@ -1,12 +1,16 @@
+import { ForbiddenException } from '@nestjs/common';
 import { Repository, SelectQueryBuilder } from 'typeorm';
 import { TrafficSignType } from '../../catalog/traffic-sign-type.entity';
 import { ConsensusService } from '../../consensus/application/consensus.service';
-import { UnverifiedSignCandidate } from '../../survey/infrastructure/persistence/unverified-sign-candidate.entity';
+import {
+  CandidateStatus,
+  UnverifiedSignCandidate,
+} from '../../survey/infrastructure/persistence/unverified-sign-candidate.entity';
 import { CandidateReview } from '../infrastructure/persistence/candidate-review.entity';
 import { ReviewsService } from './reviews.service';
 
 describe('ReviewsService queue', () => {
-  it('excludes candidates already reviewed by the current reviewer', async () => {
+  it('excludes candidates already reviewed by the current reviewer and candidates uploaded by reviewer', async () => {
     const query = {
       addOrderBy: jest.fn().mockReturnThis(),
       andWhere: jest.fn().mockReturnThis(),
@@ -31,6 +35,10 @@ describe('ReviewsService queue', () => {
       items: [{ id: 'candidate-1' }],
       total: 1,
     });
+    expect(query.andWhere).toHaveBeenCalledWith(
+      expect.stringContaining('submission.surveyor_id'),
+      { reviewerId: 'reviewer-1' },
+    );
     expect(query.andWhere).toHaveBeenCalledWith(
       expect.stringContaining('review.reviewer_id = :reviewerId'),
       { reviewerId: 'reviewer-1' },
@@ -63,6 +71,70 @@ describe('ReviewsService queue', () => {
     expect(rawQuery).toHaveBeenCalledWith(
       expect.stringContaining('INSERT INTO reviewer_skipped_candidates'),
       ['reviewer-1', 'candidate-99'],
+    );
+  });
+});
+
+describe('ReviewsService vote', () => {
+  it('throws ForbiddenException when reviewer is the surveyor who uploaded the submission', async () => {
+    const candidates = {
+      findOne: jest.fn().mockResolvedValue({
+        id: 'cand-1',
+        status: CandidateStatus.PENDING_REVIEW,
+        submission: { surveyorId: 'reviewer-1' },
+      }),
+    } as unknown as Repository<UnverifiedSignCandidate>;
+    const reviews = {
+      findOne: jest.fn().mockResolvedValue(null),
+    } as unknown as Repository<CandidateReview>;
+    const service = new ReviewsService(
+      candidates,
+      reviews,
+      {} as Repository<TrafficSignType>,
+      {} as ConsensusService,
+    );
+
+    await expect(
+      service.vote('reviewer-1', 'cand-1', { vote: 1 }),
+    ).rejects.toThrow(ForbiddenException);
+  });
+
+  it('allows voting when reviewer is not the surveyor who uploaded the submission', async () => {
+    const candidate = {
+      id: 'cand-1',
+      status: CandidateStatus.PENDING_REVIEW,
+      submission: { surveyorId: 'other-surveyor' },
+    };
+    const candidates = {
+      findOne: jest.fn().mockResolvedValue(candidate),
+    } as unknown as Repository<UnverifiedSignCandidate>;
+    const createdReview = { id: 'rev-1', vote: 1 };
+    const reviews = {
+      findOne: jest.fn().mockResolvedValue(null),
+      create: jest.fn().mockReturnValue(createdReview),
+      save: jest.fn().mockResolvedValue(createdReview),
+    } as unknown as Repository<CandidateReview>;
+    const consensus = {
+      evaluate: jest.fn().mockResolvedValue({ id: 'log-1' }),
+    } as unknown as ConsensusService;
+    const service = new ReviewsService(
+      candidates,
+      reviews,
+      {} as Repository<TrafficSignType>,
+      consensus,
+    );
+
+    const result = await service.vote('reviewer-1', 'cand-1', { vote: 1 });
+    expect(result).toEqual({
+      review: createdReview,
+      consensusLog: { id: 'log-1' },
+    });
+    expect(reviews.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        candidateId: 'cand-1',
+        reviewerId: 'reviewer-1',
+        vote: 1,
+      }),
     );
   });
 });
