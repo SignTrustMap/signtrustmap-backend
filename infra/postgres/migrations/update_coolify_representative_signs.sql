@@ -82,7 +82,29 @@ SET "sign_code" = 'I.441b',
     "updated_at" = now()
 WHERE ("sign_code" = 'I.441a' AND "name_en" = 'End tunnel') OR "name_en" = 'End tunnel';
 
--- 8. Đồng bộ URL ảnh đại diện trong sign_type_images (nếu có bản ghi)
+-- 8. Cập nhật Cấm xe chở hàng nguy hiểm (P.106c thay vì P.109)
+UPDATE "traffic_sign_types"
+SET "sign_code" = 'P.106c',
+    "name_vi" = 'Cấm xe chở hàng nguy hiểm',
+    "name_en" = 'No vehicles carrying dangerous goods',
+    "category_id" = 1,
+    "shape" = 'ROUND',
+    "color_scheme" = 'RED_WHITE',
+    "updated_at" = now()
+WHERE "sign_code" = 'P.109' OR "name_en" = 'No vehicles carrying dangerous goods';
+
+-- 9. Cập nhật Đường hầm / Hầm chui xe chạy (W.240 thay vì I.424b)
+UPDATE "traffic_sign_types"
+SET "sign_code" = 'W.240',
+    "name_vi" = 'Đường hầm / Hầm chui',
+    "name_en" = 'Underpass',
+    "category_id" = 2,
+    "shape" = 'TRIANGLE',
+    "color_scheme" = 'RED_YELLOW',
+    "updated_at" = now()
+WHERE "sign_code" = 'I.424b' OR "name_en" = 'Underpass';
+
+-- 10. Đồng bộ URL ảnh đại diện trong sign_type_images (nếu có bản ghi)
 UPDATE "sign_type_images" sti
 SET "image_url" = 'https://s3.signmap.site/stm-sign-crops/representative/' || UPPER(REPLACE(REPLACE(tst.name_en, ' ', '_'), '-', '_')) || '.png'
 FROM "traffic_sign_types" tst
@@ -93,5 +115,5 @@ COMMIT;
 -- Kiểm tra lại sau khi cập nhật:
 SELECT id, category_id, sign_code, name_vi, name_en, shape, color_scheme
 FROM "traffic_sign_types"
-WHERE name_en IN ('Hospital', 'Market', 'No slow moving vehicles', 'Tunnel', 'Cliff ahead', 'No cars and motorcycles', 'End tunnel')
+WHERE name_en IN ('Hospital', 'Market', 'No slow moving vehicles', 'Tunnel', 'Cliff ahead', 'No cars and motorcycles', 'End tunnel', 'No vehicles carrying dangerous goods', 'Underpass')
 ORDER BY id;

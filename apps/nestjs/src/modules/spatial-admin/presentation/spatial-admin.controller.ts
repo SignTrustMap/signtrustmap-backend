@@ -5,7 +5,7 @@ import { SpatialAdminService } from '../application/spatial-admin.service';
 
 @ApiTags('Spatial Admin')
 @Public()
-@Controller('spatial')
+@Controller(['spatial', 'addresses'])
 export class SpatialAdminController {
   constructor(private readonly spatialService: SpatialAdminService) {}
 
