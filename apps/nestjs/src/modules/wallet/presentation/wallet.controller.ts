@@ -33,6 +33,7 @@ export class WalletController {
     return this.walletService.listTransactions(user.id, { page: Number.isNaN(p) ? 1 : p, pageSize: Number.isNaN(ps) ? 20 : ps, type, from, to });
   }
 
+  @Public()
   @ApiOperation({ summary: 'List top-up packages', description: 'Available credit top-up packages with bonuses and pricing' })
   @Get('top-up/packages')
   async listPackages() { return this.walletService.listPackages(); }
