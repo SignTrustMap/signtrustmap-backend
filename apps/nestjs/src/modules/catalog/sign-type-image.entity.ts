@@ -17,6 +17,15 @@ export class SignTypeImage {
   @Column({ name: 'is_primary', type: 'boolean', default: false })
   isPrimary: boolean;
 
+  @Column({ name: 'role', type: 'varchar', length: 50, default: 'MEDOID', nullable: true })
+  role: string;
+
+  @Column({ name: 'is_pinned', type: 'boolean', default: false, nullable: true })
+  isPinned: boolean;
+
+  @Column({ name: 'sharpness', type: 'float', nullable: true })
+  sharpness: number | null;
+
   @Column({ name: 'uploaded_at', type: 'timestamptz', default: () => 'now()' })
   uploadedAt: Date;
 }

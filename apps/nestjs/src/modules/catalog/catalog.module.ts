@@ -8,9 +8,12 @@ import { CatalogController } from './catalog.controller';
 import { SignTypeAiPrompt } from './sign-type-ai-prompt.entity';
 import { SignTypeImage } from './sign-type-image.entity';
 import { SignTypeOsmMapping } from './sign-type-osm-mapping.entity';
+import { CatalogSyncModule } from '../../integrations/catalog-sync/catalog-sync.module';
+
 
 @Module({
   imports: [
+    CatalogSyncModule,
     TypeOrmModule.forFeature([
       SignCategory,
       TrafficSignType,

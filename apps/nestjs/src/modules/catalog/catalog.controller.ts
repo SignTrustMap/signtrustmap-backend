@@ -17,7 +17,9 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import {
   CreateSignCategoryDto,
   CreateSignTypeDto,
+  CreateSupportShotDto,
   ListSignTypesQueryDto,
+  SetSupportShotPinDto,
   UpdateSignCategoryDto,
   UpdateSignTypeDto,
   UpsertSystemParameterDto,
@@ -102,4 +104,42 @@ export class CatalogController {
   upsertParam(@Param('key') key: string, @Body() dto: UpsertSystemParameterDto, @CurrentUser() user: any) {
     return this.svc.upsertParameter(key, dto, user.id);
   }
+
+  // --- Support Shots (Few-shot learning) Management: ADMIN / STAFF ---
+
+  @Roles('ADMIN', 'STAFF')
+  @ApiOperation({ summary: 'List support shots for sign type', description: 'Retrieve support shots (anchors & medoids) for a specific sign type' })
+  @Get('catalog/sign-types/:id/support-shots')
+  listSupportShots(@Param('id', ParseIntPipe) id: number) {
+    return this.svc.listSupportShots(id);
+  }
+
+  @Roles('ADMIN', 'STAFF')
+  @ApiOperation({ summary: 'Add support shot for sign type', description: 'Admin or Staff manually adds a real-photo support shot for a sign type' })
+  @Post('catalog/sign-types/:id/support-shots')
+  addSupportShot(@Param('id', ParseIntPipe) id: number, @Body() dto: CreateSupportShotDto) {
+    return this.svc.addSupportShot(id, dto);
+  }
+
+  @Roles('ADMIN')
+  @ApiOperation({ summary: 'Delete support shot', description: 'Admin deletes a noisy or incorrect support shot' })
+  @Delete('catalog/sign-types/:id/support-shots/:imageId')
+  deleteSupportShot(@Param('id', ParseIntPipe) id: number, @Param('imageId') imageId: string) {
+    return this.svc.deleteSupportShot(id, imageId);
+  }
+
+  @Roles('ADMIN', 'STAFF')
+  @ApiOperation({ summary: 'Toggle pin status of support shot', description: 'Pin or unpin a support shot to protect it from automatic replacement' })
+  @Patch('catalog/sign-types/:id/support-shots/:imageId/pin')
+  togglePinSupportShot(@Param('id', ParseIntPipe) id: number, @Param('imageId') imageId: string, @Body() body: SetSupportShotPinDto) {
+    return this.svc.setSupportShotPinned(id, imageId, body.isPinned);
+  }
+
+  @Roles('ADMIN')
+  @ApiOperation({ summary: 'Trigger ProtoFuse prototype rebuild', description: 'Admin triggers AI service to recompute ProtoFuse prototypes from database support shots' })
+  @Post('catalog/rebuild-prototypes')
+  rebuildPrototypes() {
+    return this.svc.triggerPrototypeRebuild();
+  }
 }
+

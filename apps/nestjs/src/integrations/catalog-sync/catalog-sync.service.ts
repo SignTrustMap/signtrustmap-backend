@@ -51,4 +51,33 @@ export class CatalogSyncService {
       return { triggered: false, message: `sync_unavailable: ${err?.message ?? err}` };
     }
   }
+
+  /** Trigger AI service to recompute ProtoFuse prototypes from database support shots. */
+  async rebuildPrototypes(): Promise<{ triggered: boolean; status?: number; data?: any; message?: string }> {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (this.token) headers['X-Internal-Token'] = this.token;
+      try {
+        const res = await fetch(`${this.baseUrl.replace(/\/$/, '')}/api/v1/active-learning/prototypes/rebuild`, {
+          method: 'POST',
+          headers,
+          signal: controller.signal,
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) {
+          this.logger.warn(`prototype rebuild returned ${res.status}: ${data?.detail || res.statusText}`);
+          return { triggered: false, status: res.status, message: data?.detail || res.statusText };
+        }
+        this.logger.log(`prototype rebuild triggered successfully (status ${res.status})`);
+        return { triggered: true, status: res.status, data };
+      } finally {
+        clearTimeout(timer);
+      }
+    } catch (err: any) {
+      this.logger.warn(`prototype rebuild unavailable: ${err?.message ?? err}`);
+      return { triggered: false, message: `rebuild_unavailable: ${err?.message ?? err}` };
+    }
+  }
 }
