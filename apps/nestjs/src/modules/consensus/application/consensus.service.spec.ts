@@ -48,6 +48,9 @@ describe('ConsensusService', () => {
       if (sql.includes('SELECT reliability_score')) {
         return [{ reliability_score: 1 }];
       }
+      if (sql.includes('candidate_geo_estimations')) {
+        return [{ sign_wkt: 'POINT(106.80 10.85)', traffic_direction: 90 }];
+      }
       if (sql.includes('SELECT id FROM verified_traffic_signs')) {
         return [{ id: 'verified-sign-id' }];
       }
@@ -119,6 +122,9 @@ describe('ConsensusService', () => {
       if (sql.includes('SELECT reliability_score')) {
         return [{ reliability_score: 1 }];
       }
+      if (sql.includes('candidate_geo_estimations')) {
+        return [{ sign_wkt: 'POINT(106.80 10.85)', traffic_direction: 90 }];
+      }
       if (sql.includes('SELECT id FROM verified_traffic_signs')) {
         return [{ id: 'verified-sign-id' }];
       }
@@ -133,8 +139,8 @@ describe('ConsensusService', () => {
     } as unknown as NotificationsService;
     const spatialAdmin = {
       resolveLocation: jest.fn().mockResolvedValue({
-        latitude: 21.0285,
-        longitude: 105.8342,
+        latitude: 10.85,
+        longitude: 106.80,
         communeCode: '26804',
         roadName: 'Xa lộ Hà Nội',
         displayAddress: 'Xa lộ Hà Nội, Phường Long Thạnh Mỹ, Thành phố Hồ Chí Minh',
@@ -154,7 +160,7 @@ describe('ConsensusService', () => {
 
     await service.evaluate('candidate-id');
 
-    expect(spatialAdmin.resolveLocation).toHaveBeenCalledWith(21.0285, 105.8342);
+    expect(spatialAdmin.resolveLocation).toHaveBeenCalledWith(10.85, 106.80);
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining('commune_code, road_name, display_address'),
       expect.arrayContaining(['26804', 'Xa lộ Hà Nội', 'Xa lộ Hà Nội, Phường Long Thạnh Mỹ, Thành phố Hồ Chí Minh']),

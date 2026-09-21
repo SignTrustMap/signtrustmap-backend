@@ -5,6 +5,7 @@ import {
   GeocodingResultResponse,
   GeocodingSearchRequest,
   GeocodingSearchResponse,
+  ReverseGeocodingResult,
 } from '../domain/geocoding.types';
 
 interface NormalizedSearch extends GeocodingSearchRequest {
@@ -61,7 +62,7 @@ export class NominatimGeocodingClient {
   async reverse(
     latitude: number,
     longitude: number,
-  ): Promise<{ displayLocation: string; roadName: string | null }> {
+  ): Promise<ReverseGeocodingResult> {
     const latRounded = Number(latitude.toFixed(4));
     const lonRounded = Number(longitude.toFixed(4));
     const key = `rev:${latRounded}:${lonRounded}`;
@@ -81,16 +82,48 @@ export class NominatimGeocodingClient {
       const responseText = await this.fetchResponse(url);
       const data = JSON.parse(responseText);
       const addr = data.address || {};
-      const roadName = addr.road || addr.street || addr.neighbourhood || addr.suburb || null;
+
+      const roadName =
+        addr.road ||
+        addr.street ||
+        addr.pedestrian ||
+        addr.highway ||
+        addr.footway ||
+        addr.path ||
+        null;
+
+      const communeName =
+        addr.quarter ||
+        addr.suburb ||
+        addr.ward ||
+        addr.neighbourhood ||
+        addr.village ||
+        addr.commune ||
+        addr.town ||
+        null;
+
+      const provinceName =
+        addr.city ||
+        addr.province ||
+        addr.state ||
+        null;
+
       const displayLocation = data.display_name || `${latRounded}, ${lonRounded}`;
 
-      const result = { displayLocation, roadName };
+      const result: ReverseGeocodingResult = {
+        roadName: roadName ? String(roadName).trim() : null,
+        communeName: communeName ? String(communeName).trim() : null,
+        provinceName: provinceName ? String(provinceName).trim() : null,
+        displayLocation,
+      };
       this.cache.set(key, { response: null as any, reverseResult: result, expiresAt: Date.now() + this.cacheTtlMs } as any);
       return result;
     } catch {
       return {
-        displayLocation: `${latRounded}, ${lonRounded}`,
         roadName: null,
+        communeName: null,
+        provinceName: null,
+        displayLocation: `${latRounded}, ${lonRounded}`,
       };
     }
   }

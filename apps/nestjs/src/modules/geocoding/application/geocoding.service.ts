@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { GeocodingSearchRequest } from '../domain/geocoding.types';
+import { GeocodingSearchRequest, ReverseGeocodingResult } from '../domain/geocoding.types';
 import { NominatimGeocodingClient } from '../infrastructure/nominatim-geocoding.client';
 
 @Injectable()
@@ -10,7 +10,7 @@ export class GeocodingService {
     return this.nominatim.search(request);
   }
 
-  reverse(latitude: number, longitude: number) {
+  reverse(latitude: number, longitude: number): Promise<ReverseGeocodingResult> {
     return this.nominatim.reverse(latitude, longitude);
   }
 }
