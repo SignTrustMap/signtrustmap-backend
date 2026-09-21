@@ -67,8 +67,9 @@ export class SpatialAdminBackfillService {
                     AND road_name NOT ILIKE 'Bến %'
                   )
                   OR (
-                    road_name ~* '\b(Nguyen|Tran|Le|Pham|Hoang|Phan|Vu|Vo|Dang|Bui|Do|Ho|Ngo|Duong|Ly|Huynh)\b'
-                    AND road_name !~* '[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]'
+                    REGEXP_REPLACE(road_name, '^(Đường|Phố|Đại lộ|Xa lộ|Cầu|Hầm|Quốc lộ|Tỉnh lộ|Vành đai|Hẻm|Ngõ|Ngách|Đoạn|Bến|Giao lộ|Nút giao)\s+', '', 'i') ~* '[a-z]'
+                    AND REGEXP_REPLACE(road_name, '^(Đường|Phố|Đại lộ|Xa lộ|Cầu|Hầm|Quốc lộ|Tỉnh lộ|Vành đai|Hẻm|Ngõ|Ngách|Đoạn|Bến|Giao lộ|Nút giao)\s+', '', 'i') !~* '[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]'
+                    AND REGEXP_REPLACE(road_name, '^(Đường|Phố|Đại lộ|Xa lộ|Cầu|Hầm|Quốc lộ|Tỉnh lộ|Vành đai|Hẻm|Ngõ|Ngách|Đoạn|Bến|Giao lộ|Nút giao)\s+', '', 'i') !~* '^(Pasteur|Yersin|Calmette|Alexandre\s+de\s+Rhodes|(số\s+)?\d+[a-z]?)$'
                   )
                 )
               ORDER BY created_at DESC

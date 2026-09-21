@@ -72,41 +72,35 @@ export function formatCanonicalRoadName(rawName: string | null | undefined): str
 }
 
 /**
- * Checks whether a road name has valid Vietnamese accents or is a recognized numbered road.
- * Returns false if the name contains unaccented Vietnamese words like "Nguyen Huu Canh", "Hoang Van Thu".
+ * Checks whether a road name is a valid, clean Vietnamese name with proper diacritics.
+ * Returns false if a Vietnamese street name has zero diacritics (e.g. "Dinh Tien Hoang", "Nguyen Thi Dinh").
  */
 export function isCleanVietnameseRoadName(roadName: string | null | undefined): boolean {
   if (!roadName) return false;
   const trimmed = roadName.trim();
   if (!trimmed) return false;
 
-  // English road words indicate dirty untranslated data
+  // Untranslated English road words indicate dirty data
   if (/\b(Street|Road|Boulevard|Avenue|Bridge|Tunnel)\b/i.test(trimmed)) {
     return false;
   }
 
-  // Common unaccented Vietnamese surnames/particles that indicate missing accents
-  const unaccentedMarkers = [
-    /\bNguyen\b/i,
-    /\bTran\b/i,
-    /\bLe\b/i,
-    /\bPham\b/i,
-    /\bHoang\b/i,
-    /\bPhan\b/i,
-    /\bVu\b/i,
-    /\bVo\b/i,
-    /\bDang\b/i,
-    /\bBui\b/i,
-    /\bDo\b/i,
-    /\bHo\b/i,
-    /\bNgo\b/i,
-    /\bDuong\b/i,
-    /\bLy\b/i,
-    /\bHuynh\b/i,
-  ];
+  // Strip infrastructure classification prefix to inspect the core road name
+  const core = trimmed
+    .replace(
+      /^(Đường|Phố|Đại lộ|Xa lộ|Cầu|Hầm|Quốc lộ|Tỉnh lộ|Vành đai|Hẻm|Ngõ|Ngách|Đoạn|Bến|Giao lộ|Nút giao)\s+/i,
+      '',
+    )
+    .trim();
 
-  for (const marker of unaccentedMarkers) {
-    if (marker.test(trimmed) && !VIETNAMESE_ACCENT_REGEX.test(trimmed.replace(/^Đường\s+/i, ''))) {
+  const hasLetters = /[a-zA-Z]/.test(core);
+  const isNumbered = /^(số\s+)?\d+[a-zA-Z]?$/i.test(core);
+
+  if (hasLetters && !isNumbered) {
+    // Known foreign street names in Vietnam that legitimately have no Vietnamese diacritics
+    const isForeignName = /^(Pasteur|Yersin|Calmette|Alexandre\s+de\s+Rhodes)$/i.test(core);
+    if (!isForeignName && !VIETNAMESE_ACCENT_REGEX.test(core)) {
+      // Core name consists of words but has ZERO Vietnamese diacritics -> UNACCENTED!
       return false;
     }
   }
