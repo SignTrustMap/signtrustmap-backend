@@ -1,13 +1,17 @@
-import { BadRequestException, Controller, Get, Query } from '@nestjs/common';
+import { BadRequestException, Controller, Get, Post, Query } from '@nestjs/common';
 import { ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { Public } from '../../../common/decorators/public.decorator';
 import { SpatialAdminService } from '../application/spatial-admin.service';
+import { SpatialAdminBackfillService } from '../application/spatial-admin-backfill.service';
 
 @ApiTags('Spatial Admin')
 @Public()
 @Controller(['spatial', 'addresses'])
 export class SpatialAdminController {
-  constructor(private readonly spatialService: SpatialAdminService) {}
+  constructor(
+    private readonly spatialService: SpatialAdminService,
+    private readonly backfillService: SpatialAdminBackfillService,
+  ) {}
 
   @ApiOperation({
     summary: 'Resolve GPS point to 2-tier administrative address and road name',
@@ -37,5 +41,22 @@ export class SpatialAdminController {
   async search(@Query('q') query: string, @Query('limit') limit?: string) {
     const parsedLimit = limit ? Number(limit) : 10;
     return this.spatialService.search(query, Number.isFinite(parsedLimit) ? parsedLimit : 10);
+  }
+
+  @ApiOperation({
+    summary: 'Trigger spatial address backfill',
+    description:
+      'Runs batch backfill on verified signs missing display address or commune code using internal PostGIS.',
+  })
+  @ApiQuery({ name: 'batchSize', type: Number, required: false, example: 50 })
+  @ApiQuery({ name: 'maxTotal', type: Number, required: false, example: 5000 })
+  @Post('backfill')
+  async backfill(@Query('batchSize') batchSize?: string, @Query('maxTotal') maxTotal?: string) {
+    const parsedBatch = batchSize ? Number(batchSize) : 50;
+    const parsedTotal = maxTotal ? Number(maxTotal) : 5000;
+    return this.backfillService.runBackfill(
+      Number.isFinite(parsedBatch) ? parsedBatch : 50,
+      Number.isFinite(parsedTotal) ? parsedTotal : 5000,
+    );
   }
 }
