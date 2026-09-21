@@ -63,6 +63,9 @@ describe('TypeOrmVerifiedSignRepository', () => {
       90,
       'https://images.test/sign.jpg',
       lastVerifiedAt,
+      null,
+      null,
+      null,
     ]);
     expect((ormRepository.query as jest.Mock).mock.calls[1][1]).toEqual([databaseRow().id]);
     expect(created.id).toBe(databaseRow().id);
