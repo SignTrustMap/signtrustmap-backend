@@ -1,10 +1,12 @@
-import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
+import { Injectable, Logger, OnApplicationBootstrap, OnApplicationShutdown } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { SpatialAdminService } from './spatial-admin.service';
 
 @Injectable()
-export class SpatialAdminBackfillService implements OnApplicationBootstrap {
+export class SpatialAdminBackfillService implements OnApplicationBootstrap, OnApplicationShutdown {
   private readonly logger = new Logger(SpatialAdminBackfillService.name);
+  private intervalTimer: NodeJS.Timeout | null = null;
+  private isRunning = false;
 
   constructor(
     private readonly dataSource: DataSource,
@@ -12,15 +14,38 @@ export class SpatialAdminBackfillService implements OnApplicationBootstrap {
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
-    // Run backfill asynchronously after bootstrap so startup is not blocked
+    // Initial run 3 seconds after boot
     setTimeout(() => {
-      this.runBackfill().catch((err) => {
-        this.logger.error(`SpatialAdminBackfill failed: ${err?.message}`, err?.stack);
-      });
+      this.runBackfillSafe();
     }, 3_000);
+
+    // Periodic sweep every 30 seconds to catch newly inserted or reset signs
+    this.intervalTimer = setInterval(() => {
+      this.runBackfillSafe();
+    }, 30_000);
+  }
+
+  onApplicationShutdown(): void {
+    if (this.intervalTimer) {
+      clearInterval(this.intervalTimer);
+      this.intervalTimer = null;
+    }
+  }
+
+  private runBackfillSafe(): void {
+    if (this.isRunning) return;
+    this.runBackfill().catch((err) => {
+      this.logger.error(`SpatialAdminBackfill failed: ${err?.message}`, err?.stack);
+    });
   }
 
   async runBackfill(batchSize = 50, maxTotal = 5000): Promise<{ processed: number; success: number }> {
+    if (this.isRunning) {
+      this.logger.log('SpatialAdminBackfill already in progress, skipping concurrent run.');
+      return { processed: 0, success: 0 };
+    }
+
+    this.isRunning = true;
     let totalProcessed = 0;
     let totalSuccess = 0;
 
@@ -81,11 +106,15 @@ export class SpatialAdminBackfillService implements OnApplicationBootstrap {
         if (rows.length < batchSize) break;
       }
 
-      this.logger.log(
-        `SpatialAdminBackfill completed. Processed: ${totalProcessed}, Successfully updated: ${totalSuccess}.`,
-      );
+      if (totalProcessed > 0) {
+        this.logger.log(
+          `SpatialAdminBackfill completed. Processed: ${totalProcessed}, Successfully updated: ${totalSuccess}.`,
+        );
+      }
     } catch (err: any) {
       this.logger.error(`SpatialAdminBackfill error: ${err?.message}`);
+    } finally {
+      this.isRunning = false;
     }
 
     return { processed: totalProcessed, success: totalSuccess };
