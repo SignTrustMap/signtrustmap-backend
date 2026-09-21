@@ -42,9 +42,12 @@ describe('formatCanonicalRoadName', () => {
 });
 
 describe('isCleanVietnameseRoadName', () => {
-  it('detects unaccented Vietnamese street names', () => {
+  it('detects unaccented Vietnamese street names regardless of surname', () => {
     expect(isCleanVietnameseRoadName('Đường Nguyen Huu Canh')).toBe(false);
     expect(isCleanVietnameseRoadName('Đường Phan Dinh Phung')).toBe(false);
+    expect(isCleanVietnameseRoadName('Đường Dinh Tien Hoang')).toBe(false);
+    expect(isCleanVietnameseRoadName('Đường Nguyen Thi Dinh')).toBe(false);
+    expect(isCleanVietnameseRoadName('Đường Truong Chinh')).toBe(false);
     expect(isCleanVietnameseRoadName('Nguyen Tat Thanh')).toBe(false);
     expect(isCleanVietnameseRoadName('Hoang Van Thu')).toBe(false);
   });
@@ -52,6 +55,8 @@ describe('isCleanVietnameseRoadName', () => {
   it('approves accented Vietnamese street names', () => {
     expect(isCleanVietnameseRoadName('Đường Nguyễn Hữu Cảnh')).toBe(true);
     expect(isCleanVietnameseRoadName('Đường Phan Đình Phùng')).toBe(true);
+    expect(isCleanVietnameseRoadName('Đường Đinh Tiên Hoàng')).toBe(true);
+    expect(isCleanVietnameseRoadName('Đường Nguyễn Thị Định')).toBe(true);
     expect(isCleanVietnameseRoadName('Cầu Tân Thuận 2')).toBe(true);
     expect(isCleanVietnameseRoadName('Xa lộ Hà Nội')).toBe(true);
   });
