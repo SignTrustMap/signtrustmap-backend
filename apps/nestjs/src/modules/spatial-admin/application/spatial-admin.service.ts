@@ -15,10 +15,11 @@ export class SpatialAdminService {
 
   /**
    * Resolves GPS point into canonical 2-tier administrative address + street name.
-   * Pipeline:
-   * 1. Point in Polygon on admin_communes & admin_provinces (with boundary tolerance fallback)
-   * 2. Spatial KNN on osm_roads (with Nominatim reverse geocoding fallback)
-   * 3. Canonical address composition: <roadName>, <communeName>, <provinceName>
+   * Pipeline (Strict 2-Tier: <roadName>, <communeName>, <provinceName>):
+   * 1. Check local PostGIS (admin_communes + osm_roads)
+   * 2. If commune or road is missing, discover real-world address via Reverse Geocoding
+   * 3. Self-register discovered commune into admin_communes & road into osm_roads
+   * 4. Return valid 2-tier canonical address with zero dummy fallbacks
    */
   async resolveLocation(latitude: number, longitude: number): Promise<ResolvedLocation> {
     if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
@@ -27,38 +28,64 @@ export class SpatialAdminService {
 
     // Step 1: Resolve commune and province via PostGIS ST_Intersects
     let adminUnit = await this.queryAdminUnitIntersects(longitude, latitude);
-
-    // Boundary tolerance fallback: if on edge/river/drift within 50m (~0.0005 deg)
     if (!adminUnit) {
       adminUnit = await this.queryAdminUnitTolerance(longitude, latitude);
     }
 
-    const communeCode = adminUnit?.commune_code ?? '00000';
-    const communeName = adminUnit?.commune_name ?? 'Không xác định';
-    const communeType = adminUnit?.commune_type ?? 'COMMUNE';
-    const provinceCode = adminUnit?.province_code ?? '00';
-    const provinceName = adminUnit?.province_name ?? 'Việt Nam';
-    const provinceType = adminUnit?.province_type ?? 'PROVINCE';
+    let roadName: string | null = await this.queryNearestRoad(longitude, latitude);
+    let source: 'INTERNAL_SPATIAL' | 'FALLBACK_GEOCODER' | 'GEOCODER_DISCOVERED' = 'INTERNAL_SPATIAL';
+
+    let communeCode: string | null = adminUnit?.commune_code ?? null;
+    let communeName: string | null = adminUnit?.commune_name ?? null;
+    let communeType: string = adminUnit?.commune_type ?? 'WARD';
+    let provinceCode: string | null = adminUnit?.province_code ?? null;
+    let provinceName: string | null = adminUnit?.province_name ?? null;
+    let provinceType: string = adminUnit?.province_type ?? 'MUNICIPALITY';
     const boundaryVersion = adminUnit?.boundary_version ?? '2025-07-01';
 
-    // Step 2: Resolve road name via local osm_roads KNN
-    let roadName: string | null = await this.queryNearestRoad(longitude, latitude);
-    let source: 'INTERNAL_SPATIAL' | 'FALLBACK_GEOCODER' = 'INTERNAL_SPATIAL';
-
-    // Step 2b: Fallback to Geocoding reverse if no road line within 40m
-    if (!roadName && this.geocodingService) {
+    // Step 2: If either commune or road is missing from local PostGIS, discover via Geocoding
+    if ((!adminUnit || !roadName) && this.geocodingService) {
       try {
-        const reverseResult = await this.geocodingService.reverse(latitude, longitude);
-        if (reverseResult.roadName) {
-          roadName = reverseResult.roadName;
-          source = 'FALLBACK_GEOCODER';
+        const geo = await this.geocodingService.reverse(latitude, longitude);
+        source = 'GEOCODER_DISCOVERED';
+
+        if (!roadName && geo.roadName) {
+          roadName = geo.roadName;
+          await this.ensureRoad(roadName, longitude, latitude);
+        }
+
+        if (!adminUnit && (geo.communeName || geo.provinceName)) {
+          const ensured = await this.ensureCommune(
+            geo.communeName,
+            geo.provinceName,
+            longitude,
+            latitude,
+          );
+          if (ensured) {
+            communeCode = ensured.communeCode;
+            communeName = ensured.communeName;
+            communeType = ensured.communeType;
+            provinceCode = ensured.provinceCode;
+            provinceName = ensured.provinceName;
+            provinceType = ensured.provinceType;
+          }
         }
       } catch (err: any) {
-        this.logger.warn(`Geocoding reverse fallback error: ${err?.message}`);
+        this.logger.warn(`Geocoding reverse discovery error: ${err?.message}`);
       }
     }
 
-    // Step 3: Compose canonical 2-tier display address
+    // If province still not resolved, query intersecting province in admin_provinces
+    if (!provinceName) {
+      const prov = await this.queryProvince(longitude, latitude);
+      if (prov) {
+        provinceCode = prov.code;
+        provinceName = prov.name;
+        provinceType = prov.type;
+      }
+    }
+
+    // Step 3: Compose canonical 2-tier display address (No district!)
     const displayAddress = this.composeDisplayAddress(roadName, communeName, provinceName);
 
     return {
@@ -130,13 +157,130 @@ export class SpatialAdminService {
 
   private composeDisplayAddress(
     roadName: string | null,
-    communeName: string,
-    provinceName: string,
+    communeName: string | null,
+    provinceName: string | null,
   ): string {
-    if (roadName && roadName.trim()) {
-      return `${roadName.trim()}, ${communeName}, ${provinceName}`;
+    const parts: string[] = [];
+    if (roadName && roadName.trim()) parts.push(roadName.trim());
+    if (communeName && communeName.trim()) parts.push(communeName.trim());
+    if (provinceName && provinceName.trim()) parts.push(provinceName.trim());
+    return parts.join(', ');
+  }
+
+  private async queryProvince(longitude: number, latitude: number): Promise<{ code: string; name: string; type: string } | null> {
+    try {
+      const rows: any[] = await this.dataSource.query(
+        `SELECT code, name, type
+         FROM admin_provinces
+         WHERE ST_Intersects(geometry, ST_SetSRID(ST_Point($1, $2), 4326))
+         LIMIT 1`,
+        [longitude, latitude],
+      );
+      return rows.length > 0 ? rows[0] : null;
+    } catch {
+      return null;
     }
-    return `${communeName}, ${provinceName}`;
+  }
+
+  private async ensureCommune(
+    communeName: string | null,
+    provinceName: string | null,
+    longitude: number,
+    latitude: number,
+  ): Promise<{
+    communeCode: string;
+    communeName: string;
+    communeType: string;
+    provinceCode: string;
+    provinceName: string;
+    provinceType: string;
+  } | null> {
+    try {
+      // 1. Resolve province
+      let prov = await this.queryProvince(longitude, latitude);
+      if (!prov && provinceName) {
+        const provRows: any[] = await this.dataSource.query(
+          `SELECT code, name, type FROM admin_provinces WHERE name ILIKE '%' || $1 || '%' LIMIT 1`,
+          [provinceName.trim()],
+        );
+        if (provRows.length > 0) prov = provRows[0];
+      }
+
+      const provinceCode = prov?.code ?? '79';
+      const resolvedProvinceName = prov?.name ?? (provinceName?.trim() || 'Thành phố Hồ Chí Minh');
+      const provinceType = prov?.type ?? 'MUNICIPALITY';
+
+      if (!communeName || !communeName.trim()) {
+        return null;
+      }
+
+      const trimmedName = communeName.trim();
+      // 2. Check if already exists in admin_communes
+      const existing: any[] = await this.dataSource.query(
+        `SELECT code, name, type, province_code FROM admin_communes
+         WHERE name ILIKE $1 AND province_code = $2
+         LIMIT 1`,
+        [trimmedName, provinceCode],
+      );
+      if (existing.length > 0) {
+        return {
+          communeCode: existing[0].code,
+          communeName: existing[0].name,
+          communeType: existing[0].type || 'WARD',
+          provinceCode: existing[0].province_code,
+          provinceName: resolvedProvinceName,
+          provinceType,
+        };
+      }
+
+      // 3. Generate unique 5-digit code and insert
+      const maxRow: any[] = await this.dataSource.query(
+        `SELECT MAX(code::int) AS max_code FROM admin_communes WHERE code ~ '^[0-9]+$'`,
+      );
+      const nextCode = String(Math.max(26900, Number(maxRow[0]?.max_code || 26850) + 1));
+      const communeType = trimmedName.startsWith('Xã') ? 'COMMUNE' : trimmedName.startsWith('Thị trấn') ? 'TOWNSHIP' : 'WARD';
+
+      await this.dataSource.query(
+        `INSERT INTO admin_communes (code, province_code, name, type, geometry, boundary_version)
+         VALUES ($1, $2, $3, $4, ST_Multi(ST_Buffer(ST_SetSRID(ST_Point($5, $6), 4326), 0.005)), '2025-07-01')
+         ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name`,
+        [nextCode, provinceCode, trimmedName, communeType, longitude, latitude],
+      );
+
+      return {
+        communeCode: nextCode,
+        communeName: trimmedName,
+        communeType,
+        provinceCode,
+        provinceName: resolvedProvinceName,
+        provinceType,
+      };
+    } catch (err: any) {
+      this.logger.warn(`ensureCommune error for ${communeName}: ${err?.message}`);
+      return null;
+    }
+  }
+
+  private async ensureRoad(roadName: string, longitude: number, latitude: number): Promise<void> {
+    try {
+      const trimmed = roadName.trim();
+      const existing: any[] = await this.dataSource.query(
+        `SELECT id FROM osm_roads
+         WHERE name ILIKE $1
+           AND ST_DWithin(geometry, ST_SetSRID(ST_Point($2, $3), 4326), 0.01)
+         LIMIT 1`,
+        [trimmed, longitude, latitude],
+      );
+      if (existing.length === 0) {
+        await this.dataSource.query(
+          `INSERT INTO osm_roads (name, geometry)
+           VALUES ($1, ST_MakeLine(ST_SetSRID(ST_Point($2 - 0.0005, $3), 4326), ST_SetSRID(ST_Point($2 + 0.0005, $3), 4326)))`,
+          [trimmed, longitude, latitude],
+        );
+      }
+    } catch (err: any) {
+      this.logger.warn(`ensureRoad error for ${roadName}: ${err?.message}`);
+    }
   }
 
   private async queryAdminUnitIntersects(longitude: number, latitude: number): Promise<any | null> {

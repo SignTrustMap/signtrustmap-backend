@@ -1,11 +1,16 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
 import { DataSource } from 'typeorm';
+import { SpatialAdminBackfillService } from '../../spatial-admin/application/spatial-admin-backfill.service';
 
 @Injectable()
 export class SignMapSchemaInitializer implements OnModuleInit {
   private readonly logger = new Logger(SignMapSchemaInitializer.name);
 
-  constructor(private readonly dataSource: DataSource) {}
+  constructor(
+    private readonly dataSource: DataSource,
+    @Optional()
+    private readonly backfillService?: SpatialAdminBackfillService,
+  ) {}
 
   async onModuleInit(): Promise<void> {
     try {
@@ -137,6 +142,12 @@ export class SignMapSchemaInitializer implements OnModuleInit {
         WHERE v.id = sub.sign_id AND v.commune_code IS NULL;
       `);
       this.logger.log('SignMap schema preflight verified (admin_boundaries, osm_roads, verified_traffic_signs columns).');
+
+      if (this.backfillService) {
+        this.backfillService
+          .backfillMissingAddresses(200)
+          .catch((err) => this.logger.warn(`Background address backfill warning: ${err?.message}`));
+      }
     } catch (error: any) {
       this.logger.warn(`SignMap schema preflight check warning: ${error?.message || error}`);
     }

@@ -2,15 +2,15 @@ export interface ResolvedLocation {
   latitude: number;
   longitude: number;
   roadName: string | null;
-  communeCode: string;
-  communeName: string;
+  communeCode: string | null;
+  communeName: string | null;
   communeType: string;
-  provinceCode: string;
-  provinceName: string;
+  provinceCode: string | null;
+  provinceName: string | null;
   provinceType: string;
   displayAddress: string;
   boundaryVersion: string;
-  source: 'INTERNAL_SPATIAL' | 'FALLBACK_GEOCODER';
+  source: 'INTERNAL_SPATIAL' | 'FALLBACK_GEOCODER' | 'GEOCODER_DISCOVERED';
 }
 
 export interface AdminSearchResult {

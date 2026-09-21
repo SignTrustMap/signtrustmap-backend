@@ -35,3 +35,10 @@ export interface GeocodingSearchRequest {
   maxLatitude?: number;
   maxLongitude?: number;
 }
+
+export interface ReverseGeocodingResult {
+  roadName: string | null;
+  communeName: string | null;
+  provinceName: string | null;
+  displayLocation: string;
+}

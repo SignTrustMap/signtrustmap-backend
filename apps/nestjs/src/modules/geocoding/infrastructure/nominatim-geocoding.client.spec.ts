@@ -137,6 +137,8 @@ describe('NominatimGeocodingClient', () => {
     expect(result).toEqual({
       displayLocation: 'Xa Lo Ha Noi, Hiep Phu, Thu Duc City, Ho Chi Minh City, Vietnam',
       roadName: 'Xa Lo Ha Noi',
+      communeName: null,
+      provinceName: 'Ho Chi Minh City',
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url] = fetchMock.mock.calls[0];

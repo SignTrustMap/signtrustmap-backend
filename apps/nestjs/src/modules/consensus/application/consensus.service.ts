@@ -67,11 +67,32 @@ export class ConsensusService {
     return savedLog;
   }
   private async handleApproved(candidate: UnverifiedSignCandidate, signTypeId: number, log: ConsensusLog, voterDetails: Array<{ reviewerId: string; weight: number; vote: number; suggestedSignTypeId: number | null }>, winningVote: number, config: ConsensusConfig) {
-    let lon = 105.8342; let lat = 21.0285; let bearing: number | null = null;
+    let lon: number | null = null;
+    let lat: number | null = null;
+    let bearing: number | null = null;
     try {
-      const rows: any[] = await this.dataSource.query('SELECT ST_AsText(sign_location) AS wkt, traffic_direction FROM candidate_geo_estimations WHERE candidate_id=$1', [candidate.id]);
-      if (rows.length > 0 && rows[0].wkt) { const m = String(rows[0].wkt).match(/POINT\s*\(\s*([^\s]+)\s+([^\s]+)\s*\)/); if (m) { lon = parseFloat(m[1]); lat = parseFloat(m[2]); } if (rows[0].traffic_direction != null) bearing = Number(rows[0].traffic_direction); }
+      const rows: any[] = await this.dataSource.query(
+        'SELECT ST_AsText(sign_location) AS sign_wkt, ST_AsText(vehicle_location) AS vehicle_wkt, traffic_direction FROM candidate_geo_estimations WHERE candidate_id=$1',
+        [candidate.id],
+      );
+      if (rows.length > 0) {
+        const wkt = rows[0].sign_wkt || rows[0].vehicle_wkt;
+        if (wkt) {
+          const m = String(wkt).match(/POINT\s*\(\s*([^\s]+)\s+([^\s]+)\s*\)/);
+          if (m) {
+            lon = parseFloat(m[1]);
+            lat = parseFloat(m[2]);
+          }
+        }
+        if (rows[0].traffic_direction != null) bearing = Number(rows[0].traffic_direction);
+      }
     } catch {}
+
+    if (lon == null || lat == null) {
+      this.logger.warn(`Candidate ${candidate.id} approved without GPS geo estimation. Skipping map creation.`);
+      await this.candidateRepo.update(candidate.id, { status: CandidateStatus.VERIFIED });
+      return;
+    }
 
     let communeCode: string | null = null;
     let roadName: string | null = null;
@@ -79,9 +100,9 @@ export class ConsensusService {
     if (this.spatialAdminService) {
       try {
         const resolved = await this.spatialAdminService.resolveLocation(lat, lon);
-        communeCode = resolved.communeCode && resolved.communeCode !== '00000' ? resolved.communeCode : null;
-        roadName = resolved.roadName ?? null;
-        displayAddress = resolved.displayAddress ?? null;
+        communeCode = resolved.communeCode;
+        roadName = resolved.roadName;
+        displayAddress = resolved.displayAddress;
       } catch (err: any) {
         this.logger.warn(`Failed to resolve spatial address for consensus sign ${candidate.id}: ${err?.message}`);
       }
