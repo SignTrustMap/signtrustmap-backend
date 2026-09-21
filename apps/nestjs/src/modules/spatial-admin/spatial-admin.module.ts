@@ -1,11 +1,10 @@
 import { Module } from '@nestjs/common';
-import { GeocodingModule } from '../geocoding/geocoding.module';
+import { SpatialAdminController } from './presentation/spatial-admin.controller';
 import { SpatialAdminService } from './application/spatial-admin.service';
 import { SpatialAdminBackfillService } from './application/spatial-admin-backfill.service';
-import { SpatialAdminController } from './presentation/spatial-admin.controller';
 
 @Module({
-  imports: [GeocodingModule],
+  imports: [],
   controllers: [SpatialAdminController],
   providers: [SpatialAdminService, SpatialAdminBackfillService],
   exports: [SpatialAdminService, SpatialAdminBackfillService],

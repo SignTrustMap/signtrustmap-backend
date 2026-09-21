@@ -59,6 +59,8 @@ describe('isCleanVietnameseRoadName', () => {
     expect(isCleanVietnameseRoadName('Đường Nguyễn Thị Định')).toBe(true);
     expect(isCleanVietnameseRoadName('Cầu Tân Thuận 2')).toBe(true);
     expect(isCleanVietnameseRoadName('Xa lộ Hà Nội')).toBe(true);
+    expect(isCleanVietnameseRoadName('Đường N2')).toBe(true);
+    expect(isCleanVietnameseRoadName('Đường số 1D')).toBe(true);
   });
 
   it('detects untranslated English words', () => {
