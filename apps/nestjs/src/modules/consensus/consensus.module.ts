@@ -7,12 +7,14 @@ import { CandidateReview } from '../reviews/infrastructure/persistence/candidate
 import { UnverifiedSignCandidate } from '../survey/infrastructure/persistence/unverified-sign-candidate.entity';
 import { WalletModule } from '../wallet/wallet.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { SpatialAdminModule } from '../spatial-admin/spatial-admin.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([ConsensusConfig, ConsensusLog, UnverifiedSignCandidate, CandidateReview]),
     WalletModule,
     NotificationsModule,
+    SpatialAdminModule,
   ],
   providers: [ConsensusService],
   exports: [ConsensusService],
