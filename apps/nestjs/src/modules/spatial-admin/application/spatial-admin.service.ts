@@ -2,6 +2,10 @@ import { BadRequestException, Injectable, Logger, Optional } from '@nestjs/commo
 import { DataSource } from 'typeorm';
 import { AdminSearchResult, ResolvedLocation } from '../domain/spatial-admin.types';
 import { GeocodingService } from '../../geocoding/application/geocoding.service';
+import {
+  formatCanonicalRoadName,
+  isCleanVietnameseRoadName,
+} from '../domain/road-name-formatter';
 
 @Injectable()
 export class SpatialAdminService {
@@ -263,19 +267,29 @@ export class SpatialAdminService {
 
   private async ensureRoad(roadName: string, longitude: number, latitude: number): Promise<void> {
     try {
-      const trimmed = roadName.trim();
+      const canonicalName = formatCanonicalRoadName(roadName);
+      if (!canonicalName) return;
+
       const existing: any[] = await this.dataSource.query(
-        `SELECT id FROM osm_roads
-         WHERE name ILIKE $1
-           AND ST_DWithin(geometry, ST_SetSRID(ST_Point($2, $3), 4326), 0.01)
+        `SELECT id, name FROM osm_roads
+         WHERE (name ILIKE $1 OR name ILIKE $2)
+           AND ST_DWithin(geometry, ST_SetSRID(ST_Point($3, $4), 4326), 0.01)
          LIMIT 1`,
-        [trimmed, longitude, latitude],
+        [canonicalName, `%${canonicalName.replace(/^Đường\s+/i, '')}%`, longitude, latitude],
       );
       if (existing.length === 0) {
         await this.dataSource.query(
           `INSERT INTO osm_roads (name, geometry)
            VALUES ($1, ST_MakeLine(ST_SetSRID(ST_Point($2 - 0.0005, $3), 4326), ST_SetSRID(ST_Point($2 + 0.0005, $3), 4326)))`,
-          [trimmed, longitude, latitude],
+          [canonicalName, longitude, latitude],
+        );
+      } else if (
+        !isCleanVietnameseRoadName(existing[0].name) &&
+        isCleanVietnameseRoadName(canonicalName)
+      ) {
+        await this.dataSource.query(
+          `UPDATE osm_roads SET name = $1 WHERE id = $2`,
+          [canonicalName, existing[0].id],
         );
       }
     } catch (err: any) {
@@ -320,7 +334,7 @@ export class SpatialAdminService {
            p.type AS province_type
          FROM admin_communes c
          JOIN admin_provinces p ON c.province_code = p.code
-         WHERE ST_DWithin(c.geometry, ST_SetSRID(ST_Point($1, $2), 4326), 0.0005)
+         WHERE ST_DWithin(c.geometry, ST_SetSRID(ST_Point($1, $2), 4326), 0.005)
          ORDER BY c.geometry <-> ST_SetSRID(ST_Point($1, $2), 4326)
          LIMIT 1`,
         [longitude, latitude],
@@ -344,7 +358,10 @@ export class SpatialAdminService {
         [longitude, latitude],
       );
       if (rows.length > 0 && rows[0].name) {
-        return rows[0].name.trim();
+        const canonical = formatCanonicalRoadName(rows[0].name);
+        if (canonical && isCleanVietnameseRoadName(canonical)) {
+          return canonical;
+        }
       }
       return null;
     } catch (err: any) {

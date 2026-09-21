@@ -60,7 +60,7 @@ describe('PhotonGeocodingClient', () => {
       name: 'Cho Ben Thanh',
       latitude: 10.7725167,
       longitude: 106.6980203,
-      address: { city: 'Thành phố Hồ Chí Minh', road: 'Lê Lợi' },
+      address: { city: 'Thành phố Hồ Chí Minh', road: 'Đường Lê Lợi' },
       boundingBox: { minLongitude: 106.6974 },
     });
   });
