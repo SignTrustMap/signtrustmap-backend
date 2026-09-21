@@ -63,7 +63,7 @@ export class VerifiedSignService {
             request.latitude,
             request.longitude,
           );
-          communeCode = resolved.communeCode;
+          communeCode = resolved.communeCode && resolved.communeCode !== '00000' ? resolved.communeCode : null;
           roadName = resolved.roadName;
           displayAddress = resolved.displayAddress;
         } catch (spatialErr: any) {
