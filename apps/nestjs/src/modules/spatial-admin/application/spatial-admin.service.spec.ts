@@ -96,7 +96,7 @@ describe('SpatialAdminService', () => {
       expect(result.displayAddress).toBe('Xa lộ Hà Nội, Phường Linh Trung, Thành phố Hồ Chí Minh');
     });
 
-    it('falls back to Geocoding reverse when no road line exists in osm_roads', async () => {
+    it('discovers road via Geocoding reverse when no road line exists in osm_roads', async () => {
       // 1. ST_Intersects succeeds
       (dataSource.query as jest.Mock)
         .mockResolvedValueOnce([
@@ -111,20 +111,63 @@ describe('SpatialAdminService', () => {
           },
         ])
         // 2. osm_roads returns empty
+        .mockResolvedValueOnce([])
+        // 3. ensureRoad query: SELECT id FROM osm_roads
+        .mockResolvedValueOnce([])
+        // 4. ensureRoad insert
         .mockResolvedValueOnce([]);
 
-      // 3. Geocoding reverse fallback
+      // 5. Geocoding reverse discovery
       (geocodingService.reverse as jest.Mock).mockResolvedValueOnce({
         roadName: 'Đường Nguyễn Huệ',
-        displayLocation: 'Đường Nguyễn Huệ, Hồ Chí Minh',
+        communeName: 'Phường Bến Nghé',
+        provinceName: 'Thành phố Hồ Chí Minh',
+        displayLocation: 'Đường Nguyễn Huệ, Phường Bến Nghé, Hồ Chí Minh',
       });
 
       const result = await service.resolveLocation(10.772, 106.702);
 
       expect(result.roadName).toBe('Đường Nguyễn Huệ');
-      expect(result.source).toBe('FALLBACK_GEOCODER');
+      expect(result.source).toBe('GEOCODER_DISCOVERED');
       expect(result.displayAddress).toBe('Đường Nguyễn Huệ, Phường Bến Nghé, Thành phố Hồ Chí Minh');
       expect(geocodingService.reverse).toHaveBeenCalledWith(10.772, 106.702);
+    });
+
+    it('discovers and auto-registers commune and road when outside initial seed boundaries', async () => {
+      // 1. ST_Intersects misses
+      (dataSource.query as jest.Mock)
+        .mockResolvedValueOnce([])
+        // 2. ST_DWithin tolerance misses
+        .mockResolvedValueOnce([])
+        // 3. osm_roads misses
+        .mockResolvedValueOnce([])
+        // 4. ensureRoad: check existing
+        .mockResolvedValueOnce([])
+        // 5. ensureRoad: insert
+        .mockResolvedValueOnce([])
+        // 6. ensureCommune: query province
+        .mockResolvedValueOnce([{ code: '79', name: 'Thành phố Hồ Chí Minh', type: 'MUNICIPALITY' }])
+        // 7. ensureCommune: check existing
+        .mockResolvedValueOnce([])
+        // 8. ensureCommune: MAX code
+        .mockResolvedValueOnce([{ max_code: '26808' }])
+        // 9. ensureCommune: insert
+        .mockResolvedValueOnce([]);
+
+      (geocodingService.reverse as jest.Mock).mockResolvedValueOnce({
+        roadName: 'Đường Nguyễn Thị Thập',
+        communeName: 'Phường Tân Phú',
+        provinceName: 'Thành phố Hồ Chí Minh',
+        displayLocation: 'Đường Nguyễn Thị Thập, Phường Tân Phú, Thành phố Hồ Chí Minh',
+      });
+
+      const result = await service.resolveLocation(10.738, 106.721);
+
+      expect(result.roadName).toBe('Đường Nguyễn Thị Thập');
+      expect(result.communeName).toBe('Phường Tân Phú');
+      expect(result.communeCode).toBe('26900');
+      expect(result.provinceName).toBe('Thành phố Hồ Chí Minh');
+      expect(result.displayAddress).toBe('Đường Nguyễn Thị Thập, Phường Tân Phú, Thành phố Hồ Chí Minh');
     });
 
     it('throws BadRequestException on invalid coordinates', async () => {
