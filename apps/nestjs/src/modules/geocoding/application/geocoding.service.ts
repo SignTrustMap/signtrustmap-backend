@@ -1,16 +1,16 @@
 import { Injectable } from '@nestjs/common';
 import { GeocodingSearchRequest, ReverseGeocodingResult } from '../domain/geocoding.types';
-import { NominatimGeocodingClient } from '../infrastructure/nominatim-geocoding.client';
+import { PhotonGeocodingClient } from '../infrastructure/photon-geocoding.client';
 
 @Injectable()
 export class GeocodingService {
-  constructor(private readonly nominatim: NominatimGeocodingClient) {}
+  constructor(private readonly photon: PhotonGeocodingClient) {}
 
   search(request: GeocodingSearchRequest) {
-    return this.nominatim.search(request);
+    return this.photon.search(request);
   }
 
   reverse(latitude: number, longitude: number): Promise<ReverseGeocodingResult> {
-    return this.nominatim.reverse(latitude, longitude);
+    return this.photon.reverse(latitude, longitude);
   }
 }
