@@ -3,7 +3,7 @@ import { AdminController } from '../modules/admin/admin.controller';
 import { AuthController } from '../modules/auth/presentation/auth.controller';
 import { CatalogController } from '../modules/catalog/catalog.controller';
 import { DailyTasksController } from '../modules/daily-tasks/daily-tasks.controller';
-import { GeocodingController } from '../modules/geocoding/presentation/geocoding.controller';
+import { SpatialAdminController } from '../modules/spatial-admin/presentation/spatial-admin.controller';
 import { SignGeolocationController } from '../modules/geolocation/presentation/sign-geolocation.controller';
 import { HealthController } from '../modules/health/presentation/health.controller';
 import { LeaderboardController } from '../modules/leaderboard/leaderboard.controller';
@@ -29,7 +29,7 @@ const CONTROLLER_GROUPS = [
   { controller: AuthController, tag: 'Auth' },
   { controller: WalletController, tag: 'Wallet' },
   { controller: PlacesController, tag: 'Places' },
-  { controller: GeocodingController, tag: 'Geocoding' },
+  { controller: SpatialAdminController, tag: 'Spatial Admin' },
   { controller: RoutingController, tag: 'Routing' },
   { controller: NavigationController, tag: 'Navigation' },
   { controller: VerifiedSignController, tag: 'Sign Map' },
