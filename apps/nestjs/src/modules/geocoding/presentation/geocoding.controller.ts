@@ -10,7 +10,7 @@ import { GeocodingService } from '../application/geocoding.service';
 export class GeocodingController {
   constructor(private readonly geocoding: GeocodingService) {}
 
-  @ApiOperation({ summary: 'Search places and addresses', description: 'Geocode search queries with viewport bounding-box and country filtering via OpenStreetMap Nominatim' })
+  @ApiOperation({ summary: 'Search places and addresses', description: 'Geocode search queries with viewport bounding-box and country filtering via OpenStreetMap Photon' })
   @Get('search')
   search(@Query() query: GeocodingSearchQueryDto) {
     return this.geocoding.search({
