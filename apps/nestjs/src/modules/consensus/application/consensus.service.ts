@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { ConsensusConfig } from '../infrastructure/persistence/consensus-config.entity';
@@ -11,6 +11,7 @@ import { CandidateReview } from '../../reviews/infrastructure/persistence/candid
 import { TransactionType } from '../../wallet/infrastructure/persistence/credit-transaction.entity';
 import { WalletService } from '../../wallet/application/wallet.service';
 import { NotificationsService } from '../../notifications/notifications.service';
+import { SpatialAdminService } from '../../spatial-admin/application/spatial-admin.service';
 
 @Injectable()
 export class ConsensusService {
@@ -23,6 +24,7 @@ export class ConsensusService {
     private readonly dataSource: DataSource,
     private readonly walletService: WalletService,
     private readonly notificationsService: NotificationsService,
+    @Optional() private readonly spatialAdminService?: SpatialAdminService,
   ) {}
   async evaluate(candidateId: string): Promise<ConsensusLog | null> {
     const candidate = await this.candidateRepo.findOne({ where: { id: candidateId } });
@@ -70,9 +72,35 @@ export class ConsensusService {
       const rows: any[] = await this.dataSource.query('SELECT ST_AsText(sign_location) AS wkt, traffic_direction FROM candidate_geo_estimations WHERE candidate_id=$1', [candidate.id]);
       if (rows.length > 0 && rows[0].wkt) { const m = String(rows[0].wkt).match(/POINT\s*\(\s*([^\s]+)\s+([^\s]+)\s*\)/); if (m) { lon = parseFloat(m[1]); lat = parseFloat(m[2]); } if (rows[0].traffic_direction != null) bearing = Number(rows[0].traffic_direction); }
     } catch {}
+
+    let communeCode: string | null = null;
+    let roadName: string | null = null;
+    let displayAddress: string | null = null;
+    if (this.spatialAdminService) {
+      try {
+        const resolved = await this.spatialAdminService.resolveLocation(lat, lon);
+        communeCode = resolved.communeCode && resolved.communeCode !== '00000' ? resolved.communeCode : null;
+        roadName = resolved.roadName ?? null;
+        displayAddress = resolved.displayAddress ?? null;
+      } catch (err: any) {
+        this.logger.warn(`Failed to resolve spatial address for consensus sign ${candidate.id}: ${err?.message}`);
+      }
+    }
+
     await this.candidateRepo.update(candidate.id, { status: CandidateStatus.VERIFIED });
     try {
-      await this.dataSource.query("INSERT INTO verified_traffic_signs (id, sign_type_id, origin_candidate_id, location, traffic_direction, sign_crop_url, status, freshness_score, last_verified_at) VALUES (gen_random_uuid(), $1, $2, ST_SetSRID(ST_MakePoint($3,$4),4326), $5, $6, 'ACTIVE', 1, now()) ON CONFLICT (origin_candidate_id) DO NOTHING", [signTypeId, candidate.id, lon, lat, bearing, candidate.signCropUrl]);
+      await this.dataSource.query(
+        `INSERT INTO verified_traffic_signs (
+           id, sign_type_id, origin_candidate_id, location, traffic_direction,
+           sign_crop_url, status, freshness_score, last_verified_at,
+           commune_code, road_name, display_address
+         ) VALUES (
+           gen_random_uuid(), $1, $2, ST_SetSRID(ST_MakePoint($3,$4),4326), $5,
+           $6, 'ACTIVE', 1, now(),
+           $7, $8, $9
+         ) ON CONFLICT (origin_candidate_id) DO NOTHING`,
+        [signTypeId, candidate.id, lon, lat, bearing, candidate.signCropUrl, communeCode, roadName, displayAddress],
+      );
       const vRows: any[] = await this.dataSource.query('SELECT id FROM verified_traffic_signs WHERE origin_candidate_id=$1', [candidate.id]);
       if (vRows.length > 0) { try { await this.dataSource.query('INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, note) VALUES ($1,\'PUBLISHED\',\'Consensus APPROVED\')', [vRows[0].id]); } catch {} }
     } catch (e: any) { this.logger.warn('verified_sign insert failed ' + candidate.id + ': ' + e?.message); }
