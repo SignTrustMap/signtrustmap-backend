@@ -3,6 +3,7 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, ILike, In, Repository } from 'typeorm';
@@ -10,6 +11,7 @@ import { PageResponse, pageResponse } from '../../common/pagination/page-respons
 import {
   CreateSignCategoryDto,
   CreateSignTypeDto,
+  CreateSupportShotDto,
   UpdateSignCategoryDto,
   UpdateSignTypeDto,
   UpsertSystemParameterDto,
@@ -20,6 +22,7 @@ import { SignTypeImage } from './sign-type-image.entity';
 import { SignTypeOsmMapping } from './sign-type-osm-mapping.entity';
 import { SystemParameter } from './system-parameter.entity';
 import { TrafficSignType } from './traffic-sign-type.entity';
+import { CatalogSyncService } from '../../integrations/catalog-sync/catalog-sync.service';
 
 export interface ListSignTypesOptions {
   categoryId?: number;
@@ -57,6 +60,8 @@ export class CatalogService {
     @InjectRepository(SignTypeImage)
     private readonly signTypeImages: Repository<SignTypeImage>,
     private readonly dataSource: DataSource,
+    @Optional()
+    private readonly catalogSyncService?: CatalogSyncService,
   ) {}
 
   listCategories() {
@@ -437,4 +442,85 @@ export class CatalogService {
     if (value == null) return null;
     return value.trim() || null;
   }
+
+  // --- Support Shots (Few-Shot Visual Learning) Management Methods ---
+
+  async listSupportShots(signTypeId: number) {
+    const signType = await this.signTypes.findOne({ where: { id: signTypeId } });
+    if (!signType) throw new NotFoundException(`TrafficSignType #${signTypeId} not found`);
+
+    const shots = await this.signTypeImages.find({
+      where: { signTypeId },
+      order: { isPinned: 'DESC', isPrimary: 'DESC', uploadedAt: 'DESC' },
+    });
+
+    return {
+      signTypeId,
+      signCode: signType.signCode,
+      nameVi: signType.nameVi,
+      totalShots: shots.length,
+      shots: shots.map((s) => ({
+        id: s.id,
+        imageUrl: s.imageUrl,
+        imageType: s.imageType,
+        role: s.role || 'MEDOID',
+        isPrimary: s.isPrimary,
+        isPinned: s.isPinned ?? false,
+        sharpness: s.sharpness,
+        uploadedAt: s.uploadedAt,
+      })),
+    };
+  }
+
+  async addSupportShot(signTypeId: number, dto: CreateSupportShotDto) {
+    const signType = await this.signTypes.findOne({ where: { id: signTypeId } });
+    if (!signType) throw new NotFoundException(`TrafficSignType #${signTypeId} not found`);
+
+    if (dto.isPrimary) {
+      // Unset previous primary for this sign type
+      await this.signTypeImages.update({ signTypeId }, { isPrimary: false });
+    }
+
+    const newShot = this.signTypeImages.create({
+      signTypeId,
+      imageUrl: dto.imageUrl,
+      imageType: 'REAL_PHOTO',
+      role: dto.role || 'MEDOID',
+      isPrimary: dto.isPrimary ?? false,
+      isPinned: dto.isPinned ?? false,
+      sharpness: dto.sharpness ?? null,
+    });
+
+    const saved = await this.signTypeImages.save(newShot);
+    return saved;
+  }
+
+  async deleteSupportShot(signTypeId: number, imageId: string) {
+    const shot = await this.signTypeImages.findOne({
+      where: { id: imageId, signTypeId },
+    });
+    if (!shot) throw new NotFoundException(`Support shot #${imageId} not found for sign type #${signTypeId}`);
+
+    await this.signTypeImages.remove(shot);
+    return { deleted: true, imageId, signTypeId };
+  }
+
+  async setSupportShotPinned(signTypeId: number, imageId: string, isPinned: boolean) {
+    const shot = await this.signTypeImages.findOne({
+      where: { id: imageId, signTypeId },
+    });
+    if (!shot) throw new NotFoundException(`Support shot #${imageId} not found for sign type #${signTypeId}`);
+
+    shot.isPinned = Boolean(isPinned);
+    const updated = await this.signTypeImages.save(shot);
+    return { updated: true, imageId, isPinned: updated.isPinned };
+  }
+
+  async triggerPrototypeRebuild() {
+    if (!this.catalogSyncService) {
+      throw new BadRequestException('CatalogSyncService is not configured or available');
+    }
+    return this.catalogSyncService.rebuildPrototypes();
+  }
 }
+

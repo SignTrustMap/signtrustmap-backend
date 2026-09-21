@@ -285,3 +285,32 @@ export class ListSignTypesQueryDto {
   @Max(100)
   pageSize?: number;
 }
+
+export class CreateSupportShotDto {
+  @IsString()
+  @MinLength(1)
+  @MaxLength(500)
+  imageUrl: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['ANCHOR', 'MEDOID', 'REPRESENTATIVE'])
+  role?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isPinned?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  isPrimary?: boolean;
+
+  @IsOptional()
+  sharpness?: number;
+}
+
+export class SetSupportShotPinDto {
+  @IsBoolean()
+  isPinned: boolean;
+}
+
