@@ -8,6 +8,8 @@ import {
   ReverseGeocodingResult,
 } from '../domain/geocoding.types';
 
+import { formatCanonicalRoadName } from '../../spatial-admin/domain/road-name-formatter';
+
 interface NormalizedSearch extends GeocodingSearchRequest {
   countryCode?: string;
 }
@@ -88,10 +90,11 @@ export class PhotonGeocodingClient {
 
       if (feature) {
         const props = feature.properties || {};
-        const roadName =
+        const rawRoadName =
           props.street ||
           (props.osm_key === 'highway' || props.type === 'street' ? props.name : null) ||
           null;
+        const roadName = formatCanonicalRoadName(rawRoadName);
 
         let communeName =
           props.district ||
@@ -190,7 +193,7 @@ export class PhotonGeocodingClient {
                 }
               : null,
           address: {
-            road: props.street || '',
+            road: formatCanonicalRoadName(props.street || '') || '',
             suburb: props.district || '',
             city: props.city || props.state || '',
             country: props.country || 'Việt Nam',
