@@ -19,9 +19,9 @@ export const OPENAPI_TAGS = [
     description: 'Saved destinations and recent place-search history.',
   },
   {
-    name: 'Geocoding',
+    name: 'Spatial Admin',
     description:
-      'Place and address search backed by OpenStreetMap Nominatim.',
+      'Point-in-polygon administrative address resolution (QĐ 19/2025/QĐ-TTg) and spatial unit search.',
   },
   {
     name: 'Routing',

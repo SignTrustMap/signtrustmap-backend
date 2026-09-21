@@ -1,33 +1,31 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { SpatialAdminService } from './spatial-admin.service';
 
 @Injectable()
-export class SpatialAdminBackfillService {
+export class SpatialAdminBackfillService implements OnApplicationBootstrap {
   private readonly logger = new Logger(SpatialAdminBackfillService.name);
-  private isRunning = false;
 
   constructor(
     private readonly dataSource: DataSource,
     private readonly spatialAdminService: SpatialAdminService,
   ) {}
 
-  /**
-   * Backfills verified traffic signs that are missing commune_code, road_name, or have partial display_address.
-   * Processes in batches until all signs in the database have full 2-tier addresses.
-   */
-  async backfillMissingAddresses(batchSize = 50, maxTotal = 3000): Promise<{ processed: number; success: number }> {
-    if (this.isRunning) {
-      this.logger.log('Spatial admin address backfill already in progress, skipping duplicate run.');
-      return { processed: 0, success: 0 };
-    }
+  async onApplicationBootstrap(): Promise<void> {
+    // Run backfill asynchronously after bootstrap so startup is not blocked
+    setTimeout(() => {
+      this.runBackfill().catch((err) => {
+        this.logger.error(`SpatialAdminBackfill failed: ${err?.message}`, err?.stack);
+      });
+    }, 3_000);
+  }
 
-    this.isRunning = true;
+  async runBackfill(batchSize = 50, maxTotal = 5000): Promise<{ processed: number; success: number }> {
     let totalProcessed = 0;
     let totalSuccess = 0;
 
     try {
-      this.logger.log('Starting full 2-tier spatial address backfill via Photon...');
+      this.logger.log('Starting spatial address backfill via PostGIS...');
 
       while (totalProcessed < maxTotal) {
         const rows: Array<{ id: string; longitude: number; latitude: number }> =
@@ -37,43 +35,13 @@ export class SpatialAdminBackfillService {
                ST_X(location::geometry) AS longitude,
                ST_Y(location::geometry) AS latitude
              FROM verified_traffic_signs
-              WHERE location IS NOT NULL
-                AND (
-                  commune_code IS NULL
-                  OR road_name IS NULL
-                  OR display_address IS NULL
-                  OR display_address = 'Thành phố Hồ Chí Minh'
-                  OR display_address = 'Thành phố Hà Nội'
-                  OR display_address ILIKE '%Phường Saigon%'
-                  OR road_name ILIKE '%Street%'
-                  OR road_name ILIKE '%Road%'
-                  OR road_name ILIKE '%Boulevard%'
-                  OR road_name ILIKE 'Hướng đi %'
-                  OR (
-                    road_name IS NOT NULL
-                    AND road_name NOT ILIKE 'Đường %'
-                    AND road_name NOT ILIKE 'Cầu %'
-                    AND road_name NOT ILIKE 'Hầm %'
-                    AND road_name NOT ILIKE 'Đại lộ %'
-                    AND road_name NOT ILIKE 'Xa lộ %'
-                    AND road_name NOT ILIKE 'Quốc lộ %'
-                    AND road_name NOT ILIKE 'QL%'
-                    AND road_name NOT ILIKE 'Tỉnh lộ %'
-                    AND road_name NOT ILIKE 'TL%'
-                    AND road_name NOT ILIKE 'Hẻm %'
-                    AND road_name NOT ILIKE 'Ngõ %'
-                    AND road_name NOT ILIKE 'Giao lộ %'
-                    AND road_name NOT ILIKE 'Nút giao %'
-                    AND road_name NOT ILIKE 'Bến %'
-                  )
-                  OR (
-                    REGEXP_REPLACE(road_name, '^(Đường|Phố|Đại lộ|Xa lộ|Cầu|Hầm|Quốc lộ|Tỉnh lộ|Vành đai|Hẻm|Ngõ|Ngách|Đoạn|Bến|Giao lộ|Nút giao)\s+', '', 'i') ~* '[a-z]'
-                    AND REGEXP_REPLACE(road_name, '^(Đường|Phố|Đại lộ|Xa lộ|Cầu|Hầm|Quốc lộ|Tỉnh lộ|Vành đai|Hẻm|Ngõ|Ngách|Đoạn|Bến|Giao lộ|Nút giao)\s+', '', 'i') !~* '[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]'
-                    AND REGEXP_REPLACE(road_name, '^(Đường|Phố|Đại lộ|Xa lộ|Cầu|Hầm|Quốc lộ|Tỉnh lộ|Vành đai|Hẻm|Ngõ|Ngách|Đoạn|Bến|Giao lộ|Nút giao)\s+', '', 'i') !~* '^(Pasteur|Yersin|Calmette|Alexandre\s+de\s+Rhodes|(số\s+)?\d+[a-z]?)$'
-                  )
-                )
-              ORDER BY created_at DESC
-              LIMIT $1`,
+             WHERE location IS NOT NULL
+               AND (
+                 commune_code IS NULL
+                 OR display_address IS NULL
+               )
+             ORDER BY created_at DESC
+             LIMIT $1`,
             [batchSize],
           );
 
@@ -107,17 +75,23 @@ export class SpatialAdminBackfillService {
           }
           totalProcessed++;
 
-          // Gentle throttle between requests
-          await new Promise((resolve) => setTimeout(resolve, 50));
+          await new Promise((resolve) => setTimeout(resolve, 20));
         }
 
-        this.logger.log(`Backfilled ${totalSuccess}/${totalProcessed} signs so far...`);
+        if (rows.length < batchSize) break;
       }
 
-      this.logger.log(`Completed full address backfill: ${totalSuccess}/${totalProcessed} signs updated.`);
-      return { processed: totalProcessed, success: totalSuccess };
-    } finally {
-      this.isRunning = false;
+      this.logger.log(
+        `SpatialAdminBackfill completed. Processed: ${totalProcessed}, Successfully updated: ${totalSuccess}.`,
+      );
+    } catch (err: any) {
+      this.logger.error(`SpatialAdminBackfill error: ${err?.message}`);
     }
+
+    return { processed: totalProcessed, success: totalSuccess };
+  }
+
+  async backfillMissingAddresses(batchSize = 200): Promise<{ processed: number; success: number }> {
+    return this.runBackfill(batchSize);
   }
 }

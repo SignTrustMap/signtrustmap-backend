@@ -112,35 +112,7 @@ export class SignMapSchemaInitializer implements OnModuleInit {
           ('Đường Nguyễn Huệ', 'Đ. Nguyễn Huệ', 'pedestrian',
            ST_GeomFromText('LINESTRING(106.7020 10.7720, 106.7060 10.7750)', 4326))
         ON CONFLICT DO NOTHING;
-
-        -- Auto backfill signs with missing addresses
-        UPDATE "verified_traffic_signs" v
-        SET
-          commune_code = sub.commune_code,
-          road_name = COALESCE(v.road_name, sub.road_name),
-          display_address = CASE
-            WHEN sub.road_name IS NOT NULL THEN sub.road_name || ', ' || sub.commune_name || ', ' || sub.province_name
-            ELSE sub.commune_name || ', ' || sub.province_name
-          END
-        FROM (
-          SELECT
-            v2.id as sign_id,
-            c.code as commune_code,
-            c.name as commune_name,
-            p.name as province_name,
-            (
-              SELECT r.name
-              FROM osm_roads r
-              WHERE r.name IS NOT NULL
-              ORDER BY r.geometry <-> v2.location
-              LIMIT 1
-            ) as road_name
-          FROM verified_traffic_signs v2
-          JOIN admin_communes c ON ST_Intersects(c.geometry, v2.location)
-          JOIN admin_provinces p ON c.province_code = p.code
-        ) sub
-        WHERE v.id = sub.sign_id AND v.commune_code IS NULL;
-      `);
+       `);
       this.logger.log('SignMap schema preflight verified (admin_boundaries, osm_roads, verified_traffic_signs columns).');
 
       if (this.backfillService) {

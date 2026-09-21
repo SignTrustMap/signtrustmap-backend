@@ -3,7 +3,6 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { APP_GUARD } from '@nestjs/core';
 import databaseConfig from './config/database.config';
-import geocodingConfig from './config/geocoding.config';
 import jwtConfig from './config/jwt.config';
 import minioConfig from './config/minio.config';
 import routingConfig from './config/routing.config';
@@ -26,7 +25,6 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
 import { AdminModule } from './modules/admin/admin.module';
 import { LeaderboardModule } from './modules/leaderboard/leaderboard.module';
 import { PlacesModule } from './modules/places/places.module';
-import { GeocodingModule } from './modules/geocoding/geocoding.module';
 import { GeolocationModule } from './modules/geolocation/geolocation.module';
 import { NavigationModule } from './modules/navigation/navigation.module';
 import { SignMapModule } from './modules/sign-map/sign-map.module';
@@ -41,7 +39,6 @@ import { SpatialAdminModule } from './modules/spatial-admin/spatial-admin.module
         databaseConfig,
         jwtConfig,
         minioConfig,
-        geocodingConfig,
         routingConfig,
         catalogSyncConfig,
       ],
@@ -88,7 +85,6 @@ import { SpatialAdminModule } from './modules/spatial-admin/spatial-admin.module
     AdminModule,
     LeaderboardModule,
     PlacesModule,
-    GeocodingModule,
     GeolocationModule,
     SignMapModule,
     NavigationModule,

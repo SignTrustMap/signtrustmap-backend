@@ -9,7 +9,7 @@ import {
 import { TrafficSignType } from '../../catalog/traffic-sign-type.entity';
 import { VoteDto } from '../presentation/dto/vote.dto';
 import { ConsensusService } from '../../consensus/application/consensus.service';
-import { GeocodingService } from '../../geocoding/application/geocoding.service';
+import { SpatialAdminService } from '../../spatial-admin/application/spatial-admin.service';
 import { ReviewerSkippedCandidate } from '../infrastructure/persistence/reviewer-skipped-candidate.entity';
 
 @Injectable()
@@ -19,7 +19,7 @@ export class ReviewsService implements OnModuleInit {
     @InjectRepository(CandidateReview) private readonly reviewRepo: Repository<CandidateReview>,
     @InjectRepository(TrafficSignType) private readonly signTypeRepo: Repository<TrafficSignType>,
     private readonly consensusService: ConsensusService,
-    @Optional() private readonly geocodingService?: GeocodingService,
+    @Optional() private readonly spatialAdminService?: SpatialAdminService,
     @Optional() @InjectRepository(ReviewerSkippedCandidate) private readonly skippedRepo?: Repository<ReviewerSkippedCandidate>,
   ) {}
 
@@ -184,11 +184,11 @@ export class ReviewsService implements OnModuleInit {
       if (lat != null && lon != null) {
         let displayLocation = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
         let nearbyRoad: string | null = null;
-        if (this.geocodingService) {
+        if (this.spatialAdminService) {
           try {
-            const rev = await this.geocodingService.reverse(lat, lon);
-            if (rev?.displayLocation) displayLocation = rev.displayLocation;
-            if (rev?.roadName) nearbyRoad = rev.roadName;
+            const loc = await this.spatialAdminService.resolveLocation(lat, lon);
+            if (loc?.displayAddress) displayLocation = loc.displayAddress;
+            if (loc?.roadName) nearbyRoad = loc.roadName;
           } catch {}
         }
         locationContext = {

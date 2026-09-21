@@ -7,7 +7,7 @@ import { ReviewsController } from './presentation/reviews.controller';
 import { TrafficSignType } from '../catalog/traffic-sign-type.entity';
 import { UnverifiedSignCandidate } from '../survey/infrastructure/persistence/unverified-sign-candidate.entity';
 import { ConsensusModule } from '../consensus/consensus.module';
-import { GeocodingModule } from '../geocoding/geocoding.module';
+import { SpatialAdminModule } from '../spatial-admin/spatial-admin.module';
 import { ReviewerSkippedCandidate } from './infrastructure/persistence/reviewer-skipped-candidate.entity';
 
 @Module({
@@ -20,7 +20,7 @@ import { ReviewerSkippedCandidate } from './infrastructure/persistence/reviewer-
       ReviewerSkippedCandidate,
     ]),
     ConsensusModule,
-    GeocodingModule,
+    SpatialAdminModule,
   ],
   controllers: [ReviewsController],
   providers: [ReviewsService],
