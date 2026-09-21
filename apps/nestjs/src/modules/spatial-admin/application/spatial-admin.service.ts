@@ -1,7 +1,6 @@
-import { BadRequestException, Injectable, Logger, Optional } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { AdminSearchResult, ResolvedLocation } from '../domain/spatial-admin.types';
-import { GeocodingService } from '../../geocoding/application/geocoding.service';
 import {
   formatCanonicalRoadName,
   isCleanVietnameseRoadName,
@@ -11,19 +10,12 @@ import {
 export class SpatialAdminService {
   private readonly logger = new Logger(SpatialAdminService.name);
 
-  constructor(
-    private readonly dataSource: DataSource,
-    @Optional()
-    private readonly geocodingService?: GeocodingService,
-  ) {}
+  constructor(private readonly dataSource: DataSource) {}
 
   /**
-   * Resolves GPS point into canonical 2-tier administrative address + street name.
-   * Pipeline (Strict 2-Tier: <roadName>, <communeName>, <provinceName>):
-   * 1. Check local PostGIS (admin_communes + osm_roads)
-   * 2. If commune or road is missing, discover real-world address via Reverse Geocoding
-   * 3. Self-register discovered commune into admin_communes & road into osm_roads
-   * 4. Return valid 2-tier canonical address with zero dummy fallbacks
+   * Resolves WGS84 GPS point into a canonical 2-tier administrative address under QĐ 19/2025/QĐ-TTg.
+   * Format: <Tên đường>, <Phường/Xã>, <Tỉnh/Thành phố>.
+   * Road name is null if no designated road centerline exists within spatial tolerance.
    */
   async resolveLocation(latitude: number, longitude: number): Promise<ResolvedLocation> {
     if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
@@ -36,9 +28,6 @@ export class SpatialAdminService {
       adminUnit = await this.queryAdminUnitTolerance(longitude, latitude);
     }
 
-    let roadName: string | null = await this.queryNearestRoad(longitude, latitude);
-    let source: 'INTERNAL_SPATIAL' | 'FALLBACK_GEOCODER' | 'GEOCODER_DISCOVERED' = 'INTERNAL_SPATIAL';
-
     let communeCode: string | null = adminUnit?.commune_code ?? null;
     let communeName: string | null = adminUnit?.commune_name ?? null;
     let communeType: string = adminUnit?.commune_type ?? 'WARD';
@@ -46,38 +35,6 @@ export class SpatialAdminService {
     let provinceName: string | null = adminUnit?.province_name ?? null;
     let provinceType: string = adminUnit?.province_type ?? 'MUNICIPALITY';
     const boundaryVersion = adminUnit?.boundary_version ?? '2025-07-01';
-
-    // Step 2: If either commune or road is missing from local PostGIS, discover via Geocoding
-    if ((!adminUnit || !roadName) && this.geocodingService) {
-      try {
-        const geo = await this.geocodingService.reverse(latitude, longitude);
-        source = 'GEOCODER_DISCOVERED';
-
-        if (!roadName && geo.roadName) {
-          roadName = geo.roadName;
-          await this.ensureRoad(roadName, longitude, latitude);
-        }
-
-        if (!adminUnit && (geo.communeName || geo.provinceName)) {
-          const ensured = await this.ensureCommune(
-            geo.communeName,
-            geo.provinceName,
-            longitude,
-            latitude,
-          );
-          if (ensured) {
-            communeCode = ensured.communeCode;
-            communeName = ensured.communeName;
-            communeType = ensured.communeType;
-            provinceCode = ensured.provinceCode;
-            provinceName = ensured.provinceName;
-            provinceType = ensured.provinceType;
-          }
-        }
-      } catch (err: any) {
-        this.logger.warn(`Geocoding reverse discovery error: ${err?.message}`);
-      }
-    }
 
     // If province still not resolved, query intersecting province in admin_provinces
     if (!provinceName) {
@@ -88,6 +45,9 @@ export class SpatialAdminService {
         provinceType = prov.type;
       }
     }
+
+    // Step 2: Query nearest genuine road line from local PostGIS osm_roads
+    const roadName: string | null = await this.queryNearestRoad(longitude, latitude);
 
     // Step 3: Compose canonical 2-tier display address (No district!)
     const displayAddress = this.composeDisplayAddress(roadName, communeName, provinceName);
@@ -104,7 +64,7 @@ export class SpatialAdminService {
       provinceType,
       displayAddress,
       boundaryVersion,
-      source,
+      source: 'INTERNAL_SPATIAL',
     };
   }
 
@@ -171,7 +131,10 @@ export class SpatialAdminService {
     return parts.join(', ');
   }
 
-  private async queryProvince(longitude: number, latitude: number): Promise<{ code: string; name: string; type: string } | null> {
+  private async queryProvince(
+    longitude: number,
+    latitude: number,
+  ): Promise<{ code: string; name: string; type: string } | null> {
     try {
       const rows: any[] = await this.dataSource.query(
         `SELECT code, name, type
@@ -183,117 +146,6 @@ export class SpatialAdminService {
       return rows.length > 0 ? rows[0] : null;
     } catch {
       return null;
-    }
-  }
-
-  private async ensureCommune(
-    communeName: string | null,
-    provinceName: string | null,
-    longitude: number,
-    latitude: number,
-  ): Promise<{
-    communeCode: string;
-    communeName: string;
-    communeType: string;
-    provinceCode: string;
-    provinceName: string;
-    provinceType: string;
-  } | null> {
-    try {
-      // 1. Resolve province
-      let prov = await this.queryProvince(longitude, latitude);
-      if (!prov && provinceName) {
-        const provRows: any[] = await this.dataSource.query(
-          `SELECT code, name, type FROM admin_provinces WHERE name ILIKE '%' || $1 || '%' LIMIT 1`,
-          [provinceName.trim()],
-        );
-        if (provRows.length > 0) prov = provRows[0];
-      }
-
-      const provinceCode = prov?.code ?? '79';
-      const resolvedProvinceName = prov?.name ?? (provinceName?.trim() || 'Thành phố Hồ Chí Minh');
-      const provinceType = prov?.type ?? 'MUNICIPALITY';
-
-      if (!communeName || !communeName.trim()) {
-        return null;
-      }
-
-      const trimmedName = communeName.trim();
-      // 2. Check if already exists in admin_communes
-      const existing: any[] = await this.dataSource.query(
-        `SELECT code, name, type, province_code FROM admin_communes
-         WHERE name ILIKE $1 AND province_code = $2
-         LIMIT 1`,
-        [trimmedName, provinceCode],
-      );
-      if (existing.length > 0) {
-        return {
-          communeCode: existing[0].code,
-          communeName: existing[0].name,
-          communeType: existing[0].type || 'WARD',
-          provinceCode: existing[0].province_code,
-          provinceName: resolvedProvinceName,
-          provinceType,
-        };
-      }
-
-      // 3. Generate unique 5-digit code and insert
-      const maxRow: any[] = await this.dataSource.query(
-        `SELECT MAX(code::int) AS max_code FROM admin_communes WHERE code ~ '^[0-9]+$'`,
-      );
-      const nextCode = String(Math.max(26900, Number(maxRow[0]?.max_code || 26850) + 1));
-      const communeType = trimmedName.startsWith('Xã') ? 'COMMUNE' : trimmedName.startsWith('Thị trấn') ? 'TOWNSHIP' : 'WARD';
-
-      await this.dataSource.query(
-        `INSERT INTO admin_communes (code, province_code, name, type, geometry, boundary_version)
-         VALUES ($1, $2, $3, $4, ST_Multi(ST_Buffer(ST_SetSRID(ST_Point($5, $6), 4326), 0.005)), '2025-07-01')
-         ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name`,
-        [nextCode, provinceCode, trimmedName, communeType, longitude, latitude],
-      );
-
-      return {
-        communeCode: nextCode,
-        communeName: trimmedName,
-        communeType,
-        provinceCode,
-        provinceName: resolvedProvinceName,
-        provinceType,
-      };
-    } catch (err: any) {
-      this.logger.warn(`ensureCommune error for ${communeName}: ${err?.message}`);
-      return null;
-    }
-  }
-
-  private async ensureRoad(roadName: string, longitude: number, latitude: number): Promise<void> {
-    try {
-      const canonicalName = formatCanonicalRoadName(roadName);
-      if (!canonicalName) return;
-
-      const existing: any[] = await this.dataSource.query(
-        `SELECT id, name FROM osm_roads
-         WHERE (name ILIKE $1 OR name ILIKE $2)
-           AND ST_DWithin(geometry, ST_SetSRID(ST_Point($3, $4), 4326), 0.01)
-         LIMIT 1`,
-        [canonicalName, `%${canonicalName.replace(/^Đường\s+/i, '')}%`, longitude, latitude],
-      );
-      if (existing.length === 0) {
-        await this.dataSource.query(
-          `INSERT INTO osm_roads (name, geometry)
-           VALUES ($1, ST_MakeLine(ST_SetSRID(ST_Point($2 - 0.0005, $3), 4326), ST_SetSRID(ST_Point($2 + 0.0005, $3), 4326)))`,
-          [canonicalName, longitude, latitude],
-        );
-      } else if (
-        !isCleanVietnameseRoadName(existing[0].name) &&
-        isCleanVietnameseRoadName(canonicalName)
-      ) {
-        await this.dataSource.query(
-          `UPDATE osm_roads SET name = $1 WHERE id = $2`,
-          [canonicalName, existing[0].id],
-        );
-      }
-    } catch (err: any) {
-      this.logger.warn(`ensureRoad error for ${roadName}: ${err?.message}`);
     }
   }
 
@@ -352,7 +204,7 @@ export class SpatialAdminService {
         `SELECT name, ref
          FROM osm_roads
          WHERE name IS NOT NULL
-           AND ST_DWithin(geometry, ST_SetSRID(ST_Point($1, $2), 4326), 0.0004)
+           AND ST_DWithin(geometry, ST_SetSRID(ST_Point($1, $2), 4326), 0.0005)
          ORDER BY geometry <-> ST_SetSRID(ST_Point($1, $2), 4326)
          LIMIT 1`,
         [longitude, latitude],
