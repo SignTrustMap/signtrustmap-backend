@@ -1,6 +1,7 @@
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
+  scrape_timeout: 15s
 
 rule_files:
   - "alerts.yml"
@@ -32,7 +33,7 @@ scrape_configs:
           tier: "backend"
 
       - targets:
-          - "https://api.signmap.site/api/v1/spatial/signs?min_lat=10.7&min_lon=106.6&max_lat=10.8&max_lon=106.7"
+          - "https://api.signmap.site/api/v1/spatial/signs?min_lat=0&min_lon=0&max_lat=0.0001&max_lon=0.0001"
         labels:
           service: "stm-fastapi"
           display_name: "FastAPI Spatial GIS"

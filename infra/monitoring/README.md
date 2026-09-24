@@ -10,8 +10,8 @@ This directory contains a turn-key, pre-provisioned monitoring stack using **Pro
                   ┌────────────────────────────────────────────────────────┐
                   │                 SignTrustMap Services                  │
                   │                                                        │
-                  │  • NestJS Core API (Heroku: preview.api.signmap.site)  │
-                  │  • FastAPI Spatial (Heroku: stm-fastapi.herokuapp.com) │
+                  │  • NestJS Core API (Coolify: api.signmap.site/api/v1/health/ready)    │
+                  │  • FastAPI Spatial (Coolify: api.signmap.site/api/v1/spatial/...)     │
                   │  • Jetson Orin AI (Edge: ai.signmap.site)              │
                   │  • Neon PostgreSQL & Upstash Redis                     │
                   └───────────────────────────▲────────────────────────────┘
@@ -63,8 +63,8 @@ docker compose -f infra/monitoring/docker-compose.monitoring.yml down
 ## 📊 What's Included in the Dashboard
 
 1. **Real-time Status Badges**:
-   - 🟢 **NestJS Core API** (`preview.api.signmap.site`)
-   - 🟢 **FastAPI Spatial GIS** (`stm-fastapi-d515b7fbf92f.herokuapp.com`)
+   - 🟢 **NestJS Core API** (`api.signmap.site/api/v1/health/ready`)
+   - 🟢 **FastAPI Spatial GIS** (`api.signmap.site/api/v1/spatial`)
    - 🟢 **Jetson Orin AI Inference** (`ai.signmap.site`)
    - 🟢 **Neon PostgreSQL Database** (verified via NestJS `/api/v1/health/ready`)
 2. **Response Latency (Time-Series)**:
@@ -101,8 +101,8 @@ If you prefer not to host Docker on your machine or Jetson Orin 24/7:
 3. Click **Add check**:
    - **Check Type**: `HTTP`
    - **Check Name**: `NestJS Core API`
-   - **URL**: `https://preview.api.signmap.site/api/v1/health/ready`
+   - **URL**: `https://api.signmap.site/api/v1/health/ready`
    - **Frequency**: `1m`
    - **Probe Locations**: Choose Singapore, Tokyo, and Frankfurt.
-4. Repeat for `https://stm-fastapi-d515b7fbf92f.herokuapp.com/health` and `https://ai.signmap.site/health`.
+4. Repeat for `https://api.signmap.site/api/v1/spatial/signs?min_lat=0&min_lon=0&max_lat=0.0001&max_lon=0.0001` and `https://ai.signmap.site/health`.
 5. Grafana Cloud will automatically generate uptime dashboards and send alerts when any probe fails.

@@ -17,11 +17,29 @@ from app.database import get_db
 from app.schemas.spatial import (
     GeoJSONFeature,
     GeoJSONFeatureCollection,
+    HealthResponse,
     SignDetailResponse,
 )
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+@router.get(
+    "/health",
+    response_model=HealthResponse,
+    summary="Spatial GIS health check",
+    tags=["Health"],
+)
+async def spatial_health() -> dict:  # type: ignore[no-untyped-def]
+    return HealthResponse(
+        status="ok",
+        service="stm-fastapi",
+        version="1.0.0",
+        env=settings.APP_ENV,
+    ).model_dump()
+
 
 # GIST index on verified_traffic_signs.location via ST_Within.
 # JOIN with traffic_sign_types enriches each feature with name/code/category.
