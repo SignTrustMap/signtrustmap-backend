@@ -1,0 +1,36 @@
+# =============================================================================
+# docker-compose.ai.yml — Local AI Inference Service Extension
+# =============================================================================
+# Usage for local development when running both backend and AI repos side-by-side:
+#   docker compose -f docker-compose.yml -f docker-compose.ai.yml up --build
+# =============================================================================
+
+services:
+  ai-inference:
+    build:
+      context: ../signtrustmap-ai
+      dockerfile: Dockerfile
+    container_name: stm-ai-inference
+    restart: unless-stopped
+    environment:
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-stm_minio}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-stm_minio_secret_123}
+      MINIO_SECURE: "false"
+      MINIO_OUTPUT_BUCKET: stm-sign-crops
+      INTERNAL_API_TOKEN: ${INTERNAL_TOKEN:-stm_internal_secret_dev}
+      RELOAD: "false"
+    ports: ["${AI_INFERENCE_PORT:-8001}:8000"]
+    depends_on:
+      minio: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    networks: [stm-network]
+
+  celery-worker:
+    depends_on:
+      ai-inference: { condition: service_healthy }

@@ -1,0 +1,47 @@
+groups:
+  - name: signtrustmap_alerts
+    rules:
+      - alert: ServiceDown
+        expr: probe_success{service!="stm-ai-jetson"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service [{{ $labels.service }}] is DOWN"
+          description: "Health probe to {{ $labels.instance }} has failed for over 2 minutes."
+
+      - alert: EdgeServiceDown
+        expr: probe_success{service="stm-ai-jetson"} == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Edge AI Engine [{{ $labels.service }}] is DOWN"
+          description: "Edge health probe to {{ $labels.instance }} has failed for over 10 minutes."
+
+      - alert: HighProbeLatency
+        expr: probe_duration_seconds{service!="stm-ai-jetson"} > 2.5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Service [{{ $labels.service }}] High Latency"
+          description: "Response time is {{ $value | printf \"%.2f\" }}s on {{ $labels.instance }}."
+
+      - alert: EdgeHighProbeLatency
+        expr: probe_duration_seconds{service="stm-ai-jetson"} > 15
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Edge AI Engine [{{ $labels.service }}] High Latency"
+          description: "Response time is {{ $value | printf \"%.2f\" }}s on {{ $labels.instance }}."
+
+      - alert: SSLCertificateExpiringSoon
+        expr: (probe_ssl_earliest_cert_expiry - time()) / 86400 < 14
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "SSL Certificate Expiring Soon"
+          description: "Certificate for {{ $labels.instance }} expires in {{ $value | printf \"%.0f\" }} days."

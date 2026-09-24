@@ -1,0 +1,71 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 15s
+
+rule_files:
+  - "alerts.yml"
+
+remote_write:
+  - url: https://prometheus-prod-37-prod-ap-southeast-1.grafana.net/api/prom/push
+    basic_auth:
+      username: "3048268"
+      password: "glc_eyJvIjoiMTcwMjA2MyIsIm4iOiJzdG0tcHJvbWV0aGV1cy1zdG0tcHJvbWV0aGV1cyIsImsiOiJIVGo3ZUtPOFY1eFpUNDdUZzU5OUo1OXUiLCJtIjp7InIiOiJ1cyJ9fQ=="
+    queue_config:
+      capacity: 2500
+      max_shards: 10
+      min_shards: 1
+      max_samples_per_send: 500
+      batch_send_deadline: 5s
+
+scrape_configs:
+  - job_name: "blackbox-http"
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+          - "https://api.signmap.site/api/v1/health/ready"
+        labels:
+          service: "stm-nestjs"
+          display_name: "NestJS Core API"
+          provider: "Coolify (Ubuntu)"
+          tier: "backend"
+
+      - targets:
+          - "https://api.signmap.site/api/v1/spatial/signs?min_lat=0&min_lon=0&max_lat=0.0001&max_lon=0.0001"
+        labels:
+          service: "stm-fastapi"
+          display_name: "FastAPI Spatial GIS"
+          provider: "Coolify (Ubuntu)"
+          tier: "spatial"
+
+      - targets:
+          - "https://api.signmap.site/health"
+        labels:
+          service: "stm-gateway"
+          display_name: "API Gateway (Nginx)"
+          provider: "Coolify (Ubuntu)"
+          tier: "gateway"
+
+      - targets:
+          - "https://ai.signmap.site/health"
+        labels:
+          service: "stm-ai-jetson"
+          display_name: "Jetson Orin AI Engine"
+          provider: "Jetson Orin (Cloudflare Tunnel)"
+          tier: "ai-edge"
+
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: "blackbox-exporter:9115"
+
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels:
+          service: "prometheus"

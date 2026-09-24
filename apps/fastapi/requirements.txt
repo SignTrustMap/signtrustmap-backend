@@ -1,0 +1,28 @@
+﻿# ── Core framework ───────────────────────────────────────────────────────────
+fastapi==0.111.1
+uvicorn[standard]==0.30.1
+
+# ── Database (async) ──────────────────────────────────────────────────────────
+sqlalchemy==2.0.31
+asyncpg==0.29.0
+# psycopg[binary] — sync driver used by Celery task workers (app.db_sync)
+psycopg[binary]==3.1.19
+
+# ── GIS / PostGIS ─────────────────────────────────────────────────────────────
+geoalchemy2==0.15.2
+
+# ── Settings & validation ─────────────────────────────────────────────────────
+pydantic==2.8.2
+pydantic-settings==2.3.4
+python-dotenv==1.0.1
+
+# ── WebSocket support (bundled via uvicorn[standard]/starlette) ───────────────
+websockets==12.0
+
+# ── Celery + Redis (Phase 4: background workers & monitors) ───────────────────
+celery==5.4.0
+redis==5.0.7
+
+# ── MinIO client (Phase 4+ AI pipeline) ───────────────────────────────────────
+minio==7.1.3
+httpx==0.27.2
