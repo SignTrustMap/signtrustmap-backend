@@ -104,5 +104,5 @@ If you prefer not to host Docker on your machine or Jetson Orin 24/7:
    - **URL**: `https://api.signmap.site/api/v1/health/ready`
    - **Frequency**: `1m`
    - **Probe Locations**: Choose Singapore, Tokyo, and Frankfurt.
-4. Repeat for `https://api.signmap.site/api/v1/spatial/signs?min_lat=0&min_lon=0&max_lat=0.0001&max_lon=0.0001` and `https://ai.signmap.site/health`.
+4. Repeat for `https://api.signmap.site/api/v1/spatial/health` and `https://ai.signmap.site/health`.
 5. Grafana Cloud will automatically generate uptime dashboards and send alerts when any probe fails.
