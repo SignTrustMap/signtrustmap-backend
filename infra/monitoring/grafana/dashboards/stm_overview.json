@@ -180,6 +180,7 @@
     {
       "id": 3,
       "title": "Jetson Orin AI Engine (Edge)",
+      "description": "Jetson Orin AI Engine • Edge Tunnel (10m fault-tolerant window)",
       "type": "stat",
       "gridPos": {
         "h": 4,
@@ -243,7 +244,7 @@
       },
       "targets": [
         {
-          "expr": "probe_success{service=\"stm-ai-jetson\"}",
+          "expr": "max_over_time(probe_success{service=\"stm-ai-jetson\"}[10m])",
           "legendFormat": "Jetson Orin",
           "refId": "A"
         }
