@@ -1,0 +1,22 @@
+{
+  "name": "signtrustmap",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/nestjs"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace=stm-nestjs",
+    "heroku-postbuild": "npm run build",
+    "start": "npm run start:prod --workspace=stm-nestjs",
+    "lint": "npm run lint --workspace=stm-nestjs",
+    "lint:fix": "npm run lint:fix --workspace=stm-nestjs",
+    "test": "npm test --workspace=stm-nestjs -- --runInBand",
+    "test:cov": "npm run test:cov --workspace=stm-nestjs",
+    "migrate:spring-data": "bash scripts/migrate-spring-data.sh"
+  },
+  "engines": {
+    "node": "22.x",
+    "npm": "10.x"
+  }
+}

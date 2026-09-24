@@ -1,0 +1,15 @@
+{
+    "Servers": {
+        "1": {
+            "Name": "SignTrustMap (local)",
+            "Group": "Docker",
+            "Host": "postgres",
+            "Port": 5432,
+            "MaintenanceDB": "signtrustmap",
+            "Username": "stm_user",
+            "SSLMode": "prefer",
+            "PassFile": "/tmp/pgpass",
+            "Comment": "Auto-registered. Password = stm_password (saved via pgpass)."
+        }
+    }
+}

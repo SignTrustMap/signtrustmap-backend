@@ -1,0 +1,980 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": "stm-cloud-health",
+    "title": "SignTrustMap \u2014 Live Services & Infrastructure",
+    "tags": [
+      "signtrustmap",
+      "health",
+      "production",
+      "cloud"
+    ],
+    "timezone": "browser",
+    "refresh": "30s",
+    "liveNow": true,
+    "panels": [
+      {
+        "collapsed": false,
+        "gridPos": {
+          "x": 0,
+          "y": 0,
+          "w": 24,
+          "h": 1
+        },
+        "id": 100,
+        "title": "System & Edge Hardware Health",
+        "type": "row"
+      },
+      {
+        "id": 1,
+        "title": "\ud83d\ude80 NestJS Core API",
+        "type": "stat",
+        "gridPos": {
+          "x": 0,
+          "y": 1,
+          "w": 4,
+          "h": 3
+        },
+        "datasource": {
+          "type": "yesoreyeram-infinity-datasource",
+          "uid": "dfxqi2uo6794we"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "thresholds"
+            },
+            "mappings": [
+              {
+                "type": "value",
+                "options": {
+                  "ready": {
+                    "text": "ONLINE",
+                    "color": "green"
+                  },
+                  "ok": {
+                    "text": "ONLINE",
+                    "color": "green"
+                  },
+                  "unavailable": {
+                    "text": "OFFLINE",
+                    "color": "red"
+                  }
+                }
+              }
+            ],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "red"
+                },
+                {
+                  "value": 1,
+                  "color": "green"
+                }
+              ]
+            }
+          }
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ],
+            "fields": "/^status$/",
+            "values": false
+          },
+          "orientation": "auto",
+          "textMode": "auto",
+          "colorMode": "value",
+          "graphMode": "none",
+          "text": {
+            "valueSize": 22
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "yesoreyeram-infinity-datasource",
+              "uid": "dfxqi2uo6794we"
+            },
+            "refId": "A",
+            "type": "json",
+            "source": "url",
+            "url": "https://api.signmap.site/api/v1/health/ready",
+            "format": "table",
+            "parser": "backend",
+            "columns": [
+              {
+                "selector": "status",
+                "text": "status",
+                "type": "string"
+              },
+              {
+                "selector": "service",
+                "text": "service",
+                "type": "string"
+              },
+              {
+                "selector": "uptimeSeconds",
+                "text": "uptimeSeconds",
+                "type": "number"
+              },
+              {
+                "selector": "checks.database",
+                "text": "database",
+                "type": "string"
+              }
+            ],
+            "url_options": {
+              "method": "GET",
+              "data": "",
+              "body_type": "",
+              "body_content_type": ""
+            }
+          }
+        ],
+        "description": "api.signmap.site • Coolify"
+      },
+      {
+        "id": 2,
+        "title": "\ud83d\uddfa\ufe0f FastAPI Spatial GIS",
+        "type": "stat",
+        "gridPos": {
+          "x": 4,
+          "y": 1,
+          "w": 4,
+          "h": 3
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "grafanacloud-prom"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "thresholds"
+            },
+            "mappings": [
+              {
+                "type": "value",
+                "options": {
+                  "0": {
+                    "text": "OFFLINE",
+                    "color": "red"
+                  },
+                  "1": {
+                    "text": "ONLINE",
+                    "color": "green"
+                  }
+                }
+              }
+            ],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "red"
+                },
+                {
+                  "value": 1,
+                  "color": "green"
+                }
+              ]
+            }
+          }
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ],
+            "values": false
+          },
+          "orientation": "auto",
+          "textMode": "auto",
+          "colorMode": "value",
+          "graphMode": "none",
+          "text": {
+            "valueSize": 22
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "grafanacloud-prom"
+            },
+            "expr": "probe_success{service=\"stm-fastapi\"}",
+            "legendFormat": "FastAPI Spatial GIS",
+            "refId": "A"
+          }
+        ],
+        "description": "api.signmap.site \u2022 Coolify"
+      },
+      {
+        "id": 3,
+        "title": "\ud83e\udde0 Jetson Orin AI Engine",
+        "type": "stat",
+        "gridPos": {
+          "x": 8,
+          "y": 1,
+          "w": 4,
+          "h": 3
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "grafanacloud-prom"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "thresholds"
+            },
+            "mappings": [
+              {
+                "type": "value",
+                "options": {
+                  "0": {
+                    "text": "OFFLINE",
+                    "color": "red"
+                  },
+                  "1": {
+                    "text": "HEALTHY",
+                    "color": "green"
+                  }
+                }
+              }
+            ],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "red"
+                },
+                {
+                  "value": 1,
+                  "color": "green"
+                }
+              ]
+            }
+          }
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ],
+            "values": false
+          },
+          "orientation": "auto",
+          "textMode": "auto",
+          "colorMode": "value",
+          "graphMode": "none",
+          "text": {
+            "valueSize": 22
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "prometheus",
+              "uid": "grafanacloud-prom"
+            },
+            "expr": "max_over_time(probe_success{service=\"stm-ai-jetson\"}[10m])",
+            "legendFormat": "Jetson Orin AI Engine",
+            "refId": "A"
+          }
+        ],
+        "description": "ai.signmap.site \u2022 Edge Tunnel (10m fault-tolerant window)"
+      },
+      {
+        "id": 4,
+        "title": "\ud83d\udc18 Neon PostgreSQL",
+        "type": "stat",
+        "gridPos": {
+          "x": 12,
+          "y": 1,
+          "w": 4,
+          "h": 3
+        },
+        "datasource": {
+          "type": "yesoreyeram-infinity-datasource",
+          "uid": "dfxqi2uo6794we"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "thresholds"
+            },
+            "mappings": [
+              {
+                "type": "value",
+                "options": {
+                  "up": {
+                    "text": "CONNECTED",
+                    "color": "green"
+                  },
+                  "down": {
+                    "text": "DOWN",
+                    "color": "red"
+                  }
+                }
+              }
+            ],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "red"
+                },
+                {
+                  "value": 1,
+                  "color": "green"
+                }
+              ]
+            }
+          }
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ],
+            "fields": "/^database$/",
+            "values": false
+          },
+          "orientation": "auto",
+          "textMode": "auto",
+          "colorMode": "value",
+          "graphMode": "none",
+          "text": {
+            "valueSize": 22
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "yesoreyeram-infinity-datasource",
+              "uid": "dfxqi2uo6794we"
+            },
+            "refId": "A",
+            "type": "json",
+            "source": "url",
+            "url": "https://api.signmap.site/api/v1/health/ready",
+            "format": "table",
+            "parser": "backend",
+            "columns": [
+              {
+                "selector": "checks.database",
+                "text": "database",
+                "type": "string"
+              }
+            ],
+            "url_options": {
+              "method": "GET",
+              "data": "",
+              "body_type": "",
+              "body_content_type": ""
+            }
+          }
+        ],
+        "description": "Serverless Postgres Pooler"
+      },
+      {
+        "id": 5,
+        "title": "\u26a1 NVIDIA CUDA GPU",
+        "type": "stat",
+        "gridPos": {
+          "x": 16,
+          "y": 1,
+          "w": 4,
+          "h": 3
+        },
+        "datasource": {
+          "type": "yesoreyeram-infinity-datasource",
+          "uid": "dfxqi2uo6794we"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "thresholds"
+            },
+            "mappings": [
+              {
+                "type": "value",
+                "options": {
+                  "healthy": {
+                    "text": "ACTIVE",
+                    "color": "green"
+                  },
+                  "unhealthy": {
+                    "text": "ERROR",
+                    "color": "red"
+                  }
+                }
+              }
+            ],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "red"
+                },
+                {
+                  "value": 1,
+                  "color": "green"
+                }
+              ]
+            }
+          }
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ],
+            "fields": "/^cuda_status$/",
+            "values": false
+          },
+          "orientation": "auto",
+          "textMode": "auto",
+          "colorMode": "value",
+          "graphMode": "none",
+          "text": {
+            "valueSize": 22
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "yesoreyeram-infinity-datasource",
+              "uid": "dfxqi2uo6794we"
+            },
+            "refId": "A",
+            "type": "json",
+            "source": "url",
+            "url": "https://ai.signmap.site/health",
+            "format": "table",
+            "parser": "backend",
+            "columns": [
+              {
+                "selector": "dependencies.cuda.status",
+                "text": "cuda_status",
+                "type": "string"
+              }
+            ],
+            "url_options": {
+              "method": "GET",
+              "data": "",
+              "body_type": "",
+              "body_content_type": ""
+            }
+          }
+        ],
+        "description": "Jetson Orin Hardware Accelerator"
+      },
+      {
+        "id": 6,
+        "title": "\ud83c\udfce\ufe0f TensorRT Engine",
+        "type": "stat",
+        "gridPos": {
+          "x": 20,
+          "y": 1,
+          "w": 4,
+          "h": 3
+        },
+        "datasource": {
+          "type": "yesoreyeram-infinity-datasource",
+          "uid": "dfxqi2uo6794we"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "thresholds"
+            },
+            "mappings": [
+              {
+                "type": "value",
+                "options": {
+                  "healthy": {
+                    "text": "v10.3.0 ACTIVE",
+                    "color": "green"
+                  },
+                  "unhealthy": {
+                    "text": "ERROR",
+                    "color": "red"
+                  }
+                }
+              }
+            ],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "red"
+                },
+                {
+                  "value": 1,
+                  "color": "green"
+                }
+              ]
+            }
+          }
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ],
+            "fields": "/^tensorrt_status$/",
+            "values": false
+          },
+          "orientation": "auto",
+          "textMode": "auto",
+          "colorMode": "value",
+          "graphMode": "none",
+          "text": {
+            "valueSize": 22
+          }
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "yesoreyeram-infinity-datasource",
+              "uid": "dfxqi2uo6794we"
+            },
+            "refId": "A",
+            "type": "json",
+            "source": "url",
+            "url": "https://ai.signmap.site/health",
+            "format": "table",
+            "parser": "backend",
+            "columns": [
+              {
+                "selector": "dependencies.tensorrt.status",
+                "text": "tensorrt_status",
+                "type": "string"
+              }
+            ],
+            "url_options": {
+              "method": "GET",
+              "data": "",
+              "body_type": "",
+              "body_content_type": ""
+            }
+          }
+        ],
+        "description": "Deep Learning Inference Optimizer"
+      },
+      {
+        "collapsed": false,
+        "gridPos": {
+          "x": 0,
+          "y": 4,
+          "w": 24,
+          "h": 1
+        },
+        "id": 201,
+        "title": "Latency & Response Metrics",
+        "type": "row"
+      },
+      {
+        "id": 205,
+        "title": "Response Latency over Time",
+        "type": "timeseries",
+        "gridPos": {
+          "x": 0,
+          "y": 5,
+          "w": 16,
+          "h": 8
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "grafanacloud-prom"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "smooth",
+              "lineWidth": 2,
+              "fillOpacity": 15
+            },
+            "unit": "s",
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "green"
+                },
+                {
+                  "value": 1.5,
+                  "color": "yellow"
+                },
+                {
+                  "value": 3.0,
+                  "color": "red"
+                }
+              ]
+            }
+          }
+        },
+        "targets": [
+          {
+            "expr": "probe_duration_seconds{job=\"blackbox-http\"}",
+            "legendFormat": "{{display_name}} ({{provider}})",
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "grafanacloud-prom"
+            }
+          }
+        ]
+      },
+      {
+        "id": 206,
+        "title": "24h Availability SLA (%)",
+        "type": "gauge",
+        "gridPos": {
+          "x": 16,
+          "y": 5,
+          "w": 8,
+          "h": 8
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "grafanacloud-prom"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "min": 90,
+            "max": 100,
+            "unit": "percent",
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "red"
+                },
+                {
+                  "value": 95,
+                  "color": "yellow"
+                },
+                {
+                  "value": 99,
+                  "color": "green"
+                }
+              ]
+            }
+          }
+        },
+        "options": {
+          "showThresholdLabels": false,
+          "showThresholdMarkers": true
+        },
+        "targets": [
+          {
+            "expr": "avg_over_time(probe_success{job=\"blackbox-http\"}[24h]) * 100",
+            "legendFormat": "{{display_name}}",
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "grafanacloud-prom"
+            }
+          }
+        ]
+      },
+      {
+        "collapsed": false,
+        "gridPos": {
+          "x": 0,
+          "y": 13,
+          "w": 24,
+          "h": 1
+        },
+        "id": 202,
+        "title": "Security & Status Codes",
+        "type": "row"
+      },
+      {
+        "id": 207,
+        "title": "SSL Certificate Expiration (Days Remaining)",
+        "type": "bargauge",
+        "gridPos": {
+          "x": 0,
+          "y": 14,
+          "w": 12,
+          "h": 6
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "grafanacloud-prom"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "min": 0,
+            "max": 90,
+            "unit": "d",
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "red"
+                },
+                {
+                  "value": 14,
+                  "color": "yellow"
+                },
+                {
+                  "value": 30,
+                  "color": "green"
+                }
+              ]
+            }
+          }
+        },
+        "options": {
+          "orientation": "horizontal",
+          "displayMode": "gradient",
+          "showUnfilled": true
+        },
+        "targets": [
+          {
+            "expr": "(probe_ssl_earliest_cert_expiry{job=\"blackbox-http\"} - time()) / 86400",
+            "legendFormat": "{{display_name}}",
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "grafanacloud-prom"
+            }
+          }
+        ]
+      },
+      {
+        "id": 208,
+        "title": "HTTP Status Code History",
+        "type": "timeseries",
+        "gridPos": {
+          "x": 12,
+          "y": 14,
+          "w": 12,
+          "h": 6
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "grafanacloud-prom"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "drawStyle": "points",
+              "pointSize": 5
+            },
+            "unit": "short"
+          }
+        },
+        "targets": [
+          {
+            "expr": "probe_http_status_code{job=\"blackbox-http\"}",
+            "legendFormat": "{{display_name}} (HTTP {{probe_http_status_code}})",
+            "refId": "A",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "grafanacloud-prom"
+            }
+          }
+        ]
+      },
+      {
+        "collapsed": false,
+        "gridPos": {
+          "x": 0,
+          "y": 20,
+          "w": 24,
+          "h": 1
+        },
+        "id": 102,
+        "title": "\ud83d\udccb Live Diagnostic Data Feed",
+        "type": "row"
+      },
+      {
+        "id": 7,
+        "title": "NestJS Core API Diagnostics",
+        "type": "table",
+        "gridPos": {
+          "x": 0,
+          "y": 21,
+          "w": 8,
+          "h": 5
+        },
+        "datasource": {
+          "type": "yesoreyeram-infinity-datasource",
+          "uid": "dfxqi2uo6794we"
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "yesoreyeram-infinity-datasource",
+              "uid": "dfxqi2uo6794we"
+            },
+            "refId": "A",
+            "type": "json",
+            "source": "url",
+            "url": "https://api.signmap.site/api/v1/health/ready",
+            "format": "table",
+            "parser": "backend",
+            "columns": [
+              {
+                "selector": "service",
+                "text": "service",
+                "type": "string"
+              },
+              {
+                "selector": "status",
+                "text": "status",
+                "type": "string"
+              },
+              {
+                "selector": "version",
+                "text": "version",
+                "type": "string"
+              },
+              {
+                "selector": "uptimeSeconds",
+                "text": "uptimeSeconds",
+                "type": "number"
+              }
+            ],
+            "url_options": {
+              "method": "GET",
+              "data": "",
+              "body_type": "",
+              "body_content_type": ""
+            }
+          }
+        ]
+      },
+      {
+        "id": 8,
+        "title": "FastAPI Spatial GIS Diagnostics",
+        "type": "table",
+        "gridPos": {
+          "x": 8,
+          "y": 21,
+          "w": 8,
+          "h": 5
+        },
+        "datasource": {
+          "type": "yesoreyeram-infinity-datasource",
+          "uid": "dfxqi2uo6794we"
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "yesoreyeram-infinity-datasource",
+              "uid": "dfxqi2uo6794we"
+            },
+            "refId": "A",
+            "type": "json",
+            "source": "url",
+            "url": "https://api.signmap.site/api/v1/spatial/health",
+            "format": "table",
+            "parser": "backend",
+            "columns": [
+              {
+                "selector": "service",
+                "text": "service",
+                "type": "string"
+              },
+              {
+                "selector": "status",
+                "text": "status",
+                "type": "string"
+              },
+              {
+                "selector": "version",
+                "text": "version",
+                "type": "string"
+              },
+              {
+                "selector": "env",
+                "text": "env",
+                "type": "string"
+              }
+            ],
+            "url_options": {
+              "method": "GET",
+              "data": "",
+              "body_type": "",
+              "body_content_type": ""
+            }
+          }
+        ]
+      },
+      {
+        "id": 9,
+        "title": "Jetson Orin Dependencies Diagnostics",
+        "type": "table",
+        "gridPos": {
+          "x": 16,
+          "y": 21,
+          "w": 8,
+          "h": 5
+        },
+        "datasource": {
+          "type": "yesoreyeram-infinity-datasource",
+          "uid": "dfxqi2uo6794we"
+        },
+        "targets": [
+          {
+            "datasource": {
+              "type": "yesoreyeram-infinity-datasource",
+              "uid": "dfxqi2uo6794we"
+            },
+            "refId": "A",
+            "type": "json",
+            "source": "url",
+            "url": "https://ai.signmap.site/health",
+            "format": "table",
+            "parser": "backend",
+            "columns": [
+              {
+                "selector": "status",
+                "text": "status",
+                "type": "string"
+              },
+              {
+                "selector": "dependencies.cuda.status",
+                "text": "cuda",
+                "type": "string"
+              },
+              {
+                "selector": "dependencies.tensorrt.version",
+                "text": "tensorrt_version",
+                "type": "string"
+              }
+            ],
+            "url_options": {
+              "method": "GET",
+              "data": "",
+              "body_type": "",
+              "body_content_type": ""
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "overwrite": true
+}

@@ -1,0 +1,488 @@
+{
+  "info": {
+    "name": "STM Phase 3 - FastAPI Spatial GIS & Smart Navigation",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Phase 3: Spatial GIS & Smart Navigation (FastAPI, port 8000).\nFlow 6: GET /api/v1/spatial/signs (GeoJSON, bbox + optional category_id/sign_type_id) and GET /api/v1/spatial/signs/{id} (full sign detail).\nFlow 7: POST/PATCH /api/v1/spatial/navigation/sessions (session lifecycle) and WS /api/v1/spatial/navigation/stream (WebSocket).\nSeed verified_traffic_signs + traffic_sign_types before testing."
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000/api/v1"
+    },
+    {
+      "key": "wsBaseUrl",
+      "value": "ws://localhost:8000/api/v1"
+    },
+    {
+      "key": "sessionId",
+      "value": ""
+    },
+    {
+      "key": "signId",
+      "value": ""
+    },
+    {
+      "key": "categoryId",
+      "value": "1"
+    },
+    {
+      "key": "signTypeId",
+      "value": "1"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health (non-prefixed)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:8000/health",
+              "protocol": "http",
+              "host": [
+                "localhost"
+              ],
+              "port": "8000",
+              "path": [
+                "health"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Health (version-prefixed)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Spatial GIS - Flow 6",
+      "description": "Interactive GIS map - GET /spatial/signs returns GeoJSON.",
+      "item": [
+        {
+          "name": "Get signs - HCMC District 1 viewport",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/spatial/signs?min_lat=10.7600&min_lon=106.6800&max_lat=10.7900&max_lon=106.7100",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "spatial",
+                "signs"
+              ],
+              "query": [
+                {
+                  "key": "min_lat",
+                  "value": "10.7600"
+                },
+                {
+                  "key": "min_lon",
+                  "value": "106.6800"
+                },
+                {
+                  "key": "max_lat",
+                  "value": "10.7900"
+                },
+                {
+                  "key": "max_lon",
+                  "value": "106.7100"
+                }
+              ]
+            },
+            "description": "Fetch ACTIVE signs inside HCMC District 1 (~3km). Expect GeoJSON FeatureCollection."
+          }
+        },
+        {
+          "name": "Get signs - wide Vietnam viewport",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/spatial/signs?min_lat=8.0&min_lon=102.0&max_lat=24.0&max_lon=110.0",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "spatial",
+                "signs"
+              ],
+              "query": [
+                {
+                  "key": "min_lat",
+                  "value": "8.0"
+                },
+                {
+                  "key": "min_lon",
+                  "value": "102.0"
+                },
+                {
+                  "key": "max_lat",
+                  "value": "24.0"
+                },
+                {
+                  "key": "max_lon",
+                  "value": "110.0"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get signs - empty viewport (expect 0 features)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/spatial/signs?min_lat=0.0&min_lon=0.0&max_lat=0.01&max_lon=0.01",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "spatial",
+                "signs"
+              ],
+              "query": [
+                {
+                  "key": "min_lat",
+                  "value": "0.0"
+                },
+                {
+                  "key": "min_lon",
+                  "value": "0.0"
+                },
+                {
+                  "key": "max_lat",
+                  "value": "0.01"
+                },
+                {
+                  "key": "max_lon",
+                  "value": "0.01"
+                }
+              ]
+            },
+            "description": "Ocean viewport - expect {\"type\":\"FeatureCollection\",\"features\":[],\"total\":0}"
+          }
+        },
+        {
+          "name": "Get signs - filtered by sign_type_id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/spatial/signs?min_lat=10.7600&min_lon=106.6800&max_lat=10.7900&max_lon=106.7100&sign_type_id={{signTypeId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "spatial",
+                "signs"
+              ],
+              "query": [
+                {
+                  "key": "min_lat",
+                  "value": "10.7600"
+                },
+                {
+                  "key": "min_lon",
+                  "value": "106.6800"
+                },
+                {
+                  "key": "max_lat",
+                  "value": "10.7900"
+                },
+                {
+                  "key": "max_lon",
+                  "value": "106.7100"
+                },
+                {
+                  "key": "sign_type_id",
+                  "value": "{{signTypeId}}"
+                }
+              ]
+            },
+            "description": "Filtered by sign_type_id."
+          }
+        },
+        {
+          "name": "Get signs - filtered by category_id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/spatial/signs?min_lat=10.7600&min_lon=106.6800&max_lat=10.7900&max_lon=106.7100&category_id={{categoryId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "spatial",
+                "signs"
+              ],
+              "query": [
+                {
+                  "key": "min_lat",
+                  "value": "10.7600"
+                },
+                {
+                  "key": "min_lon",
+                  "value": "106.6800"
+                },
+                {
+                  "key": "max_lat",
+                  "value": "10.7900"
+                },
+                {
+                  "key": "max_lon",
+                  "value": "106.7100"
+                },
+                {
+                  "key": "category_id",
+                  "value": "{{categoryId}}"
+                }
+              ]
+            },
+            "description": "Filtered by category_id (JOIN traffic_sign_types)."
+          }
+        },
+        {
+          "name": "Get signs - filtered by both",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/spatial/signs?min_lat=10.7600&min_lon=106.6800&max_lat=10.7900&max_lon=106.7100&sign_type_id={{signTypeId}}&category_id={{categoryId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "spatial",
+                "signs"
+              ],
+              "query": [
+                {
+                  "key": "min_lat",
+                  "value": "10.7600"
+                },
+                {
+                  "key": "min_lon",
+                  "value": "106.6800"
+                },
+                {
+                  "key": "max_lat",
+                  "value": "10.7900"
+                },
+                {
+                  "key": "max_lon",
+                  "value": "106.7100"
+                },
+                {
+                  "key": "sign_type_id",
+                  "value": "{{signTypeId}}"
+                },
+                {
+                  "key": "category_id",
+                  "value": "{{categoryId}}"
+                }
+              ]
+            },
+            "description": "Both filters together."
+          }
+        },
+        {
+          "name": "Get sign by ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/spatial/signs/{{signId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "spatial",
+                "signs",
+                "{{signId}}"
+              ]
+            },
+            "description": "Full sign detail. Set signId from GET /signs response. 404 if not found."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Navigation Sessions - Flow 7 (REST)",
+      "description": "Session lifecycle. POST creates session -> use id as sessionId in WS. PATCH transitions ACTIVE -> COMPLETED/CANCELED.",
+      "item": [
+        {
+          "name": "Create navigation session (POST)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/spatial/navigation/sessions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "spatial",
+                "navigation",
+                "sessions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"driver_id\": \"00000000-0000-0000-0000-000000000001\",\n  \"origin_latitude\": 10.7769,\n  \"origin_longitude\": 106.7009,\n  \"destination_latitude\": 10.8000,\n  \"destination_longitude\": 106.7200\n}"
+            },
+            "description": "Creates navigation_sessions row (PostGIS Points SRID 4326). Response: {id, driver_id, status: ACTIVE, ...}. Copy id into sessionId variable."
+          }
+        },
+        {
+          "name": "Update session - COMPLETED (PATCH)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/spatial/navigation/sessions/{{sessionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "spatial",
+                "navigation",
+                "sessions",
+                "{{sessionId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"COMPLETED\"\n}"
+            },
+            "description": "ACTIVE -> COMPLETED, ended_at=NOW(). 404 if not found or already terminal."
+          }
+        },
+        {
+          "name": "Update session - CANCELED (PATCH)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/spatial/navigation/sessions/{{sessionId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "spatial",
+                "navigation",
+                "sessions",
+                "{{sessionId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"CANCELED\"\n}"
+            },
+            "description": "ACTIVE -> CANCELED. 404 if already terminal."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Smart Navigation - Flow 7 (WebSocket)",
+      "description": "Flow 7 WebSocket: ws://{{wsBaseUrl}}/spatial/navigation/stream. Test with Postman WS tab (File>New>WebSocket Request), wscat -c ws://localhost:8000/api/v1/spatial/navigation/stream, or websocat. Client sends {\"latitude\":...,\"longitude\":...,\"heading\":...,\"sessionId\":\"uuid-optional\"} per tick; server replies {\"type\":\"sign_alerts\",\"alerts\":[...],\"alert_count\":N} or {\"type\":\"error\"}. Buffer 5 route points; 50m radius; +-30deg heading filter; deduplicates per connection.",
+      "item": [
+        {
+          "name": "WebSocket - Connection info (read-only)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "ws://{{wsBaseUrl}}/spatial/navigation/stream",
+              "protocol": "ws",
+              "host": [
+                "{{wsBaseUrl}}"
+              ],
+              "path": [
+                "spatial",
+                "navigation",
+                "stream"
+              ]
+            },
+            "description": "WS URL: ws://localhost:8000/api/v1/spatial/navigation/stream. Placeholder - open a real WS connection. Example ticks: {\"latitude\":10.7769,\"longitude\":106.7009,\"heading\":45.0}"
+          }
+        },
+        {
+          "name": "WebSocket - Example tick (no sessionId)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "ws://{{wsBaseUrl}}/spatial/navigation/stream  -- send: {\"latitude\":10.7769,\"longitude\":106.7009,\"heading\":45.0}",
+              "protocol": "ws",
+              "host": [
+                "{{wsBaseUrl}}"
+              ],
+              "path": [
+                "spatial",
+                "navigation",
+                "stream"
+              ]
+            },
+            "description": "Paste into WS composer: {\"latitude\":10.7769,\"longitude\":106.7009,\"heading\":45.0}. Alerts work but nothing persisted."
+          }
+        },
+        {
+          "name": "WebSocket - Example tick (with sessionId)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "ws://{{wsBaseUrl}}/spatial/navigation/stream  -- send: {\"latitude\":10.7775,\"longitude\":106.7015,\"heading\":90.0,\"sessionId\":\"{{sessionId}}\"}",
+              "protocol": "ws",
+              "host": [
+                "{{wsBaseUrl}}"
+              ],
+              "path": [
+                "spatial",
+                "navigation",
+                "stream"
+              ]
+            },
+            "description": "Paste into WS composer: {\"latitude\":10.7775,\"longitude\":106.7015,\"heading\":90.0,\"sessionId\":\"{{sessionId}}\"} - persists route + alerts."
+          }
+        }
+      ]
+    }
+  ]
+}

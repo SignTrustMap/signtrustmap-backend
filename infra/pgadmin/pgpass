@@ -1,0 +1,2 @@
+postgres:5432:*:stm_user:stm_password
+postgres:5432:signtrustmap:stm_user:stm_password

@@ -1,0 +1,1282 @@
+{
+  "info": {
+    "name": "STM Phase 5 - NestJS",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Phase 5: Catalog/Admin CRUD, Moderation, Revalidation evidence & voting, Payment webhook. Prefix /api/v1. Login via Phase 1 to obtain token."
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000/api/v1"
+    },
+    {
+      "key": "token",
+      "value": ""
+    },
+    {
+      "key": "categoryId",
+      "value": ""
+    },
+    {
+      "key": "signTypeId",
+      "value": ""
+    },
+    {
+      "key": "caseId",
+      "value": ""
+    },
+    {
+      "key": "reportId",
+      "value": ""
+    },
+    {
+      "key": "taskId",
+      "value": ""
+    },
+    {
+      "key": "evidenceId",
+      "value": ""
+    },
+    {
+      "key": "orderCode",
+      "value": "ORD-TEST-001"
+    }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Login (save token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var j=null;try{j=pm.response.json()}catch(e){}",
+                  "if(j&&j.accessToken){pm.collectionVariables.set('token',j.accessToken);console.log('token saved')}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@example.com\",\n  \"password\": \"AdminPassword123\"\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Catalog - Sign Categories (Flow 9)",
+      "item": [
+        {
+          "name": "List Categories (public)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/catalog/categories",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "catalog",
+                "categories"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Category by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/catalog/categories/{{categoryId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "catalog",
+                "categories",
+                "{{categoryId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Category (Admin)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var j=null;try{j=pm.response.json()}catch(e){}",
+                  "if(j&&j.id){pm.collectionVariables.set('categoryId',String(j.id))}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/catalog/categories",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "catalog",
+                "categories"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"W\",\n  \"nameVi\": \"Bien canh bao\",\n  \"nameEn\": \"Warning Signs\",\n  \"description\": \"Signs warning drivers of hazards ahead\",\n  \"sortOrder\": 1\n}"
+            }
+          }
+        },
+        {
+          "name": "Update Category (Admin PATCH)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/catalog/categories/{{categoryId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "catalog",
+                "categories",
+                "{{categoryId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"nameVi\": \"Bien canh bao (updated)\",\n  \"sortOrder\": 2\n}"
+            }
+          }
+        },
+        {
+          "name": "Delete Category (Admin) - 400 if types exist",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/catalog/categories/{{categoryId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "catalog",
+                "categories",
+                "{{categoryId}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Catalog - Traffic Sign Types (Flow 9)",
+      "item": [
+        {
+          "name": "List Sign Types (public)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/catalog/sign-types?isActive=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "catalog",
+                "sign-types"
+              ],
+              "query": [
+                {
+                  "key": "isActive",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Sign Types by Category",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/catalog/sign-types?categoryId={{categoryId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "catalog",
+                "sign-types"
+              ],
+              "query": [
+                {
+                  "key": "categoryId",
+                  "value": "{{categoryId}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Sign Type by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/catalog/sign-types/{{signTypeId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "catalog",
+                "sign-types",
+                "{{signTypeId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Sign Type (Admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/catalog/sign-types",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "catalog",
+                "sign-types"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"categoryId\": 1,\n  \"signCode\": \"W-001\",\n  \"nameVi\": \"Duong hep\",\n  \"nameEn\": \"Road Narrows\",\n  \"shape\": \"TRIANGLE\",\n  \"colorScheme\": \"YELLOW_BLACK\",\n  \"isActive\": true\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var j=null;try{j=pm.response.json()}catch(e){}",
+                  "if(j&&j.id){pm.collectionVariables.set('signTypeId',String(j.id))}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Sign Type (Admin PATCH)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/catalog/sign-types/{{signTypeId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "catalog",
+                "sign-types",
+                "{{signTypeId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"nameEn\": \"Road Narrows (updated)\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Soft-Delete Sign Type (Admin)",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/catalog/sign-types/{{signTypeId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "catalog",
+                "sign-types",
+                "{{signTypeId}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Admin - System Parameters (Flow 13)",
+      "item": [
+        {
+          "name": "List All Parameters",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/system-parameters",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "system-parameters"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Parameter by Key",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/system-parameters/min_review_votes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "system-parameters",
+                "min_review_votes"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Upsert Parameter (Admin PUT)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/system-parameters/min_review_votes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "system-parameters",
+                "min_review_votes"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"value\": \"5\",\n  \"description\": \"Minimum votes to finalize\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Create New Parameter",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/system-parameters/revalidation_reward",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "system-parameters",
+                "revalidation_reward"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"value\": \"10\",\n  \"description\": \"Credits per revalidation\"\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Missing Type Reports (Flow 10)",
+      "item": [
+        {
+          "name": "Report Unknown Sign (Reviewer)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/reviews/missing-type",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "reviews",
+                "missing-type"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"proposedName\": \"Unknown orange diamond\",\n  \"description\": \"Saw near toll\",\n  \"proposedCategoryId\": 1\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var j=null;try{j=pm.response.json()}catch(e){}",
+                  "if(j&&j.id){pm.collectionVariables.set('reportId',j.id)}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Report Missing - no category",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/reviews/missing-type",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "reviews",
+                "missing-type"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"proposedName\": \"Blue circle variant\",\n  \"description\": \"Not in catalog\"\n}"
+            }
+          }
+        },
+        {
+          "name": "List Missing Reports (Staff)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/moderation/missing-type-reports?page=1&pageSize=10",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "moderation",
+                "missing-type-reports"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "pageSize",
+                  "value": "10"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Missing Report by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/moderation/missing-type-reports/{{reportId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "moderation",
+                "missing-type-reports",
+                "{{reportId}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Moderation Cases (Flow 12)",
+      "item": [
+        {
+          "name": "List Cases PENDING",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/moderation/cases?status=PENDING&page=1&pageSize=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "moderation",
+                "cases"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "PENDING"
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "pageSize",
+                  "value": "20"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Cases IN_REVIEW",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/moderation/cases?status=IN_REVIEW",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "moderation",
+                "cases"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "IN_REVIEW"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Case by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/moderation/cases/{{caseId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "moderation",
+                "cases",
+                "{{caseId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Resolve Case (Staff)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/moderation/cases/{{caseId}}/resolve",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "moderation",
+                "cases",
+                "{{caseId}}",
+                "resolve"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"resolutionNote\": \"GPS anomaly - test data. Resolved.\",\n  \"actionType\": \"DISMISS\",\n  \"actionNote\": \"No further action\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Resolve again - expect 400",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/moderation/cases/{{caseId}}/resolve",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "moderation",
+                "cases",
+                "{{caseId}}",
+                "resolve"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"resolutionNote\": \"Duplicate resolve\"\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Revalidation (Flow 8)",
+      "item": [
+        {
+          "name": "List Tasks",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/revalidation/tasks?page=1&pageSize=10&status=OPEN",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "revalidation",
+                "tasks"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "pageSize",
+                  "value": "10"
+                },
+                {
+                  "key": "status",
+                  "value": "OPEN"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Tasks sorted by reward",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/revalidation/tasks?sort=reward",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "revalidation",
+                "tasks"
+              ],
+              "query": [
+                {
+                  "key": "sort",
+                  "value": "reward"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Task by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/revalidation/tasks/{{taskId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "revalidation",
+                "tasks",
+                "{{taskId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var j=null;try{j=pm.response.json()}catch(e){}",
+                  "if(j&&j.id){pm.collectionVariables.set('taskId',j.id)}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Submit Evidence by URL (Surveyor)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/revalidation/tasks/{{taskId}}/evidence",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "revalidation",
+                "tasks",
+                "{{taskId}}",
+                "evidence"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mediaUrl\": \"revalidation/sample/photo_001.jpg\",\n  \"latitude\": 10.762622,\n  \"longitude\": 106.660172\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var j=null;try{j=pm.response.json()}catch(e){}",
+                  "if(j&&j.id){pm.collectionVariables.set('evidenceId',j.id)}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Submit Evidence - multipart file upload (Surveyor)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/revalidation/tasks/{{taskId}}/evidence",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "revalidation",
+                "tasks",
+                "{{taskId}}",
+                "evidence"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "/path/to/photo.jpg"
+                },
+                {
+                  "key": "latitude",
+                  "value": "10.762622",
+                  "type": "text"
+                },
+                {
+                  "key": "longitude",
+                  "value": "106.660172",
+                  "type": "text"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Evidence for Task",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/revalidation/tasks/{{taskId}}/evidences",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "revalidation",
+                "tasks",
+                "{{taskId}}",
+                "evidences"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Vote UNCHANGED (Reviewer)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/revalidation/evidence/{{evidenceId}}/vote",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "revalidation",
+                "evidence",
+                "{{evidenceId}}",
+                "vote"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"decision\": \"UNCHANGED\",\n  \"note\": \"Sign still ok\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Vote CHANGED",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/revalidation/evidence/{{evidenceId}}/vote",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "revalidation",
+                "evidence",
+                "{{evidenceId}}",
+                "vote"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"decision\": \"CHANGED\",\n  \"note\": \"Sign faded\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Vote Duplicate - expect 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/revalidation/evidence/{{evidenceId}}/vote",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "revalidation",
+                "evidence",
+                "{{evidenceId}}",
+                "vote"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"decision\": \"UNCHANGED\"\n}"
+            }
+          }
+        },
+        {
+          "name": "List Decisions",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/revalidation/evidence/{{evidenceId}}/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "revalidation",
+                "evidence",
+                "{{evidenceId}}",
+                "decisions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Payment Webhook (FR 4.8 / Flow 11)",
+      "item": [
+        {
+          "name": "Webhook SUCCESS (credits wallet)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/payments/webhook",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "payments",
+                "webhook"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderCode\": \"{{orderCode}}\",\n  \"gateway\": \"MOCK\",\n  \"status\": \"SUCCESS\",\n  \"amountVnd\": \"50000\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Webhook SUCCESS again - idempotency",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/payments/webhook",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "payments",
+                "webhook"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderCode\": \"{{orderCode}}\",\n  \"status\": \"SUCCESS\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Webhook FAILED",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/payments/webhook",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "payments",
+                "webhook"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderCode\": \"ORD-FAILED-002\",\n  \"status\": \"FAILED\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Webhook EXPIRED",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/payments/webhook",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "payments",
+                "webhook"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderCode\": \"ORD-EXPIRED-003\",\n  \"status\": \"EXPIRED\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Webhook 404 unknown",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/payments/webhook",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "payments",
+                "webhook"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderCode\": \"ORD-DOES-NOT-EXIST\",\n  \"status\": \"SUCCESS\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Webhook bad status - 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/payments/webhook",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "payments",
+                "webhook"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderCode\": \"{{orderCode}}\",\n  \"status\": \"PENDING\"\n}"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
