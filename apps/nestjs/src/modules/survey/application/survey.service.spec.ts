@@ -44,6 +44,8 @@ describe('SurveyService submission contract', () => {
       surveyorId: userId,
       submissionType: SubmissionType.SINGLE_IMAGE,
       status: SubmissionStatus.DRAFT,
+      rewardStatus: 'PENDING' as any,
+      rewardAmount: 0,
       capturedAt: new Date('2026-09-08T02:00:00.000Z'),
       coordinateSource: CoordinateSource.DEVICE_GPS,
       note: 'Northbound lane',

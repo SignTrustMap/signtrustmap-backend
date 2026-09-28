@@ -35,6 +35,13 @@ export class ReviewsController {
   }
 
   @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get reviewer governance statistics', description: 'Reviewer reliability score, correct/false votes, provisional status, and suspension flag' })
+  @Get('stats')
+  async stats(@CurrentUser() user: any) {
+    return this.reviewsService.getMyStats(user.id);
+  }
+
+  @ApiBearerAuth()
   @ApiOperation({ summary: 'Get candidate sign detail', description: 'Retrieve crop image, AI confidence, and sign classification for review' })
   @Get('candidates/:candidateId')
   async getCandidate(@Param('candidateId', ParseUUIDPipe) candidateId: string) {

@@ -1,4 +1,4 @@
-import { IsInt, IsPositive, IsString, IsOptional, MaxLength } from 'class-validator';
+import { IsInt, IsPositive, IsString, IsOptional, MaxLength, IsNotEmpty, MinLength, NotEquals, IsBoolean } from 'class-validator';
 
 export class TopUpDto {
   @IsInt()
@@ -43,5 +43,42 @@ export class CreatePaymentMethodDto {
   @IsString()
   @MaxLength(10)
   isDefault?: boolean;
+}
+
+export class ManualAdjustmentDto {
+  @IsInt()
+  @NotEquals(0)
+  amount: number;
+
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(5)
+  @MaxLength(500)
+  reason: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  referenceType?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  referenceId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  idempotencyKey?: string;
+}
+
+export class FreezeWalletDto {
+  @IsBoolean()
+  freeze: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
 }
 

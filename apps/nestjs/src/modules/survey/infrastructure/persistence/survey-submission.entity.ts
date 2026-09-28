@@ -61,6 +61,12 @@ export class SurveySubmission {
   @Column({ name: 'total_candidates_extracted', type: 'int', default: 0 })
   totalCandidatesExtracted: number;
 
+  @Column({ name: 'reward_status', type: 'varchar', length: 32, default: 'NONE' })
+  rewardStatus: string;
+
+  @Column({ name: 'reward_amount', type: 'int', default: 0 })
+  rewardAmount: number;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 

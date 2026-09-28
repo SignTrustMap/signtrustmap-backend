@@ -8,8 +8,13 @@ import { WalletController } from './presentation/wallet.controller';
 import { PaymentOrder } from '../payments/infrastructure/persistence/payment-order.entity';
 import { TopupPackage } from '../payments/infrastructure/persistence/topup-package.entity';
 
+import { RewardsModule } from '../rewards/rewards.module';
+
 @Module({
-  imports: [TypeOrmModule.forFeature([Wallet, CreditTransaction, TopupPackage, PaymentOrder, PaymentMethod])],
+  imports: [
+    TypeOrmModule.forFeature([Wallet, CreditTransaction, TopupPackage, PaymentOrder, PaymentMethod]),
+    RewardsModule,
+  ],
   controllers: [WalletController],
   providers: [WalletService],
   exports: [WalletService],

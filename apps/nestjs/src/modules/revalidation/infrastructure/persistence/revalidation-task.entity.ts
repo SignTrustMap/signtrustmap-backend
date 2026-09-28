@@ -36,6 +36,12 @@ export class RevalidationTask {
   @Column({ name: 'reward_credits', type: 'int', default: 10 })
   rewardCredits: number;
 
+  @Column({ type: 'float', default: 0.0 })
+  urgency: number;
+
+  @Column({ name: 'route_classification_id', type: 'int', nullable: true })
+  routeClassificationId: number | null;
+
   @Column({ type: 'enum', enum: TaskStatus, default: TaskStatus.OPEN })
   status: TaskStatus;
 
