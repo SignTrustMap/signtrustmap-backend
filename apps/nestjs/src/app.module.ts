@@ -10,6 +10,7 @@ import catalogSyncConfig from './config/catalog-sync.config';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { AuthModule } from './modules/auth/auth.module';
+import { RedisModule } from './integrations/redis/redis.module';
 import { WalletModule } from './modules/wallet/wallet.module';
 import { DailyTasksModule } from './modules/daily-tasks/daily-tasks.module';
 import { MinioModule } from './integrations/minio/minio.module';
@@ -30,6 +31,8 @@ import { NavigationModule } from './modules/navigation/navigation.module';
 import { SignMapModule } from './modules/sign-map/sign-map.module';
 import { HealthModule } from './modules/health/health.module';
 import { SpatialAdminModule } from './modules/spatial-admin/spatial-admin.module';
+import { RewardsModule } from './modules/rewards/rewards.module';
+import { HazardsModule } from './modules/hazards/hazards.module';
 
 @Module({
   imports: [
@@ -71,6 +74,7 @@ import { SpatialAdminModule } from './modules/spatial-admin/spatial-admin.module
     }),
     MinioModule,
     CatalogSyncModule,
+    RedisModule,
     AuthModule,
     WalletModule,
     DailyTasksModule,
@@ -89,6 +93,8 @@ import { SpatialAdminModule } from './modules/spatial-admin/spatial-admin.module
     SignMapModule,
     NavigationModule,
     SpatialAdminModule,
+    RewardsModule,
+    HazardsModule,
     HealthModule,
   ],
   providers: [

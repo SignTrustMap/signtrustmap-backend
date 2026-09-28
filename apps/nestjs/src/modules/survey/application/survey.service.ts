@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash } from 'crypto';
 import { DataSource, EntityManager, MoreThanOrEqual, Repository } from 'typeorm';
@@ -35,6 +35,7 @@ import { NotificationsService } from '../../notifications/notifications.service'
 import { MinioStorageService } from '../../../integrations/minio/minio-storage.service';
 import type { StoredObjectReference } from '../../../integrations/minio/minio-storage.service';
 import { WalletService } from '../../wallet/application/wallet.service';
+import { DailyTasksService } from '../../daily-tasks/daily-tasks.service';
 import { InitializeUploadDto } from '../presentation/dto/initialize-upload.dto';
 import { UploadChunkBodyDto } from '../presentation/dto/upload-chunk.dto';
 import { CreateSubmissionDto } from '../presentation/dto/create-submission.dto';
@@ -51,6 +52,7 @@ export class SurveyService {
     private readonly dataSource: DataSource,
     private readonly walletService: WalletService,
     private readonly notificationsService: NotificationsService,
+    @Optional() private readonly dailyTasksService?: DailyTasksService,
   ) {}
 
   private validateCapturedAt(capturedAt: string) {
@@ -599,6 +601,10 @@ export class SurveyService {
         ],
       );
 
+      if (accepted && this.dailyTasksService) {
+        this.dailyTasksService.recordProgress(userId, 'SURVEY', 1).catch(() => {});
+      }
+
       return {
         accepted,
         submission: this.submissionResponse(saved),
@@ -1028,12 +1034,47 @@ export class SurveyService {
     }
     const oldStatus = sub.status;
     sub.status = SubmissionStatus.COMPLETED;
+    const candidatesCount = sub.totalCandidatesExtracted ?? 0;
+    let rewardAmount = 0;
+    if (candidatesCount > 0) {
+      rewardAmount = await this.walletService.resolveRewardAmount(
+        TransactionType.SURVEY_REWARD,
+        10,
+        sub.surveyorId,
+        { candidateCount: candidatesCount },
+      );
+      if (rewardAmount > 0) {
+        try {
+          await this.walletService.creditUser(
+            sub.surveyorId,
+            rewardAmount,
+            TransactionType.SURVEY_REWARD,
+            'survey_submission',
+            sub.id,
+            'Survey reward (submission ' + sub.id.slice(0, 8) + ' completed with ' + candidatesCount + ' candidate(s))',
+            { idempotencyKey: `survey_reward:${sub.id}` },
+          );
+          sub.rewardStatus = 'PAID';
+          sub.rewardAmount = rewardAmount;
+        } catch (e: any) {
+          this.logger.warn('survey reward credit failed ' + sub.surveyorId + ': ' + e?.message);
+          sub.rewardStatus = 'APPROVED';
+          sub.rewardAmount = rewardAmount;
+        }
+      } else {
+        sub.rewardStatus = 'NONE';
+        sub.rewardAmount = 0;
+      }
+    } else {
+      sub.rewardStatus = 'REJECTED';
+      sub.rewardAmount = 0;
+    }
     await this.submissionRepo.save(sub);
     try { await this.dataSource.query('INSERT INTO submission_status_history (submission_id, old_status, new_status, note) VALUES ($1,$2::submission_status,$3::submission_status,$4)', [sub.id, String(oldStatus), String(SubmissionStatus.COMPLETED), note ?? 'AI pipeline completed']); } catch {}
-    const rewardAmount = await this.walletService.resolveRewardAmount(TransactionType.SURVEY_REWARD, 10);
-    try { await this.walletService.creditUser(sub.surveyorId, rewardAmount, TransactionType.SURVEY_REWARD, 'survey_submission', sub.id, 'Survey reward (submission ' + sub.id.slice(0,8) + ' completed)'); } catch (e: any) { this.logger.warn('survey reward credit failed ' + sub.surveyorId + ': ' + e?.message); }
-    try { await this.dataSource.query('INSERT INTO surveyor_profiles (user_id, total_submissions, total_verified_signs, total_credits_earned) VALUES ($1, 1, 0, $2) ON CONFLICT (user_id) DO UPDATE SET total_submissions = surveyor_profiles.total_submissions + 1, total_credits_earned = surveyor_profiles.total_credits_earned + $2', [sub.surveyorId, rewardAmount]); } catch {}
-    try { await this.notificationsService.create(sub.surveyorId, 'SURVEY_COMPLETED', 'Survey completed', 'Your submission ' + sub.id.slice(0,8) + ' has been processed (+' + rewardAmount + ' credits).', 'survey_submission', sub.id); } catch {}
+    if (rewardAmount > 0) {
+      try { await this.dataSource.query('INSERT INTO surveyor_profiles (user_id, total_submissions, total_verified_signs, total_credits_earned) VALUES ($1, 1, 0, $2) ON CONFLICT (user_id) DO UPDATE SET total_submissions = surveyor_profiles.total_submissions + 1, total_credits_earned = surveyor_profiles.total_credits_earned + $2', [sub.surveyorId, rewardAmount]); } catch {}
+      try { await this.notificationsService.create(sub.surveyorId, 'SURVEY_COMPLETED', 'Survey completed', 'Your submission ' + sub.id.slice(0,8) + ' has been processed (+' + rewardAmount + ' credits).', 'survey_submission', sub.id); } catch {}
+    }
     return { alreadyCompleted: false, submission: sub, rewardAmount };
   }
 }

@@ -73,6 +73,9 @@ CREATE TYPE "consensus_outcome" AS ENUM (
 CREATE TYPE "sign_lifecycle_status" AS ENUM (
   'ACTIVE',
   'STALE',
+  'REVALIDATION_REQUIRED',
+  'INACTIVE',
+  'DECOMMISSIONED',
   'RETIRED',
   'MODERATED_OVERRIDE'
 );
@@ -154,11 +157,16 @@ CREATE TYPE "transaction_type" AS ENUM (
   'SURVEY_REWARD',
   'REVIEW_REWARD',
   'REVALIDATION_REWARD',
+  'SIGN_DECOMMISSION_REWARD',
+  'HAZARD_REPORT_REWARD',
+  'HAZARD_CONFIRM_REWARD',
   'DAILY_TASK_REWARD',
   'NAVIGATION_FEE',
+  'CUSTOM_PROFILE_SPEND',
   'TOP_UP',
   'REFUND',
-  'MANUAL_ADJUSTMENT'
+  'MANUAL_ADJUSTMENT',
+  'REWARD_WITHHELD'
 );
 
 CREATE TYPE "payment_status" AS ENUM (
@@ -245,7 +253,15 @@ CREATE TABLE "user_status_history" (
 
 CREATE TABLE "reviewer_profiles" (
   "user_id" uuid PRIMARY KEY,
-  "reliability_score" float NOT NULL DEFAULT 0.5,
+  "reliability_score" numeric(5,2) NOT NULL DEFAULT 100.00 CHECK ("reliability_score" BETWEEN 0.00 AND 100.00),
+  "total_correct_votes" int NOT NULL DEFAULT 0 CHECK ("total_correct_votes" >= 0),
+  "total_false_votes" int NOT NULL DEFAULT 0 CHECK ("total_false_votes" >= 0),
+  "consecutive_errors" int NOT NULL DEFAULT 0 CHECK ("consecutive_errors" >= 0),
+  "is_provisional" boolean NOT NULL DEFAULT true,
+  "is_review_suspended" boolean NOT NULL DEFAULT false,
+  "suspended_at" timestamptz,
+  "suspended_until" timestamptz,
+  "suspension_reason" text,
   "total_reviews" int NOT NULL DEFAULT 0,
   "correct_reviews" int NOT NULL DEFAULT 0,
   "accuracy_rate" float NOT NULL DEFAULT 0,
@@ -408,9 +424,28 @@ CREATE TABLE "survey_submissions" (
   "correction_requirements" jsonb NOT NULL DEFAULT '[]'::jsonb,
   "failure_reason" text,
   "total_candidates_extracted" int NOT NULL DEFAULT 0,
+  "reward_status" varchar(32) NOT NULL DEFAULT 'NONE',
+  "reward_amount" int NOT NULL DEFAULT 0,
   "created_at" timestamptz NOT NULL DEFAULT (now()),
   "updated_at" timestamptz NOT NULL DEFAULT (now())
 );
+
+CREATE TABLE "batch_submissions" (
+  "id" uuid PRIMARY KEY DEFAULT (gen_random_uuid()),
+  "user_id" uuid NOT NULL REFERENCES "users"("id") ON DELETE CASCADE,
+  "title" varchar(255),
+  "total_images" int NOT NULL DEFAULT 0,
+  "processed_images" int NOT NULL DEFAULT 0,
+  "extracted_candidates" int NOT NULL DEFAULT 0,
+  "reward_status" varchar(32) NOT NULL DEFAULT 'PENDING',
+  "reward_amount" int NOT NULL DEFAULT 0,
+  "status" varchar(32) NOT NULL DEFAULT 'PENDING',
+  "metadata" jsonb NOT NULL DEFAULT '{}'::jsonb,
+  "created_at" timestamptz NOT NULL DEFAULT (now()),
+  "updated_at" timestamptz NOT NULL DEFAULT (now())
+);
+
+CREATE INDEX "idx_batch_submissions_user" ON "batch_submissions"("user_id", "created_at" DESC);
 
 CREATE TABLE "submission_media_files" (
   "id" uuid PRIMARY KEY DEFAULT (gen_random_uuid()),
@@ -529,6 +564,13 @@ CREATE TABLE "consensus_configs" (
   "rejection_threshold" float NOT NULL,
   "min_votes_required" int NOT NULL DEFAULT 3,
   "alpha_smoothing_factor" float NOT NULL DEFAULT 0.1,
+  "weight_correct" float NOT NULL DEFAULT 1.0,
+  "penalty_false" float NOT NULL DEFAULT 2.0,
+  "min_sample_baseline" int NOT NULL DEFAULT 5,
+  "min_reliability_threshold" float NOT NULL DEFAULT 50.0,
+  "consecutive_error_limit" int NOT NULL DEFAULT 3,
+  "suspension_cooldown_days" int NOT NULL DEFAULT 7,
+  "provisional_vote_weight" float NOT NULL DEFAULT 0.5,
   "created_by" uuid,
   "is_active" boolean NOT NULL DEFAULT true,
   "effective_from" timestamptz NOT NULL DEFAULT (now())
@@ -554,6 +596,16 @@ CREATE TABLE "reviewer_reliability_history" (
   "updated_at" timestamptz NOT NULL DEFAULT (now())
 );
 
+CREATE TABLE "route_classifications" (
+  "id" SERIAL PRIMARY KEY,
+  "name" varchar(64) NOT NULL UNIQUE,
+  "road_type" varchar(32) NOT NULL,
+  "default_lifetime_days" int NOT NULL,
+  "revalidation_threshold_days" int NOT NULL,
+  "spatial_buffer_meters" int NOT NULL DEFAULT 20,
+  "created_at" timestamptz NOT NULL DEFAULT (now())
+);
+
 CREATE TABLE "verified_traffic_signs" (
   "id" uuid PRIMARY KEY DEFAULT (gen_random_uuid()),
   "sign_type_id" int NOT NULL,
@@ -565,6 +617,7 @@ CREATE TABLE "verified_traffic_signs" (
   "freshness_score" float NOT NULL DEFAULT 1,
   "confirmation_count" int NOT NULL DEFAULT 0,
   "last_verified_at" timestamptz NOT NULL DEFAULT (now()),
+  "route_classification_id" int,
   "created_at" timestamptz NOT NULL DEFAULT (now()),
   "updated_at" timestamptz NOT NULL DEFAULT (now())
 );
@@ -614,6 +667,8 @@ CREATE TABLE "revalidation_tasks" (
   "priority" task_priority NOT NULL DEFAULT 'MEDIUM',
   "reward_credits" int NOT NULL DEFAULT 10,
   "status" task_status NOT NULL DEFAULT 'OPEN',
+  "urgency" float NOT NULL DEFAULT 0.0,
+  "route_classification_id" int,
   "created_at" timestamptz NOT NULL DEFAULT (now()),
   "expired_at" timestamptz
 );
@@ -624,7 +679,33 @@ CREATE TABLE "revalidation_evidences" (
   "user_id" uuid NOT NULL,
   "media_url" varchar(500) NOT NULL,
   "location" geometry(Point,4326) NOT NULL,
+  "evidence_type" varchar(32) NOT NULL DEFAULT 'STILL_ACTIVE',
   "submitted_at" timestamptz NOT NULL DEFAULT (now())
+);
+
+CREATE TABLE "road_hazard_events" (
+  "id" uuid PRIMARY KEY DEFAULT (gen_random_uuid()),
+  "reported_by" uuid NOT NULL,
+  "hazard_type" varchar(64) NOT NULL,
+  "description" text,
+  "location" geometry(Point,4326) NOT NULL,
+  "status" varchar(32) NOT NULL DEFAULT 'UNCONFIRMED',
+  "confirmations_count" int NOT NULL DEFAULT 1,
+  "dismissals_count" int NOT NULL DEFAULT 0,
+  "reward_paid" boolean NOT NULL DEFAULT false,
+  "expires_at" timestamptz NOT NULL,
+  "created_at" timestamptz NOT NULL DEFAULT (now()),
+  "updated_at" timestamptz NOT NULL DEFAULT (now())
+);
+
+CREATE TABLE "hazard_confirmations" (
+  "id" uuid PRIMARY KEY DEFAULT (gen_random_uuid()),
+  "hazard_id" uuid NOT NULL,
+  "user_id" uuid NOT NULL,
+  "vote_type" varchar(16) NOT NULL,
+  "location" geometry(Point,4326),
+  "created_at" timestamptz NOT NULL DEFAULT (now()),
+  CONSTRAINT "uq_hazard_user_confirmation" UNIQUE ("hazard_id", "user_id")
 );
 
 CREATE TABLE "revalidation_decisions" (
@@ -663,6 +744,17 @@ CREATE TABLE "navigation_sign_alerts" (
   "triggered_at" timestamptz NOT NULL DEFAULT (now())
 );
 
+CREATE TABLE "custom_alert_profiles" (
+  "id" uuid PRIMARY KEY DEFAULT (gen_random_uuid()),
+  "user_id" uuid NOT NULL,
+  "name" varchar(64) NOT NULL,
+  "description" text,
+  "filter_rules" jsonb NOT NULL DEFAULT '{}'::jsonb,
+  "is_active" boolean NOT NULL DEFAULT true,
+  "created_at" timestamptz NOT NULL DEFAULT (now()),
+  "updated_at" timestamptz NOT NULL DEFAULT (now())
+);
+
 CREATE TABLE "navigation_pricing_rules" (
   "id" INT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
   "rule_name" varchar(100) NOT NULL,
@@ -675,6 +767,7 @@ CREATE TABLE "wallets" (
   "id" uuid PRIMARY KEY DEFAULT (gen_random_uuid()),
   "user_id" uuid UNIQUE NOT NULL,
   "balance" bigint NOT NULL DEFAULT 0,
+  "is_frozen" boolean NOT NULL DEFAULT false,
   "updated_at" timestamptz NOT NULL DEFAULT (now()),
   CONSTRAINT "chk_balance_non_negative" CHECK ("balance" >= 0)
 );
@@ -683,9 +776,12 @@ CREATE TABLE "credit_transactions" (
   "id" uuid PRIMARY KEY DEFAULT (gen_random_uuid()),
   "wallet_id" uuid NOT NULL,
   "amount" int NOT NULL,
+  "balance_after" bigint,
   "transaction_type" transaction_type NOT NULL,
+  "idempotency_key" varchar(128) UNIQUE,
   "reference_type" varchar(50),
   "reference_id" uuid,
+  "metadata" jsonb DEFAULT '{}'::jsonb,
   "description" text,
   "created_at" timestamptz NOT NULL DEFAULT (now())
 );
@@ -698,6 +794,21 @@ CREATE TABLE "credit_rules" (
   "is_active" boolean NOT NULL DEFAULT true,
   "effective_from" timestamptz NOT NULL DEFAULT (now())
 );
+
+CREATE TABLE "reward_rules" (
+  "id" INT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+  "activity_type" varchar(64) UNIQUE NOT NULL,
+  "base_amount" int NOT NULL DEFAULT 0,
+  "daily_limit" int NOT NULL DEFAULT 10,
+  "multiplier_config" jsonb NOT NULL DEFAULT '{"reputation_bonus": true}'::jsonb,
+  "is_active" boolean NOT NULL DEFAULT true,
+  "effective_from" timestamptz NOT NULL DEFAULT (now()),
+  "effective_to" timestamptz,
+  "created_at" timestamptz NOT NULL DEFAULT (now()),
+  "updated_at" timestamptz NOT NULL DEFAULT (now())
+);
+
+CREATE INDEX "idx_reward_rules_activity" ON "reward_rules"("activity_type");
 
 CREATE TABLE "topup_packages" (
   "id" INT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
@@ -733,8 +844,12 @@ CREATE TABLE "daily_tasks" (
   "task_code" varchar(50) UNIQUE NOT NULL,
   "name" varchar(255) NOT NULL,
   "description" text,
+  "target_count" int NOT NULL DEFAULT 1,
   "reward_credits" int NOT NULL,
-  "is_active" boolean NOT NULL DEFAULT true
+  "activity_type" varchar(50) NOT NULL DEFAULT 'SURVEY',
+  "is_active" boolean NOT NULL DEFAULT true,
+  "created_at" timestamptz NOT NULL DEFAULT (now()),
+  "updated_at" timestamptz NOT NULL DEFAULT (now())
 );
 
 CREATE TABLE "daily_task_completions" (
@@ -742,8 +857,12 @@ CREATE TABLE "daily_task_completions" (
   "user_id" uuid NOT NULL,
   "daily_task_id" int NOT NULL,
   "completion_date" date NOT NULL,
+  "progress" int NOT NULL DEFAULT 0,
+  "is_completed" boolean NOT NULL DEFAULT false,
   "claimed" boolean NOT NULL DEFAULT false,
-  "claimed_at" timestamptz
+  "claimed_at" timestamptz,
+  "created_at" timestamptz NOT NULL DEFAULT (now()),
+  "updated_at" timestamptz NOT NULL DEFAULT (now())
 );
 
 CREATE TABLE "moderation_cases" (
@@ -895,6 +1014,14 @@ CREATE INDEX ON "revalidation_tasks" ("verified_sign_id", "status");
 
 CREATE INDEX ON "revalidation_evidences" USING GIST ("location");
 
+CREATE INDEX ON "road_hazard_events" USING GIST ("location");
+CREATE INDEX "idx_road_hazard_events_location_geography" ON "road_hazard_events" USING GIST (("location"::geography));
+CREATE INDEX ON "road_hazard_events" ("status", "expires_at");
+CREATE INDEX ON "road_hazard_events" ("reported_by");
+
+CREATE INDEX ON "hazard_confirmations" ("hazard_id");
+CREATE INDEX ON "hazard_confirmations" ("user_id");
+
 CREATE UNIQUE INDEX ON "revalidation_decisions" ("evidence_id", "reviewer_id");
 
 CREATE INDEX ON "revalidation_decisions" ("evidence_id");
@@ -902,6 +1029,8 @@ CREATE INDEX ON "revalidation_decisions" ("evidence_id");
 CREATE INDEX ON "navigation_route_points" ("session_id", "sequence_no");
 
 CREATE INDEX ON "navigation_sign_alerts" ("session_id");
+
+CREATE INDEX ON "custom_alert_profiles" ("user_id");
 
 CREATE INDEX ON "credit_transactions" ("wallet_id", "created_at");
 
@@ -1083,6 +1212,12 @@ ALTER TABLE "revalidation_decisions" ADD FOREIGN KEY ("evidence_id") REFERENCES 
 
 ALTER TABLE "revalidation_decisions" ADD FOREIGN KEY ("reviewer_id") REFERENCES "users" ("id") DEFERRABLE INITIALLY IMMEDIATE;
 
+ALTER TABLE "road_hazard_events" ADD FOREIGN KEY ("reported_by") REFERENCES "users" ("id") DEFERRABLE INITIALLY IMMEDIATE;
+
+ALTER TABLE "hazard_confirmations" ADD FOREIGN KEY ("hazard_id") REFERENCES "road_hazard_events" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE;
+
+ALTER TABLE "hazard_confirmations" ADD FOREIGN KEY ("user_id") REFERENCES "users" ("id") DEFERRABLE INITIALLY IMMEDIATE;
+
 ALTER TABLE "navigation_sessions" ADD FOREIGN KEY ("driver_id") REFERENCES "users" ("id") DEFERRABLE INITIALLY IMMEDIATE;
 
 ALTER TABLE "navigation_route_points" ADD FOREIGN KEY ("session_id") REFERENCES "navigation_sessions" ("id") DEFERRABLE INITIALLY IMMEDIATE;
@@ -1090,6 +1225,8 @@ ALTER TABLE "navigation_route_points" ADD FOREIGN KEY ("session_id") REFERENCES 
 ALTER TABLE "navigation_sign_alerts" ADD FOREIGN KEY ("session_id") REFERENCES "navigation_sessions" ("id") DEFERRABLE INITIALLY IMMEDIATE;
 
 ALTER TABLE "navigation_sign_alerts" ADD FOREIGN KEY ("verified_sign_id") REFERENCES "verified_traffic_signs" ("id") DEFERRABLE INITIALLY IMMEDIATE;
+
+ALTER TABLE "custom_alert_profiles" ADD FOREIGN KEY ("user_id") REFERENCES "users" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE;
 
 ALTER TABLE "wallets" ADD FOREIGN KEY ("user_id") REFERENCES "users" ("id") DEFERRABLE INITIALLY IMMEDIATE;
 

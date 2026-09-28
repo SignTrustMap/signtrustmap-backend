@@ -7,8 +7,10 @@ import {
 
 export enum RevalDecision {
   UNCHANGED = 'UNCHANGED',
+  STILL_ACTIVE = 'STILL_ACTIVE',
   CHANGED = 'CHANGED',
   MISSING = 'MISSING',
+  REMOVED = 'REMOVED',
   UNCLEAR = 'UNCLEAR',
   INVALID = 'INVALID',
 }

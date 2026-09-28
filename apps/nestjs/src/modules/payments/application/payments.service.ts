@@ -1,6 +1,13 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  UnauthorizedException,
+  Logger,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
+import * as crypto from 'crypto';
 import { PaymentOrder, PaymentStatus } from '../infrastructure/persistence/payment-order.entity';
 import { PaymentCallback } from '../infrastructure/persistence/payment-callback.entity';
 import { TopupPackage } from '../infrastructure/persistence/topup-package.entity';
@@ -13,6 +20,8 @@ import { PaymentWebhookDto } from '../presentation/dto/payment-webhook.dto';
 
 @Injectable()
 export class PaymentsService {
+  private readonly logger = new Logger(PaymentsService.name);
+
   constructor(
     @InjectRepository(PaymentOrder) private orders: Repository<PaymentOrder>,
     @InjectRepository(PaymentCallback) private callbacks: Repository<PaymentCallback>,
@@ -22,9 +31,68 @@ export class PaymentsService {
     private readonly dataSource: DataSource,
   ) {}
 
-  // POST /api/v1/payments/webhook  — simulated gateway callback (FR 4.8 / Flow 11)
+  /**
+   * Retrieves active credit top-up packages
+   */
+  async listPackages() {
+    return this.packages.find({
+      where: { isActive: true },
+      order: { id: 'ASC' },
+    });
+  }
+
+  /**
+   * Validates HMAC-SHA256 webhook signature against configured secret
+   */
+  verifyWebhookSignature(dto: PaymentWebhookDto, signature?: string): boolean {
+    const secret = process.env.PAYMENT_WEBHOOK_SECRET;
+
+    if (!secret && !signature) {
+      return true;
+    }
+
+    if (!signature) {
+      if (secret) {
+        throw new UnauthorizedException('Missing webhook signature');
+      }
+      return true;
+    }
+
+    const secretKey = secret || 'signtrustmap-webhook-secret';
+    const cleanSig = signature.startsWith('sha256=') ? signature.slice(7) : signature;
+
+    const payloadStr = JSON.stringify(dto);
+    const expectedPayloadSig = crypto
+      .createHmac('sha256', secretKey)
+      .update(payloadStr)
+      .digest('hex');
+
+    const expectedOrderCodeSig = crypto
+      .createHmac('sha256', secretKey)
+      .update(dto.orderCode)
+      .digest('hex');
+
+    const matchesPayload = this.safeCompare(cleanSig, expectedPayloadSig);
+    const matchesOrderCode = this.safeCompare(cleanSig, expectedOrderCodeSig);
+
+    if (!matchesPayload && !matchesOrderCode) {
+      this.logger.warn(`Invalid webhook signature for order ${dto.orderCode}`);
+      throw new UnauthorizedException('Invalid webhook signature');
+    }
+
+    return true;
+  }
+
+  private safeCompare(a: string, b: string): boolean {
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(Buffer.from(a, 'utf-8'), Buffer.from(b, 'utf-8'));
+  }
+
+  // POST /api/v1/payments/webhook — simulated gateway callback (FR 4.8 / Flow 11)
   // Idempotency: second SUCCESS callback on same orderCode is ignored (no double credit).
-  async handleWebhook(dto: PaymentWebhookDto) {
+  async handleWebhook(dto: PaymentWebhookDto, signature?: string) {
+    this.verifyWebhookSignature(dto, signature);
+
     const order = await this.orders.findOne({ where: { orderCode: dto.orderCode } });
     if (!order) throw new NotFoundException(`PaymentOrder with orderCode "${dto.orderCode}" not found`);
 
