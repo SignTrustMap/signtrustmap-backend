@@ -1,5 +1,7 @@
-﻿import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
+import { UpdateConsensusConfigDto, UpdateRouteMatrixDto } from './dto/admin.dto';
+
 @Injectable()
 export class AdminService {
   constructor(private readonly dataSource: DataSource) {}
@@ -57,4 +59,192 @@ export class AdminService {
     if (format === 'geojson') return { type: 'FeatureCollection', features: rows.map(r => ({ type: 'Feature', geometry: r.geojson, properties: { id: r.id, signTypeId: r.sign_type_id, signCode: r.sign_code, nameEn: r.name_en, nameVi: r.name_vi, categoryCode: r.category_code, status: r.status, freshnessScore: r.freshness_score, trafficDirection: r.traffic_direction, signCropUrl: r.sign_crop_url, lastVerifiedAt: r.last_verified_at } })) };
     return rows;
   }
+
+  /**
+   * Retrieves current active consensus config parameters
+   */
+  async getConsensusConfig() {
+    const rows = await this.dataSource.query(
+      `SELECT * FROM consensus_configs WHERE is_active = true ORDER BY effective_from DESC LIMIT 1`,
+    );
+    if (rows.length === 0) {
+      return {
+        approvalThreshold: 2.0,
+        rejectionThreshold: -2.0,
+        minVotesRequired: 3,
+        alphaSmoothingFactor: 0.1,
+        weightCorrect: 1.0,
+        penaltyFalse: 2.0,
+        minSampleBaseline: 5,
+        minReliabilityThreshold: 50.0,
+        consecutiveErrorLimit: 3,
+        suspensionCooldownDays: 7,
+        provisionalVoteWeight: 0.5,
+        isActive: true,
+      };
+    }
+    const c = rows[0];
+    return {
+      id: c.id,
+      approvalThreshold: Number(c.approval_threshold),
+      rejectionThreshold: Number(c.rejection_threshold),
+      minVotesRequired: Number(c.min_votes_required),
+      alphaSmoothingFactor: Number(c.alpha_smoothing_factor),
+      weightCorrect: Number(c.weight_correct),
+      penaltyFalse: Number(c.penalty_false),
+      minSampleBaseline: Number(c.min_sample_baseline),
+      minReliabilityThreshold: Number(c.min_reliability_threshold),
+      consecutiveErrorLimit: Number(c.consecutive_error_limit),
+      suspensionCooldownDays: Number(c.suspension_cooldown_days),
+      provisionalVoteWeight: Number(c.provisional_vote_weight),
+      createdBy: c.created_by,
+      isActive: c.is_active,
+      effectiveFrom: c.effective_from,
+    };
+  }
+
+  /**
+   * Updates consensus engine parameters, creates an audit log entry, and keeps history intact
+   */
+  async updateConsensusConfig(dto: UpdateConsensusConfigDto, adminUserId: string, ip?: string) {
+    const current = await this.getConsensusConfig();
+    const approvalThreshold = dto.approvalThreshold ?? current.approvalThreshold;
+    const rejectionThreshold = dto.rejectionThreshold ?? current.rejectionThreshold;
+    const minVotesRequired = dto.minVotesRequired ?? current.minVotesRequired;
+    const alphaSmoothingFactor = dto.alphaSmoothingFactor ?? current.alphaSmoothingFactor;
+    const weightCorrect = dto.weightCorrect ?? current.weightCorrect;
+    const penaltyFalse = dto.penaltyFalse ?? current.penaltyFalse;
+    const minSampleBaseline = dto.minSampleBaseline ?? current.minSampleBaseline;
+    const minReliabilityThreshold = dto.minReliabilityThreshold ?? current.minReliabilityThreshold;
+    const consecutiveErrorLimit = dto.consecutiveErrorLimit ?? current.consecutiveErrorLimit;
+    const suspensionCooldownDays = dto.suspensionCooldownDays ?? current.suspensionCooldownDays;
+    const provisionalVoteWeight = dto.provisionalVoteWeight ?? current.provisionalVoteWeight;
+
+    // Deactivate previous active configs
+    await this.dataSource.query(`UPDATE consensus_configs SET is_active = false WHERE is_active = true`);
+
+    const result = await this.dataSource.query(
+      `INSERT INTO consensus_configs (
+        approval_threshold, rejection_threshold, min_votes_required, alpha_smoothing_factor,
+        weight_correct, penalty_false, min_sample_baseline, min_reliability_threshold,
+        consecutive_error_limit, suspension_cooldown_days, provisional_vote_weight,
+        created_by, is_active, effective_from
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, true, NOW())
+      RETURNING *`,
+      [
+        approvalThreshold,
+        rejectionThreshold,
+        minVotesRequired,
+        alphaSmoothingFactor,
+        weightCorrect,
+        penaltyFalse,
+        minSampleBaseline,
+        minReliabilityThreshold,
+        consecutiveErrorLimit,
+        suspensionCooldownDays,
+        provisionalVoteWeight,
+        adminUserId,
+      ],
+    );
+
+    const inserted = result[0];
+    await this.dataSource.query(
+      `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, old_values, new_values, ip_address)
+       VALUES ($1, 'UPDATE_CONSENSUS_CONFIG', 'consensus_configs', $2, $3, $4, $5)`,
+      [
+        adminUserId,
+        String(inserted.id),
+        JSON.stringify(current),
+        JSON.stringify({ ...dto, id: inserted.id }),
+        ip ?? null,
+      ],
+    );
+
+    return {
+      id: inserted.id,
+      approvalThreshold: Number(inserted.approval_threshold),
+      rejectionThreshold: Number(inserted.rejection_threshold),
+      minVotesRequired: Number(inserted.min_votes_required),
+      alphaSmoothingFactor: Number(inserted.alpha_smoothing_factor),
+      weightCorrect: Number(inserted.weight_correct),
+      penaltyFalse: Number(inserted.penalty_false),
+      minSampleBaseline: Number(inserted.min_sample_baseline),
+      minReliabilityThreshold: Number(inserted.min_reliability_threshold),
+      consecutiveErrorLimit: Number(inserted.consecutive_error_limit),
+      suspensionCooldownDays: Number(inserted.suspension_cooldown_days),
+      provisionalVoteWeight: Number(inserted.provisional_vote_weight),
+      createdBy: inserted.created_by,
+      isActive: inserted.is_active,
+      effectiveFrom: inserted.effective_from,
+    };
+  }
+
+  /**
+   * Retrieves route classifications and spatial freshness decay parameters
+   */
+  async getRouteMatrix() {
+    const rows = await this.dataSource.query(
+      `SELECT id, name, road_type, default_lifetime_days, revalidation_threshold_days, spatial_buffer_meters, created_at
+       FROM route_classifications
+       ORDER BY id ASC`,
+    );
+    return rows.map((r: any) => ({
+      id: r.id,
+      name: r.name,
+      roadType: r.road_type,
+      defaultLifetimeDays: r.default_lifetime_days,
+      revalidationThresholdDays: r.revalidation_threshold_days,
+      spatialBufferMeters: r.spatial_buffer_meters,
+      createdAt: r.created_at,
+    }));
+  }
+
+  /**
+   * Updates route classification decay and spatial buffer parameters
+   */
+  async updateRouteMatrix(id: number, dto: UpdateRouteMatrixDto, adminUserId: string, ip?: string) {
+    const rows = await this.dataSource.query(
+      `SELECT * FROM route_classifications WHERE id = $1`,
+      [id],
+    );
+    if (rows.length === 0) {
+      throw new NotFoundException(`Route classification #${id} not found`);
+    }
+    const current = rows[0];
+
+    const roadType = dto.roadType ?? current.road_type;
+    const defaultLifetimeDays = dto.defaultLifetimeDays ?? current.default_lifetime_days;
+    const revalidationThresholdDays = dto.revalidationThresholdDays ?? current.revalidation_threshold_days;
+    const spatialBufferMeters = dto.spatialBufferMeters ?? current.spatial_buffer_meters;
+
+    await this.dataSource.query(
+      `UPDATE route_classifications
+       SET road_type = $1, default_lifetime_days = $2, revalidation_threshold_days = $3, spatial_buffer_meters = $4
+       WHERE id = $5`,
+      [roadType, defaultLifetimeDays, revalidationThresholdDays, spatialBufferMeters, id],
+    );
+
+    await this.dataSource.query(
+      `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, old_values, new_values, ip_address)
+       VALUES ($1, 'UPDATE_ROUTE_MATRIX', 'route_classifications', $2, $3, $4, $5)`,
+      [
+        adminUserId,
+        String(id),
+        JSON.stringify(current),
+        JSON.stringify(dto),
+        ip ?? null,
+      ],
+    );
+
+    return {
+      id,
+      name: current.name,
+      roadType,
+      defaultLifetimeDays,
+      revalidationThresholdDays,
+      spatialBufferMeters,
+      updated: true,
+    };
+  }
 }
+

@@ -19,6 +19,13 @@ describe('ConsensusService', () => {
         rejectionThreshold: -0.5,
         minVotesRequired: 1,
         alphaSmoothingFactor: 0.1,
+        weightCorrect: 1.0,
+        penaltyFalse: 2.0,
+        minSampleBaseline: 5,
+        minReliabilityThreshold: 50.0,
+        consecutiveErrorLimit: 3,
+        suspensionCooldownDays: 7,
+        provisionalVoteWeight: 0.5,
       }),
     } as unknown as Repository<ConsensusConfig>;
     const logRepo = {
@@ -46,7 +53,7 @@ describe('ConsensusService', () => {
     } as unknown as Repository<CandidateReview>;
     const query = jest.fn(async (sql: string) => {
       if (sql.includes('SELECT reliability_score')) {
-        return [{ reliability_score: 1 }];
+        return [{ reliability_score: 100, is_provisional: false, total_correct_votes: 10, total_false_votes: 0 }];
       }
       if (sql.includes('candidate_geo_estimations')) {
         return [{ sign_wkt: 'POINT(106.80 10.85)', traffic_direction: 90 }];
@@ -58,7 +65,7 @@ describe('ConsensusService', () => {
     });
     const wallet = {
       resolveRewardAmount: jest.fn().mockResolvedValue(5),
-      creditUser: jest.fn().mockResolvedValue(undefined),
+      creditUser: jest.fn().mockResolvedValue({ walletId: 'w-1', newBalance: 105, txId: 'tx-1' }),
     } as unknown as WalletService;
     const notifications = {
       createBulk: jest.fn().mockResolvedValue(undefined),
@@ -80,8 +87,8 @@ describe('ConsensusService', () => {
       ['verified-sign-id'],
     );
     expect(query).toHaveBeenCalledWith(
-      expect.stringContaining('UPDATE reviewer_profiles SET reliability_score=$1'),
-      [1, 1, 1, 1, 1, 'reviewer-id'],
+      expect.stringContaining('UPDATE reviewer_profiles SET'),
+      expect.arrayContaining([100, 1, 0, 0, true, false, 'reviewer-id']),
     );
   });
 
@@ -165,5 +172,193 @@ describe('ConsensusService', () => {
       expect.stringContaining('commune_code, road_name, display_address'),
       expect.arrayContaining(['26804', 'Xa lộ Hà Nội', 'Xa lộ Hà Nội, Phường Long Thạnh Mỹ, Thành phố Hồ Chí Minh']),
     );
+  });
+
+  describe('Phase 4: Reviewer Reliability Formula & Governance Tests', () => {
+    let service: ConsensusService;
+    let query: jest.Mock;
+
+    beforeEach(() => {
+      query = jest.fn().mockResolvedValue([]);
+      service = new ConsensusService(
+        {} as any,
+        {} as any,
+        {} as any,
+        {} as any,
+        { query } as unknown as DataSource,
+        {} as any,
+        {} as any,
+      );
+    });
+
+    it('calculates reliability formula (x*C)/(x*C + y*F) * 100 with x=1.0, y=2.0', async () => {
+      // User with 4 correct votes and 2 false votes:
+      // (1*4) / (1*4 + 2*2) * 100 = 4 / 8 * 100 = 50.00%
+      query.mockImplementation(async (sql: string) => {
+        if (sql.includes('SELECT * FROM reviewer_profiles')) {
+          return [
+            {
+              reliability_score: 66.67,
+              total_correct_votes: 3,
+              total_false_votes: 2,
+              consecutive_errors: 0,
+              total_reviews: 5,
+              correct_reviews: 3,
+            },
+          ];
+        }
+        return [];
+      });
+
+      const config: any = {
+        weightCorrect: 1.0,
+        penaltyFalse: 2.0,
+        minSampleBaseline: 5,
+        minReliabilityThreshold: 50.0,
+        consecutiveErrorLimit: 3,
+        suspensionCooldownDays: 7,
+      };
+
+      const result = await service.updateReviewerProfile('u-1', 1, config, 'log-1');
+
+      expect(result.reliability_score).toBe(50.0);
+      expect(result.total_correct_votes).toBe(4);
+      expect(result.total_false_votes).toBe(2);
+      expect(result.is_provisional).toBe(false);
+      expect(result.is_review_suspended).toBe(false);
+    });
+
+    it('sets is_provisional = true when total votes < 5', async () => {
+      query.mockImplementation(async (sql: string) => {
+        if (sql.includes('SELECT * FROM reviewer_profiles')) {
+          return [
+            {
+              reliability_score: 100.0,
+              total_correct_votes: 2,
+              total_false_votes: 0,
+              consecutive_errors: 0,
+              total_reviews: 2,
+              correct_reviews: 2,
+            },
+          ];
+        }
+        return [];
+      });
+
+      const config: any = {
+        weightCorrect: 1.0,
+        penaltyFalse: 2.0,
+        minSampleBaseline: 5,
+        minReliabilityThreshold: 50.0,
+      };
+
+      const result = await service.updateReviewerProfile('u-1', 1, config, 'log-1');
+
+      expect(result.total_correct_votes).toBe(3);
+      expect(result.is_provisional).toBe(true);
+      expect(result.is_review_suspended).toBe(false);
+    });
+
+    it('triggers automated suspension when N >= 5 and reliability < 50%', async () => {
+      // Current: 3 correct, 2 false (total 5).
+      // Misaligned review (aligned = 0):
+      // total_false becomes 3. Total votes = 6.
+      // (1*3) / (1*3 + 2*3) * 100 = 3 / 9 * 100 = 33.33% < 50%
+      query.mockImplementation(async (sql: string) => {
+        if (sql.includes('SELECT * FROM reviewer_profiles')) {
+          return [
+            {
+              reliability_score: 50.0,
+              total_correct_votes: 3,
+              total_false_votes: 2,
+              consecutive_errors: 1,
+              total_reviews: 5,
+              correct_reviews: 3,
+            },
+          ];
+        }
+        return [];
+      });
+
+      const config: any = {
+        weightCorrect: 1.0,
+        penaltyFalse: 2.0,
+        minSampleBaseline: 5,
+        minReliabilityThreshold: 50.0,
+        consecutiveErrorLimit: 5,
+      };
+
+      const result = await service.updateReviewerProfile('u-1', 0, config, 'log-1');
+
+      expect(result.reliability_score).toBe(33.33);
+      expect(result.is_provisional).toBe(false);
+      expect(result.is_review_suspended).toBe(true);
+      expect(result.suspension_reason).toBe('BELOW_MIN_RELIABILITY');
+    });
+
+    it('triggers consecutive error cooldown suspension on >= 3 consecutive errors', async () => {
+      // Current: 2 consecutive errors. Misaligned review -> 3 consecutive errors.
+      query.mockImplementation(async (sql: string) => {
+        if (sql.includes('SELECT * FROM reviewer_profiles')) {
+          return [
+            {
+              reliability_score: 80.0,
+              total_correct_votes: 8,
+              total_false_votes: 1,
+              consecutive_errors: 2,
+              total_reviews: 9,
+              correct_reviews: 8,
+            },
+          ];
+        }
+        return [];
+      });
+
+      const config: any = {
+        weightCorrect: 1.0,
+        penaltyFalse: 2.0,
+        minSampleBaseline: 5,
+        minReliabilityThreshold: 50.0,
+        consecutiveErrorLimit: 3,
+        suspensionCooldownDays: 7,
+      };
+
+      const result = await service.updateReviewerProfile('u-1', 0, config, 'log-1');
+
+      expect(result.consecutive_errors).toBe(3);
+      expect(result.is_review_suspended).toBe(true);
+      expect(result.suspension_reason).toBe('CONSECUTIVE_ERRORS');
+    });
+
+    it('resets consecutive errors on aligned vote', async () => {
+      query.mockImplementation(async (sql: string) => {
+        if (sql.includes('SELECT * FROM reviewer_profiles')) {
+          return [
+            {
+              reliability_score: 80.0,
+              total_correct_votes: 8,
+              total_false_votes: 1,
+              consecutive_errors: 2,
+              total_reviews: 9,
+              correct_reviews: 8,
+            },
+          ];
+        }
+        return [];
+      });
+
+      const config: any = {
+        weightCorrect: 1.0,
+        penaltyFalse: 2.0,
+        minSampleBaseline: 5,
+        minReliabilityThreshold: 50.0,
+        consecutiveErrorLimit: 3,
+      };
+
+      const result = await service.updateReviewerProfile('u-1', 1, config, 'log-1');
+
+      expect(result.consecutive_errors).toBe(0);
+      expect(result.is_review_suspended).toBe(false);
+    });
   });
 });

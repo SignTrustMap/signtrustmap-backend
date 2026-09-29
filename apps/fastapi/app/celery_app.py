@@ -62,6 +62,8 @@ celery_app.conf.update(
         "app.tasks.leaderboard.*": {"queue": "leaderboard"},
         "app.tasks.ai_pipeline.*": {"queue": "ai_pipeline"},
         "app.tasks.catalog_sync.*": {"queue": "default"},
+        "app.tasks.daily_tasks.*": {"queue": "default"},
+        "app.tasks.hazards.*": {"queue": "default"},
     },
     # Reliability — acknowledge late so a crashing worker re-queues the task.
     task_acks_late=True,
@@ -74,6 +76,8 @@ celery_app.conf.update(
         "app.tasks.leaderboard",
         "app.tasks.ai_pipeline",
         "app.tasks.catalog_sync",
+        "app.tasks.daily_tasks",
+        "app.tasks.hazards",
     ],
 )
 
@@ -87,6 +91,12 @@ celery_app.conf.beat_schedule = {
         "schedule": 10.0,
         "options": {"queue": "ai_pipeline"},
     },
+    # Durable handoff from NestJS' PENDING batch submissions to the Celery broker.
+    "dispatch-pending-batch-submissions": {
+        "task": "app.tasks.ai_pipeline.task_dispatch_pending_batch_submissions",
+        "schedule": 15.0,
+        "options": {"queue": "ai_pipeline"},
+    },
     # Flow 8 — scans verified_traffic_signs for staleness every 30 minutes.
     "freshness-monitor-every-30min": {
         "task": "app.tasks.freshness.task_check_freshness_and_spawn_revalidations",
@@ -98,5 +108,17 @@ celery_app.conf.beat_schedule = {
         "task": "app.tasks.leaderboard.task_refresh_community_leaderboard",
         "schedule": crontab(minute="*/15"),
         "options": {"queue": "leaderboard"},
+    },
+    # Midnight UTC rollover — resets unclaimed daily tasks and archives stats.
+    "daily-task-midnight-rollover": {
+        "task": "app.tasks.daily_tasks.task_daily_task_midnight_rollover",
+        "schedule": crontab(minute=0, hour=0),
+        "options": {"queue": "default"},
+    },
+    # Flow 8 & Phase 6 — sweeps expired or dismissed roadside hazards every 5 minutes.
+    "hazard-decay-sweeper-every-5min": {
+        "task": "app.tasks.hazards.task_decay_hazard_events",
+        "schedule": crontab(minute="*/5"),
+        "options": {"queue": "default"},
     },
 }

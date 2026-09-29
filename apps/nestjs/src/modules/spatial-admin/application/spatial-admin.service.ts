@@ -28,9 +28,9 @@ export class SpatialAdminService {
       adminUnit = await this.queryAdminUnitTolerance(longitude, latitude);
     }
 
-    let communeCode: string | null = adminUnit?.commune_code ?? null;
-    let communeName: string | null = adminUnit?.commune_name ?? null;
-    let communeType: string = adminUnit?.commune_type ?? 'WARD';
+    const communeCode: string | null = adminUnit?.commune_code ?? null;
+    const communeName: string | null = adminUnit?.commune_name ?? null;
+    const communeType: string = adminUnit?.commune_type ?? 'WARD';
     let provinceCode: string | null = adminUnit?.province_code ?? null;
     let provinceName: string | null = adminUnit?.province_name ?? null;
     let provinceType: string = adminUnit?.province_type ?? 'MUNICIPALITY';

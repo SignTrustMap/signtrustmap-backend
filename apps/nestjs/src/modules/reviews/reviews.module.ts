@@ -8,7 +8,9 @@ import { TrafficSignType } from '../catalog/traffic-sign-type.entity';
 import { UnverifiedSignCandidate } from '../survey/infrastructure/persistence/unverified-sign-candidate.entity';
 import { ConsensusModule } from '../consensus/consensus.module';
 import { SpatialAdminModule } from '../spatial-admin/spatial-admin.module';
+import { DailyTasksModule } from '../daily-tasks/daily-tasks.module';
 import { ReviewerSkippedCandidate } from './infrastructure/persistence/reviewer-skipped-candidate.entity';
+import { ReviewerProfile } from './infrastructure/persistence/reviewer-profile.entity';
 
 @Module({
   imports: [
@@ -18,9 +20,11 @@ import { ReviewerSkippedCandidate } from './infrastructure/persistence/reviewer-
       ReviewFlag,
       TrafficSignType,
       ReviewerSkippedCandidate,
+      ReviewerProfile,
     ]),
     ConsensusModule,
     SpatialAdminModule,
+    DailyTasksModule,
   ],
   controllers: [ReviewsController],
   providers: [ReviewsService],

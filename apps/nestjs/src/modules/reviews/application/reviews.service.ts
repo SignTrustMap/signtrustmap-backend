@@ -11,6 +11,7 @@ import { VoteDto } from '../presentation/dto/vote.dto';
 import { ConsensusService } from '../../consensus/application/consensus.service';
 import { SpatialAdminService } from '../../spatial-admin/application/spatial-admin.service';
 import { ReviewerSkippedCandidate } from '../infrastructure/persistence/reviewer-skipped-candidate.entity';
+import { DailyTasksService } from '../../daily-tasks/daily-tasks.service';
 
 @Injectable()
 export class ReviewsService implements OnModuleInit {
@@ -21,6 +22,7 @@ export class ReviewsService implements OnModuleInit {
     private readonly consensusService: ConsensusService,
     @Optional() private readonly spatialAdminService?: SpatialAdminService,
     @Optional() @InjectRepository(ReviewerSkippedCandidate) private readonly skippedRepo?: Repository<ReviewerSkippedCandidate>,
+    @Optional() private readonly dailyTasksService?: DailyTasksService,
   ) {}
 
   async onModuleInit() {
@@ -91,6 +93,34 @@ export class ReviewsService implements OnModuleInit {
     if (candidate.submission && candidate.submission.surveyorId === reviewerId) {
       throw new ForbiddenException('You cannot review sign candidates from your own survey submission');
     }
+
+    // Phase 4 Governance Safeguard: check reviewer suspension status
+    try {
+      const rRows: any[] = await (this.candidateRepo.manager as any).query(
+        'SELECT * FROM reviewer_profiles WHERE user_id = $1',
+        [reviewerId],
+      );
+      if (rRows.length > 0) {
+        const profile = rRows[0];
+        if (profile.is_review_suspended) {
+          if (profile.suspended_until && new Date() > new Date(profile.suspended_until)) {
+            // 7-day cooldown expired: automatically lift suspension
+            await (this.candidateRepo.manager as any).query(
+              `UPDATE reviewer_profiles 
+               SET is_review_suspended = FALSE, consecutive_errors = 0, suspended_until = NULL, suspension_reason = NULL, updated_at = NOW() 
+               WHERE user_id = $1`,
+              [reviewerId],
+            );
+          } else {
+            const reason = profile.suspension_reason || 'REVIEW_PRIVILEGES_SUSPENDED';
+            throw new ForbiddenException(`REVIEW_PRIVILEGES_SUSPENDED: ${reason}`);
+          }
+        }
+      }
+    } catch (e: any) {
+      if (e instanceof ForbiddenException) throw e;
+    }
+
     if (candidate.status !== CandidateStatus.PENDING_REVIEW && candidate.status !== CandidateStatus.IN_CONSENSUS) throw new BadRequestException('Candidate ' + candidateId + ' is not pending review (status=' + candidate.status + ')');
     const existing = await this.reviewRepo.findOne({ where: { candidateId, reviewerId } });
     if (existing) throw new ConflictException('You have already voted on this candidate');
@@ -115,6 +145,12 @@ export class ReviewsService implements OnModuleInit {
     // trigger consensus evaluation (fire-and-forget style but await to surface log if needed)
     let consensusLog = null;
     try { consensusLog = await this.consensusService.evaluate(candidateId); } catch (e) { /* consensus failure must not rollback the vote */ }
+
+    // Advance daily task progress for review contribution
+    if (this.dailyTasksService) {
+      this.dailyTasksService.recordProgress(reviewerId, 'REVIEW', 1).catch(() => {});
+    }
+
     return { review: saved, consensusLog };
   }
 
@@ -227,19 +263,47 @@ export class ReviewsService implements OnModuleInit {
     let profile: any = null;
     try {
       const rows: any[] = await (this.candidateRepo.manager as any).query(
-        'SELECT * FROM reviewer_profiles WHERE user_id = $1', [reviewerId]);
+        'SELECT * FROM reviewer_profiles WHERE user_id = $1',
+        [reviewerId],
+      );
       if (rows.length) profile = rows[0];
     } catch {}
+
+    const totalCorrect = profile ? Number(profile.total_correct_votes ?? profile.correct_reviews ?? 0) : 0;
+    const totalFalse = profile ? Number(profile.total_false_votes ?? 0) : 0;
+    const totalVotes = totalCorrect + totalFalse;
+    const isProvisional = profile ? Boolean(profile.is_provisional ?? (totalVotes < 5)) : true;
+    const isSuspended = profile ? Boolean(profile.is_review_suspended) : false;
+    const consecutiveErrors = profile ? Number(profile.consecutive_errors ?? 0) : 0;
+
+    let reliabilityScore = 100.0;
+    if (profile && profile.reliability_score != null) {
+      const raw = Number(profile.reliability_score);
+      reliabilityScore = raw <= 1.0 && totalVotes > 0 ? Number((raw * 100).toFixed(2)) : Number(raw.toFixed(2));
+    }
+
     const totalReviews = await this.reviewRepo.count({ where: { reviewerId } as any }).catch(() => 0);
     const approved = await this.reviewRepo.count({ where: { reviewerId, vote: 1 } as any }).catch(() => 0);
     const rejected = await this.reviewRepo.count({ where: { reviewerId, vote: -1 } as any }).catch(() => 0);
     let recentActivity: any = [];
     try {
-      recentActivity = await this.reviewRepo.find({ where: { reviewerId } as any, order: { reviewedAt: 'DESC' as any }, take: 5 });
+      recentActivity = await this.reviewRepo.find({
+        where: { reviewerId } as any,
+        order: { reviewedAt: 'DESC' as any },
+        take: 5,
+      });
     } catch {}
+
     return {
       reviewerId,
-      reliabilityScore: profile ? Number(profile.reliability_score ?? 0.5) : 0.5,
+      reliabilityScore,
+      totalCorrect,
+      totalFalse,
+      isProvisional,
+      isSuspended,
+      consecutiveErrors,
+      suspendedUntil: profile?.suspended_until ?? null,
+      suspensionReason: profile?.suspension_reason ?? null,
       totalReviews,
       approved,
       rejected,

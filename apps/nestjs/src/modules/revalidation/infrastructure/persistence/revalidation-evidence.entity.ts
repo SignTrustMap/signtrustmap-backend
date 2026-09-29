@@ -26,6 +26,10 @@ export class RevalidationEvidence {
   @Column({ name: 'media_url', type: 'varchar', length: 500 })
   mediaUrl: string;
 
+  @Column({ name: 'evidence_type', type: 'varchar', length: 32, default: 'STILL_ACTIVE' })
+  evidenceType: string;
+
   @CreateDateColumn({ name: 'submitted_at', type: 'timestamptz' })
   submittedAt: Date;
 }
+

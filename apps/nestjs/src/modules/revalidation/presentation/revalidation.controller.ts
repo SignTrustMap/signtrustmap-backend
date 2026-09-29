@@ -29,11 +29,27 @@ export class RevalidationController {
     return this.svc.listTasksInBbox({ minLat: min_lat, minLon: min_lon, maxLat: max_lat, maxLon: max_lon, status, priority, page: Number.isNaN(p) ? 1 : p, pageSize: Number.isNaN(ps) ? 20 : ps });
   }
 
-  @ApiOperation({ summary: 'List revalidation tasks', description: 'Paginated list of verification tasks filterable by status and priority' })
+  @ApiOperation({ summary: 'List revalidation tasks', description: 'Paginated list of verification tasks filterable by status, priority, or spatial radius' })
   @Get('revalidation/tasks')
-  listTasks(@Query('page') page?: string, @Query('pageSize') ps?: string, @Query('status') status?: string, @Query('sort') sort?: string) {
+  listTasks(
+    @Query('page') page?: string,
+    @Query('pageSize') ps?: string,
+    @Query('status') status?: string,
+    @Query('sort') sort?: string,
+    @Query('lat') lat?: string,
+    @Query('lon') lon?: string,
+    @Query('radiusMeters') radiusMeters?: string,
+  ) {
     const p = page ? parseInt(page, 10) : 1, n = ps ? parseInt(ps, 10) : 20;
-    return this.svc.listTasks(Number.isNaN(p) ? 1 : p, Number.isNaN(n) ? 20 : n, status, sort);
+    const parsedLat = lat != null ? parseFloat(lat) : undefined;
+    const parsedLon = lon != null ? parseFloat(lon) : undefined;
+    const parsedRadius = radiusMeters != null ? parseFloat(radiusMeters) : 5000;
+    const spatial =
+      parsedLat != null && parsedLon != null && !Number.isNaN(parsedLat) && !Number.isNaN(parsedLon)
+        ? { lat: parsedLat, lon: parsedLon, radiusMeters: Number.isNaN(parsedRadius) ? 5000 : parsedRadius }
+        : undefined;
+
+    return this.svc.listTasks(Number.isNaN(p) ? 1 : p, Number.isNaN(n) ? 20 : n, status, sort, spatial);
   }
 
   @ApiOperation({ summary: 'Get revalidation task detail', description: 'Fetch task coordinates, target sign, and current verification progress' })

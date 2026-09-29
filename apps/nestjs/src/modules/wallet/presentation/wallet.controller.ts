@@ -75,8 +75,34 @@ export class WalletController {
   @UseGuards(InternalTokenGuard)
   @ApiOperation({ summary: 'Internal deduct credits', description: 'Service-to-service endpoint to deduct credits (e.g. navigation fee)' })
   @Post('internal/deduct')
-  async internalDeduct(@Body() body: { userId: string; amount: number; referenceType?: string; referenceId?: string; description?: string }) {
+  async internalDeduct(@Body() body: { userId: string; amount: number; referenceType?: string; referenceId?: string; description?: string; idempotencyKey?: string }) {
     if (!body.userId || !body.amount) throw new BadRequestException('userId and amount are required');
-    return this.walletService.deductUser(body.userId, Math.abs(Number(body.amount)), TransactionType.NAVIGATION_FEE, body.referenceType ?? 'navigation_session', body.referenceId ?? null, body.description ?? 'Navigation session fee');
+    return this.walletService.deductUser(
+      body.userId,
+      Math.abs(Number(body.amount)),
+      TransactionType.NAVIGATION_FEE,
+      body.referenceType ?? 'navigation_session',
+      body.referenceId ?? null,
+      body.description ?? 'Navigation session fee',
+      { idempotencyKey: body.idempotencyKey },
+    );
+  }
+
+  @Public()
+  @UseGuards(InternalTokenGuard)
+  @ApiOperation({ summary: 'Internal credit rewards', description: 'Service-to-service endpoint to credit user rewards' })
+  @Post('internal/credit')
+  async internalCredit(@Body() body: { userId: string; amount: number; type?: TransactionType; referenceType?: string; referenceId?: string; description?: string; idempotencyKey?: string }) {
+    if (!body.userId || !body.amount) throw new BadRequestException('userId and amount are required');
+    return this.walletService.creditUser(
+      body.userId,
+      Math.abs(Number(body.amount)),
+      body.type ?? TransactionType.SURVEY_REWARD,
+      body.referenceType ?? null,
+      body.referenceId ?? null,
+      body.description ?? 'Reward credit',
+      { idempotencyKey: body.idempotencyKey },
+    );
   }
 }
+

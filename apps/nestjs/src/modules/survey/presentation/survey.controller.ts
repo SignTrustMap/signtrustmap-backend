@@ -13,12 +13,42 @@ import { CreateSubmissionDto } from './dto/create-submission.dto';
 import { UpdateSubmissionDto } from './dto/update-submission.dto';
 import { UpdateSubmissionStatusDto } from './dto/update-submission-status.dto';
 import { CreateFrameBatchSessionDto } from './dto/create-frame-batch.dto';
+import { CreateBatchSurveyDto } from './dto/create-batch-survey.dto';
+import { BatchSurveyService } from '../application/batch-survey.service';
 
 @ApiTags('Survey Submissions')
 @Roles('SURVEYOR', 'ADMIN')
 @Controller('submissions')
 export class SurveyController {
-  constructor(private readonly surveyService: SurveyService) {}
+  constructor(
+    private readonly surveyService: SurveyService,
+    private readonly batchService: BatchSurveyService,
+  ) {}
+
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Create multi-image batch survey', description: 'Submit an asynchronous batch of multiple geo-tagged images for candidate extraction' })
+  @Post('batch')
+  async createBatch(@CurrentUser() user: any, @Body() dto: CreateBatchSurveyDto) {
+    return this.batchService.createBatch(user.id, dto);
+  }
+
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get batch survey status', description: 'Retrieve processing progress and candidate-gated reward status of a batch submission' })
+  @Get('batch/:batchId')
+  async getBatch(@CurrentUser() user: any, @Param('batchId', ParseUUIDPipe) batchId: string) {
+    return this.batchService.getBatch(user.id, batchId);
+  }
+
+  @Public()
+  @UseGuards(InternalTokenGuard)
+  @ApiOperation({ summary: 'Internal complete batch survey processing', description: 'Worker callback to report batch candidate extraction and trigger reward settlement' })
+  @Post('internal/batch/:batchId/complete')
+  async completeBatch(
+    @Param('batchId', ParseUUIDPipe) batchId: string,
+    @Body() body: { extractedCandidates: number; totalProcessed?: number; note?: string },
+  ) {
+    return this.batchService.completeBatch(batchId, body);
+  }
 
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Create frame batch survey session', description: 'Submit reduced FPS sampled frames with GPS telemetry and camera calibration metadata in a single session' })
