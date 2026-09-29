@@ -3,7 +3,12 @@
   "sourceRoot": "src",
   "compilerOptions": {
     "deleteOutDir": true,
-    "assets": [],
+    "assets": [
+      {
+        "include": "database/migrations/*.sql",
+        "outDir": "dist"
+      }
+    ],
     "watchAssets": false,
     "plugins": ["@nestjs/swagger"]
   }
