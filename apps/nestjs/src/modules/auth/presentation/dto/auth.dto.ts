@@ -1,4 +1,4 @@
-import { IsEmail, IsString, MinLength, IsOptional, MaxLength } from 'class-validator';
+import { IsEmail, IsString, MinLength, IsOptional, MaxLength, IsIn } from 'class-validator';
 
 export class RegisterDto {
   @IsEmail()
@@ -16,6 +16,13 @@ export class RegisterDto {
   @IsString()
   @MaxLength(20)
   phone?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['SURVEYOR', 'DRIVER', 'REVIEWER', 'surveyor', 'driver', 'reviewer'], {
+    message: 'role must be one of SURVEYOR, DRIVER, REVIEWER',
+  })
+  role?: string;
 }
 
 export class LoginDto {

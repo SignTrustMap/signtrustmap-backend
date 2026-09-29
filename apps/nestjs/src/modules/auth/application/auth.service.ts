@@ -39,14 +39,30 @@ export class AuthService {
     const existing = await this.userRepo.findOne({ where: { email: dto.email } });
     if (existing) throw new ConflictException('Email already registered');
     const passwordHash = await bcrypt.hash(dto.password, 10);
+    const targetRoleCode = (dto.role ? dto.role.toUpperCase() : 'SURVEYOR');
+    const ALLOWED_ROLES = ['SURVEYOR', 'DRIVER', 'REVIEWER'];
+    if (!ALLOWED_ROLES.includes(targetRoleCode)) {
+      throw new BadRequestException(`Role ${dto.role} is not allowed for self-registration`);
+    }
+
     return this.dataSource.transaction(async (manager) => {
       const user = manager.create(User, { email: dto.email, passwordHash, fullName: dto.fullName, phone: dto.phone || null, status: UserStatus.ACTIVE });
       const savedUser = await manager.save(user);
-      const defaultRole = await manager.findOne(Role, { where: { code: 'SURVEYOR' } });
-      if (defaultRole) await manager.save(manager.create(UserRole, { userId: savedUser.id, roleId: defaultRole.id, isActive: true }));
+      const role = await manager.findOne(Role, { where: { code: targetRoleCode } });
+      if (role) await manager.save(manager.create(UserRole, { userId: savedUser.id, roleId: role.id, isActive: true }));
       await manager.save(manager.create(Wallet, { userId: savedUser.id, balance: '0' }));
-      const roles = defaultRole ? [defaultRole.code] : [];
-      return { user: { id: savedUser.id, email: savedUser.email, fullName: savedUser.fullName }, accessToken: this.signToken(savedUser, roles) };
+
+      // Initialize corresponding role profile
+      if (targetRoleCode === 'DRIVER') {
+        await manager.query(`INSERT INTO driver_profiles (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [savedUser.id]);
+      } else if (targetRoleCode === 'REVIEWER') {
+        await manager.query(`INSERT INTO reviewer_profiles (user_id, reliability_score) VALUES ($1, 0.5) ON CONFLICT (user_id) DO NOTHING`, [savedUser.id]);
+      } else if (targetRoleCode === 'SURVEYOR') {
+        await manager.query(`INSERT INTO surveyor_profiles (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [savedUser.id]);
+      }
+
+      const roles = role ? [role.code] : [];
+      return { user: { id: savedUser.id, email: savedUser.email, fullName: savedUser.fullName, roles }, accessToken: this.signToken(savedUser, roles) };
     });
   }
 
