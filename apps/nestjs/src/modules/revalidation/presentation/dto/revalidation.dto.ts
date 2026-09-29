@@ -1,10 +1,11 @@
-import { IsString, IsOptional, IsNumber, Min, Max, IsInt, IsISO8601 } from 'class-validator';
+import { IsString, IsOptional, IsNumber, Min, Max, IsInt, IsISO8601, IsIn } from 'class-validator';
 export class SubmitEvidenceDto {
   // One of mediaUrl (already uploaded) OR file upload via multipart; DTO keeps non-file fields
   @IsOptional() @IsString() mediaUrl?: string;
   @IsNumber() @Min(-90) @Max(90) latitude: number;
   @IsNumber() @Min(-180) @Max(180) longitude: number;
   @IsOptional() @IsISO8601() capturedAt?: string;
+  @IsOptional() @IsIn(['STILL_ACTIVE', 'REMOVED']) evidenceType?: string;
 }
 export class EvidenceVoteDto {
   @IsString() decision: string;

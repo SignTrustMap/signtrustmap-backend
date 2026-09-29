@@ -374,6 +374,35 @@ def task_dispatch_queued_submissions(limit: int = 100) -> dict[str, int]:
     return {"queued": len(media_by_submission), "dispatched": dispatched}
 
 
+@shared_task(name="app.tasks.ai_pipeline.task_dispatch_pending_batch_submissions")
+def task_dispatch_pending_batch_submissions(limit: int = 50) -> dict[str, int]:
+    """Scan PENDING batch_submissions and dispatch task_process_batch_survey."""
+    query = text(
+        "SELECT id FROM batch_submissions WHERE status = 'PENDING' "
+        "ORDER BY created_at LIMIT :limit"
+    )
+    with get_sync_db() as db:
+        rows = db.execute(query, {"limit": limit}).mappings().all()
+
+    dispatched = 0
+    broker = _broker_client()
+    for row in rows:
+        bid = str(row["id"])
+        key = f"stm:batch-dispatch:{bid}"
+        if not broker.set(key, "1", nx=True, ex=_DISPATCH_LOCK_SECONDS):
+            continue
+        try:
+            task_process_batch_survey.apply_async(
+                kwargs={"batch_id": bid},
+                queue="ai_pipeline",
+            )
+            dispatched += 1
+        except Exception:
+            broker.delete(key)
+            raise
+    return {"pending": len(rows), "dispatched": dispatched}
+
+
 def _call_inference_engine(submission_id: str, media_objects: list[dict[str, str]]) -> dict:
     url = f"{settings.AI_INFERENCE_URL.rstrip('/')}/api/v1/inference/submissions/{submission_id}"
     timeout = httpx.Timeout(settings.AI_INFERENCE_TIMEOUT_SECONDS, connect=10.0)
@@ -415,6 +444,30 @@ def _notify_no_signs(submission_id: str, note: str) -> None:
         response = client.patch(
             url,
             json={"status": "NO_SIGN_DETECTED", "note": note},
+            headers={"X-Internal-Token": settings.INTERNAL_API_TOKEN},
+        )
+        response.raise_for_status()
+
+
+def _complete_batch_submission(
+    batch_id: str,
+    extracted_candidates: int,
+    total_processed: int,
+    note: str = "",
+) -> None:
+    """Close the batch submission workflow through NestJS so candidate-gated rewards run."""
+    url = (
+        f"{settings.NESTJS_INTERNAL_URL.rstrip('/')}"
+        f"/api/v1/submissions/internal/batch/{batch_id}/complete"
+    )
+    with httpx.Client(timeout=15.0) as client:
+        response = client.post(
+            url,
+            json={
+                "extractedCandidates": extracted_candidates,
+                "totalProcessed": total_processed,
+                "note": note,
+            },
             headers={"X-Internal-Token": settings.INTERNAL_API_TOKEN},
         )
         response.raise_for_status()
@@ -728,3 +781,119 @@ def task_process_submission_pipeline(
         _mark_failed(submission_id, f"AI inference failed after retries: {exc}")
         _clear_dispatch_lock(submission_id)
         raise
+
+
+@shared_task(
+    name="app.tasks.ai_pipeline.task_process_batch_survey",
+    bind=True,
+    max_retries=2,
+    default_retry_delay=60,
+    acks_late=True,
+)
+def task_process_batch_survey(
+    self,
+    batch_id: str,
+    images: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Run one durable batch survey job through AI inference and candidate-gated payout."""
+    lock_key = f"stm:batch-dispatch:{batch_id}"
+    try:
+        with get_sync_db() as db:
+            row = db.execute(
+                text(
+                    "SELECT id, user_id, status, total_images, metadata "
+                    "FROM batch_submissions WHERE id = :bid FOR UPDATE"
+                ),
+                {"bid": batch_id},
+            ).mappings().first()
+
+        if row is None:
+            return {"batch_id": batch_id, "skipped": True, "reason": "not_found"}
+
+        status = str(row["status"])
+        if status == "COMPLETED":
+            return {"batch_id": batch_id, "skipped": True, "reason": "already_completed"}
+        if status == "FAILED" and self.request.retries == 0:
+            return {"batch_id": batch_id, "skipped": True, "reason": "already_failed"}
+
+        with get_sync_db() as db:
+            db.execute(
+                text("UPDATE batch_submissions SET status = 'PROCESSING', updated_at = NOW() WHERE id = :bid"),
+                {"bid": batch_id},
+            )
+            db.commit()
+
+        raw_meta = row.get("metadata")
+        if isinstance(raw_meta, str):
+            try:
+                metadata = json.loads(raw_meta)
+            except Exception:
+                metadata = {}
+        elif isinstance(raw_meta, dict):
+            metadata = raw_meta
+        else:
+            metadata = {}
+
+        img_list = images if images is not None else metadata.get("images", [])
+        total_extracted = 0
+        processed_count = 0
+
+        for idx, img in enumerate(img_list):
+            storage_key = img.get("storageKey") or img.get("fileUrl") or img.get("url")
+            if not storage_key:
+                continue
+
+            if "signs" in img and isinstance(img["signs"], list):
+                total_extracted += len(img["signs"])
+                processed_count += 1
+                continue
+
+            try:
+                bucket, object_key = _parse_storage_key(storage_key)
+                media_objects = [{
+                    "media_type": img.get("mediaType", "IMAGE"),
+                    "bucket": bucket,
+                    "object_key": object_key,
+                }]
+                res = _call_inference_engine(f"{batch_id}_{idx}", media_objects)
+                signs = res.get("signs", [])
+                total_extracted += len(signs)
+            except Exception as exc:
+                logger.warning("[ai] batch %s image %d inference error: %s", batch_id, idx, exc)
+
+            processed_count += 1
+
+        _complete_batch_submission(
+            batch_id=batch_id,
+            extracted_candidates=total_extracted,
+            total_processed=processed_count,
+            note=f"Batch processed {processed_count} image(s); extracted {total_extracted} candidate(s).",
+        )
+
+        try:
+            _broker_client().delete(lock_key)
+        except Exception:
+            pass
+
+        return {
+            "batch_id": batch_id,
+            "status": "COMPLETED",
+            "processed_images": processed_count,
+            "extracted_candidates": total_extracted,
+        }
+    except Exception as exc:
+        logger.exception("[ai] batch %s processing failed: %s", batch_id, exc)
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=exc)
+        with get_sync_db() as db:
+            db.execute(
+                text("UPDATE batch_submissions SET status = 'FAILED', updated_at = NOW() WHERE id = :bid"),
+                {"bid": batch_id},
+            )
+            db.commit()
+        try:
+            _broker_client().delete(lock_key)
+        except Exception:
+            pass
+        raise
+

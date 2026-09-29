@@ -1,11 +1,26 @@
-import { BadRequestException, Body, Controller, Get, Logger, Post, Put } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Logger,
+  Param,
+  Post,
+  Put,
+  Query,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { DataSource } from 'typeorm';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { Public } from '../../../common/decorators/public.decorator';
+import { Roles } from '../../../common/decorators/roles.decorator';
 import { RoutePreviewService } from '../application/route-preview.service';
+import { NavigationCreditGateService } from '../application/navigation-credit-gate.service';
 import { RouteDirectionsRequestDto, UpdateNavigationPreferencesDto } from './dto/routing.dto';
 import { NavigationResponseDto } from './dto/navigation-response.dto';
+import { InitiateNavigationSessionDto } from './dto/initiate-navigation-session.dto';
+import { CreateAlertProfileDto } from './dto/create-alert-profile.dto';
 
 @ApiTags('Navigation')
 @Controller('navigation')
@@ -15,6 +30,7 @@ export class NavigationController {
   constructor(
     private readonly routePreview: RoutePreviewService,
     private readonly dataSource: DataSource,
+    private readonly creditGate: NavigationCreditGateService,
   ) {}
 
   @Public()
@@ -96,5 +112,108 @@ export class NavigationController {
       enabledCategoryCodes: enabledCategories,
       updated: true,
     };
+  }
+
+  @ApiBearerAuth()
+  @Roles('DRIVER', 'SURVEYOR', 'REVIEWER', 'STAFF', 'ADMIN')
+  @Post('sessions/initiate')
+  @ApiOperation({
+    summary: 'Initiate navigation session with credit gate',
+    description: 'Atomically deducts turn-by-turn navigation fee (5 credits) and initiates active session',
+  })
+  async initiateSession(
+    @CurrentUser() user: any,
+    @Body() dto: InitiateNavigationSessionDto,
+  ) {
+    const userId = user?.id ?? user?.sub;
+    return this.creditGate.initiateSession(userId, dto);
+  }
+
+  @ApiBearerAuth()
+  @Roles('DRIVER', 'SURVEYOR', 'REVIEWER', 'STAFF', 'ADMIN')
+  @Post('sessions/:id/end')
+  @ApiOperation({
+    summary: 'Conclude active navigation session',
+    description: 'Marks navigation session as completed',
+  })
+  async endSession(
+    @CurrentUser() user: any,
+    @Param('id') sessionId: string,
+  ) {
+    const userId = user?.id ?? user?.sub;
+    return this.creditGate.endSession(userId, sessionId);
+  }
+
+  @ApiBearerAuth()
+  @Roles('DRIVER', 'SURVEYOR', 'REVIEWER', 'STAFF', 'ADMIN')
+  @Get('sessions')
+  @ApiOperation({
+    summary: 'List user navigation sessions',
+    description: 'Paginated list of previous and current navigation sessions',
+  })
+  async listSessions(
+    @CurrentUser() user: any,
+    @Query('page') page?: number,
+    @Query('pageSize') pageSize?: number,
+  ) {
+    const userId = user?.id ?? user?.sub;
+    return this.creditGate.listSessions(userId, Number(page) || 1, Number(pageSize) || 20);
+  }
+
+  @ApiBearerAuth()
+  @Roles('DRIVER', 'SURVEYOR', 'REVIEWER', 'STAFF', 'ADMIN')
+  @Post('profiles')
+  @ApiOperation({
+    summary: 'Create custom alert profile',
+    description: 'Creates a custom alert profile and deducts CUSTOM_PROFILE_SPEND fee (20 credits)',
+  })
+  async createProfile(
+    @CurrentUser() user: any,
+    @Body() dto: CreateAlertProfileDto,
+  ) {
+    const userId = user?.id ?? user?.sub;
+    return this.creditGate.createAlertProfile(userId, dto);
+  }
+
+  @ApiBearerAuth()
+  @Roles('DRIVER', 'SURVEYOR', 'REVIEWER', 'STAFF', 'ADMIN')
+  @Get('profiles')
+  @ApiOperation({
+    summary: 'List custom alert profiles',
+    description: 'Returns all saved custom alert profiles for current driver',
+  })
+  async listProfiles(@CurrentUser() user: any) {
+    const userId = user?.id ?? user?.sub;
+    return this.creditGate.listAlertProfiles(userId);
+  }
+
+  @ApiBearerAuth()
+  @Roles('DRIVER', 'SURVEYOR', 'REVIEWER', 'STAFF', 'ADMIN')
+  @Put('profiles/:id/activate')
+  @ApiOperation({
+    summary: 'Activate a custom alert profile',
+    description: 'Sets specified profile active and deactivates others',
+  })
+  async activateProfile(
+    @CurrentUser() user: any,
+    @Param('id') profileId: string,
+  ) {
+    const userId = user?.id ?? user?.sub;
+    return this.creditGate.activateAlertProfile(userId, profileId);
+  }
+
+  @ApiBearerAuth()
+  @Roles('DRIVER', 'SURVEYOR', 'REVIEWER', 'STAFF', 'ADMIN')
+  @Delete('profiles/:id')
+  @ApiOperation({
+    summary: 'Delete a custom alert profile',
+    description: 'Permanently remove a custom alert profile by identifier',
+  })
+  async deleteProfile(
+    @CurrentUser() user: any,
+    @Param('id') profileId: string,
+  ) {
+    const userId = user?.id ?? user?.sub;
+    return this.creditGate.deleteAlertProfile(userId, profileId);
   }
 }

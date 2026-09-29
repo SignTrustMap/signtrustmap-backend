@@ -4,14 +4,18 @@ import { CameraProfileController } from './presentation/camera-profile.controlle
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { SurveyService } from './application/survey.service';
+import { BatchSurveyService } from './application/batch-survey.service';
 import { SubmissionMediaFile } from './infrastructure/persistence/submission-media-file.entity';
 import { SurveySubmission } from './infrastructure/persistence/survey-submission.entity';
+import { BatchSubmission } from './infrastructure/persistence/batch-submission.entity';
 import { UnverifiedSignCandidate } from './infrastructure/persistence/unverified-sign-candidate.entity';
 import { UploadChunk } from './infrastructure/persistence/upload-chunk.entity';
 import { UploadSession } from './infrastructure/persistence/upload-session.entity';
 import { SurveyController } from './presentation/survey.controller';
 import { WalletModule } from '../wallet/wallet.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { RewardsModule } from '../rewards/rewards.module';
+import { DailyTasksModule } from '../daily-tasks/daily-tasks.module';
 
 @Module({
   imports: [
@@ -19,15 +23,18 @@ import { NotificationsModule } from '../notifications/notifications.module';
       UploadSession,
       UploadChunk,
       SurveySubmission,
+      BatchSubmission,
       SubmissionMediaFile,
       UnverifiedSignCandidate,
       CameraCalibrationProfile,
     ]),
     WalletModule,
     NotificationsModule,
+    RewardsModule,
+    DailyTasksModule,
   ],
   controllers: [SurveyController, CameraProfileController],
-  providers: [SurveyService, CameraProfileService],
-  exports: [SurveyService, CameraProfileService],
+  providers: [SurveyService, BatchSurveyService, CameraProfileService],
+  exports: [SurveyService, BatchSurveyService, CameraProfileService],
 })
 export class SurveyModule {}

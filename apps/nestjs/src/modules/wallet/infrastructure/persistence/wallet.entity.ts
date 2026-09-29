@@ -12,6 +12,9 @@ export class Wallet {
   @Column({ type: 'bigint', default: 0 })
   balance: string; // pg bigint maps to string in JS to avoid overflow; we coerce to number where safe
 
+  @Column({ name: 'is_frozen', type: 'boolean', default: false })
+  isFrozen: boolean;
+
   @UpdateDateColumn({ name: 'updated_at', type: 'timestamptz' })
   updatedAt: Date;
 

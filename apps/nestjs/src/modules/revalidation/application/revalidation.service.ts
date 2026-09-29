@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, ForbiddenException, HttpException, HttpStatus, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ForbiddenException, HttpException, HttpStatus, Logger, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, In } from 'typeorm';
 import { RevalidationDecision, RevalDecision } from '../infrastructure/persistence/revalidation-decision.entity';
@@ -9,6 +9,7 @@ import { MinioStorageService } from '../../../integrations/minio/minio-storage.s
 import { WalletService } from '../../wallet/application/wallet.service';
 import { TransactionType } from '../../wallet/infrastructure/persistence/credit-transaction.entity';
 import { NotificationsService } from '../../notifications/notifications.service';
+import { DailyTasksService } from '../../daily-tasks/daily-tasks.service';
 import { randomUUID } from 'crypto';
 
 const DEFAULT_MIN_VOTES_REQUIRED = 3;
@@ -54,28 +55,127 @@ export class RevalidationService {
     private readonly walletService: WalletService,
     private readonly notificationsService: NotificationsService,
     @InjectRepository(FreshnessRule) private readonly freshnessRules?: Repository<FreshnessRule>,
+    @Optional() private readonly dailyTasksService?: DailyTasksService,
   ) {}
-  async listTasks(page = 1, pageSize = 20, status?: string, sort?: string) {
-    const p = Math.max(1, page), ps = Math.min(Math.max(1, pageSize), 100);
-    const where: any = {}; if (status) where.status = status;
-    const order: any = sort === 'reward' ? { rewardCredits: 'DESC' } : { createdAt: 'DESC' };
+  async listTasks(
+    page = 1,
+    pageSize = 20,
+    status?: string,
+    sort?: string,
+    spatial?: { lat: number; lon: number; radiusMeters?: number },
+  ) {
+    const p = Math.max(1, page),
+      ps = Math.min(Math.max(1, pageSize), 100);
+
+    if (spatial && spatial.lat != null && spatial.lon != null) {
+      const radius = spatial.radiusMeters ?? 5000;
+      const conditions: string[] = ['vts.location IS NOT NULL'];
+      const params: any[] = [spatial.lon, spatial.lat, radius];
+      conditions.push(
+        `ST_DWithin(vts.location::geography, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, $3)`,
+      );
+
+      if (status) {
+        conditions.push(`rt.status = $${params.length + 1}::task_status`);
+        params.push(status);
+      }
+
+      const whereClause = 'WHERE ' + conditions.join(' AND ');
+      const countRows: any[] = await this.dataSource.query(
+        `SELECT COUNT(*)::int AS cnt 
+         FROM revalidation_tasks rt 
+         JOIN verified_traffic_signs vts ON vts.id = rt.verified_sign_id 
+         ${whereClause}`,
+        params,
+      );
+      const total = countRows[0]?.cnt ?? 0;
+
+      const orderClause =
+        sort === 'reward'
+          ? 'rt.reward_credits DESC'
+          : sort === 'urgency'
+            ? 'rt.urgency DESC'
+            : 'distance_meters ASC';
+
+      const rows: any[] = await this.dataSource.query(
+        `SELECT rt.id,
+                rt.verified_sign_id AS "signId",
+                rt.reward_credits AS bounty,
+                rt.reward_credits AS "rewardCredits",
+                rt.urgency,
+                rt.priority,
+                rt.status,
+                rt.expired_at AS "expiresAt",
+                rt.created_at AS "createdAt",
+                ST_Y(vts.location::geometry) AS lat,
+                ST_X(vts.location::geometry) AS lon,
+                ST_Distance(vts.location::geography, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography) AS distance_meters
+         FROM revalidation_tasks rt
+         JOIN verified_traffic_signs vts ON vts.id = rt.verified_sign_id
+         ${whereClause}
+         ORDER BY ${orderClause}
+         LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+        [...params, ps, (p - 1) * ps],
+      );
+
+      const items = rows.map((r) => ({
+        id: r.id,
+        signId: r.signId,
+        location: { lat: Number(r.lat), lon: Number(r.lon) },
+        urgency: Number(r.urgency ?? 0.0),
+        bounty: Number(r.bounty ?? 10),
+        priority: r.priority,
+        status: r.status,
+        expiresAt: r.expiresAt,
+        distanceMeters: Math.round(Number(r.distance_meters ?? 0)),
+      }));
+
+      return { items, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
+    }
+
+    const where: any = {};
+    if (status) where.status = status;
+    const order: any =
+      sort === 'reward'
+        ? { rewardCredits: 'DESC' }
+        : sort === 'urgency'
+          ? { urgency: 'DESC' }
+          : { createdAt: 'DESC' };
     const [items, total] = await this.tasks.findAndCount({ where, order, skip: (p - 1) * ps, take: ps });
     return { items, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
   }
 
-  async listTasksInBbox(q: { minLat: number; minLon: number; maxLat: number; maxLon: number; status?: string; priority?: string; page?: number; pageSize?: number }) {
-    const p = Math.max(1, q.page ?? 1), ps = Math.min(Math.max(1, q.pageSize ?? 20), 100);
+  async listTasksInBbox(q: {
+    minLat: number;
+    minLon: number;
+    maxLat: number;
+    maxLon: number;
+    status?: string;
+    priority?: string;
+    page?: number;
+    pageSize?: number;
+  }) {
+    const p = Math.max(1, q.page ?? 1),
+      ps = Math.min(Math.max(1, q.pageSize ?? 20), 100);
     const conditions: string[] = ['vts.location IS NOT NULL'];
     const params: any[] = [];
     let idx = 1;
     // bbox via ST_Within on verified_traffic_signs.location
     conditions.push(`ST_Within(vts.location, ST_MakeEnvelope($${idx++}, $${idx++}, $${idx++}, $${idx++}, 4326))`);
     params.push(q.minLon, q.minLat, q.maxLon, q.maxLat);
-    if (q.status) { conditions.push(`rt.status = $${idx++}::task_status`); params.push(q.status); }
-    if (q.priority) { conditions.push(`rt.priority = $${idx++}::task_priority`); params.push(q.priority); }
+    if (q.status) {
+      conditions.push(`rt.status = $${idx++}::task_status`);
+      params.push(q.status);
+    }
+    if (q.priority) {
+      conditions.push(`rt.priority = $${idx++}::task_priority`);
+      params.push(q.priority);
+    }
     const whereClause = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
     const countRows: any[] = await this.dataSource.query(
-      `SELECT COUNT(*)::int AS cnt FROM revalidation_tasks rt JOIN verified_traffic_signs vts ON vts.id = rt.verified_sign_id ${whereClause}`, params);
+      `SELECT COUNT(*)::int AS cnt FROM revalidation_tasks rt JOIN verified_traffic_signs vts ON vts.id = rt.verified_sign_id ${whereClause}`,
+      params,
+    );
     const total = countRows[0]?.cnt ?? 0;
     const rows: any[] = await this.dataSource.query(
       `SELECT rt.*, vts.sign_type_id, vts.status AS sign_status, vts.freshness_score,
@@ -86,14 +186,30 @@ export class RevalidationService {
        LEFT JOIN traffic_sign_types tst ON tst.id = vts.sign_type_id
        ${whereClause}
        ORDER BY rt.created_at DESC
-       LIMIT $${idx++} OFFSET $${idx}`, [...params, ps, (p - 1) * ps]);
+       LIMIT $${idx++} OFFSET $${idx}`,
+      [...params, ps, (p - 1) * ps],
+    );
     return { items: rows, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
   }
+
   async getTask(id: string) {
     const t = await this.tasks.findOne({ where: { id } });
     if (!t) throw new NotFoundException('RevalidationTask ' + id + ' not found');
-    const evs: any[] = await this.dataSource.query('SELECT id, task_id, user_id, media_url, submitted_at, ST_AsText(location) as location_wkt FROM revalidation_evidences WHERE task_id=$1 ORDER BY submitted_at ASC', [id]);
-    return { ...t, evidences: evs };
+    const evs: any[] = await this.dataSource.query(
+      'SELECT id, task_id, user_id, media_url, evidence_type, submitted_at, ST_AsText(location) as location_wkt FROM revalidation_evidences WHERE task_id=$1 ORDER BY submitted_at ASC',
+      [id],
+    );
+    let location: { lat: number; lon: number } | null = null;
+    try {
+      const sRows: any[] = await this.dataSource.query(
+        'SELECT ST_Y(location::geometry) as lat, ST_X(location::geometry) as lon FROM verified_traffic_signs WHERE id=$1',
+        [t.verifiedSignId],
+      );
+      if (sRows.length && sRows[0].lat != null && sRows[0].lon != null) {
+        location = { lat: Number(sRows[0].lat), lon: Number(sRows[0].lon) };
+      }
+    } catch {}
+    return { ...t, bounty: t.rewardCredits, location, evidences: evs };
   }
   private assertDecision(v: string): RevalDecision {
     const allowed = Object.values(RevalDecision);
@@ -105,7 +221,12 @@ export class RevalidationService {
    * Scenario #3 — on-site evidence submission with PostGIS proximity
    * guardrail and a daily per-task rate limit (see plan §3 & §6.1).
    */
-  async submitEvidence(taskId: string, userId: string, dto: { mediaUrl?: string; latitude: number; longitude: number }, file?: Express.Multer.File) {
+  async submitEvidence(
+    taskId: string,
+    userId: string,
+    dto: { mediaUrl?: string; latitude: number; longitude: number; evidenceType?: string },
+    file?: Express.Multer.File,
+  ) {
     const task = await this.tasks.findOne({ where: { id: taskId } });
     if (!task) throw new NotFoundException('RevalidationTask ' + taskId + ' not found');
     if (task.status !== TaskStatus.OPEN && task.status !== TaskStatus.EVALUATING) throw new BadRequestException('Task ' + taskId + ' is not open for new evidence (status=' + task.status + ')');
@@ -146,14 +267,22 @@ export class RevalidationService {
     let mediaUrl = dto.mediaUrl ?? null;
     if (file) { const key = 'revalidation/' + taskId + '/' + randomUUID() + '-' + file.originalname; await this.storage.putObject('stm-sign-crops', key, file.buffer, file.mimetype); mediaUrl = key; }
     if (!mediaUrl) throw new BadRequestException('Provide mediaUrl or upload a file');
+    const evidenceType = dto.evidenceType === 'REMOVED' ? 'REMOVED' : 'STILL_ACTIVE';
     const id = randomUUID();
-    await this.dataSource.query('INSERT INTO revalidation_evidences (id, task_id, user_id, media_url, location) VALUES ($1,$2,$3,$4,ST_SetSRID(ST_MakePoint($5,$6),4326))', [id, taskId, userId, mediaUrl, lon, lat]);
+    await this.dataSource.query(
+      'INSERT INTO revalidation_evidences (id, task_id, user_id, media_url, location, evidence_type) VALUES ($1,$2,$3,$4,ST_SetSRID(ST_MakePoint($5,$6),4326),$7)',
+      [id, taskId, userId, mediaUrl, lon, lat, evidenceType],
+    );
     if (task.status === TaskStatus.OPEN) { task.status = TaskStatus.EVALUATING; await this.tasks.save(task); }
+    if (this.dailyTasksService) {
+      this.dailyTasksService.recordProgress(userId, 'REVALIDATE', 1).catch(() => {});
+    }
     const saved = await this.evidences.findOne({ where: { id } });
     return {
-      ...(saved ?? { id, taskId, userId, mediaUrl, latitude: lat, longitude: lon }),
+      ...(saved ?? { id, taskId, userId, mediaUrl, evidenceType, latitude: lat, longitude: lon }),
       latitude: lat,
       longitude: lon,
+      evidenceType,
       distanceMeters: Math.round(distanceMeters * 100) / 100,
       maxProximityMeters,
       dailySubmissionLimit,
@@ -162,7 +291,7 @@ export class RevalidationService {
   }
   async listEvidencesForTask(taskId: string) {
     if (!await this.tasks.findOne({ where: { id: taskId } })) throw new NotFoundException('RevalidationTask ' + taskId + ' not found');
-    const rows: any[] = await this.dataSource.query('SELECT id, task_id, user_id, media_url, submitted_at, ST_AsText(location) as location_wkt FROM revalidation_evidences WHERE task_id=$1 ORDER BY submitted_at ASC', [taskId]);
+    const rows: any[] = await this.dataSource.query('SELECT id, task_id, user_id, media_url, evidence_type, submitted_at, ST_AsText(location) as location_wkt FROM revalidation_evidences WHERE task_id=$1 ORDER BY submitted_at ASC', [taskId]);
     return rows;
   }
 
@@ -190,6 +319,7 @@ export class RevalidationService {
          ev.task_id,
          ev.user_id,
          ev.media_url,
+         ev.evidence_type,
          ev.submitted_at,
          ST_Y(ev.location::geometry) AS latitude,
          ST_X(ev.location::geometry) AS longitude,
@@ -227,6 +357,7 @@ export class RevalidationService {
       },
       evidence: {
         mediaUrl: r.media_url,
+        evidenceType: r.evidence_type ?? 'STILL_ACTIVE',
         submittedAt: r.submitted_at,
         latitude: Number(r.latitude),
         longitude: Number(r.longitude),
@@ -257,6 +388,9 @@ export class RevalidationService {
     if (existing) throw new BadRequestException('You have already voted on this evidence');
     const row = this.decisions.create({ evidenceId: evidenceId, reviewerId, decision, suggestedSignTypeId: dto.suggestedSignTypeId ?? null, note: dto.note ?? null } as any);
     const saved = await this.decisions.save(row);
+    if (this.dailyTasksService) {
+      this.dailyTasksService.recordProgress(reviewerId, 'REVIEW', 1).catch(() => {});
+    }
     let consensus: RevalidationConsensusSummary | null = null;
     try { consensus = await this.evaluateRevalidationConsensus(ev.taskId); }
     catch (e: any) { this.logger.warn('auto consensus failed for task ' + ev.taskId + ': ' + e?.message); }
@@ -357,28 +491,50 @@ export class RevalidationService {
       }
     }
 
-    const meaningful = [RevalDecision.UNCHANGED, RevalDecision.CHANGED, RevalDecision.MISSING].filter(k => (counts.get(k) || 0) > 0);
+    const activeCount = (counts.get(RevalDecision.UNCHANGED) || 0) + (counts.get(RevalDecision.STILL_ACTIVE) || 0);
+    const removedCount = (counts.get(RevalDecision.MISSING) || 0) + (counts.get(RevalDecision.REMOVED) || 0);
+    const changedCount = counts.get(RevalDecision.CHANGED) || 0;
+
     const voteCounts = Object.fromEntries(counts);
     let winningDecision: RevalDecision | null = null;
     let suggestedSignTypeId: number | null = null;
 
-    if (meaningful.length === 0) {
+    if (activeCount === 0 && removedCount === 0 && changedCount === 0) {
       // every decision was UNCLEAR / INVALID — staff must arbitrate
       await this.escalateToModeration(task, 'No meaningful decision reached (all votes UNCLEAR/INVALID)');
       return { evaluated: true, reason: 'CONFLICT', totalVotes: decisionRows.length, minVotesRequired: minVotes, voteCounts, escalatedToModeration: true, taskId: task.id };
     }
 
-    const ranked = meaningful
-      .slice()
-      .sort((a, b) => (counts.get(b) || 0) - (counts.get(a) || 0));
-    const top = ranked[0];
-    const second = ranked[1];
-    if (second && (counts.get(top) === counts.get(second))) {
-      await this.escalateToModeration(task, `Revalidation consensus conflict: tie between ${top} (${counts.get(top)}) and ${second} (${counts.get(second)})`);
+    const groups = [
+      {
+        name: 'ACTIVE',
+        count: activeCount,
+        decision: (counts.get(RevalDecision.STILL_ACTIVE) || 0) >= (counts.get(RevalDecision.UNCHANGED) || 0)
+          ? RevalDecision.STILL_ACTIVE
+          : RevalDecision.UNCHANGED,
+      },
+      {
+        name: 'REMOVED',
+        count: removedCount,
+        decision: (counts.get(RevalDecision.REMOVED) || 0) >= (counts.get(RevalDecision.MISSING) || 0)
+          ? RevalDecision.REMOVED
+          : RevalDecision.MISSING,
+      },
+      {
+        name: 'CHANGED',
+        count: changedCount,
+        decision: RevalDecision.CHANGED,
+      },
+    ].filter(g => g.count > 0).sort((a, b) => b.count - a.count);
+
+    const top = groups[0];
+    const second = groups[1];
+    if (second && top.count === second.count) {
+      await this.escalateToModeration(task, `Revalidation consensus conflict: tie between ${top.name} (${top.count}) and ${second.name} (${second.count})`);
       return { evaluated: true, reason: 'CONFLICT', totalVotes: decisionRows.length, minVotesRequired: minVotes, voteCounts, escalatedToModeration: true, taskId: task.id };
     }
 
-    winningDecision = top;
+    winningDecision = top.decision;
     if (winningDecision === RevalDecision.CHANGED) {
       const suggestions = suggestedByDecision.get(RevalDecision.CHANGED);
       if (suggestions && suggestions.size > 0) {
@@ -431,15 +587,15 @@ export class RevalidationService {
   private async applySignOutcome(task: RevalidationTask, winningDecision: RevalDecision, suggestedSignTypeId: number | null): Promise<string> {
     const signId = task.verifiedSignId;
     try {
-      if (winningDecision === RevalDecision.UNCHANGED) {
+      if (winningDecision === RevalDecision.UNCHANGED || winningDecision === RevalDecision.STILL_ACTIVE) {
         await this.dataSource.query("UPDATE verified_traffic_signs SET status='ACTIVE', freshness_score=1, last_verified_at=now(), updated_at=now() WHERE id=$1", [signId]);
         await this.dataSource.query("INSERT INTO verified_sign_history (verified_sign_id, change_reason) VALUES ($1, 'REVALIDATION_UPDATE')", [signId]);
-        await this.dataSource.query("INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, note) VALUES ($1,'REVALIDATED','UNCHANGED: freshness refreshed')", [signId]);
+        await this.dataSource.query("INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, note) VALUES ($1,'REVALIDATED','STILL_ACTIVE: freshness refreshed')", [signId]);
         return 'REFRESHED';
-      } else if (winningDecision === RevalDecision.MISSING) {
-        await this.dataSource.query("UPDATE verified_traffic_signs SET status='RETIRED', freshness_score=0, updated_at=now() WHERE id=$1", [signId]);
-        await this.dataSource.query("INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, note) VALUES ($1,'RETIRED','Revalidation: MISSING')", [signId]);
-        return 'RETIRED';
+      } else if (winningDecision === RevalDecision.MISSING || winningDecision === RevalDecision.REMOVED) {
+        await this.dataSource.query("UPDATE verified_traffic_signs SET status='DECOMMISSIONED', freshness_score=0, updated_at=now() WHERE id=$1", [signId]);
+        await this.dataSource.query("INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, note) VALUES ($1,'DECOMMISSIONED','Revalidation: REMOVED / DECOMMISSIONED')", [signId]);
+        return 'DECOMMISSIONED';
       } else if (winningDecision === RevalDecision.CHANGED && suggestedSignTypeId != null) {
         const prevRows: any[] = await this.dataSource.query('SELECT sign_type_id FROM verified_traffic_signs WHERE id=$1', [signId]);
         const previousType = prevRows.length ? prevRows[0].sign_type_id : null;
@@ -467,18 +623,33 @@ export class RevalidationService {
     evidenceRows: EvidenceRow[],
     winningDecision: RevalDecision,
   ): Promise<{ creditedSubmitters: number; creditedReviewers: number; rewardPerSubmitter: number }> {
+    const isDecommission = winningDecision === RevalDecision.MISSING || winningDecision === RevalDecision.REMOVED;
+    const txType = isDecommission ? TransactionType.SIGN_DECOMMISSION_REWARD : TransactionType.REVALIDATION_REWARD;
+    const defaultAmount = isDecommission ? 30 : (task.rewardCredits || 10);
+    const rewardAmount = await this.walletService.resolveRewardAmount(txType, defaultAmount);
+
     const uniqueSubmitters = [...new Set(evidenceRows.map(e => e.user_id as string))];
-    const alignedReviewers = [...new Set(decisionRows.filter(d => d.decision === winningDecision).map(d => d.reviewer_id as string))];
-    const rewardAmount = await this.walletService.resolveRewardAmount(TransactionType.REVALIDATION_REWARD, task.rewardCredits || 10);
+    const alignedReviewers = [...new Set(decisionRows.filter(d => {
+      if (isDecommission) return d.decision === RevalDecision.MISSING || d.decision === RevalDecision.REMOVED;
+      if (winningDecision === RevalDecision.UNCHANGED || winningDecision === RevalDecision.STILL_ACTIVE) {
+        return d.decision === RevalDecision.UNCHANGED || d.decision === RevalDecision.STILL_ACTIVE;
+      }
+      return d.decision === winningDecision;
+    }).map(d => d.reviewer_id as string))];
+
     let creditedSubmitters = 0; let creditedReviewers = 0;
     for (const uid of uniqueSubmitters) {
-      try { await this.walletService.creditUser(uid, rewardAmount, TransactionType.REVALIDATION_REWARD, 'revalidation_task', task.id, 'Revalidation reward (' + winningDecision + ')'); creditedSubmitters++; }
-      catch (e: any) { this.logger.warn('revalidation credit failed ' + uid + ': ' + e?.message); }
+      try {
+        await this.walletService.creditUser(uid, rewardAmount, txType, 'revalidation_task', task.id, 'Revalidation reward (' + winningDecision + ')');
+        creditedSubmitters++;
+      } catch (e: any) { this.logger.warn('revalidation credit failed ' + uid + ': ' + e?.message); }
     }
     for (const rid of alignedReviewers) {
       if (uniqueSubmitters.includes(rid)) continue; // already credited as submitter
-      try { await this.walletService.creditUser(rid, rewardAmount, TransactionType.REVALIDATION_REWARD, 'revalidation_task', task.id, 'Revalidation reviewer reward (' + winningDecision + ')'); creditedReviewers++; }
-      catch (e: any) { this.logger.warn('revalidation reviewer credit failed ' + rid + ': ' + e?.message); }
+      try {
+        await this.walletService.creditUser(rid, rewardAmount, txType, 'revalidation_task', task.id, 'Revalidation reviewer reward (' + winningDecision + ')');
+        creditedReviewers++;
+      } catch (e: any) { this.logger.warn('revalidation reviewer credit failed ' + rid + ': ' + e?.message); }
     }
     return { creditedSubmitters, creditedReviewers, rewardPerSubmitter: rewardAmount };
   }

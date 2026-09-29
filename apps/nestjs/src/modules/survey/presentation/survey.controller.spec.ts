@@ -1,14 +1,16 @@
 import { IS_PUBLIC_KEY } from '../../../common/decorators/public.decorator';
 import { InternalTokenGuard } from '../../../common/guards/internal-token.guard';
 import { SurveyService } from '../application/survey.service';
+import { BatchSurveyService } from '../application/batch-survey.service';
 import { SurveyController } from './survey.controller';
 import { CoordinateSource, SubmissionType } from '../domain/submission-contract';
 import { SubmissionStatus } from '../infrastructure/persistence/survey-submission.entity';
 import { MediaFileType } from '../infrastructure/persistence/submission-media-file.entity';
 
-describe('SurveyController (all 13 endpoints)', () => {
+describe('SurveyController (all endpoints)', () => {
   let controller: SurveyController;
   let service: jest.Mocked<SurveyService>;
+  let batchService: jest.Mocked<BatchSurveyService>;
 
   const mockUser = { id: 'user-123', email: 'surveyor@stm.dev' };
   const mockSubmissionId = 'sub-456';
@@ -32,7 +34,13 @@ describe('SurveyController (all 13 endpoints)', () => {
       getSession: jest.fn(),
     } as unknown as jest.Mocked<SurveyService>;
 
-    controller = new SurveyController(service);
+    batchService = {
+      createBatch: jest.fn(),
+      getBatch: jest.fn(),
+      completeBatch: jest.fn(),
+    } as unknown as jest.Mocked<BatchSurveyService>;
+
+    controller = new SurveyController(service, batchService);
   });
 
   it('1. createSubmission delegates to surveyService.createSubmission', async () => {
@@ -218,4 +226,43 @@ describe('SurveyController (all 13 endpoints)', () => {
     const roles = Reflect.getMetadata('roles', SurveyController);
     expect(roles).toEqual(['SURVEYOR', 'ADMIN']);
   });
+
+  it('15. createBatch delegates to batchService.createBatch', async () => {
+    const dto = {
+      images: [{ storageKey: 'img1.jpg', latitude: 10.0, longitude: 106.0 }],
+      capturedAt: new Date().toISOString(),
+    };
+    const expected = { batchId: 'b-1', status: 'PENDING' };
+    batchService.createBatch.mockResolvedValue(expected as any);
+
+    const result = await controller.createBatch(mockUser, dto as any);
+    expect(batchService.createBatch).toHaveBeenCalledWith(mockUser.id, dto);
+    expect(result).toBe(expected);
+  });
+
+  it('16. getBatch delegates to batchService.getBatch', async () => {
+    const expected = { id: 'b-1', totalImages: 2 };
+    batchService.getBatch.mockResolvedValue(expected as any);
+
+    const result = await controller.getBatch(mockUser, 'b-1');
+    expect(batchService.getBatch).toHaveBeenCalledWith(mockUser.id, 'b-1');
+    expect(result).toBe(expected);
+  });
+
+  it('17. completeBatch delegates to batchService.completeBatch and enforces InternalTokenGuard', async () => {
+    const payload = { extractedCandidates: 4, totalProcessed: 5 };
+    const expected = { alreadyCompleted: false, rewardAmount: 20 };
+    batchService.completeBatch.mockResolvedValue(expected as any);
+
+    const isPublic = Reflect.getMetadata(IS_PUBLIC_KEY, controller.completeBatch);
+    expect(isPublic).toBe(true);
+
+    const guards = Reflect.getMetadata('__guards__', controller.completeBatch);
+    expect(guards).toEqual([InternalTokenGuard]);
+
+    const result = await controller.completeBatch('b-1', payload);
+    expect(batchService.completeBatch).toHaveBeenCalledWith('b-1', payload);
+    expect(result).toBe(expected);
+  });
 });
+

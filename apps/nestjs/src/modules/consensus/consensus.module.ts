@@ -5,13 +5,20 @@ import { ConsensusConfig } from './infrastructure/persistence/consensus-config.e
 import { ConsensusLog } from './infrastructure/persistence/consensus-log.entity';
 import { CandidateReview } from '../reviews/infrastructure/persistence/candidate-review.entity';
 import { UnverifiedSignCandidate } from '../survey/infrastructure/persistence/unverified-sign-candidate.entity';
+import { ReviewerProfile } from '../reviews/infrastructure/persistence/reviewer-profile.entity';
 import { WalletModule } from '../wallet/wallet.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { SpatialAdminModule } from '../spatial-admin/spatial-admin.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([ConsensusConfig, ConsensusLog, UnverifiedSignCandidate, CandidateReview]),
+    TypeOrmModule.forFeature([
+      ConsensusConfig,
+      ConsensusLog,
+      UnverifiedSignCandidate,
+      CandidateReview,
+      ReviewerProfile,
+    ]),
     WalletModule,
     NotificationsModule,
     SpatialAdminModule,
