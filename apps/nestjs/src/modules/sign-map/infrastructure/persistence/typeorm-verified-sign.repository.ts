@@ -188,7 +188,8 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
         sign.displayAddress ?? null,
       ],
     )) as Array<{ id: string }>;
-    const created = rows[0] && (await this.findById(String(rows[0].id)));
+    const createdRow = Array.isArray(rows[0]) ? rows[0][0] : rows[0];
+    const created = createdRow?.id && (await this.findById(String(createdRow.id)));
     if (!created) throw new Error('Created verified sign could not be loaded');
     return created;
   }
@@ -241,8 +242,9 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
        RETURNING id`,
       parameters,
     )) as Array<{ id: string }>;
-    if (!rows[0]) return null;
-    return this.findById(String(rows[0].id));
+    const updatedRow = Array.isArray(rows[0]) ? rows[0][0] : rows[0];
+    if (!updatedRow?.id) return null;
+    return this.findById(String(updatedRow.id));
   }
 
   async findActiveAlongRoute(
