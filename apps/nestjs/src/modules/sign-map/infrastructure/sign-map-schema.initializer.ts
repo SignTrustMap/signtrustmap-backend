@@ -274,6 +274,27 @@ export class SignMapSchemaInitializer implements OnModuleInit {
           ON "revalidation_tasks"("urgency" DESC);
 
         -- Phase 6: Dual-Outcome Revalidation Quests & Roadside Hazard Consensus
+        DO $$
+        BEGIN
+          BEGIN ALTER TYPE "task_status" ADD VALUE IF NOT EXISTS 'ESCALATED_MODERATION'; EXCEPTION WHEN duplicate_object THEN NULL; END;
+          BEGIN ALTER TYPE "reval_decision" ADD VALUE IF NOT EXISTS 'STILL_ACTIVE'; EXCEPTION WHEN duplicate_object THEN NULL; END;
+          BEGIN ALTER TYPE "reval_decision" ADD VALUE IF NOT EXISTS 'REMOVED'; EXCEPTION WHEN duplicate_object THEN NULL; END;
+        END $$;
+
+        ALTER TABLE "freshness_rules"
+          ADD COLUMN IF NOT EXISTS "max_proximity_meters" INT NOT NULL DEFAULT 50,
+          ADD COLUMN IF NOT EXISTS "daily_submission_limit" INT NOT NULL DEFAULT 3;
+
+        ALTER TABLE "revalidation_decisions"
+          ADD COLUMN IF NOT EXISTS "suggested_sign_type_id" INT REFERENCES "traffic_sign_types"("id") ON DELETE SET NULL;
+
+        CREATE INDEX IF NOT EXISTS "idx_reval_evidences_geom"
+          ON "revalidation_evidences" USING GIST ("location");
+
+        ALTER TABLE "missing_sign_type_reports"
+          ADD COLUMN IF NOT EXISTS "suggested_shape" VARCHAR(30),
+          ADD COLUMN IF NOT EXISTS "suggested_color_scheme" VARCHAR(30);
+
         ALTER TABLE "revalidation_evidences"
           ADD COLUMN IF NOT EXISTS "evidence_type" VARCHAR(32) NOT NULL DEFAULT 'STILL_ACTIVE';
         CREATE INDEX IF NOT EXISTS "idx_revalidation_evidences_type"

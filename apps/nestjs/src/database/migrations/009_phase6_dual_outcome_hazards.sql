@@ -3,6 +3,12 @@
 -- ---------------------------------------------------------------------------
 
 -- 1. Extend revalidation_evidences with evidence_type (STILL_ACTIVE vs REMOVED)
+DO $$
+BEGIN
+  BEGIN ALTER TYPE "reval_decision" ADD VALUE IF NOT EXISTS 'STILL_ACTIVE'; EXCEPTION WHEN duplicate_object THEN NULL; END;
+  BEGIN ALTER TYPE "reval_decision" ADD VALUE IF NOT EXISTS 'REMOVED'; EXCEPTION WHEN duplicate_object THEN NULL; END;
+END $$;
+
 ALTER TABLE "revalidation_evidences"
   ADD COLUMN IF NOT EXISTS "evidence_type" VARCHAR(32) NOT NULL DEFAULT 'STILL_ACTIVE';
 

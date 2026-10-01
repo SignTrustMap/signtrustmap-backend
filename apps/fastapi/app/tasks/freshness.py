@@ -83,7 +83,7 @@ _ACTIVE_SIGNS_SQL = text(
         vts.route_classification_id,
         vts.road_name,
         tst.sign_code,
-        sc.name                                                      AS category_name,
+        COALESCE(sc.name_en, '') || ' ' || COALESCE(sc.name_vi, '') AS category_name,
         EXTRACT(EPOCH FROM (NOW() - vts.last_verified_at)) / 86400.0 AS age_days
     FROM verified_traffic_signs vts
     JOIN traffic_sign_types     tst ON tst.id = vts.sign_type_id
