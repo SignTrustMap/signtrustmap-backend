@@ -255,3 +255,65 @@ describe('ReviewsService getMyStats (Phase 4 Governance)', () => {
     expect(stats.consecutiveErrors).toBe(0);
   });
 });
+
+describe('ReviewsService undoVote', () => {
+  it('throws NotFoundException if no vote exists', async () => {
+    const reviews = {
+      findOne: jest.fn().mockResolvedValue(null),
+    } as unknown as Repository<CandidateReview>;
+    const service = new ReviewsService({} as any, reviews, {} as any, {} as any);
+    await expect(service.undoVote('rev-1', 'c-1')).rejects.toThrow();
+  });
+
+  it('throws BadRequestException if candidate already finalized', async () => {
+    const reviews = {
+      findOne: jest.fn().mockResolvedValue({ id: 'r-1' }),
+    } as unknown as Repository<CandidateReview>;
+    const candidates = {
+      findOne: jest.fn().mockResolvedValue({ id: 'c-1', status: CandidateStatus.VERIFIED }),
+    } as unknown as Repository<UnverifiedSignCandidate>;
+    const service = new ReviewsService(candidates, reviews, {} as any, {} as any);
+    await expect(service.undoVote('rev-1', 'c-1')).rejects.toThrow();
+  });
+
+  it('deletes review when candidate is still in review', async () => {
+    const reviews = {
+      findOne: jest.fn().mockResolvedValue({ id: 'r-1' }),
+      delete: jest.fn().mockResolvedValue({ affected: 1 }),
+    } as unknown as Repository<CandidateReview>;
+    const candidates = {
+      findOne: jest.fn().mockResolvedValue({ id: 'c-1', status: CandidateStatus.PENDING_REVIEW }),
+    } as unknown as Repository<UnverifiedSignCandidate>;
+    const service = new ReviewsService(candidates, reviews, {} as any, {} as any);
+    const res = await service.undoVote('rev-1', 'c-1');
+    expect(res).toEqual({ undone: true, candidateId: 'c-1', reviewerId: 'rev-1' });
+    expect(reviews.delete).toHaveBeenCalledWith({ candidateId: 'c-1', reviewerId: 'rev-1' });
+  });
+});
+
+describe('ReviewsService reportCandidate', () => {
+  it('rejects empty reason or missing candidate', async () => {
+    const service = new ReviewsService({ findOne: jest.fn().mockResolvedValue(null) } as any, {} as any, {} as any, {} as any);
+    await expect(service.reportCandidate('rev-1', 'c-1', { reason: '' })).rejects.toThrow();
+    await expect(service.reportCandidate('rev-1', 'c-1', { reason: 'suspicious' })).rejects.toThrow();
+  });
+
+  it('creates moderation case if not already reported', async () => {
+    const rawQuery = jest.fn()
+      .mockResolvedValueOnce([]) // not already reported
+      .mockResolvedValueOnce([{ id: 'case-1' }]) // insert moderation case
+      .mockResolvedValueOnce([]) // insert action
+      .mockResolvedValueOnce([]); // insert flag
+    const candidates = {
+      findOne: jest.fn().mockResolvedValue({ id: 'c-1' }),
+      manager: { query: rawQuery },
+    } as unknown as Repository<UnverifiedSignCandidate>;
+    const service = new ReviewsService(candidates, {} as any, {} as any, {} as any);
+    const res = await service.reportCandidate('rev-1', 'c-1', { reason: 'Spam sign' });
+    expect(res).toBeDefined();
+    expect(rawQuery).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO moderation_cases'),
+      ['c-1'],
+    );
+  });
+});

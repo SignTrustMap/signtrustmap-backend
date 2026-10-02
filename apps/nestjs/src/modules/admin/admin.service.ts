@@ -55,8 +55,132 @@ export class AdminService {
   async exportSigns(format: string, status?: string) {
     const where = status ? 'WHERE v.status = $1' : '';
     const params: any[] = status ? [status] : [];
-    const rows: any[] = await this.dataSource.query('SELECT v.id, v.sign_type_id, v.origin_candidate_id, ST_AsText(v.location) AS wkt, ST_AsGeoJSON(v.location)::json AS geojson, v.traffic_direction, v.sign_crop_url, v.status, v.freshness_score, v.last_verified_at, v.created_at, t.sign_code, t.name_en, t.name_vi, c.code AS category_code FROM verified_traffic_signs v JOIN traffic_sign_types t ON t.id = v.sign_type_id JOIN sign_categories c ON c.id = t.category_id ' + where + ' ORDER BY v.created_at DESC', params);
-    if (format === 'geojson') return { type: 'FeatureCollection', features: rows.map(r => ({ type: 'Feature', geometry: r.geojson, properties: { id: r.id, signTypeId: r.sign_type_id, signCode: r.sign_code, nameEn: r.name_en, nameVi: r.name_vi, categoryCode: r.category_code, status: r.status, freshnessScore: r.freshness_score, trafficDirection: r.traffic_direction, signCropUrl: r.sign_crop_url, lastVerifiedAt: r.last_verified_at } })) };
+    const rows: any[] = await this.dataSource.query(
+      `SELECT
+         v.id,
+         v.sign_type_id,
+         v.origin_candidate_id,
+         ST_AsText(v.location) AS wkt,
+         ST_AsGeoJSON(v.location)::json AS geojson,
+         ST_Y(v.location::geometry) AS lat,
+         ST_X(v.location::geometry) AS lon,
+         v.traffic_direction,
+         v.sign_crop_url,
+         v.status,
+         v.freshness_score,
+         v.last_verified_at,
+         v.created_at,
+         t.sign_code,
+         t.name_en,
+         t.name_vi,
+         c.code AS category_code
+       FROM verified_traffic_signs v
+       JOIN traffic_sign_types t ON t.id = v.sign_type_id
+       JOIN sign_categories c ON c.id = t.category_id
+       ${where}
+       ORDER BY v.created_at DESC`,
+      params,
+    );
+
+    const fmt = (format || 'json').toLowerCase();
+
+    if (fmt === 'geojson') {
+      return {
+        type: 'FeatureCollection',
+        features: rows.map((r) => ({
+          type: 'Feature',
+          geometry: r.geojson,
+          properties: {
+            id: r.id,
+            signTypeId: r.sign_type_id,
+            signCode: r.sign_code,
+            nameEn: r.name_en,
+            nameVi: r.name_vi,
+            categoryCode: r.category_code,
+            status: r.status,
+            freshnessScore: r.freshness_score,
+            trafficDirection: r.traffic_direction,
+            signCropUrl: r.sign_crop_url,
+            lastVerifiedAt: r.last_verified_at,
+          },
+        })),
+      };
+    }
+
+    if (fmt === 'csv') {
+      const escapeCsv = (val: any) => {
+        if (val == null) return '';
+        const str = String(val);
+        if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+          return `"${str.replace(/"/g, '""')}"`;
+        }
+        return str;
+      };
+
+      const headers = [
+        'id',
+        'sign_code',
+        'name_en',
+        'name_vi',
+        'category_code',
+        'status',
+        'latitude',
+        'longitude',
+        'traffic_direction',
+        'freshness_score',
+        'last_verified_at',
+        'sign_crop_url',
+      ];
+
+      const lines = [headers.join(',')];
+      for (const r of rows) {
+        lines.push(
+          [
+            escapeCsv(r.id),
+            escapeCsv(r.sign_code),
+            escapeCsv(r.name_en),
+            escapeCsv(r.name_vi),
+            escapeCsv(r.category_code),
+            escapeCsv(r.status),
+            escapeCsv(r.lat),
+            escapeCsv(r.lon),
+            escapeCsv(r.traffic_direction),
+            escapeCsv(r.freshness_score),
+            escapeCsv(r.last_verified_at ? new Date(r.last_verified_at).toISOString() : ''),
+            escapeCsv(r.sign_crop_url),
+          ].join(','),
+        );
+      }
+      return lines.join('\n');
+    }
+
+    if (fmt === 'osm') {
+      const escapeXml = (val: any) => {
+        if (val == null) return '';
+        return String(val)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&apos;');
+      };
+
+      const nodes = rows
+        .map((r, i) => {
+          const nodeId = -(i + 1);
+          return `  <node id="${nodeId}" lat="${r.lat}" lon="${r.lon}" version="1">
+    <tag k="traffic_sign" v="${escapeXml(r.sign_code)}"/>
+    <tag k="name:en" v="${escapeXml(r.name_en)}"/>
+    <tag k="name:vi" v="${escapeXml(r.name_vi)}"/>
+    <tag k="traffic_sign:category" v="${escapeXml(r.category_code)}"/>
+    ${r.traffic_direction != null ? `<tag k="direction" v="${escapeXml(r.traffic_direction)}"/>\n    ` : ''}<tag k="status" v="${escapeXml(r.status)}"/>
+  </node>`;
+        })
+        .join('\n');
+
+      return `<?xml version="1.0" encoding="UTF-8"?>\n<osm version="0.6" generator="SignTrustMap">\n${nodes}\n</osm>`;
+    }
+
     return rows;
   }
 

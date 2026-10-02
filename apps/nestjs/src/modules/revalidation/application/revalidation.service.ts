@@ -75,9 +75,11 @@ export class RevalidationService {
         `ST_DWithin(vts.location::geography, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, $3)`,
       );
 
-      if (status) {
+      if (status && status.toUpperCase() !== 'ALL') {
         conditions.push(`rt.status = $${params.length + 1}::task_status`);
         params.push(status);
+      } else if (!status) {
+        conditions.push(`rt.status IN ('OPEN', 'EVALUATING')`);
       }
 
       const whereClause = 'WHERE ' + conditions.join(' AND ');
@@ -134,7 +136,11 @@ export class RevalidationService {
     }
 
     const where: any = {};
-    if (status) where.status = status;
+    if (status && status.toUpperCase() !== 'ALL') {
+      where.status = status;
+    } else if (!status) {
+      where.status = In([TaskStatus.OPEN, TaskStatus.EVALUATING]);
+    }
     const order: any =
       sort === 'reward'
         ? { rewardCredits: 'DESC' }
@@ -163,9 +169,11 @@ export class RevalidationService {
     // bbox via ST_Within on verified_traffic_signs.location
     conditions.push(`ST_Within(vts.location, ST_MakeEnvelope($${idx++}, $${idx++}, $${idx++}, $${idx++}, 4326))`);
     params.push(q.minLon, q.minLat, q.maxLon, q.maxLat);
-    if (q.status) {
+    if (q.status && q.status.toUpperCase() !== 'ALL') {
       conditions.push(`rt.status = $${idx++}::task_status`);
       params.push(q.status);
+    } else if (!q.status) {
+      conditions.push(`rt.status IN ('OPEN', 'EVALUATING')`);
     }
     if (q.priority) {
       conditions.push(`rt.priority = $${idx++}::task_priority`);
@@ -192,6 +200,32 @@ export class RevalidationService {
     return { items: rows, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
   }
 
+  toS3Url(rawUrl?: string | null, taskId?: string): string {
+    if (!rawUrl) return '';
+    if (rawUrl.startsWith('http://') || rawUrl.startsWith('https://')) {
+      return rawUrl;
+    }
+    let objectKey = rawUrl;
+    if (
+      rawUrl.startsWith('file:') ||
+      rawUrl.startsWith('content:') ||
+      rawUrl.startsWith('device:') ||
+      rawUrl.startsWith('/')
+    ) {
+      const clean = rawUrl.replace(/^(?:file:\/\/(?:\/)?|content:\/\/|device:\/\/)?/, '');
+      const filename = clean.split('/').pop()?.split('?')[0] || `${randomUUID()}.jpg`;
+      objectKey = taskId ? `revalidation/${taskId}/${filename}` : `revalidation/${filename}`;
+    }
+    if (this.storage && typeof this.storage.getPublicUrl === 'function') {
+      return this.storage.getPublicUrl('stm-sign-crops', objectKey);
+    }
+    const cleanObject = objectKey.replace(/^\/+/, '');
+    const cleanKey = cleanObject.startsWith('stm-sign-crops/')
+      ? cleanObject
+      : `stm-sign-crops/${cleanObject}`;
+    return `https://s3.signmap.site/${cleanKey}`;
+  }
+
   async getTask(id: string) {
     const t = await this.tasks.findOne({ where: { id } });
     if (!t) throw new NotFoundException('RevalidationTask ' + id + ' not found');
@@ -199,6 +233,11 @@ export class RevalidationService {
       'SELECT id, task_id, user_id, media_url, evidence_type, submitted_at, ST_AsText(location) as location_wkt FROM revalidation_evidences WHERE task_id=$1 ORDER BY submitted_at ASC',
       [id],
     );
+    const evsWithS3 = evs.map((e) => ({
+      ...e,
+      media_url: this.toS3Url(e.media_url, e.task_id),
+      mediaUrl: this.toS3Url(e.media_url, e.task_id),
+    }));
     let location: { lat: number; lon: number } | null = null;
     try {
       const sRows: any[] = await this.dataSource.query(
@@ -209,7 +248,7 @@ export class RevalidationService {
         location = { lat: Number(sRows[0].lat), lon: Number(sRows[0].lon) };
       }
     } catch {}
-    return { ...t, bounty: t.rewardCredits, location, evidences: evs };
+    return { ...t, bounty: t.rewardCredits, location, evidences: evsWithS3 };
   }
   private assertDecision(v: string): RevalDecision {
     const allowed = Object.values(RevalDecision);
@@ -265,7 +304,13 @@ export class RevalidationService {
     }
 
     let mediaUrl = dto.mediaUrl ?? null;
-    if (file) { const key = 'revalidation/' + taskId + '/' + randomUUID() + '-' + file.originalname; await this.storage.putObject('stm-sign-crops', key, file.buffer, file.mimetype); mediaUrl = key; }
+    if (file) {
+      const key = 'revalidation/' + taskId + '/' + randomUUID() + '-' + file.originalname;
+      await this.storage.putObject('stm-sign-crops', key, file.buffer, file.mimetype);
+      mediaUrl = this.toS3Url(key, taskId);
+    } else if (mediaUrl) {
+      mediaUrl = this.toS3Url(mediaUrl, taskId);
+    }
     if (!mediaUrl) throw new BadRequestException('Provide mediaUrl or upload a file');
     const evidenceType = dto.evidenceType === 'REMOVED' ? 'REMOVED' : 'STILL_ACTIVE';
     const id = randomUUID();
@@ -280,6 +325,7 @@ export class RevalidationService {
     const saved = await this.evidences.findOne({ where: { id } });
     return {
       ...(saved ?? { id, taskId, userId, mediaUrl, evidenceType, latitude: lat, longitude: lon }),
+      mediaUrl,
       latitude: lat,
       longitude: lon,
       evidenceType,
@@ -292,7 +338,11 @@ export class RevalidationService {
   async listEvidencesForTask(taskId: string) {
     if (!await this.tasks.findOne({ where: { id: taskId } })) throw new NotFoundException('RevalidationTask ' + taskId + ' not found');
     const rows: any[] = await this.dataSource.query('SELECT id, task_id, user_id, media_url, evidence_type, submitted_at, ST_AsText(location) as location_wkt FROM revalidation_evidences WHERE task_id=$1 ORDER BY submitted_at ASC', [taskId]);
-    return rows;
+    return rows.map((r) => ({
+      ...r,
+      media_url: this.toS3Url(r.media_url, r.task_id),
+      mediaUrl: this.toS3Url(r.media_url, r.task_id),
+    }));
   }
 
   /**
@@ -356,7 +406,7 @@ export class RevalidationService {
         freshnessScore: r.freshness_score,
       },
       evidence: {
-        mediaUrl: r.media_url,
+        mediaUrl: this.toS3Url(r.media_url, r.task_id),
         evidenceType: r.evidence_type ?? 'STILL_ACTIVE',
         submittedAt: r.submitted_at,
         latitude: Number(r.latitude),
@@ -553,6 +603,19 @@ export class RevalidationService {
 
     task.status = TaskStatus.COMPLETED;
     await this.tasks.save(task);
+
+    // Automatically complete / clear any remaining active revalidation tasks for this sign
+    try {
+      await this.dataSource.query(
+        `UPDATE revalidation_tasks
+         SET status = 'COMPLETED'
+         WHERE verified_sign_id = $1 AND id != $2 AND status IN ('OPEN', 'EVALUATING')`,
+        [task.verifiedSignId, task.id],
+      );
+    } catch (e: any) {
+      this.logger.warn(`Failed to auto-clear sibling revalidation tasks for sign ${task.verifiedSignId}: ${e?.message}`);
+    }
+
     await this.notifySubmitters(task.id, evidenceRows, winningDecision, rewards.rewardPerSubmitter);
 
     return {
@@ -694,11 +757,12 @@ export class RevalidationService {
       const evidenceId = randomUUID();
       const lat = location?.latitude ?? 0;
       const lon = location?.longitude ?? 0;
+      const s3PhotoUrl = this.toS3Url(photoUrl, task.id);
       try {
         await this.dataSource.query(
           `INSERT INTO revalidation_evidences (id, task_id, user_id, media_url, location)
            VALUES ($1, $2, $3, $4, ST_SetSRID(ST_MakePoint($5, $6), 4326))`,
-          [evidenceId, task.id, userId, photoUrl, lon, lat],
+          [evidenceId, task.id, userId, s3PhotoUrl, lon, lat],
         );
       } catch (e: any) {
         this.logger.warn(`Failed to attach evidence for dispute task ${task.id}: ${e?.message}`);

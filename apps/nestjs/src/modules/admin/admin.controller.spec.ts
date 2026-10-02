@@ -158,6 +158,22 @@ describe('AdminController (Phase 1 Ledger Adjustments & Admin Operations)', () =
     expect(result).toBe(expected);
   });
 
+  it('exportSigns sets CSV download headers when res is provided', async () => {
+    const expected = 'id,sign_code\n1,W.201';
+    adminService.exportSigns.mockResolvedValue(expected as any);
+    const mockRes = { setHeader: jest.fn() };
+
+    const result = await controller.exportSigns('csv', 'ACTIVE', mockRes);
+
+    expect(adminService.exportSigns).toHaveBeenCalledWith('csv', 'ACTIVE');
+    expect(mockRes.setHeader).toHaveBeenCalledWith('Content-Type', 'text/csv; charset=utf-8');
+    expect(mockRes.setHeader).toHaveBeenCalledWith(
+      'Content-Disposition',
+      'attachment; filename="signtrustmap-signs.csv"',
+    );
+    expect(result).toBe(expected);
+  });
+
   it('getConsensusConfig delegates to adminService.getConsensusConfig', async () => {
     const expected = { approvalThreshold: 2.0, rejectionThreshold: -2.0 };
     adminService.getConsensusConfig.mockResolvedValue(expected as any);
