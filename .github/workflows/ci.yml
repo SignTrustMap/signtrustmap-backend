@@ -72,8 +72,10 @@ jobs:
 
       - name: Run Pytest
         env:
+          PYTHONPATH: .
           DATABASE_URL: postgresql://stm_user:stm_password@localhost:5432/signtrustmap
           REDIS_URL: redis://localhost:6379/0
           ENVIRONMENT: test
         run: |
-          pytest tests/ -v --maxfail=5 --ignore=tests/test_ai_pipeline.py || echo "FastAPI unit tests completed"
+          pytest tests/ -v
+
