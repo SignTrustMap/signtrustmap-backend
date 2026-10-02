@@ -62,6 +62,37 @@ export class MinioStorageService {
     }
   }
 
+  getPublicUrl(bucket: string, objectName: string): string {
+    const s3Domain =
+      this.configService.get<string>('minio.s3Domain') ||
+      process.env.S3_DOMAIN ||
+      's3.signmap.site';
+
+    const cleanObject = objectName.replace(/^\/+/, '');
+    const cleanBucket = bucket.replace(/^\/+|\/+$/g, '');
+
+    const fullPath = cleanObject.startsWith(`${cleanBucket}/`)
+      ? cleanObject
+      : `${cleanBucket}/${cleanObject}`;
+
+    if (s3Domain) {
+      const isLocal = s3Domain.includes('localhost') || s3Domain.includes('127.0.0.1');
+      const useSSL = this.configService.get<boolean>('minio.useSSL') ?? !isLocal;
+      const protocol = useSSL ? 'https' : 'http';
+      return `${protocol}://${s3Domain}/${fullPath}`;
+    }
+
+    const publicBase =
+      this.configService.get<string>('minio.publicUrl') ||
+      process.env.S3_PUBLIC_URL ||
+      process.env.MINIO_PUBLIC_URL;
+    if (publicBase) {
+      return `${publicBase.replace(/\/+$/, '')}/${fullPath}`;
+    }
+
+    return `https://s3.signmap.site/${fullPath}`;
+  }
+
   async putObject(
     bucket: string,
     objectName: string,

@@ -252,6 +252,74 @@ describe('CatalogService', () => {
     return query as unknown as jest.Mocked<SelectQueryBuilder<TrafficSignType>>;
   }
 
+  describe('Support Shots & Active Learning', () => {
+    it('listSupportShots throws NotFoundException if signType not found', async () => {
+      signTypes.findOne.mockResolvedValueOnce(null);
+      await expect(service.listSupportShots(999)).rejects.toThrow();
+    });
+
+    it('listSupportShots returns ordered shots list', async () => {
+      signTypes.findOne.mockResolvedValueOnce(entity<TrafficSignType>({ id: 1, signCode: 'P.101', nameVi: 'Cam' }));
+      images.find.mockResolvedValueOnce([
+        entity<SignTypeImage>({
+          id: 'img-1',
+          imageUrl: 's3/img1.jpg',
+          imageType: 'REAL_PHOTO',
+          role: 'MEDOID',
+          isPrimary: true,
+          isPinned: true,
+          sharpness: 95.0,
+          uploadedAt: new Date(),
+        }),
+      ]);
+
+      const res = await service.listSupportShots(1);
+      expect(res.signTypeId).toBe(1);
+      expect(res.totalShots).toBe(1);
+      expect(res.shots[0].id).toBe('img-1');
+      expect(res.shots[0].isPinned).toBe(true);
+    });
+
+    it('addSupportShot unsets previous primary if isPrimary is true', async () => {
+      signTypes.findOne.mockResolvedValueOnce(entity<TrafficSignType>({ id: 1 }));
+      images.create.mockReturnValue(entity<SignTypeImage>({ id: 'img-2', imageUrl: 's3/img2.jpg', isPrimary: true }));
+      images.save.mockResolvedValue(entity<SignTypeImage>({ id: 'img-2', imageUrl: 's3/img2.jpg', isPrimary: true }));
+
+      const res = await service.addSupportShot(1, { imageUrl: 's3/img2.jpg', isPrimary: true });
+      expect(images.update).toHaveBeenCalledWith({ signTypeId: 1 }, { isPrimary: false });
+      expect(res.id).toBe('img-2');
+    });
+
+    it('deleteSupportShot checks existence and removes shot', async () => {
+      images.findOne.mockResolvedValueOnce(null);
+      await expect(service.deleteSupportShot(1, 'img-missing')).rejects.toThrow();
+
+      const shot = entity<SignTypeImage>({ id: 'img-1', signTypeId: 1 });
+      images.findOne.mockResolvedValueOnce(shot);
+      images.remove.mockResolvedValueOnce(shot);
+
+      const res = await service.deleteSupportShot(1, 'img-1');
+      expect(res).toEqual({ deleted: true, imageId: 'img-1', signTypeId: 1 });
+      expect(images.remove).toHaveBeenCalledWith(shot);
+    });
+
+    it('setSupportShotPinned updates pin status', async () => {
+      images.findOne.mockResolvedValueOnce(null);
+      await expect(service.setSupportShotPinned(1, 'img-missing', true)).rejects.toThrow();
+
+      const shot = entity<SignTypeImage>({ id: 'img-1', signTypeId: 1, isPinned: false });
+      images.findOne.mockResolvedValueOnce(shot);
+      images.save.mockImplementation(async (s: any) => s);
+
+      const res = await service.setSupportShotPinned(1, 'img-1', true);
+      expect(res).toEqual({ updated: true, imageId: 'img-1', isPinned: true });
+    });
+
+    it('triggerPrototypeRebuild throws if catalogSyncService is missing', async () => {
+      await expect(service.triggerPrototypeRebuild()).rejects.toThrow();
+    });
+  });
+
   function repository<T>(): jest.Mocked<Repository<T>> {
     return {
       find: jest.fn(),
@@ -260,6 +328,7 @@ describe('CatalogService', () => {
       save: jest.fn(),
       update: jest.fn(),
       delete: jest.fn(),
+      remove: jest.fn(),
       count: jest.fn(),
       createQueryBuilder: jest.fn(),
     } as unknown as jest.Mocked<Repository<T>>;

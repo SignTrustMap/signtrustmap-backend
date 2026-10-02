@@ -386,5 +386,71 @@ describe('HazardsService', () => {
       expect(result.items[0].distanceMeters).toBe(154.2);
       expect(result.items[0].status).toBe(HazardStatus.CONFIRMED);
     });
+
+    it('queries active hazards with bbox and status filter', async () => {
+      queryMock.mockImplementation(async (sql: string) => {
+        if (sql.includes('COUNT(*)')) return [{ cnt: 2 }];
+        return [
+          {
+            id: 'h-1',
+            reported_by: 'u-1',
+            hazard_type: 'POTHOLE',
+            status: HazardStatus.UNCONFIRMED,
+            confirmations_count: 1,
+            dismissals_count: 0,
+            reward_paid: false,
+            lat: 10.5,
+            lon: 106.5,
+            distance_meters: null,
+            expires_at: new Date(),
+            created_at: new Date(),
+            updated_at: new Date(),
+          },
+        ];
+      });
+
+      const res = await service.listHazards({
+        status: HazardStatus.UNCONFIRMED,
+        minLat: 10,
+        minLon: 106,
+        maxLat: 11,
+        maxLon: 107,
+      });
+
+      expect(res.total).toBe(2);
+      expect(res.items[0].hazardType).toBe('POTHOLE');
+      expect(res.items[0].distanceMeters).toBeNull();
+    });
+  });
+
+  describe('getHazard', () => {
+    it('returns hazard detail when found', async () => {
+      queryMock.mockResolvedValueOnce([
+        {
+          id: 'hazard-1',
+          reported_by: 'u-1',
+          hazard_type: 'ACCIDENT',
+          description: 'Two cars crashed',
+          status: HazardStatus.CONFIRMED,
+          confirmations_count: 4,
+          dismissals_count: 0,
+          reward_paid: true,
+          lat: 10.77,
+          lon: 106.70,
+          expires_at: new Date(),
+          created_at: new Date(),
+          updated_at: new Date(),
+        },
+      ]);
+
+      const res = await service.getHazard('hazard-1');
+      expect(res.id).toBe('hazard-1');
+      expect(res.hazardType).toBe('ACCIDENT');
+    });
+
+    it('throws NotFoundException when hazard does not exist', async () => {
+      queryMock.mockResolvedValueOnce([]);
+      await expect(service.getHazard('missing-h')).rejects.toThrow();
+    });
   });
 });

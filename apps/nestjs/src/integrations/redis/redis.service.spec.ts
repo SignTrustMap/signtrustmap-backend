@@ -52,4 +52,21 @@ describe('RedisService (Distributed Redlock Mutex Tests)', () => {
     const nextAcquire = await service.acquireLock('test:lock:4', 5000);
     expect(nextAcquire).toBeNull();
   });
+
+  it('acquires and releases lock via Redis client when connected', async () => {
+    const mockClient = {
+      set: jest.fn().mockResolvedValue('OK'),
+      eval: jest.fn().mockResolvedValue(1),
+    };
+    (service as any).client = mockClient;
+    (service as any).isConnected = true;
+
+    const token = await service.acquireLock('key:connected', 5000);
+    expect(token).toBeTruthy();
+    expect(mockClient.set).toHaveBeenCalled();
+
+    const released = await service.releaseLock('key:connected', token!);
+    expect(released).toBe(true);
+    expect(mockClient.eval).toHaveBeenCalled();
+  });
 });

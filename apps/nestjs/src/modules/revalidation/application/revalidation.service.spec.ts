@@ -97,7 +97,7 @@ describe('RevalidationService', () => {
       expect(task.status).toBe('OPEN');
       expect(query).toHaveBeenCalledWith(
         expect.stringContaining('INSERT INTO revalidation_evidences'),
-        expect.arrayContaining(['new-dispute-task-id', 'user-456', 'evidence/dispute.jpg', 106.69, 10.77]),
+        expect.arrayContaining(['new-dispute-task-id', 'user-456', 'https://s3.signmap.site/stm-sign-crops/evidence/dispute.jpg', 106.69, 10.77]),
       );
     });
 

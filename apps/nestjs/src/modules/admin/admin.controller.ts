@@ -10,6 +10,7 @@ import {
   ParseUUIDPipe,
   ParseIntPipe,
   Req,
+  Res,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -62,10 +63,27 @@ export class AdminController {
     return this.svc.listAuditLogs({ action, resourceName, userId, page: Number.isNaN(p) ? 1 : p, pageSize: Number.isNaN(ps) ? 20 : ps });
   }
 
-  @ApiOperation({ summary: 'Export verified sign dataset', description: 'Admin operation to export all verified signs in JSON or GeoJSON formats' })
+  @ApiOperation({ summary: 'Export verified sign dataset', description: 'Admin operation to export all verified signs in JSON, GeoJSON, CSV, or OSM XML formats' })
   @Get('signs/export')
-  exportSigns(@Query('format') format?: string, @Query('status') status?: string) {
-    return this.svc.exportSigns(format ?? 'json', status);
+  async exportSigns(
+    @Query('format') format?: string,
+    @Query('status') status?: string,
+    @Res({ passthrough: true }) res?: any,
+  ) {
+    const fmt = (format ?? 'json').toLowerCase();
+    const result = await this.svc.exportSigns(fmt, status);
+    if (res?.setHeader) {
+      if (fmt === 'csv') {
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', 'attachment; filename="signtrustmap-signs.csv"');
+      } else if (fmt === 'osm') {
+        res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+        res.setHeader('Content-Disposition', 'attachment; filename="signtrustmap-signs.osm"');
+      } else if (fmt === 'geojson') {
+        res.setHeader('Content-Type', 'application/geo+json; charset=utf-8');
+      }
+    }
+    return result;
   }
 
   @ApiOperation({ summary: 'Manual wallet balance adjustment', description: 'Admin operation to manually credit or debit user wallet with mandatory audit reason' })

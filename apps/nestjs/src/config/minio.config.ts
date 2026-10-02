@@ -8,4 +8,6 @@ export default registerAs('minio', () => ({
   secretKey:
     process.env.MINIO_SECRET_KEY || process.env.MINIO_ROOT_PASSWORD || 'stm_minio_secret_123',
   region: process.env.MINIO_REGION,
+  s3Domain: process.env.S3_DOMAIN || 's3.signmap.site',
+  publicUrl: process.env.S3_PUBLIC_URL || process.env.MINIO_PUBLIC_URL,
 }));
