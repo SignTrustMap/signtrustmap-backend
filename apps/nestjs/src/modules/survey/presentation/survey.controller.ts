@@ -14,6 +14,7 @@ import { UpdateSubmissionDto } from './dto/update-submission.dto';
 import { UpdateSubmissionStatusDto } from './dto/update-submission-status.dto';
 import { CreateFrameBatchSessionDto } from './dto/create-frame-batch.dto';
 import { CreateBatchSurveyDto } from './dto/create-batch-survey.dto';
+import { CreatePresignedUrlDto } from './dto/create-presigned-url.dto';
 import { BatchSurveyService } from '../application/batch-survey.service';
 
 @ApiTags('Survey Submissions')
@@ -76,6 +77,20 @@ export class SurveyController {
   @Post(':submissionId/uploads')
   async initialize(@CurrentUser() user: any, @Param('submissionId', ParseUUIDPipe) submissionId: string, @Body() dto: InitializeUploadDto) {
     return this.surveyService.initialize(user.id, submissionId, dto);
+  }
+
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Generate S3 direct presigned PUT URL',
+    description: 'Generates a signed direct-to-S3 upload URL for high-bandwidth dashcam videos or GPX traces',
+  })
+  @Post(':submissionId/uploads/presigned-url')
+  async getPresignedUploadUrl(
+    @CurrentUser() user: any,
+    @Param('submissionId', ParseUUIDPipe) submissionId: string,
+    @Body() dto: CreatePresignedUrlDto,
+  ) {
+    return this.surveyService.generatePresignedUploadUrl(user.id, submissionId, dto);
   }
 
   @ApiBearerAuth()

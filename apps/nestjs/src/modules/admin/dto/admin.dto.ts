@@ -95,4 +95,45 @@ export class UpdateRouteMatrixDto {
   reason?: string;
 }
 
+export class TriggerRetrainDto {
+  @IsOptional()
+  @IsString()
+  modelType?: string;
+
+  @IsOptional()
+  @IsString()
+  modelName?: string;
+
+  @IsOptional()
+  @IsNumber()
+  datasetSplitRatio?: number;
+
+  @IsOptional()
+  @IsString()
+  notes?: string;
+
+  @IsOptional()
+  @IsNumber()
+  minSampleThreshold?: number;
+}
+
+export class ActiveLearningConfigDto {
+  @IsOptional()
+  @IsString()
+  uncertaintyMargin?: string;
+
+  @IsOptional()
+  @IsNumber()
+  minSamplesForAutoRetrain?: number;
+
+  @IsOptional()
+  @IsString()
+  defaultStrategy?: string;
+
+  @IsOptional()
+  @IsNumber()
+  defaultTopK?: number;
+}
+
+
 

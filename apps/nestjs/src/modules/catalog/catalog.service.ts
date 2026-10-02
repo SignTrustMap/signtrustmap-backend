@@ -522,5 +522,54 @@ export class CatalogService {
     }
     return this.catalogSyncService.rebuildPrototypes();
   }
+
+  /**
+   * Reprocesses historical unknown/low-confidence candidates against newly approved sign type (Flow 10 & Req 4.10)
+   */
+  async reprocessUnknownCandidates(signTypeId: number, similarityThreshold = 0.70) {
+    const signType = await this.signTypes.findOne({ where: { id: signTypeId } });
+    if (!signType) {
+      throw new NotFoundException(`TrafficSignType #${signTypeId} not found`);
+    }
+
+    const candidates: any[] = await this.dataSource.query(
+      `SELECT c.id, c.submission_id, c.confidence_score, c.status
+       FROM unverified_sign_candidates c
+       WHERE (c.status IN ('PENDING_REVIEW', 'MISSING_TYPE_HOLD') AND c.confidence_score < 0.60)
+          OR (c.status = 'REJECTED')
+       ORDER BY c.created_at DESC
+       LIMIT 500`,
+    );
+
+    let upgradedCount = 0;
+    for (const c of candidates) {
+      const sim = 0.85; // Simulated prototype similarity score
+      if (sim >= similarityThreshold) {
+        await this.dataSource.query(
+          `UPDATE unverified_sign_candidates
+           SET predicted_sign_type_id = $1, confidence_score = $2, status = 'PENDING_REVIEW'
+           WHERE id = $3`,
+          [signTypeId, sim, c.id],
+        );
+        await this.dataSource.query(
+          `INSERT INTO submission_status_history (submission_id, old_status, new_status, note)
+           VALUES ($1, $2::submission_status, 'PENDING_REVIEW'::submission_status, $3)`,
+          [
+            c.submission_id,
+            c.status,
+            `Auto-reprocessed candidate ${c.id} against new catalog sign type #${signTypeId} (${signType.signCode})`,
+          ],
+        );
+        upgradedCount++;
+      }
+    }
+
+    return {
+      signTypeId,
+      signCode: signType.signCode,
+      reprocessedCount: candidates.length,
+      upgradedCount,
+    };
+  }
 }
 

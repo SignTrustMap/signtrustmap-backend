@@ -172,6 +172,10 @@ export class MinioStorageService {
     return this.client.presignedGetObject(bucket, objectName, expirySeconds);
   }
 
+  async presignedPutObject(bucket: string, objectName: string, expirySeconds = 3600): Promise<string> {
+    return this.client.presignedPutObject(bucket, objectName, expirySeconds);
+  }
+
   async bucketExists(bucket: string): Promise<boolean> {
     return this.client.bucketExists(bucket);
   }
