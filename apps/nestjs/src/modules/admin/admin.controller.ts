@@ -23,6 +23,7 @@ import {
   FreezeWalletDto,
   UpdateConsensusConfigDto,
   UpdateRouteMatrixDto,
+  TriggerRetrainDto,
 } from './dto/admin.dto';
 import { WalletService } from '../wallet/application/wallet.service';
 
@@ -155,6 +156,87 @@ export class AdminController {
   ) {
     const ip = req.ip || req.headers['x-forwarded-for'] || null;
     return this.svc.updateRouteMatrix(id, dto, user.id, ip);
+  }
+
+  @ApiOperation({
+    summary: 'Trigger automated model retraining run',
+    description: 'Admin operation to queue fine-tuning on active learning and consensus datasets',
+  })
+  @Post('models/retrain')
+  triggerModelRetraining(
+    @Body() dto: TriggerRetrainDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.svc.triggerModelRetraining(dto, user.id);
+  }
+
+  @ApiOperation({
+    summary: 'List model retraining jobs',
+    description: 'Admin operation to view paginated history of retraining runs, duration, and metrics',
+  })
+  @Get('models/training-jobs')
+  listTrainingJobs(
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+  ) {
+    const p = page ? parseInt(page, 10) : 1;
+    const ps = pageSize ? parseInt(pageSize, 10) : 20;
+    return this.svc.listTrainingJobs({ page: p, pageSize: ps });
+  }
+
+  @ApiOperation({
+    summary: 'Get training job details',
+    description: 'Admin operation to view specific training job details and evaluation summary',
+  })
+  @Get('models/training-jobs/:id')
+  getTrainingJob(@Param('id', ParseUUIDPipe) id: string) {
+    return this.svc.getTrainingJob(id);
+  }
+
+  @ApiOperation({
+    summary: 'List AI model versions',
+    description: 'Admin operation to list active and candidate model versions in registry',
+  })
+  @Get('models/versions')
+  listModelVersions() {
+    return this.svc.listModelVersions();
+  }
+
+  @ApiOperation({
+    summary: 'Promote model version to production',
+    description: 'Governed deployment promoting a candidate version to production active with audit logging',
+  })
+  @Post('models/versions/:id/promote')
+  promoteModelVersion(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: any,
+    @Req() req: any,
+  ) {
+    const ip = req.ip || req.headers['x-forwarded-for'] || null;
+    return this.svc.promoteModelVersion(id, user.id, ip);
+  }
+
+  @ApiOperation({
+    summary: 'Rollback model version',
+    description: 'Admin operation to rollback model deployment with audit logging',
+  })
+  @Post('models/versions/:id/rollback')
+  rollbackModelVersion(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: any,
+    @Req() req: any,
+  ) {
+    const ip = req.ip || req.headers['x-forwarded-for'] || null;
+    return this.svc.rollbackModelVersion(id, user.id, ip);
+  }
+
+  @ApiOperation({
+    summary: 'Get MLOps pipeline status',
+    description: 'Admin operation to retrieve overall status of detection and classification pipeline',
+  })
+  @Get('models/pipeline/status')
+  getPipelineStatus() {
+    return this.svc.getPipelineStatus();
   }
 }
 

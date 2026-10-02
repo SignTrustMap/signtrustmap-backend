@@ -455,4 +455,40 @@ class AiPipelineContractTests(TestCase):
             {"batch_id": "batch-uuid-1", "skipped": True, "reason": "already_completed"},
         )
 
+    def test_task_reprocess_unresolved_candidates_upgrades_matching(self) -> None:
+        task = ai_pipeline.task_reprocess_unresolved_candidates
+        db = MagicMock()
+        db.execute.return_value.mappings.return_value.all.return_value = [
+            {
+                "id": "cand-1",
+                "submission_id": "sub-1",
+                "confidence_score": 0.45,
+                "status": "PENDING_REVIEW",
+            }
+        ]
+
+        with patch.object(ai_pipeline, "get_sync_db") as get_sync_db:
+            get_sync_db.return_value.__enter__.return_value = db
+            result = task.apply(args=[105, 0.70]).get()
+
+        self.assertEqual(result["sign_type_id"], 105)
+        self.assertEqual(result["reprocessed"], 1)
+        self.assertEqual(result["upgraded"], 1)
+        self.assertTrue(db.commit.called)
+
+    def test_task_trigger_model_retraining_completes_job(self) -> None:
+        task = ai_pipeline.task_trigger_model_retraining
+        db = MagicMock()
+        db.execute.return_value.scalar_one.return_value = 99
+
+        with patch.object(ai_pipeline, "get_sync_db") as get_sync_db:
+            get_sync_db.return_value.__enter__.return_value = db
+            result = task.apply(args=["job-uuid-1", "YOLO12", 0.8]).get()
+
+        self.assertEqual(result["status"], "COMPLETED")
+        self.assertEqual(result["version_id"], 99)
+        self.assertIn("yolo12", result["version_tag"])
+        self.assertTrue(db.commit.called)
+
+
 

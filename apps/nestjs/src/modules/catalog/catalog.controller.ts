@@ -141,5 +141,18 @@ export class CatalogController {
   rebuildPrototypes() {
     return this.svc.triggerPrototypeRebuild();
   }
+
+  @Roles('ADMIN')
+  @ApiOperation({
+    summary: 'Reprocess unresolved candidates against sign type',
+    description: 'Scans historical candidates marked unknown or low confidence and upgrades matching instances',
+  })
+  @Post('catalog/sign-types/:id/reprocess-candidates')
+  reprocessCandidates(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body?: { similarityThreshold?: number },
+  ) {
+    return this.svc.reprocessUnknownCandidates(id, body?.similarityThreshold);
+  }
 }
 

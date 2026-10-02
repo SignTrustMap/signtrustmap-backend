@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash } from 'crypto';
 import { DataSource, EntityManager, MoreThanOrEqual, Repository } from 'typeorm';
@@ -1076,5 +1076,46 @@ export class SurveyService {
       try { await this.notificationsService.create(sub.surveyorId, 'SURVEY_COMPLETED', 'Survey completed', 'Your submission ' + sub.id.slice(0,8) + ' has been processed (+' + rewardAmount + ' credits).', 'survey_submission', sub.id); } catch {}
     }
     return { alreadyCompleted: false, submission: sub, rewardAmount };
+  }
+
+  /**
+   * Generates a direct-to-S3 presigned PUT upload URL for high-bandwidth telemetry files (dashcam MP4, GPX tracks).
+   */
+  async generatePresignedUploadUrl(
+    userId: string,
+    submissionId: string,
+    dto: { mediaType: 'VIDEO' | 'GPX' | 'IMAGE'; fileName?: string; contentType?: string },
+  ) {
+    const sub = await this.submissionRepo.findOne({ where: { id: submissionId } });
+    if (!sub) {
+      throw new NotFoundException(`Survey submission #${submissionId} not found`);
+    }
+    if (sub.surveyorId !== userId) {
+      throw new ForbiddenException('You do not have permission to upload for this submission');
+    }
+
+    const bucket = this.storageService.bucketForMediaType(dto.mediaType);
+    const ext = dto.fileName
+      ? dto.fileName.split('.').pop()
+      : dto.mediaType === 'VIDEO'
+        ? 'mp4'
+        : dto.mediaType === 'GPX'
+          ? 'gpx'
+          : 'jpg';
+    const safeName = dto.fileName
+      ? dto.fileName.replace(/[^a-zA-Z0-9._-]/g, '_')
+      : `${dto.mediaType.toLowerCase()}.${ext}`;
+    const objectKey = `submissions/${submissionId}/${Date.now()}_${safeName}`;
+    const expiresIn = 3600;
+
+    const uploadUrl = await this.storageService.presignedPutObject(bucket, objectKey, expiresIn);
+
+    return {
+      uploadUrl,
+      bucket,
+      objectKey,
+      expiresIn,
+      mediaType: dto.mediaType,
+    };
   }
 }
