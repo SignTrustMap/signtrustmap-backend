@@ -3,7 +3,7 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { Public } from '../../../common/decorators/public.decorator';
 import { ReviewsService } from '../application/reviews.service';
-import { VoteDto, ReportDto } from './dto/vote.dto';
+import { VoteDto, ReportDto, TestReviewDto, TestAssignDto } from './dto/vote.dto';
 import { InternalTokenGuard } from '../../../common/guards/internal-token.guard';
 
 @ApiTags('Reviews')
@@ -83,11 +83,41 @@ export class ReviewsController {
     @CurrentUser() user: any,
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
+    @Query('includeOwnSubmissions') includeOwnSubmissions?: string,
   ) {
     const p = page ? parseInt(page, 10) : 1;
     const ps = pageSize ? parseInt(pageSize, 10) : 20;
-    return this.reviewsService.queue(user.id, Number.isNaN(p) ? 1 : p, Number.isNaN(ps) ? 20 : ps);
+    const allowSelf = includeOwnSubmissions === 'true' || includeOwnSubmissions === '1';
+    return this.reviewsService.queue(user.id, Number.isNaN(p) ? 1 : p, Number.isNaN(ps) ? 20 : ps, allowSelf);
   }
+
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Test review candidate sign (Testing/Development)',
+    description: 'Submit review for a candidate with 1 specific reviewer and immediately evaluate consensus. Bypasses surveyor check.',
+  })
+  @Post('test-review')
+  async testReview(@CurrentUser() user: any, @Body() dto: TestReviewDto) {
+    const targetReviewerId = dto.reviewerId || user.id;
+    return this.reviewsService.testReviewCandidate(dto.candidateId, targetReviewerId, {
+      vote: dto.vote,
+      suggestedSignTypeId: dto.suggestedSignTypeId,
+      declineReason: dto.declineReason,
+      declineNote: dto.declineNote,
+    });
+  }
+
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Direct/Assign candidates to 1 specific reviewer for testing',
+    description: 'Clear previous skipped/reviewed flags or prepare pending candidates for a specific reviewer queue',
+  })
+  @Post('test-assign')
+  async testAssign(@CurrentUser() user: any, @Body() dto: TestAssignDto) {
+    const targetReviewerId = dto.reviewerId || user.id;
+    return this.reviewsService.directCandidatesToReviewer(targetReviewerId, dto.candidateIds);
+  }
+
   // -- Flow 14: Active Learning orchestration hooks (internal) --
   // Backend dev provides the shell; AI teammate calls these after scoring candidates.
   // Single-candidate: PATCH /reviews/internal/:candidateId/active-learning-priority

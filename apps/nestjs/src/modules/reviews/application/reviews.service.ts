@@ -38,19 +38,24 @@ export class ReviewsService implements OnModuleInit {
     } catch {}
   }
 
-  async queue(reviewerId: string, page = 1, pageSize = 20) {
+  async queue(reviewerId: string, page = 1, pageSize = 20, includeOwnSubmissions = false) {
     const safePage = Math.max(1, page); const safeSize = Math.min(Math.max(1, pageSize), 100);
+    const allowSelfReview = includeOwnSubmissions || process.env.ALLOW_SELF_REVIEW === 'true';
     const query = this.candidateRepo.createQueryBuilder('candidate')
       .leftJoinAndSelect('candidate.predictedSignType', 'predictedSignType')
       .leftJoinAndSelect('candidate.submission', 'submission')
       .where('candidate.status IN (:...statuses)', {
         statuses: [CandidateStatus.PENDING_REVIEW, CandidateStatus.IN_CONSENSUS],
-      })
-      .andWhere(
+      });
+
+    if (!allowSelfReview) {
+      query.andWhere(
         '(submission.surveyor_id IS NULL OR submission.surveyor_id != :reviewerId)',
         { reviewerId },
-      )
-      .andWhere(
+      );
+    }
+
+    query.andWhere(
         `NOT EXISTS (
           SELECT 1 FROM candidate_reviews review
           WHERE review.candidate_id = candidate.id AND review.reviewer_id = :reviewerId
@@ -84,13 +89,14 @@ export class ReviewsService implements OnModuleInit {
     const [items, total] = await query.getManyAndCount();
     return { items, total, page: safePage, pageSize: safeSize, totalPages: Math.ceil(total / safeSize) };
   }
-  async vote(reviewerId: string, candidateId: string, dto: VoteDto) {
+  async vote(reviewerId: string, candidateId: string, dto: VoteDto, allowSelfReview = false) {
     const candidate = await this.candidateRepo.findOne({
       where: { id: candidateId },
       relations: ['submission'],
     });
     if (!candidate) throw new NotFoundException('Candidate ' + candidateId + ' not found');
-    if (candidate.submission && candidate.submission.surveyorId === reviewerId) {
+    const canSelfReview = allowSelfReview || process.env.ALLOW_SELF_REVIEW === 'true';
+    if (!canSelfReview && candidate.submission && candidate.submission.surveyorId === reviewerId) {
       throw new ForbiddenException('You cannot review sign candidates from your own survey submission');
     }
 
@@ -405,5 +411,128 @@ export class ReviewsService implements OnModuleInit {
     // Filter to those with default priority (0) — candidates the AL engine has not yet scored
     const unscored = items.filter(c => !c.activeLearningPriority || c.activeLearningPriority === 0);
     return { items: unscored, totalUnscored: unscored.length, totalPending: total, limit: n };
+  }
+
+  /**
+   * Special testing function: submit a review for 1 specific reviewer
+   * and immediately evaluate consensus with single-reviewer rule.
+   * Bypasses surveyor restrictions and prepares reviewer profile automatically.
+   */
+  async testReviewCandidate(
+    candidateId: string,
+    reviewerId: string,
+    dto: { vote: number; suggestedSignTypeId?: number; declineReason?: string; declineNote?: string },
+  ) {
+    const candidate = await this.candidateRepo.findOne({
+      where: { id: candidateId },
+      relations: ['submission'],
+    });
+    if (!candidate) throw new NotFoundException('Candidate ' + candidateId + ' not found');
+
+    // Ensure reviewer profile exists
+    try {
+      await (this.candidateRepo.manager as any).query(
+        `INSERT INTO reviewer_profiles (
+          user_id, reliability_score, total_reviews, correct_reviews, accuracy_rate, current_streak,
+          total_correct_votes, total_false_votes, consecutive_errors, is_provisional, is_review_suspended
+        ) VALUES ($1, 100.00, 0, 0, 0, 0, 0, 0, 0, false, false)
+        ON CONFLICT (user_id) DO UPDATE SET is_review_suspended = false`,
+        [reviewerId],
+      );
+    } catch {}
+
+    // Reset status to PENDING_REVIEW if candidate was already processed or stuck
+    if (candidate.status !== CandidateStatus.PENDING_REVIEW && candidate.status !== CandidateStatus.IN_CONSENSUS) {
+      await this.candidateRepo.update(candidateId, { status: CandidateStatus.PENDING_REVIEW });
+    }
+
+    // Delete any prior review from this reviewer to allow re-testing
+    await this.reviewRepo.delete({ candidateId, reviewerId } as any);
+
+    // Save vote
+    const review: any = this.reviewRepo.create({
+      candidateId,
+      reviewerId,
+      vote: dto.vote,
+      suggestedSignTypeId: dto.suggestedSignTypeId ?? null,
+      declineReason: dto.declineReason ?? null,
+      declineNote: dto.declineNote ?? null,
+    } as any);
+    const saved = await this.reviewRepo.save(review);
+
+    // Evaluate consensus
+    let consensusLog = null;
+    try {
+      consensusLog = await this.consensusService.evaluate(candidateId);
+    } catch (e: any) {
+      // ignore
+    }
+
+    if (this.dailyTasksService) {
+      this.dailyTasksService.recordProgress(reviewerId, 'REVIEW', 1).catch(() => {});
+    }
+
+    return {
+      success: true,
+      message: 'Test review cast and evaluated for single reviewer',
+      candidateId,
+      reviewerId,
+      review: saved,
+      consensusLog,
+    };
+  }
+
+  /**
+   * Special testing function: assigns / directs candidate(s) to a specific reviewer
+   * by resetting their status to PENDING_REVIEW and clearing any previous skips/reviews
+   * for that reviewer.
+   */
+  async directCandidatesToReviewer(reviewerId: string, candidateIds?: string[]) {
+    let targetIds = candidateIds;
+    if (!targetIds || targetIds.length === 0) {
+      const candidates = await this.candidateRepo.find({
+        where: [
+          { status: CandidateStatus.PENDING_REVIEW },
+          { status: CandidateStatus.IN_CONSENSUS },
+        ],
+        take: 10,
+        order: { createdAt: 'DESC' },
+      });
+      targetIds = candidates.map((c) => c.id);
+    }
+
+    if (targetIds.length === 0) {
+      return { success: true, count: 0, message: 'No candidates available to assign', reviewerId };
+    }
+
+    // Remove any skipped records for this reviewer
+    try {
+      await (this.candidateRepo.manager as any).query(
+        'DELETE FROM reviewer_skipped_candidates WHERE reviewer_id = $1 AND candidate_id = ANY($2)',
+        [reviewerId, targetIds],
+      );
+    } catch {}
+
+    // Remove any existing reviews from this reviewer so they can review them again
+    try {
+      await (this.candidateRepo.manager as any).query(
+        'DELETE FROM candidate_reviews WHERE reviewer_id = $1 AND candidate_id = ANY($2)',
+        [reviewerId, targetIds],
+      );
+    } catch {}
+
+    // Ensure candidate status is PENDING_REVIEW
+    await (this.candidateRepo.manager as any).query(
+      "UPDATE unverified_sign_candidates SET status = 'PENDING_REVIEW' WHERE id = ANY($1) AND status != 'VERIFIED'",
+      [targetIds],
+    );
+
+    return {
+      success: true,
+      reviewerId,
+      assignedCount: targetIds.length,
+      candidateIds: targetIds,
+      message: `Assigned ${targetIds.length} candidate(s) to reviewer ${reviewerId} for testing`,
+    };
   }
 }
