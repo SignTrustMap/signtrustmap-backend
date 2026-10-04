@@ -317,3 +317,73 @@ describe('ReviewsService reportCandidate', () => {
     );
   });
 });
+
+describe('ReviewsService test helpers', () => {
+  it('testReviewCandidate prepares profile, records vote, and triggers single-reviewer consensus', async () => {
+    const rawQuery = jest.fn().mockResolvedValue([]);
+    const candidate = {
+      id: 'cand-test-1',
+      status: CandidateStatus.PENDING_REVIEW,
+      submission: { surveyorId: 'rev-test-1' }, // same as reviewer (self-review testing)
+    };
+    const candidates = {
+      findOne: jest.fn().mockResolvedValue(candidate),
+      update: jest.fn().mockResolvedValue(undefined),
+      manager: { query: rawQuery },
+    } as unknown as Repository<UnverifiedSignCandidate>;
+    const reviews = {
+      delete: jest.fn().mockResolvedValue(undefined),
+      create: jest.fn((val) => val),
+      save: jest.fn(async (val) => ({ ...val, id: 'review-1' })),
+    } as unknown as Repository<CandidateReview>;
+    const consensus = {
+      evaluate: jest.fn().mockResolvedValue({ id: 'log-test-1', finalOutcome: 'APPROVED' }),
+    } as unknown as ConsensusService;
+
+    const service = new ReviewsService(candidates, reviews, {} as any, consensus);
+
+    const result = await service.testReviewCandidate('cand-test-1', 'rev-test-1', {
+      vote: 1,
+      suggestedSignTypeId: 5,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.candidateId).toBe('cand-test-1');
+    expect(result.reviewerId).toBe('rev-test-1');
+    expect(result.consensusLog).toEqual({ id: 'log-test-1', finalOutcome: 'APPROVED' });
+    expect(rawQuery).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO reviewer_profiles'),
+      ['rev-test-1'],
+    );
+    expect(reviews.delete).toHaveBeenCalledWith({ candidateId: 'cand-test-1', reviewerId: 'rev-test-1' });
+    expect(consensus.evaluate).toHaveBeenCalledWith('cand-test-1');
+  });
+
+  it('directCandidatesToReviewer resets candidate status and clears skips/reviews for reviewer', async () => {
+    const rawQuery = jest.fn().mockResolvedValue([]);
+    const candidates = {
+      find: jest.fn().mockResolvedValue([{ id: 'c-1' }, { id: 'c-2' }]),
+      manager: { query: rawQuery },
+    } as unknown as Repository<UnverifiedSignCandidate>;
+
+    const service = new ReviewsService(candidates, {} as any, {} as any, {} as any);
+
+    const result = await service.directCandidatesToReviewer('rev-test-1', ['c-1', 'c-2']);
+
+    expect(result.success).toBe(true);
+    expect(result.assignedCount).toBe(2);
+    expect(rawQuery).toHaveBeenCalledWith(
+      expect.stringContaining('DELETE FROM reviewer_skipped_candidates'),
+      ['rev-test-1', ['c-1', 'c-2']],
+    );
+    expect(rawQuery).toHaveBeenCalledWith(
+      expect.stringContaining('DELETE FROM candidate_reviews'),
+      ['rev-test-1', ['c-1', 'c-2']],
+    );
+    expect(rawQuery).toHaveBeenCalledWith(
+      expect.stringContaining("UPDATE unverified_sign_candidates SET status = 'PENDING_REVIEW'"),
+      [['c-1', 'c-2']],
+    );
+  });
+});
+

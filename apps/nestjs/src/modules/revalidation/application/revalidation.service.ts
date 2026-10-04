@@ -12,7 +12,7 @@ import { NotificationsService } from '../../notifications/notifications.service'
 import { DailyTasksService } from '../../daily-tasks/daily-tasks.service';
 import { randomUUID } from 'crypto';
 
-const DEFAULT_MIN_VOTES_REQUIRED = 3;
+const DEFAULT_MIN_VOTES_REQUIRED = 1;
 const DEFAULT_MAX_PROXIMITY_METERS = 50;
 const DEFAULT_DAILY_SUBMISSION_LIMIT = 3;
 

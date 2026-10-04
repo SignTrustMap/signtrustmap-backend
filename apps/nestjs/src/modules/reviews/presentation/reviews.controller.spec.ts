@@ -16,6 +16,8 @@ describe('ReviewsController', () => {
     setActiveLearningPriority: jest.Mock;
     setBulkActiveLearningPriorities: jest.Mock;
     vote: jest.Mock;
+    testReviewCandidate: jest.Mock;
+    directCandidatesToReviewer: jest.Mock;
   };
 
   const mockUser = { id: 'rev-1', email: 'reviewer@stm.dev' };
@@ -34,6 +36,8 @@ describe('ReviewsController', () => {
       setActiveLearningPriority: jest.fn(),
       setBulkActiveLearningPriorities: jest.fn(),
       vote: jest.fn(),
+      testReviewCandidate: jest.fn(),
+      directCandidatesToReviewer: jest.fn(),
     };
     controller = new ReviewsController(service as unknown as ReviewsService);
   });
@@ -93,7 +97,7 @@ describe('ReviewsController', () => {
     service.queue.mockResolvedValue({ items: [], total: 0 });
     const res = await controller.queue(mockUser, '1', '25');
     expect(res).toEqual({ items: [], total: 0 });
-    expect(service.queue).toHaveBeenCalledWith(mockUser.id, 1, 25);
+    expect(service.queue).toHaveBeenCalledWith(mockUser.id, 1, 25, false);
   });
 
   it('getUnscored calls service.getUnscoredCandidates', async () => {
@@ -122,5 +126,24 @@ describe('ReviewsController', () => {
     const res = await controller.vote(mockUser, 'cand-1', { vote: 1 });
     expect(res).toEqual({ status: 'CONFIRMED' });
     expect(service.vote).toHaveBeenCalledWith(mockUser.id, 'cand-1', { vote: 1 });
+  });
+
+  it('testReview calls service.testReviewCandidate', async () => {
+    service.testReviewCandidate.mockResolvedValue({ success: true });
+    const res = await controller.testReview(mockUser, { candidateId: 'cand-1', vote: 1 });
+    expect(res).toEqual({ success: true });
+    expect(service.testReviewCandidate).toHaveBeenCalledWith('cand-1', mockUser.id, {
+      vote: 1,
+      suggestedSignTypeId: undefined,
+      declineReason: undefined,
+      declineNote: undefined,
+    });
+  });
+
+  it('testAssign calls service.directCandidatesToReviewer', async () => {
+    service.directCandidatesToReviewer.mockResolvedValue({ success: true, count: 5 });
+    const res = await controller.testAssign(mockUser, { candidateIds: ['cand-1'] });
+    expect(res).toEqual({ success: true, count: 5 });
+    expect(service.directCandidatesToReviewer).toHaveBeenCalledWith(mockUser.id, ['cand-1']);
   });
 });
