@@ -9,11 +9,13 @@ import { PaymentOrder } from '../payments/infrastructure/persistence/payment-ord
 import { TopupPackage } from '../payments/infrastructure/persistence/topup-package.entity';
 
 import { RewardsModule } from '../rewards/rewards.module';
+import { PaymentsModule } from '../payments/payments.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Wallet, CreditTransaction, TopupPackage, PaymentOrder, PaymentMethod]),
     RewardsModule,
+    PaymentsModule,
   ],
   controllers: [WalletController],
   providers: [WalletService],
