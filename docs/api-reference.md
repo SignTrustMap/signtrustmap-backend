@@ -90,6 +90,10 @@ Base: `http://localhost:3000/api/v1`
 | `GET` | `/wallet/payment-methods` | JWT | Danh sách thẻ đã lưu. Màn Payment Methods. |
 | `POST` | `/wallet/payment-methods` | JWT | Thêm thẻ mới. Body `{cardHolderName, cardLast4, cardBrand, expiryMonth, expiryYear, isDefault}`. Màn Add New Card. |
 | `DELETE` | `/wallet/payment-methods/:id` | JWT | Xóa thẻ đã lưu. |
+| `POST` | `/payments/momo/create` | JWT | Khởi tạo phiên thanh toán MoMo Sandbox. Body `{packageId?, customAmount?, redirectUrl?, extraData?}` → trả về `payUrl` (trang thanh toán), `qrCodeUrl` (QR code), `deeplink` (mở MoMo app). |
+| `POST` | `/payments/momo/ipn` | Public | Instant Payment Notification (IPN) webhook từ MoMo Sandbox. Xác thực HMAC-SHA256, ghi log `payment_callbacks`, và cộng credit vào ví khi thanh toán thành công. |
+| `GET` | `/payments/momo/query/:orderCode` | JWT | Truy vấn trạng thái giao dịch thời gian thực từ MoMo Sandbox API (`/v2/gateway/api/query`). |
+| `POST` | `/payments/webhook` | Public | Webhook thanh toán tổng quát với HMAC-SHA256 signature (`x-webhook-signature` hoặc `stripe-signature`). |
 
 ### 3.3 Survey Submission (`/submissions`)
 

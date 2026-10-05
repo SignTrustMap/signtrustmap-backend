@@ -4,6 +4,10 @@ export class TopUpDto {
   @IsInt()
   @IsPositive()
   packageId: number;
+
+  @IsOptional()
+  @IsString()
+  gateway?: string;
 }
 
 export class CustomTopUpDto {
@@ -15,6 +19,10 @@ export class CustomTopUpDto {
   @IsString()
   @MaxLength(500)
   description?: string;
+
+  @IsOptional()
+  @IsString()
+  gateway?: string;
 }
 
 export class CreatePaymentMethodDto {

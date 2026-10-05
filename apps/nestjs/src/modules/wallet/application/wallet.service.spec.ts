@@ -458,4 +458,60 @@ describe('WalletService (Phase 1 Ledger & Double-Entry Tests)', () => {
       expect(res.isFrozen).toBe(false);
     });
   });
+
+  describe('topUp and topUpCustom with MoMo Gateway', () => {
+    it('creates MOCK payment order when gateway is default', async () => {
+      packageRepo.findOne.mockResolvedValue({ id: 1, packageName: 'Starter', priceVnd: '50000', creditAmount: 50, isActive: true });
+      orderRepo.save.mockImplementation(async (o: any) => ({ ...o, id: 'ord-1', createdAt: new Date() }));
+      walletRepo.findOne.mockResolvedValue({ id: 'w-1', userId: 'user-1', balance: '0' });
+
+      const res = await service.topUp('user-1', { packageId: 1 });
+      expect(res.paymentOrder.gateway).toBe('MOCK');
+      expect(res.paymentOrder.amountVnd).toBe('50000');
+    });
+
+    it('delegates to momoService when gateway is MOMO', async () => {
+      const mockMomoService = {
+        createPayment: jest.fn().mockResolvedValue({ payUrl: 'https://test-payment.momo.vn/pay', orderId: 'STM-1' }),
+      };
+      packageRepo.findOne.mockResolvedValue({ id: 1, packageName: 'Starter', priceVnd: '50000', creditAmount: 50, isActive: true });
+
+      const serviceWithMomo = new WalletService(
+        walletRepo,
+        txRepo,
+        packageRepo,
+        orderRepo,
+        methodRepo,
+        dataSource,
+        undefined,
+        mockMomoService as any,
+      );
+
+      const res: any = await serviceWithMomo.topUp('user-1', { packageId: 1, gateway: 'MOMO' });
+      expect(mockMomoService.createPayment).toHaveBeenCalledWith('user-1', { packageId: 1 });
+      expect(res.payUrl).toBe('https://test-payment.momo.vn/pay');
+    });
+
+    it('delegates custom topUp to momoService when gateway is MOMO', async () => {
+      const mockMomoService = {
+        createPayment: jest.fn().mockResolvedValue({ payUrl: 'https://test-payment.momo.vn/pay', customAmount: 50 }),
+      };
+
+      const serviceWithMomo = new WalletService(
+        walletRepo,
+        txRepo,
+        packageRepo,
+        orderRepo,
+        methodRepo,
+        dataSource,
+        undefined,
+        mockMomoService as any,
+      );
+
+      const res: any = await serviceWithMomo.topUpCustom('user-1', { amount: 50, gateway: 'MOMO' });
+      expect(mockMomoService.createPayment).toHaveBeenCalledWith('user-1', { customAmount: 50 });
+      expect(res.payUrl).toBe('https://test-payment.momo.vn/pay');
+    });
+  });
 });
+

@@ -8,6 +8,7 @@ import { PaymentOrder, PaymentStatus } from '../../payments/infrastructure/persi
 import { TopupPackage } from '../../payments/infrastructure/persistence/topup-package.entity';
 import { TopUpDto, CustomTopUpDto, CreatePaymentMethodDto } from '../presentation/dto/wallet.dto';
 import { RewardEngineService } from '../../rewards/application/reward-engine.service';
+import { MomoPaymentService } from '../../payments/application/momo-payment.service';
 
 @Injectable()
 export class WalletService {
@@ -19,6 +20,7 @@ export class WalletService {
     @InjectRepository(PaymentMethod) private readonly methodRepo: Repository<PaymentMethod>,
     private readonly dataSource: DataSource,
     @Optional() private readonly rewardEngine?: RewardEngineService,
+    @Optional() private readonly momoService?: MomoPaymentService,
   ) {}
 
   private async ensureWallet(userId: string): Promise<Wallet> {
@@ -101,9 +103,21 @@ export class WalletService {
     if (!pkg) throw new NotFoundException(`Top-up package #${dto.packageId} not found`);
     if (!pkg.isActive) throw new NotFoundException(`Top-up package #${dto.packageId} is inactive`);
 
+    const gateway = (dto.gateway || 'MOCK').toUpperCase();
+    if (gateway === 'MOMO' && this.momoService) {
+      return this.momoService.createPayment(userId, { packageId: dto.packageId });
+    }
+
     await this.ensureWallet(userId);
     const orderCode = `STM-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
-    const order = this.orderRepo.create({ userId, packageId: pkg.id, orderCode, amountVnd: pkg.priceVnd, gateway: 'MOCK', status: PaymentStatus.PENDING } as any);
+    const order = this.orderRepo.create({
+      userId,
+      packageId: pkg.id,
+      orderCode,
+      amountVnd: pkg.priceVnd,
+      gateway: dto.gateway || 'MOCK',
+      status: PaymentStatus.PENDING,
+    } as any);
     const saved = (await this.orderRepo.save(order as any)) as unknown as PaymentOrder;
     return {
       paymentOrder: {
@@ -121,6 +135,12 @@ export class WalletService {
     if (!Number.isFinite(amount) || !Number.isInteger(amount) || amount < 10 || amount > 10000) {
       throw new BadRequestException('amount must be an integer in [10, 10000]');
     }
+
+    const gateway = (dto.gateway || 'MOCK').toUpperCase();
+    if (gateway === 'MOMO' && this.momoService) {
+      return this.momoService.createPayment(userId, { customAmount: amount });
+    }
+
     await this.ensureWallet(userId);
     // Price rule: 1 credit = 1000 VND (configurable via credit_rules table)
     let pricePerCredit = 1000;
@@ -147,7 +167,7 @@ export class WalletService {
     const orderCode = `STM-CUSTOM-${Date.now()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
     const order = this.orderRepo.create({
       userId, packageId: (pkg as any).id > 0 ? (pkg as any).id : 1,
-      orderCode, amountVnd, gateway: 'MOCK', status: PaymentStatus.PENDING,
+      orderCode, amountVnd, gateway: dto.gateway || 'MOCK', status: PaymentStatus.PENDING,
     } as any);
     const saved = (await this.orderRepo.save(order as any)) as unknown as PaymentOrder;
     // Override credit amount for custom orders (stored in note / callback payload)
