@@ -12,8 +12,8 @@ Dynamic Urgency & Bounty Calculation:
   Bounty Reward = BaseReward + floor(Urgency * MaxBonus) (Base: 20, MaxBonus: 100)
 
 Delisting Worker:
-  When LifetimeRemaining <= 0 (Age >= L_max), sign status transitions to 'INACTIVE'
-  and freshness_score = 0.0.
+  When LifetimeRemaining <= 0 (Age >= L_max), sign status transitions to 'INACTIVE',
+  freshness_score = 0.0, and a maximum urgency revalidation quest is spawned.
 
 Beat schedule: every 30 minutes via Celery Beat on queue 'freshness'.
 """
@@ -89,6 +89,14 @@ _ACTIVE_SIGNS_SQL = text(
     JOIN traffic_sign_types     tst ON tst.id = vts.sign_type_id
     LEFT JOIN sign_categories   sc  ON sc.id = tst.category_id
     WHERE vts.status IN ('ACTIVE', 'STALE', 'REVALIDATION_REQUIRED')
+       OR (
+            vts.status = 'INACTIVE'
+            AND NOT EXISTS (
+                SELECT 1 FROM revalidation_tasks rt
+                WHERE rt.verified_sign_id = vts.id
+                  AND rt.status IN ('OPEN', 'EVALUATING')
+            )
+       )
     ORDER BY vts.last_verified_at ASC
     """
 )
@@ -234,70 +242,77 @@ def task_check_freshness_and_spawn_revalidations(self) -> dict[str, Any]:  # typ
                 try:
                     # M5.4 Delisting Worker: Age >= L_max (LifetimeRemaining <= 0)
                     if lifetime_remaining <= 0.0:
-                        db.execute(_UPDATE_SIGN_INACTIVE_SQL, {"sign_id": sign_id})
-                        db.execute(
-                            _INSERT_LIFECYCLE_EVENT_SQL,
-                            {
-                                "sign_id": sign_id,
-                                "event_type": "AUTO_DELISTED",
-                                "note": f"Delisted to INACTIVE: age={age_days:.1f}d exceeded L_max={l_max}d ({route_info.get('name')}).",
-                            },
-                        )
-                        db.commit()
-                        delisted += 1
-                        logger.info("[freshness] Sign %s delisted: age %.1f >= L_max %d", sign_id, age_days, l_max)
-                        continue
-
-                    # M5.3 Revalidation Required & Dynamic Urgency Bounty
-                    freshness_score = max(0.0, min(1.0, round(lifetime_remaining / l_max, 4)))
-
-                    if lifetime_remaining <= t_reval:
-                        urgency = max(0.0, min(1.0, round(1.0 - (lifetime_remaining / t_reval), 4)))
-                        bounty_reward = BASE_BOUNTY_REWARD + math.floor(urgency * MAX_BOUNTY_BONUS)
-                        priority = "HIGH" if urgency >= 0.7 else ("MEDIUM" if urgency >= 0.3 else "LOW")
-
-                        db.execute(_UPDATE_SIGN_STALE_SQL, {"sign_id": sign_id, "freshness_score": freshness_score})
-
-                        existing_task = db.execute(_CHECK_EXISTING_TASK_SQL, {"sign_id": sign_id}).first()
-                        if not existing_task:
-                            task_row = db.execute(
-                                _INSERT_TASK_SQL,
-                                {
-                                    "sign_id": sign_id,
-                                    "priority": priority,
-                                    "reward_credits": bounty_reward,
-                                    "urgency": urgency,
-                                    "route_class_id": route_class_id,
-                                    "remaining_days": max(1, int(lifetime_remaining)),
-                                },
-                            ).mappings().first()
-
-                            task_id = task_row["id"] if task_row else "unknown"
+                        if str(row.get("status") or "").upper() != "INACTIVE":
+                            db.execute(_UPDATE_SIGN_INACTIVE_SQL, {"sign_id": sign_id})
                             db.execute(
                                 _INSERT_LIFECYCLE_EVENT_SQL,
                                 {
                                     "sign_id": sign_id,
-                                    "event_type": "MARKED_STALE",
-                                    "note": (
-                                        f"Revalidation quest spawned: route={route_info.get('road_type')}, "
-                                        f"remaining={lifetime_remaining:.1f}d, urgency={urgency:.2f}, "
-                                        f"bounty={bounty_reward}, task={task_id}."
-                                    ),
+                                    "event_type": "AUTO_DELISTED",
+                                    "note": f"Delisted to INACTIVE: age={age_days:.1f}d exceeded L_max={l_max}d ({route_info.get('name')}).",
                                 },
                             )
-                            spawned += 1
-                            logger.info(
-                                "[freshness] Spawned task for sign %s (remaining: %.1f d, urgency: %.2f, bounty: %d)",
-                                sign_id,
-                                lifetime_remaining,
-                                urgency,
-                                bounty_reward,
-                            )
-                        db.commit()
+                            delisted += 1
+                            logger.info("[freshness] Sign %s delisted: age %.1f >= L_max %d", sign_id, age_days, l_max)
+
+                        # Even when lifetime reaches 0, ensure maximum urgency revalidation quest is spawned
+                        urgency = 1.0
+                        bounty_reward = BASE_BOUNTY_REWARD + MAX_BOUNTY_BONUS
+                        priority = "HIGH"
+                        remaining_days = max(1, t_reval)
+                    elif lifetime_remaining <= t_reval:
+                        # M5.3 Revalidation Required & Dynamic Urgency Bounty
+                        freshness_score = max(0.0, min(1.0, round(lifetime_remaining / l_max, 4)))
+                        urgency = max(0.0, min(1.0, round(1.0 - (lifetime_remaining / t_reval), 4)))
+                        bounty_reward = BASE_BOUNTY_REWARD + math.floor(urgency * MAX_BOUNTY_BONUS)
+                        priority = "HIGH" if urgency >= 0.7 else ("MEDIUM" if urgency >= 0.3 else "LOW")
+                        remaining_days = max(1, int(lifetime_remaining))
+
+                        db.execute(_UPDATE_SIGN_STALE_SQL, {"sign_id": sign_id, "freshness_score": freshness_score})
                     else:
                         # Fresh / Aging sign: update decayed freshness score
+                        freshness_score = max(0.0, min(1.0, round(lifetime_remaining / l_max, 4)))
                         db.execute(_UPDATE_SIGN_SCORE_SQL, {"sign_id": sign_id, "freshness_score": freshness_score})
                         db.commit()
+                        continue
+
+                    # Ensure revalidation quest exists (for both expired signs and signs within t_reval window)
+                    existing_task = db.execute(_CHECK_EXISTING_TASK_SQL, {"sign_id": sign_id}).first()
+                    if not existing_task:
+                        task_row = db.execute(
+                            _INSERT_TASK_SQL,
+                            {
+                                "sign_id": sign_id,
+                                "priority": priority,
+                                "reward_credits": bounty_reward,
+                                "urgency": urgency,
+                                "route_class_id": route_class_id,
+                                "remaining_days": remaining_days,
+                            },
+                        ).mappings().first()
+
+                        task_id = task_row["id"] if task_row else "unknown"
+                        db.execute(
+                            _INSERT_LIFECYCLE_EVENT_SQL,
+                            {
+                                "sign_id": sign_id,
+                                "event_type": "MARKED_STALE",
+                                "note": (
+                                    f"Revalidation quest spawned: route={route_info.get('road_type')}, "
+                                    f"remaining={lifetime_remaining:.1f}d, urgency={urgency:.2f}, "
+                                    f"bounty={bounty_reward}, task={task_id}."
+                                ),
+                            },
+                        )
+                        spawned += 1
+                        logger.info(
+                            "[freshness] Spawned task for sign %s (remaining: %.1f d, urgency: %.2f, bounty: %d)",
+                            sign_id,
+                            lifetime_remaining,
+                            urgency,
+                            bounty_reward,
+                        )
+                    db.commit()
 
                 except Exception as exc:
                     db.rollback()
