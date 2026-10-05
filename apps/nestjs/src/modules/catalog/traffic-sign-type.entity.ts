@@ -13,6 +13,9 @@ export class TrafficSignType {
   @Column({ name: 'sign_code', type: 'varchar', length: 50, unique: true })
   signCode: string;
 
+  @Column({ name: 'slug', type: 'varchar', length: 100, nullable: true, unique: true })
+  slug?: string | null;
+
   @Column({ name: 'name_vi', type: 'varchar', length: 255 })
   nameVi: string;
 

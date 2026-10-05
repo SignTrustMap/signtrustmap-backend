@@ -27,6 +27,7 @@ _LABELS_SQL = text(
     SELECT
         tst.id            AS sign_type_id,
         tst.sign_code     AS sign_code,
+        tst.slug          AS slug,
         tst.name_vi       AS name_vi,
         tst.name_en       AS name_en,
         tst.shape         AS shape,
@@ -66,6 +67,7 @@ def load_catalog_labels() -> dict:
         {
             "sign_type_id": int(row["sign_type_id"]),
             "sign_code": str(row["sign_code"]),
+            "slug": row["slug"],
             "name_vi": row["name_vi"],
             "name_en": row["name_en"],
             "shape": row["shape"],

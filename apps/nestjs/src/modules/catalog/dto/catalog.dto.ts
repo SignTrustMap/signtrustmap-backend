@@ -102,6 +102,12 @@ export class CreateSignTypeDto {
   @Matches(/^[A-Za-z0-9._-]+$/)
   signCode: string;
 
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @MaxLength(100)
+  slug?: string;
+
   @Transform(trim)
   @IsString()
   @MinLength(1)
@@ -173,6 +179,12 @@ export class UpdateSignTypeDto {
   @MaxLength(50)
   @Matches(/^[A-Za-z0-9._-]+$/)
   signCode?: string;
+
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @MaxLength(100)
+  slug?: string | null;
 
   @IsOptional()
   @Transform(trim)
