@@ -150,7 +150,7 @@ export class CatalogService {
     const search = this.trimToNull(options.search);
     if (search) {
       query.andWhere(
-        '(signType.signCode ILIKE :search OR signType.nameVi ILIKE :search OR signType.nameEn ILIKE :search)',
+        '(signType.signCode ILIKE :search OR signType.slug ILIKE :search OR signType.nameVi ILIKE :search OR signType.nameEn ILIKE :search)',
         { search: `%${search}%` },
       );
     }
@@ -187,6 +187,7 @@ export class CatalogService {
         signTypes.create({
           categoryId: dto.categoryId,
           signCode,
+          slug: this.trimToNull(dto.slug)?.toUpperCase() ?? undefined,
           nameVi: dto.nameVi.trim(),
           nameEn: dto.nameEn.trim(),
           description: this.trimToNull(dto.description),
@@ -232,6 +233,18 @@ export class CatalogService {
           throw new ConflictException(`sign_code "${signCode}" exists`);
         }
         signType.signCode = signCode;
+      }
+      if (dto.slug !== undefined) {
+        const slug = this.trimToNull(dto.slug)?.toUpperCase() ?? null;
+        if (slug) {
+          const duplicate = await signTypes.findOne({
+            where: { slug: ILike(slug) },
+          });
+          if (duplicate && duplicate.id !== id) {
+            throw new ConflictException(`slug "${slug}" exists`);
+          }
+        }
+        signType.slug = slug;
       }
       if (dto.nameVi !== undefined) signType.nameVi = dto.nameVi.trim();
       if (dto.nameEn !== undefined) signType.nameEn = dto.nameEn.trim();

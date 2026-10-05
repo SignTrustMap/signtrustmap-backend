@@ -480,10 +480,14 @@ def _resolve_sign_type_id(db, sign: dict[str, Any]) -> int | None:
         text(
             "SELECT id FROM traffic_sign_types "
             "WHERE is_active = TRUE AND ("
+            "lower(slug) = lower(:class_name) OR "
             "lower(sign_code) = lower(:class_name) OR "
             "lower(replace(sign_code, '-', '_')) = lower(:class_name) OR "
             "lower(replace(name_en, ' ', '_')) = lower(:class_name)"
-            ") ORDER BY CASE WHEN lower(sign_code) = lower(:class_name) THEN 0 ELSE 1 END LIMIT 1"
+            ") ORDER BY CASE "
+            "WHEN lower(sign_code) = lower(:class_name) THEN 0 "
+            "WHEN lower(slug) = lower(:class_name) THEN 1 "
+            "ELSE 2 END LIMIT 1"
         ),
         {"class_name": class_name},
     ).mappings().first()
