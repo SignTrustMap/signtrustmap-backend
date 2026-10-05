@@ -57,6 +57,20 @@ describe('RevalidationController', () => {
     it('throws BadRequestException if coordinates out of bounds', () => {
       expect(() => controller.listTasksInBbox('-100.0', '106.0', '11.0', '107.0')).toThrow(BadRequestException);
     });
+
+    it('allows query when all bounding box coordinates are omitted', async () => {
+      await controller.listTasksInBbox(undefined, undefined, undefined, undefined, 'OPEN', 'HIGH', '1', '20');
+      expect(service.listTasksInBbox).toHaveBeenCalledWith({
+        minLat: undefined,
+        minLon: undefined,
+        maxLat: undefined,
+        maxLon: undefined,
+        status: 'OPEN',
+        priority: 'HIGH',
+        page: 1,
+        pageSize: 20,
+      });
+    });
   });
 
   describe('listTasks', () => {
