@@ -19,14 +19,35 @@ export class RevalidationController {
     @Query('status') status?: string, @Query('priority') priority?: string,
     @Query('page') page?: string, @Query('pageSize') pageSize?: string,
   ) {
-    const min_lat = minLat != null ? parseFloat(minLat) : NaN;
-    const min_lon = minLon != null ? parseFloat(minLon) : NaN;
-    const max_lat = maxLat != null ? parseFloat(maxLat) : NaN;
-    const max_lon = maxLon != null ? parseFloat(maxLon) : NaN;
-    if ([min_lat, min_lon, max_lat, max_lon].some(v => Number.isNaN(v))) throw new BadRequestException('min_lat, min_lon, max_lat, max_lon are required and must be numbers');
-    if (min_lat < -90 || max_lat > 90 || min_lon < -180 || max_lon > 180) throw new BadRequestException('bbox out of range');
+    const anyBbox = minLat != null || minLon != null || maxLat != null || maxLon != null;
+    let min_lat: number | undefined;
+    let min_lon: number | undefined;
+    let max_lat: number | undefined;
+    let max_lon: number | undefined;
+
+    if (anyBbox) {
+      if (minLat == null || minLon == null || maxLat == null || maxLon == null) {
+        throw new BadRequestException('min_lat, min_lon, max_lat, max_lon are required and must be numbers');
+      }
+      min_lat = parseFloat(minLat);
+      min_lon = parseFloat(minLon);
+      max_lat = parseFloat(maxLat);
+      max_lon = parseFloat(maxLon);
+      if ([min_lat, min_lon, max_lat, max_lon].some(v => Number.isNaN(v))) throw new BadRequestException('min_lat, min_lon, max_lat, max_lon must be numbers');
+      if (min_lat < -90 || max_lat > 90 || min_lon < -180 || max_lon > 180) throw new BadRequestException('bbox out of range');
+    }
+
     const p = page ? parseInt(page, 10) : 1, ps = pageSize ? parseInt(pageSize, 10) : 20;
-    return this.svc.listTasksInBbox({ minLat: min_lat, minLon: min_lon, maxLat: max_lat, maxLon: max_lon, status, priority, page: Number.isNaN(p) ? 1 : p, pageSize: Number.isNaN(ps) ? 20 : ps });
+    return this.svc.listTasksInBbox({
+      minLat: min_lat,
+      minLon: min_lon,
+      maxLat: max_lat,
+      maxLon: max_lon,
+      status,
+      priority,
+      page: Number.isNaN(p) ? 1 : p,
+      pageSize: Number.isNaN(ps) ? 20 : ps,
+    });
   }
 
   @ApiOperation({ summary: 'List revalidation tasks', description: 'Paginated list of verification tasks filterable by status, priority, or spatial radius' })
