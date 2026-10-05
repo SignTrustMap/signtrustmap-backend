@@ -115,7 +115,7 @@ _INSERT_TASK_SQL = text(
     INSERT INTO revalidation_tasks
         (verified_sign_id, priority, reward_credits, urgency, status, route_classification_id, created_at, expired_at)
     VALUES
-        (:sign_id, :priority::task_priority, :reward_credits, :urgency, 'OPEN', :route_class_id, NOW(), NOW() + (:remaining_days * INTERVAL '1 day'))
+        (:sign_id, CAST(:priority AS task_priority), :reward_credits, :urgency, 'OPEN', :route_class_id, NOW(), NOW() + (:remaining_days * INTERVAL '1 day'))
     RETURNING id
     """
 )
