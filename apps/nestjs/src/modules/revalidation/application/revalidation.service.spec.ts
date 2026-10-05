@@ -377,6 +377,77 @@ describe('RevalidationService', () => {
       );
     });
 
+    it('queries non-spatial revalidation tasks with sign metadata and status filter', async () => {
+      const query = jest.fn().mockImplementation(async (sql: string) => {
+        if (sql.includes('COUNT(*)')) {
+          return [{ cnt: 1 }];
+        }
+        if (sql.includes('FROM revalidation_tasks rt')) {
+          return [
+            {
+              id: 'task-non-spatial',
+              verified_sign_id: 'sign-1',
+              reward_credits: 50,
+              urgency: 0.8,
+              status: 'OPEN',
+              sign_code: 'P.102',
+              name_en: 'No Entry',
+              name_vi: 'Cấm đi ngược chiều',
+              longitude: 106.7,
+              latitude: 10.77,
+            },
+          ];
+        }
+        return [];
+      });
+
+      const service = new RevalidationService(
+        {} as any,
+        {} as any,
+        {} as any,
+        { query } as unknown as DataSource,
+        {} as any,
+        {} as any,
+        {} as any,
+      );
+
+      const result = await service.listTasks(1, 20, 'OPEN', 'reward');
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0]).toMatchObject({
+        id: 'task-non-spatial',
+        sign_code: 'P.102',
+        name_en: 'No Entry',
+      });
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining('JOIN verified_traffic_signs vts'),
+        expect.arrayContaining(['OPEN', 20, 0]),
+      );
+    });
+
+    it('queries tasks in bbox without ST_Within when coordinates are omitted', async () => {
+      const query = jest.fn().mockImplementation(async (sql: string) => {
+        if (sql.includes('COUNT(*)')) return [{ cnt: 0 }];
+        return [];
+      });
+
+      const service = new RevalidationService(
+        {} as any,
+        {} as any,
+        {} as any,
+        { query } as unknown as DataSource,
+        {} as any,
+        {} as any,
+        {} as any,
+      );
+
+      const result = await service.listTasksInBbox({ status: 'OPEN' });
+      expect(result.items).toEqual([]);
+      expect(query).toHaveBeenCalledWith(
+        expect.not.stringContaining('ST_Within'),
+        expect.arrayContaining(['OPEN', 20, 0]),
+      );
+    });
+
     it('attaches location and bounty to getTask response', async () => {
       const task = {
         id: 'task-1',

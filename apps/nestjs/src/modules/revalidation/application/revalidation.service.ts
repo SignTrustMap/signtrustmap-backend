@@ -135,27 +135,48 @@ export class RevalidationService {
       return { items, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
     }
 
-    const where: any = {};
+    const conditions: string[] = ['vts.location IS NOT NULL'];
+    const params: any[] = [];
+    let idx = 1;
     if (status && status.toUpperCase() !== 'ALL') {
-      where.status = status;
+      conditions.push(`rt.status = $${idx++}::task_status`);
+      params.push(status);
     } else if (!status) {
-      where.status = In([TaskStatus.OPEN, TaskStatus.EVALUATING]);
+      conditions.push(`rt.status IN ('OPEN', 'EVALUATING')`);
     }
-    const order: any =
+    const whereClause = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+    const countRows: any[] = await this.dataSource.query(
+      `SELECT COUNT(*)::int AS cnt FROM revalidation_tasks rt JOIN verified_traffic_signs vts ON vts.id = rt.verified_sign_id ${whereClause}`,
+      params,
+    );
+    const total = countRows[0]?.cnt ?? 0;
+    const orderClause =
       sort === 'reward'
-        ? { rewardCredits: 'DESC' }
+        ? 'rt.reward_credits DESC'
         : sort === 'urgency'
-          ? { urgency: 'DESC' }
-          : { createdAt: 'DESC' };
-    const [items, total] = await this.tasks.findAndCount({ where, order, skip: (p - 1) * ps, take: ps });
-    return { items, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
+          ? 'rt.urgency DESC'
+          : 'rt.created_at DESC';
+
+    const rows: any[] = await this.dataSource.query(
+      `SELECT rt.*, vts.sign_type_id, vts.status AS sign_status, vts.freshness_score,
+              ST_X(vts.location::geometry) AS longitude, ST_Y(vts.location::geometry) AS latitude,
+              vts.sign_crop_url, tst.sign_code, tst.name_en, tst.name_vi
+       FROM revalidation_tasks rt
+       JOIN verified_traffic_signs vts ON vts.id = rt.verified_sign_id
+       LEFT JOIN traffic_sign_types tst ON tst.id = vts.sign_type_id
+       ${whereClause}
+       ORDER BY ${orderClause}
+       LIMIT $${idx++} OFFSET $${idx}`,
+      [...params, ps, (p - 1) * ps],
+    );
+    return { items: rows, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
   }
 
   async listTasksInBbox(q: {
-    minLat: number;
-    minLon: number;
-    maxLat: number;
-    maxLon: number;
+    minLat?: number;
+    minLon?: number;
+    maxLat?: number;
+    maxLon?: number;
     status?: string;
     priority?: string;
     page?: number;
@@ -166,9 +187,14 @@ export class RevalidationService {
     const conditions: string[] = ['vts.location IS NOT NULL'];
     const params: any[] = [];
     let idx = 1;
-    // bbox via ST_Within on verified_traffic_signs.location
-    conditions.push(`ST_Within(vts.location, ST_MakeEnvelope($${idx++}, $${idx++}, $${idx++}, $${idx++}, 4326))`);
-    params.push(q.minLon, q.minLat, q.maxLon, q.maxLat);
+    // bbox via ST_Within on verified_traffic_signs.location if coordinates provided
+    if (
+      q.minLon != null && q.minLat != null && q.maxLon != null && q.maxLat != null &&
+      !Number.isNaN(q.minLon) && !Number.isNaN(q.minLat) && !Number.isNaN(q.maxLon) && !Number.isNaN(q.maxLat)
+    ) {
+      conditions.push(`ST_Within(vts.location, ST_MakeEnvelope($${idx++}, $${idx++}, $${idx++}, $${idx++}, 4326))`);
+      params.push(q.minLon, q.minLat, q.maxLon, q.maxLat);
+    }
     if (q.status && q.status.toUpperCase() !== 'ALL') {
       conditions.push(`rt.status = $${idx++}::task_status`);
       params.push(q.status);
