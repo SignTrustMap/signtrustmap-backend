@@ -52,6 +52,8 @@ services:
       JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_me_super_secret_32_chars}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
       INTERNAL_TOKEN: ${INTERNAL_TOKEN:-stm_internal_secret_dev}
+      AI_INFERENCE_URL: ${AI_INFERENCE_URL:-https://ai.signmap.site}
+      AI_INFERENCE_TIMEOUT_MS: ${AI_INFERENCE_TIMEOUT_MS:-30000}
       ROUTING_PROVIDER: ${ROUTING_PROVIDER:-OSRM}
       ROUTING_OSRM_BASE_URL: ${ROUTING_OSRM_BASE_URL:-https://router.project-osrm.org}
       ROUTING_OSRM_PROFILE: ${ROUTING_OSRM_PROFILE:-driving}
