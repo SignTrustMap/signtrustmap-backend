@@ -10,6 +10,7 @@ import { RevalidationController } from './presentation/revalidation.controller';
 import { WalletModule } from '../wallet/wallet.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { DailyTasksModule } from '../daily-tasks/daily-tasks.module';
+import { AiInferenceModule } from '../../integrations/ai-inference/ai-inference.module';
 @Module({
   imports: [
     TypeOrmModule.forFeature([
@@ -22,6 +23,7 @@ import { DailyTasksModule } from '../daily-tasks/daily-tasks.module';
     WalletModule,
     NotificationsModule,
     DailyTasksModule,
+    AiInferenceModule,
   ],
   controllers: [RevalidationController],
   providers: [RevalidationService],
