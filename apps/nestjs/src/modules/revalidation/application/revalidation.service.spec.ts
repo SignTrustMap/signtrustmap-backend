@@ -24,7 +24,7 @@ describe('RevalidationService', () => {
       save: jest.fn(async (value) => value),
     } as unknown as Repository<RevalidationTask>;
     const query = jest.fn(async (sql: string) => {
-      if (sql.includes('SELECT id, user_id FROM revalidation_evidences')) {
+      if (sql.includes('FROM revalidation_evidences')) {
         return [{ id: 'evidence-id', user_id: 'surveyor-id' }];
       }
       if (sql.includes('SELECT decision, reviewer_id, evidence_id')) {
@@ -179,6 +179,21 @@ describe('RevalidationService', () => {
       );
     });
 
+    it('accepts evidence within proximity guardrail with evidenceType CHANGED', async () => {
+      const { service, query } = proximityHarness(20);
+      const result = await service.submitEvidence('task-id', 'surveyor-id', {
+        latitude: 21.02851,
+        longitude: 105.83419,
+        mediaUrl: 'revalidation/task-id/changed.jpg',
+        evidenceType: 'CHANGED',
+      });
+      expect(result.evidenceType).toBe('CHANGED');
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining('evidence_type'),
+        expect.arrayContaining(['CHANGED']),
+      );
+    });
+
     it('rejects evidence farther than the max proximity', async () => {
       const { service } = proximityHarness(142);
       await expect(service.submitEvidence('task-id', 'surveyor-id', { latitude: 21.02851, longitude: 105.83419 }))
@@ -230,11 +245,11 @@ describe('RevalidationService', () => {
   });
 
   describe('evaluateRevalidationConsensus (Scenario #3 auto-finalize)', () => {
-    function consensusHarness(decisionRows: any[]) {
+    function consensusHarness(decisionRows: any[], evidenceRows?: any[]) {
       const task = { id: 'task-id', verifiedSignId: 'sign-id', status: TaskStatus.EVALUATING, rewardCredits: 10, freshnessRuleId: null } as RevalidationTask;
       const tasks = { findOne: jest.fn().mockResolvedValue(task), save: jest.fn(async (v: any) => v) } as unknown as Repository<RevalidationTask>;
       const query = jest.fn(async (sql: string) => {
-        if (sql.includes('SELECT id, user_id FROM revalidation_evidences')) return [{ id: 'evidence-id', user_id: 'surveyor-id' }];
+        if (sql.includes('FROM revalidation_evidences')) return evidenceRows ?? [{ id: 'evidence-id', user_id: 'surveyor-id' }];
         if (sql.includes('SELECT decision, reviewer_id, evidence_id')) return decisionRows;
         if (sql.includes('min_votes_required')) return [];
         if (/SELECT sign_type_id FROM verified_traffic_signs/.test(sql)) return [{ sign_type_id: 7 }];
@@ -305,6 +320,38 @@ describe('RevalidationService', () => {
       expect(result).toMatchObject({ winningDecision: 'STILL_ACTIVE', signAction: 'REFRESHED' });
       expect(query).toHaveBeenCalledWith(expect.stringContaining("UPDATE verified_traffic_signs SET status='ACTIVE'"), ['sign-id']);
       expect(wallet.creditUser).toHaveBeenCalledWith('surveyor-id', 10, TransactionType.REVALIDATION_REWARD, 'revalidation_task', 'task-id', expect.any(String));
+    });
+
+    it('updates sign_crop_url with latest evidence media_url when STILL_ACTIVE is confirmed', async () => {
+      const { service, query } = consensusHarness(
+        [
+          { decision: 'STILL_ACTIVE', reviewer_id: 'r1', evidence_id: 'evidence-id', suggestedSignTypeId: null },
+          { decision: 'STILL_ACTIVE', reviewer_id: 'r2', evidence_id: 'evidence-id', suggestedSignTypeId: null },
+        ],
+        [{ id: 'evidence-id', user_id: 'surveyor-id', media_url: 'https://s3.example.com/updated-sign.jpg' }],
+      );
+      const result = await service.evaluateRevalidationConsensus('task-id');
+      expect(result).toMatchObject({ winningDecision: 'STILL_ACTIVE', signAction: 'REFRESHED' });
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining("UPDATE verified_traffic_signs SET status='ACTIVE', freshness_score=1, sign_crop_url=$2"),
+        ['sign-id', 'https://s3.example.com/updated-sign.jpg'],
+      );
+    });
+
+    it('updates sign_crop_url and sign_type_id when CHANGED is confirmed with evidence media_url', async () => {
+      const { service, query } = consensusHarness(
+        [
+          { decision: 'CHANGED', reviewer_id: 'r1', evidence_id: 'evidence-id', suggested_sign_type_id: 42 },
+          { decision: 'CHANGED', reviewer_id: 'r2', evidence_id: 'evidence-id', suggested_sign_type_id: 42 },
+        ],
+        [{ id: 'evidence-id', user_id: 'surveyor-id', media_url: 'https://s3.example.com/changed-sign.jpg' }],
+      );
+      const result = await service.evaluateRevalidationConsensus('task-id');
+      expect(result).toMatchObject({ winningDecision: 'CHANGED', signAction: 'UPDATED_TYPE' });
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining('UPDATE verified_traffic_signs SET sign_type_id=$1, status=\'ACTIVE\', freshness_score=1, sign_crop_url=$3'),
+        [42, 'sign-id', 'https://s3.example.com/changed-sign.jpg'],
+      );
     });
 
     it('escalates a tie to moderation instead of arbitrarily picking a winner', async () => {
