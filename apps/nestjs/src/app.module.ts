@@ -7,6 +7,7 @@ import jwtConfig from './config/jwt.config';
 import minioConfig from './config/minio.config';
 import routingConfig from './config/routing.config';
 import catalogSyncConfig from './config/catalog-sync.config';
+import aiInferenceConfig from './config/ai-inference.config';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { AuthModule } from './modules/auth/auth.module';
@@ -15,6 +16,7 @@ import { WalletModule } from './modules/wallet/wallet.module';
 import { DailyTasksModule } from './modules/daily-tasks/daily-tasks.module';
 import { MinioModule } from './integrations/minio/minio.module';
 import { CatalogSyncModule } from './integrations/catalog-sync/catalog-sync.module';
+import { AiInferenceModule } from './integrations/ai-inference/ai-inference.module';
 import { SurveyModule } from './modules/survey/survey.module';
 import { ReviewsModule } from './modules/reviews/reviews.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
@@ -44,8 +46,10 @@ import { HazardsModule } from './modules/hazards/hazards.module';
         minioConfig,
         routingConfig,
         catalogSyncConfig,
+        aiInferenceConfig,
       ],
     }),
+    AiInferenceModule,
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => {

@@ -242,10 +242,45 @@ describe('RevalidationService', () => {
       await service.voteOnEvidence('ev-1', 'reviewer-1', { decision: 'STILL_ACTIVE' });
       expect(mockDailyTasks.recordProgress).toHaveBeenCalledWith('reviewer-1', 'REVIEW', 1);
     });
+
+    it('dispatches early classification when submitting evidence of type CHANGED', async () => {
+      const { tasks, query } = proximityHarness(20);
+      const mockAiService = {
+        classifyEarly: jest.fn().mockResolvedValue({
+          status: 'success',
+          className: 'Stop',
+          confidence: 0.99,
+        }),
+      };
+      const service = new RevalidationService(
+        tasks,
+        { findOne: jest.fn().mockResolvedValue(null) } as unknown as Repository<RevalidationEvidence>,
+        {} as Repository<RevalidationDecision>,
+        { query } as unknown as DataSource,
+        {} as MinioStorageService,
+        {} as WalletService,
+        {} as NotificationsService,
+        undefined,
+        undefined,
+        mockAiService as any,
+      );
+      const result = await service.submitEvidence('task-id', 'surveyor-id', {
+        latitude: 21.02851,
+        longitude: 105.83419,
+        mediaUrl: 'revalidation/task-id/changed-sign.jpg',
+        evidenceType: 'CHANGED',
+      });
+      expect(result.evidenceType).toBe('CHANGED');
+      expect(mockAiService.classifyEarly).toHaveBeenCalledWith({
+        mediaUrl: 'https://s3.signmap.site/stm-sign-crops/revalidation/task-id/changed-sign.jpg',
+        signId: 'sign-id',
+        taskId: 'task-id',
+      });
+    });
   });
 
   describe('evaluateRevalidationConsensus (Scenario #3 auto-finalize)', () => {
-    function consensusHarness(decisionRows: any[], evidenceRows?: any[]) {
+    function consensusHarness(decisionRows: any[], evidenceRows?: any[], mockAiService?: any) {
       const task = { id: 'task-id', verifiedSignId: 'sign-id', status: TaskStatus.EVALUATING, rewardCredits: 10, freshnessRuleId: null } as RevalidationTask;
       const tasks = { findOne: jest.fn().mockResolvedValue(task), save: jest.fn(async (v: any) => v) } as unknown as Repository<RevalidationTask>;
       const query = jest.fn(async (sql: string) => {
@@ -253,6 +288,7 @@ describe('RevalidationService', () => {
         if (sql.includes('SELECT decision, reviewer_id, evidence_id')) return decisionRows;
         if (sql.includes('min_votes_required')) return [];
         if (/SELECT sign_type_id FROM verified_traffic_signs/.test(sql)) return [{ sign_type_id: 7 }];
+        if (sql.includes('SELECT id FROM traffic_sign_types')) return [{ id: 99 }];
         return [];
       });
       const wallet = {
@@ -268,6 +304,9 @@ describe('RevalidationService', () => {
         {} as MinioStorageService,
         wallet,
         notifications,
+        undefined,
+        undefined,
+        mockAiService,
       );
       return { service, tasks, query, wallet };
     }
@@ -352,6 +391,86 @@ describe('RevalidationService', () => {
         expect.stringContaining('UPDATE verified_traffic_signs SET sign_type_id=$1, status=\'ACTIVE\', freshness_score=1, sign_crop_url=$3'),
         [42, 'sign-id', 'https://s3.example.com/changed-sign.jpg'],
       );
+    });
+
+    it('sends new changed image to AI server for early classification when CHANGED is confirmed', async () => {
+      const mockAiService = {
+        classifyEarly: jest.fn().mockResolvedValue({
+          status: 'success',
+          classId: 42,
+          className: 'No_entry',
+          standardCode: 'P.102',
+          confidence: 0.98,
+        }),
+      };
+      const { service, query } = consensusHarness(
+        [
+          { decision: 'CHANGED', reviewer_id: 'r1', evidence_id: 'evidence-id', suggested_sign_type_id: 42 },
+          { decision: 'CHANGED', reviewer_id: 'r2', evidence_id: 'evidence-id', suggested_sign_type_id: 42 },
+        ],
+        [{ id: 'evidence-id', user_id: 'surveyor-id', media_url: 'https://s3.example.com/changed-sign.jpg' }],
+        mockAiService,
+      );
+      const result = await service.evaluateRevalidationConsensus('task-id');
+      expect(result).toMatchObject({ winningDecision: 'CHANGED', signAction: 'UPDATED_TYPE' });
+      expect(mockAiService.classifyEarly).toHaveBeenCalledWith({
+        mediaUrl: 'https://s3.example.com/changed-sign.jpg',
+        signId: 'sign-id',
+        taskId: 'task-id',
+      });
+      expect(result.earlyClassification).toEqual(expect.objectContaining({
+        standardCode: 'P.102',
+        confidence: 0.98,
+      }));
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining('INSERT INTO sign_lifecycle_events'),
+        expect.arrayContaining(['sign-id', expect.stringContaining('AI early classification: P.102')]),
+      );
+    });
+
+    it('resolves suggestedSignTypeId using AI early classification when reviewers provide none', async () => {
+      const mockAiService = {
+        classifyEarly: jest.fn().mockResolvedValue({
+          status: 'success',
+          classId: 99,
+          className: 'Speed_limit_50',
+          standardCode: 'P.127',
+          confidence: 0.95,
+        }),
+      };
+      const { service, query, tasks } = consensusHarness(
+        [
+          { decision: 'CHANGED', reviewer_id: 'r1', evidence_id: 'evidence-id', suggested_sign_type_id: null },
+          { decision: 'CHANGED', reviewer_id: 'r2', evidence_id: 'evidence-id', suggested_sign_type_id: null },
+        ],
+        [{ id: 'evidence-id', user_id: 'surveyor-id', media_url: 'https://s3.example.com/new-speed-limit.jpg' }],
+        mockAiService,
+      );
+      const result = await service.evaluateRevalidationConsensus('task-id');
+      expect(result).toMatchObject({ winningDecision: 'CHANGED', signAction: 'UPDATED_TYPE' });
+      expect(mockAiService.classifyEarly).toHaveBeenCalled();
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining('UPDATE verified_traffic_signs SET sign_type_id=$1'),
+        [99, 'sign-id', 'https://s3.example.com/new-speed-limit.jpg'],
+      );
+      expect(tasks.save).toHaveBeenCalledWith(expect.objectContaining({ status: TaskStatus.COMPLETED }));
+    });
+
+    it('falls back to moderation if reviewers provide no type and AI early classification fails', async () => {
+      const mockAiService = {
+        classifyEarly: jest.fn().mockResolvedValue(null),
+      };
+      const { service, tasks } = consensusHarness(
+        [
+          { decision: 'CHANGED', reviewer_id: 'r1', evidence_id: 'evidence-id', suggested_sign_type_id: null },
+          { decision: 'CHANGED', reviewer_id: 'r2', evidence_id: 'evidence-id', suggested_sign_type_id: null },
+        ],
+        [{ id: 'evidence-id', user_id: 'surveyor-id', media_url: 'https://s3.example.com/unclear.jpg' }],
+        mockAiService,
+      );
+      const result = await service.evaluateRevalidationConsensus('task-id');
+      expect(result).toMatchObject({ reason: 'CHANGED_WITHOUT_TYPE', escalatedToModeration: true });
+      expect(tasks.save).toHaveBeenCalledWith(expect.objectContaining({ status: TaskStatus.ESCALATED_MODERATION }));
     });
 
     it('escalates a tie to moderation instead of arbitrarily picking a winner', async () => {
@@ -527,6 +646,52 @@ describe('RevalidationService', () => {
       const result = await service.getTask('task-1');
       expect(result.bounty).toBe(90);
       expect(result.location).toEqual({ lat: 10.772, lon: 106.698 });
+    });
+  });
+
+  describe('triggerEarlyClassification', () => {
+    it('fetches latest evidence and triggers early classification', async () => {
+      const task = { id: 'task-1', verifiedSignId: 'sign-1', status: TaskStatus.OPEN } as RevalidationTask;
+      const tasks = { findOne: jest.fn().mockResolvedValue(task) } as unknown as Repository<RevalidationTask>;
+      const query = jest.fn(async (sql: string) => {
+        if (sql.includes('FROM revalidation_evidences')) {
+          return [{ media_url: 'https://s3.example.com/crop.jpg', evidence_type: 'CHANGED' }];
+        }
+        if (sql.includes('FROM traffic_sign_types')) {
+          return [{ id: 101 }];
+        }
+        return [];
+      });
+      const mockAiService = {
+        classifyEarly: jest.fn().mockResolvedValue({
+          status: 'success',
+          standardCode: 'P.102',
+          className: 'No_entry',
+          confidence: 0.98,
+        }),
+      };
+      const service = new RevalidationService(
+        tasks,
+        {} as any,
+        {} as any,
+        { query } as unknown as DataSource,
+        {} as any,
+        {} as any,
+        {} as any,
+        undefined,
+        undefined,
+        mockAiService as any,
+      );
+
+      const res = await service.triggerEarlyClassification('task-1');
+      expect(res.taskId).toBe('task-1');
+      expect(res.signId).toBe('sign-1');
+      expect(res.resolvedSignTypeId).toBe(101);
+      expect(mockAiService.classifyEarly).toHaveBeenCalledWith({
+        mediaUrl: 'https://s3.example.com/crop.jpg',
+        signId: 'sign-1',
+        taskId: 'task-1',
+      });
     });
   });
 });

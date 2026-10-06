@@ -11,6 +11,7 @@ import { TransactionType } from '../../wallet/infrastructure/persistence/credit-
 import { NotificationsService } from '../../notifications/notifications.service';
 import { DailyTasksService } from '../../daily-tasks/daily-tasks.service';
 import { randomUUID } from 'crypto';
+import { AiInferenceService, EarlyClassificationResult } from '../../../integrations/ai-inference/ai-inference.service';
 
 const DEFAULT_MIN_VOTES_REQUIRED = 1;
 const DEFAULT_MAX_PROXIMITY_METERS = 50;
@@ -44,6 +45,7 @@ export interface RevalidationConsensusSummary {
   creditedReviewers?: number;
   rewardPerSubmitter?: number;
   taskId?: string;
+  earlyClassification?: EarlyClassificationResult | null;
 }
 
 @Injectable()
@@ -59,6 +61,7 @@ export class RevalidationService {
     private readonly notificationsService: NotificationsService,
     @InjectRepository(FreshnessRule) private readonly freshnessRules?: Repository<FreshnessRule>,
     @Optional() private readonly dailyTasksService?: DailyTasksService,
+    @Optional() private readonly aiInferenceService?: AiInferenceService,
   ) {}
   async listTasks(
     page = 1,
@@ -355,6 +358,26 @@ export class RevalidationService {
     if (this.dailyTasksService) {
       this.dailyTasksService.recordProgress(userId, 'REVALIDATE', 1).catch(() => {});
     }
+
+    if (evidenceType === 'CHANGED' && mediaUrl && this.aiInferenceService) {
+      this.aiInferenceService
+        .classifyEarly({
+          mediaUrl,
+          signId: task.verifiedSignId,
+          taskId: task.id,
+        })
+        .then((aiResult) => {
+          if (aiResult) {
+            this.logger.log(
+              `Early classification dispatched for CHANGED evidence on task ${taskId}: class=${aiResult.className}, code=${aiResult.standardCode}, conf=${aiResult.confidence}`,
+            );
+          }
+        })
+        .catch((err) => {
+          this.logger.warn(`Early classification on CHANGED evidence failed for task ${taskId}: ${err?.message}`);
+        });
+    }
+
     const saved = await this.evidences.findOne({ where: { id } });
     return {
       ...(saved ?? { id, taskId, userId, mediaUrl, evidenceType, latitude: lat, longitude: lon }),
@@ -618,6 +641,9 @@ export class RevalidationService {
     }
 
     winningDecision = top.decision;
+    const latestEvidenceMediaUrl = evidenceRows.length > 0 ? (evidenceRows[0].media_url ?? null) : null;
+    let aiEarlyClassification: EarlyClassificationResult | null = null;
+
     if (winningDecision === RevalDecision.CHANGED) {
       const suggestions = suggestedByDecision.get(RevalDecision.CHANGED);
       if (suggestions && suggestions.size > 0) {
@@ -625,14 +651,58 @@ export class RevalidationService {
         for (const [typeId, count] of suggestions.entries()) if (count > bestCount) { bestCount = count; best = typeId; }
         suggestedSignTypeId = best;
       }
+
+      // If sign status is changed, send new changed image to AI server for early classification
+      if (latestEvidenceMediaUrl && this.aiInferenceService) {
+        try {
+          aiEarlyClassification = await this.aiInferenceService.classifyEarly({
+            mediaUrl: latestEvidenceMediaUrl,
+            signId: task.verifiedSignId,
+            taskId: task.id,
+          });
+          if (aiEarlyClassification) {
+            this.logger.log(
+              `AI early classification for task ${task.id} sign ${task.verifiedSignId}: ` +
+              `class=${aiEarlyClassification.className}, code=${aiEarlyClassification.standardCode}, conf=${aiEarlyClassification.confidence}`,
+            );
+          }
+        } catch (e: any) {
+          this.logger.warn(`AI early classification request failed during consensus for task ${task.id}: ${e?.message}`);
+        }
+      }
+
+      // If reviewers did not specify a suggestedSignTypeId, attempt to resolve it via AI early classification
+      if (!suggestedSignTypeId && aiEarlyClassification) {
+        suggestedSignTypeId = await this.resolveSignTypeIdFromAiResult(aiEarlyClassification);
+        if (suggestedSignTypeId) {
+          this.logger.log(
+            `Auto-resolved suggestedSignTypeId=${suggestedSignTypeId} from AI early classification (${aiEarlyClassification.standardCode || aiEarlyClassification.className}) for task ${task.id}`,
+          );
+        }
+      }
+
       if (!suggestedSignTypeId) {
         await this.escalateToModeration(task, 'Reviewers decided CHANGED but provided no suggested sign type');
-        return { evaluated: true, reason: 'CHANGED_WITHOUT_TYPE', totalVotes: decisionRows.length, minVotesRequired: minVotes, voteCounts, escalatedToModeration: true, taskId: task.id };
+        return {
+          evaluated: true,
+          reason: 'CHANGED_WITHOUT_TYPE',
+          totalVotes: decisionRows.length,
+          minVotesRequired: minVotes,
+          voteCounts,
+          escalatedToModeration: true,
+          taskId: task.id,
+          earlyClassification: aiEarlyClassification,
+        };
       }
     }
 
-    const latestEvidenceMediaUrl = evidenceRows.length > 0 ? (evidenceRows[0].media_url ?? null) : null;
-    const signAction = await this.applySignOutcome(task, winningDecision, suggestedSignTypeId, latestEvidenceMediaUrl);
+    const signAction = await this.applySignOutcome(
+      task,
+      winningDecision,
+      suggestedSignTypeId,
+      latestEvidenceMediaUrl,
+      aiEarlyClassification,
+    );
     const rewards = await this.creditRewards(task, decisionRows, evidenceRows, winningDecision);
 
     task.status = TaskStatus.COMPLETED;
@@ -664,6 +734,7 @@ export class RevalidationService {
       creditedReviewers: rewards.creditedReviewers,
       rewardPerSubmitter: rewards.rewardPerSubmitter,
       taskId: task.id,
+      earlyClassification: aiEarlyClassification,
     };
   }
 
@@ -686,6 +757,7 @@ export class RevalidationService {
     winningDecision: RevalDecision,
     suggestedSignTypeId: number | null,
     latestEvidenceMediaUrl?: string | null,
+    aiEarlyClassification?: EarlyClassificationResult | null,
   ): Promise<string> {
     const signId = task.verifiedSignId;
     try {
@@ -709,6 +781,18 @@ export class RevalidationService {
         await this.dataSource.query("INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, note) VALUES ($1,'DECOMMISSIONED','Revalidation: REMOVED / DECOMMISSIONED')", [signId]);
         return 'DECOMMISSIONED';
       } else if (winningDecision === RevalDecision.CHANGED && suggestedSignTypeId != null) {
+        // Fallback early classification if not already obtained
+        if (!aiEarlyClassification && latestEvidenceMediaUrl && this.aiInferenceService) {
+          try {
+            aiEarlyClassification = await this.aiInferenceService.classifyEarly({
+              mediaUrl: latestEvidenceMediaUrl,
+              signId,
+              taskId: task.id,
+            });
+          } catch (e: any) {
+            this.logger.warn(`AI classification fallback failed in applySignOutcome: ${e?.message}`);
+          }
+        }
         const prevRows: any[] = await this.dataSource.query('SELECT sign_type_id FROM verified_traffic_signs WHERE id=$1', [signId]);
         const previousType = prevRows.length ? prevRows[0].sign_type_id : null;
         if (latestEvidenceMediaUrl) {
@@ -726,9 +810,12 @@ export class RevalidationService {
           "INSERT INTO verified_sign_history (verified_sign_id, previous_sign_type_id, change_reason) VALUES ($1, $2, 'REVALIDATION_UPDATE')",
           [signId, previousType],
         );
+        const lifecycleNote = aiEarlyClassification?.standardCode
+          ? `CHANGED: sign type updated to #${suggestedSignTypeId} (AI early classification: ${aiEarlyClassification.standardCode}, conf: ${aiEarlyClassification.confidence?.toFixed(2) ?? 'N/A'})`
+          : `CHANGED: sign type updated to #${suggestedSignTypeId}`;
         await this.dataSource.query(
           "INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, note) VALUES ($1, 'REVALIDATION_CHANGED', $2)",
-          [signId, 'CHANGED: sign type updated to #' + suggestedSignTypeId],
+          [signId, lifecycleNote],
         );
         return 'UPDATED_TYPE';
       }
@@ -826,5 +913,76 @@ export class RevalidationService {
     }
 
     return task;
+  }
+
+  /**
+   * Attempts to resolve the database traffic_sign_types(id) from the AI early classification result.
+   */
+  async resolveSignTypeIdFromAiResult(aiResult: EarlyClassificationResult): Promise<number | null> {
+    if (!aiResult) return null;
+    try {
+      if (aiResult.standardCode) {
+        const rows = await this.dataSource.query(
+          'SELECT id FROM traffic_sign_types WHERE UPPER(sign_code) = UPPER($1) LIMIT 1',
+          [aiResult.standardCode],
+        );
+        if (rows.length > 0) return Number(rows[0].id);
+      }
+      const candidateNames = [aiResult.className, aiResult.nameEn, aiResult.nameVi].filter(Boolean) as string[];
+      for (const name of candidateNames) {
+        const rows = await this.dataSource.query(
+          'SELECT id FROM traffic_sign_types WHERE LOWER(name_en) = LOWER($1) OR LOWER(name_vi) = LOWER($1) OR LOWER(sign_code) = LOWER($1) LIMIT 1',
+          [name],
+        );
+        if (rows.length > 0) return Number(rows[0].id);
+      }
+      if (aiResult.classId != null && Number.isInteger(aiResult.classId)) {
+        const rows = await this.dataSource.query(
+          'SELECT id FROM traffic_sign_types WHERE id = $1 LIMIT 1',
+          [aiResult.classId],
+        );
+        if (rows.length > 0) return Number(rows[0].id);
+      }
+    } catch (e: any) {
+      this.logger.warn(`Failed to resolve sign type from AI result: ${e?.message}`);
+    }
+    return null;
+  }
+
+  /**
+   * Manually or programmatically triggers early classification on the latest evidence of a revalidation task.
+   */
+  async triggerEarlyClassification(taskId: string, explicitMediaUrl?: string) {
+    const task = await this.tasks.findOne({ where: { id: taskId } });
+    if (!task) throw new NotFoundException('RevalidationTask ' + taskId + ' not found');
+    let targetUrl = explicitMediaUrl;
+    if (!targetUrl) {
+      const evs: any[] = await this.dataSource.query(
+        "SELECT media_url, evidence_type FROM revalidation_evidences WHERE task_id=$1 ORDER BY (evidence_type = 'CHANGED') DESC, submitted_at DESC LIMIT 1",
+        [taskId],
+      );
+      if (evs.length && evs[0].media_url) {
+        targetUrl = this.toS3Url(evs[0].media_url, taskId);
+      }
+    }
+    if (!targetUrl) {
+      throw new BadRequestException('No image evidence available for early classification on task ' + taskId);
+    }
+    if (!this.aiInferenceService) {
+      throw new BadRequestException('AiInferenceService is not configured or available');
+    }
+    const classification = await this.aiInferenceService.classifyEarly({
+      mediaUrl: targetUrl,
+      signId: task.verifiedSignId,
+      taskId: task.id,
+    });
+    const resolvedSignTypeId = classification ? await this.resolveSignTypeIdFromAiResult(classification) : null;
+    return {
+      taskId: task.id,
+      signId: task.verifiedSignId,
+      mediaUrl: targetUrl,
+      classification,
+      resolvedSignTypeId,
+    };
   }
 }
