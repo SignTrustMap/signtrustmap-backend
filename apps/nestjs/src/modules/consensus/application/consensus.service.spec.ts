@@ -174,6 +174,84 @@ describe('ConsensusService', () => {
     );
   });
 
+  it('supersedes older active signs within 5 meters and completes their revalidation tasks when a new sign is approved', async () => {
+    const configRepo = {
+      findOne: jest.fn().mockResolvedValue({
+        id: 1,
+        approvalThreshold: 0.5,
+        rejectionThreshold: -0.5,
+        minVotesRequired: 1,
+        alphaSmoothingFactor: 0.1,
+      }),
+    } as unknown as Repository<ConsensusConfig>;
+    const logRepo = {
+      create: jest.fn((value) => value),
+      save: jest.fn(async (value) => ({ ...value, id: 'log-id' })),
+    } as unknown as Repository<ConsensusLog>;
+    const candidateRepo = {
+      findOne: jest.fn().mockResolvedValue({
+        id: 'candidate-id',
+        status: CandidateStatus.PENDING_REVIEW,
+        predictedSignTypeId: 10,
+        signCropUrl: 'sign.jpg',
+        submissionId: 'submission-id',
+      }),
+      update: jest.fn().mockResolvedValue(undefined),
+    } as unknown as Repository<UnverifiedSignCandidate>;
+    const reviewRepo = {
+      find: jest.fn().mockResolvedValue([
+        { reviewerId: 'reviewer-id', vote: 1, suggestedSignTypeId: null },
+      ]),
+    } as unknown as Repository<CandidateReview>;
+    const query = jest.fn(async (sql: string) => {
+      if (sql.includes('SELECT reliability_score')) {
+        return [{ reliability_score: 100, is_provisional: false, total_correct_votes: 10, total_false_votes: 0 }];
+      }
+      if (sql.includes('candidate_geo_estimations')) {
+        return [{ sign_wkt: 'POINT(106.80 10.85)', traffic_direction: 90 }];
+      }
+      if (sql.includes('SELECT id FROM verified_traffic_signs') && !sql.includes('ST_DWithin')) {
+        return [{ id: 'new-sign-id' }];
+      }
+      if (sql.includes('ST_DWithin')) {
+        return [{ id: 'old-sign-1' }];
+      }
+      return [];
+    });
+    const wallet = {
+      resolveRewardAmount: jest.fn().mockResolvedValue(5),
+      creditUser: jest.fn().mockResolvedValue(undefined),
+    } as unknown as WalletService;
+    const notifications = {
+      createBulk: jest.fn().mockResolvedValue(undefined),
+    } as unknown as NotificationsService;
+
+    const service = new ConsensusService(
+      configRepo,
+      logRepo,
+      candidateRepo,
+      reviewRepo,
+      { query } as unknown as DataSource,
+      wallet,
+      notifications,
+    );
+
+    await service.evaluate('candidate-id');
+
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining("UPDATE verified_traffic_signs SET status = 'DECOMMISSIONED'"),
+      ['old-sign-1'],
+    );
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO verified_sign_history'),
+      ['old-sign-1', 'Superseded by verified sign #new-sign-id'],
+    );
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining("UPDATE revalidation_tasks SET status = 'COMPLETED' WHERE verified_sign_id = $1"),
+      ['old-sign-1'],
+    );
+  });
+
   describe('Phase 4: Reviewer Reliability Formula & Governance Tests', () => {
     let service: ConsensusService;
     let query: jest.Mock;

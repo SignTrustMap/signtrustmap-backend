@@ -26,6 +26,9 @@ interface RevalDecisionRow {
 interface EvidenceRow {
   id: string;
   user_id: string;
+  media_url?: string;
+  evidence_type?: string;
+  submitted_at?: Date | string;
 }
 
 export interface RevalidationConsensusSummary {
@@ -338,7 +341,11 @@ export class RevalidationService {
       mediaUrl = this.toS3Url(mediaUrl, taskId);
     }
     if (!mediaUrl) throw new BadRequestException('Provide mediaUrl or upload a file');
-    const evidenceType = dto.evidenceType === 'REMOVED' ? 'REMOVED' : 'STILL_ACTIVE';
+    const evidenceType = dto.evidenceType === 'REMOVED'
+      ? 'REMOVED'
+      : dto.evidenceType === 'CHANGED'
+        ? 'CHANGED'
+        : 'STILL_ACTIVE';
     const id = randomUUID();
     await this.dataSource.query(
       'INSERT INTO revalidation_evidences (id, task_id, user_id, media_url, location, evidence_type) VALUES ($1,$2,$3,$4,ST_SetSRID(ST_MakePoint($5,$6),4326),$7)',
@@ -453,9 +460,6 @@ export class RevalidationService {
       throw new ForbiddenException('You cannot vote on your own submitted evidence');
     }
     const decision = this.assertDecision(dto.decision);
-    if (decision === RevalDecision.CHANGED && dto.suggestedSignTypeId == null) {
-      throw new BadRequestException('suggestedSignTypeId is required when decision is CHANGED');
-    }
     if (dto.suggestedSignTypeId != null) {
       const typeRows: any[] = await this.dataSource.query('SELECT id FROM traffic_sign_types WHERE id=$1', [dto.suggestedSignTypeId]);
       if (typeRows.length === 0) throw new BadRequestException('suggestedSignTypeId ' + dto.suggestedSignTypeId + ' does not exist');
@@ -511,7 +515,10 @@ export class RevalidationService {
   // ---------------------------------------------------------------------------
 
   private async loadTaskEvidenceAndDecisions(taskId: string): Promise<{ evidenceRows: EvidenceRow[]; decisions: RevalDecisionRow[] }> {
-    const evidenceRows: any[] = await this.dataSource.query('SELECT id, user_id FROM revalidation_evidences WHERE task_id=$1', [taskId]);
+    const evidenceRows: any[] = await this.dataSource.query(
+      'SELECT id, user_id, media_url, evidence_type, submitted_at FROM revalidation_evidences WHERE task_id=$1 ORDER BY submitted_at DESC',
+      [taskId],
+    );
     const evIds = evidenceRows.map(e => e.id as string);
     const decisions: any[] = evIds.length
       ? await this.dataSource.query('SELECT decision, reviewer_id, evidence_id, suggested_sign_type_id FROM revalidation_decisions WHERE evidence_id = ANY($1)', [evIds])
@@ -624,7 +631,8 @@ export class RevalidationService {
       }
     }
 
-    const signAction = await this.applySignOutcome(task, winningDecision, suggestedSignTypeId);
+    const latestEvidenceMediaUrl = evidenceRows.length > 0 ? (evidenceRows[0].media_url ?? null) : null;
+    const signAction = await this.applySignOutcome(task, winningDecision, suggestedSignTypeId, latestEvidenceMediaUrl);
     const rewards = await this.creditRewards(task, decisionRows, evidenceRows, winningDecision);
 
     task.status = TaskStatus.COMPLETED;
@@ -673,11 +681,26 @@ export class RevalidationService {
     await this.tasks.save(task);
   }
 
-  private async applySignOutcome(task: RevalidationTask, winningDecision: RevalDecision, suggestedSignTypeId: number | null): Promise<string> {
+  private async applySignOutcome(
+    task: RevalidationTask,
+    winningDecision: RevalDecision,
+    suggestedSignTypeId: number | null,
+    latestEvidenceMediaUrl?: string | null,
+  ): Promise<string> {
     const signId = task.verifiedSignId;
     try {
       if (winningDecision === RevalDecision.UNCHANGED || winningDecision === RevalDecision.STILL_ACTIVE) {
-        await this.dataSource.query("UPDATE verified_traffic_signs SET status='ACTIVE', freshness_score=1, last_verified_at=now(), updated_at=now() WHERE id=$1", [signId]);
+        if (latestEvidenceMediaUrl) {
+          await this.dataSource.query(
+            "UPDATE verified_traffic_signs SET status='ACTIVE', freshness_score=1, sign_crop_url=$2, last_verified_at=now(), updated_at=now() WHERE id=$1",
+            [signId, latestEvidenceMediaUrl],
+          );
+        } else {
+          await this.dataSource.query(
+            "UPDATE verified_traffic_signs SET status='ACTIVE', freshness_score=1, last_verified_at=now(), updated_at=now() WHERE id=$1",
+            [signId],
+          );
+        }
         await this.dataSource.query("INSERT INTO verified_sign_history (verified_sign_id, change_reason) VALUES ($1, 'REVALIDATION_UPDATE')", [signId]);
         await this.dataSource.query("INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, note) VALUES ($1,'REVALIDATED','STILL_ACTIVE: freshness refreshed')", [signId]);
         return 'REFRESHED';
@@ -688,10 +711,17 @@ export class RevalidationService {
       } else if (winningDecision === RevalDecision.CHANGED && suggestedSignTypeId != null) {
         const prevRows: any[] = await this.dataSource.query('SELECT sign_type_id FROM verified_traffic_signs WHERE id=$1', [signId]);
         const previousType = prevRows.length ? prevRows[0].sign_type_id : null;
-        await this.dataSource.query(
-          "UPDATE verified_traffic_signs SET sign_type_id=$1, status='ACTIVE', freshness_score=1, last_verified_at=now(), updated_at=now() WHERE id=$2",
-          [suggestedSignTypeId, signId],
-        );
+        if (latestEvidenceMediaUrl) {
+          await this.dataSource.query(
+            "UPDATE verified_traffic_signs SET sign_type_id=$1, status='ACTIVE', freshness_score=1, sign_crop_url=$3, last_verified_at=now(), updated_at=now() WHERE id=$2",
+            [suggestedSignTypeId, signId, latestEvidenceMediaUrl],
+          );
+        } else {
+          await this.dataSource.query(
+            "UPDATE verified_traffic_signs SET sign_type_id=$1, status='ACTIVE', freshness_score=1, last_verified_at=now(), updated_at=now() WHERE id=$2",
+            [suggestedSignTypeId, signId],
+          );
+        }
         await this.dataSource.query(
           "INSERT INTO verified_sign_history (verified_sign_id, previous_sign_type_id, change_reason) VALUES ($1, $2, 'REVALIDATION_UPDATE')",
           [signId, previousType],
