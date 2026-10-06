@@ -4,7 +4,7 @@ import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagg
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RevalidationService } from '../application/revalidation.service';
-import { SubmitEvidenceDto, EvidenceVoteDto } from './dto/revalidation.dto';
+import { SubmitEvidenceDto, EvidenceVoteDto, EarlyClassifyDto } from './dto/revalidation.dto';
 
 @ApiTags('Revalidation')
 @Controller()
@@ -96,6 +96,14 @@ export class RevalidationController {
   @Post('revalidation/tasks/:taskId/finalize')
   @Roles('STAFF', 'ADMIN')
   finalizeTask(@Param('taskId', ParseUUIDPipe) taskId: string, @CurrentUser() user: any) { return this.svc.finalizeTask(taskId, user.id); }
+
+  @ApiBearerAuth()
+  @Roles('STAFF', 'ADMIN', 'REVIEWER')
+  @ApiOperation({ summary: 'Trigger early classification for revalidation task', description: 'Send task evidence photo to AI server for early classification' })
+  @Post('revalidation/tasks/:taskId/early-classify')
+  earlyClassify(@Param('taskId', ParseUUIDPipe) taskId: string, @Body() dto?: EarlyClassifyDto) {
+    return this.svc.triggerEarlyClassification(taskId, dto?.mediaUrl);
+  }
 
   @ApiBearerAuth()
   @Roles('REVIEWER', 'ADMIN')

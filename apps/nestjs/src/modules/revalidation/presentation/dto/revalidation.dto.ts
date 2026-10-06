@@ -17,3 +17,7 @@ export class EvidenceQueryDto {
   @IsOptional() @IsInt() @Min(1) page?: number;
   @IsOptional() @IsInt() @Min(1) @Max(100) pageSize?: number;
 }
+
+export class EarlyClassifyDto {
+  @IsOptional() @IsString() mediaUrl?: string;
+}

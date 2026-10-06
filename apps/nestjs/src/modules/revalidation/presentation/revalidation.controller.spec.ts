@@ -14,6 +14,7 @@ describe('RevalidationController', () => {
     voteOnEvidence: jest.Mock;
     listEvidenceQueue: jest.Mock;
     listDecisions: jest.Mock;
+    triggerEarlyClassification: jest.Mock;
   };
 
   const mockUser = { id: 'u-user', role: 'SURVEYOR' };
@@ -29,6 +30,7 @@ describe('RevalidationController', () => {
       voteOnEvidence: jest.fn().mockResolvedValue({ id: 'vote-1' }),
       listEvidenceQueue: jest.fn().mockResolvedValue({ items: [], total: 0 }),
       listDecisions: jest.fn().mockResolvedValue([]),
+      triggerEarlyClassification: jest.fn().mockResolvedValue({ taskId: 'task-1', classification: { className: 'No_entry' } }),
     };
 
     controller = new RevalidationController(service as unknown as RevalidationService);
@@ -134,6 +136,12 @@ describe('RevalidationController', () => {
       const res = await controller.listDecisions('ev-1');
       expect(res).toEqual([]);
       expect(service.listDecisions).toHaveBeenCalledWith('ev-1');
+    });
+
+    it('earlyClassify calls service.triggerEarlyClassification', async () => {
+      const res = await controller.earlyClassify('task-1', { mediaUrl: 'https://s3.example.com/test.jpg' });
+      expect(res).toEqual({ taskId: 'task-1', classification: { className: 'No_entry' } });
+      expect(service.triggerEarlyClassification).toHaveBeenCalledWith('task-1', 'https://s3.example.com/test.jpg');
     });
   });
 });
