@@ -5,7 +5,8 @@ export class SubmitEvidenceDto {
   @IsNumber() @Min(-90) @Max(90) latitude: number;
   @IsNumber() @Min(-180) @Max(180) longitude: number;
   @IsOptional() @IsISO8601() capturedAt?: string;
-  @IsOptional() @IsIn(['STILL_ACTIVE', 'REMOVED']) evidenceType?: string;
+  @IsOptional() @IsIn(['STILL_ACTIVE', 'REMOVED', 'CHANGED']) evidenceType?: string;
+  @IsOptional() @IsInt() suggestedSignTypeId?: number;
 }
 export class EvidenceVoteDto {
   @IsString() decision: string;

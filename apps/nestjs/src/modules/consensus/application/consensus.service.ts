@@ -250,12 +250,50 @@ export class ConsensusService {
         [candidate.id],
       );
       if (vRows.length > 0) {
+        const newSignId = vRows[0].id;
         try {
           await this.dataSource.query(
             "INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, note) VALUES ($1,'PUBLISHED','Consensus APPROVED')",
-            [vRows[0].id],
+            [newSignId],
           );
         } catch {}
+
+        // Decommission and supersede any existing older sign in the exact same spot (within 5 meters)
+        try {
+          const oldSigns: any[] = await this.dataSource.query(
+            `SELECT id FROM verified_traffic_signs
+             WHERE id != $1
+               AND status = 'ACTIVE'
+               AND ST_DWithin(
+                 location::geography,
+                 ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography,
+                 5
+               )`,
+            [newSignId, lon, lat],
+          );
+          for (const oldSign of oldSigns) {
+            await this.dataSource.query(
+              "UPDATE verified_traffic_signs SET status = 'DECOMMISSIONED', updated_at = NOW() WHERE id = $1",
+              [oldSign.id],
+            );
+            await this.dataSource.query(
+              "INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, note) VALUES ($1, 'DECOMMISSIONED', $2)",
+              [oldSign.id, `Superseded by verified sign #${newSignId}`],
+            );
+            try {
+              await this.dataSource.query(
+                "INSERT INTO verified_sign_history (verified_sign_id, change_reason) VALUES ($1, $2)",
+                [oldSign.id, `Superseded by verified sign #${newSignId}`],
+              );
+            } catch {}
+            await this.dataSource.query(
+              "UPDATE revalidation_tasks SET status = 'COMPLETED' WHERE verified_sign_id = $1 AND status IN ('OPEN', 'EVALUATING')",
+              [oldSign.id],
+            );
+          }
+        } catch (e: any) {
+          this.logger.warn(`Failed to supersede older signs near (${lat}, ${lon}): ${e?.message}`);
+        }
       }
     } catch (e: any) {
       this.logger.warn('verified_sign insert failed ' + candidate.id + ': ' + e?.message);
