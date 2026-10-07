@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import { IsArray, IsIn, IsInt, IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
 import { VEHICLE_TYPES, VehicleType } from '../../../../common/vehicle-types';
 import { RouteDirectionsRequest } from '../../domain/routing.types';
@@ -16,8 +16,13 @@ export class UpdateNavigationPreferencesDto {
 
 export class RouteDirectionsRequestDto implements RouteDirectionsRequest {
   @IsOptional()
-  @IsIn(['DRIVING', 'CYCLING', 'WALKING'])
-  vehicleMode?: 'DRIVING' | 'CYCLING' | 'WALKING';
+  @Transform(({ value }) => (typeof value === 'string' ? value.toUpperCase() : value))
+  @IsIn(['DRIVING', 'CYCLING', 'WALKING', 'BIKE', 'MOTORCYCLE'])
+  vehicleMode?: 'DRIVING' | 'CYCLING' | 'WALKING' | 'BIKE' | 'MOTORCYCLE';
+
+  @IsOptional()
+  @IsString()
+  _vehicleMode?: string;
 
   @IsOptional()
   @IsIn(Object.values(VEHICLE_TYPES))

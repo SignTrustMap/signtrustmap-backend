@@ -1,7 +1,8 @@
 import { VehicleType } from '../../../common/vehicle-types';
 
 export interface RouteDirectionsRequest {
-  vehicleMode?: 'DRIVING' | 'CYCLING' | 'WALKING';
+  vehicleMode?: 'DRIVING' | 'CYCLING' | 'WALKING' | 'BIKE' | 'MOTORCYCLE';
+  _vehicleMode?: string;
   vehicleType?: VehicleType;
   enabledCategoryCodes?: string[];
   originLatitude: number;

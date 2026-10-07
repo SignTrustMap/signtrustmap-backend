@@ -39,11 +39,15 @@ export class OsrmRoutingClient {
   private readonly baseUrl: string;
   private readonly profile: string;
   private readonly timeoutMs: number;
+  private readonly motorcycleDurationFactor: number;
 
   constructor(config: ConfigService) {
     this.baseUrl = config.get<string>('routing.osrm.baseUrl') ?? 'https://router.project-osrm.org';
     this.profile = config.get<string>('routing.osrm.profile') ?? 'driving';
     this.timeoutMs = config.get<number>('routing.osrm.timeoutMs') ?? 5_000;
+    this.motorcycleDurationFactor =
+      config.get<number>('routing.osrm.motorcycleDurationFactor') ??
+      OsrmRoutingClient.MOTORCYCLE_DURATION_FACTOR;
   }
 
   async findDirections(
@@ -51,7 +55,9 @@ export class OsrmRoutingClient {
     thresholdPercent: number,
     maxAlternatives: number,
   ): Promise<RouteDirectionsResponse> {
-    const profile = this.resolveProfile(request.vehicleType, request.vehicleMode);
+    const effectiveMode = request.vehicleMode ?? request._vehicleMode;
+    const effectiveType = this.resolveVehicleType(request.vehicleType, effectiveMode);
+    const profile = this.resolveProfile(effectiveType, effectiveMode);
     let body: string;
     try {
       body = await this.fetchResponse(this.routeUrl(request, maxAlternatives, profile));
@@ -65,11 +71,26 @@ export class OsrmRoutingClient {
     return this.parseResponse(request, thresholdPercent, maxAlternatives, body);
   }
 
+  private resolveVehicleType(
+    vehicleType?: VehicleType,
+    vehicleMode?: string,
+  ): VehicleType | undefined {
+    if (vehicleType) return vehicleType;
+    const mode = (vehicleMode ?? '').toString().toUpperCase();
+    if (mode === 'BIKE' || mode === 'MOTORCYCLE') return 'MOTORCYCLE';
+    if (mode === 'DRIVING' || mode === 'CAR') return 'CAR';
+    if (mode === 'CYCLING' || mode === 'BICYCLE') return 'BICYCLE';
+    if (mode === 'WALKING' || mode === 'PEDESTRIAN') return 'PEDESTRIAN';
+    return undefined;
+  }
+
   private resolveProfile(vehicleType?: VehicleType, vehicleMode?: string): string {
-    if (vehicleType === 'BICYCLE' || vehicleMode === 'CYCLING') {
+    const effectiveType = this.resolveVehicleType(vehicleType, vehicleMode);
+    const mode = (vehicleMode ?? '').toString().toUpperCase();
+    if (effectiveType === 'BICYCLE' || mode === 'CYCLING') {
       return 'bike';
     }
-    if (vehicleType === 'PEDESTRIAN' || vehicleMode === 'WALKING') {
+    if (effectiveType === 'PEDESTRIAN' || mode === 'WALKING') {
       return 'foot';
     }
     return this.profile || 'driving';
@@ -109,9 +130,10 @@ export class OsrmRoutingClient {
       longitude: request.destinationLongitude,
     };
     const snappedOrigin = this.waypoint(root.waypoints, 0, origin);
-    const snappedDestination = this.waypoint(root.waypoints, 1, destination);
+    const effectiveMode = request.vehicleMode ?? request._vehicleMode;
+    const effectiveType = this.resolveVehicleType(request.vehicleType, effectiveMode);
     const parsedRoutes = root.routes
-      .map((route) => this.parseRoute(route, request.vehicleType, request.vehicleMode))
+      .map((route) => this.parseRoute(route, effectiveType, effectiveMode))
       .sort((left, right) => left.distanceMeters - right.distanceMeters);
 
     const shortestDistanceMeters = parsedRoutes[0].distanceMeters;
@@ -120,7 +142,7 @@ export class OsrmRoutingClient {
     for (const route of parsedRoutes) {
       if (route.distanceMeters > maxDistanceMeters) continue;
       acceptedRoutes.push(
-        this.toResponse(route, acceptedRoutes.length, shortestDistanceMeters, request.vehicleType),
+        this.toResponse(route, acceptedRoutes.length, shortestDistanceMeters, effectiveType),
       );
       if (acceptedRoutes.length >= maxAlternatives + 1) break;
     }
@@ -164,7 +186,9 @@ export class OsrmRoutingClient {
     maxAlternatives: number,
     profileOverride?: string,
   ): URL {
-    const profile = profileOverride ?? this.resolveProfile(request.vehicleType, request.vehicleMode);
+    const effectiveMode = request.vehicleMode ?? request._vehicleMode;
+    const effectiveType = this.resolveVehicleType(request.vehicleType, effectiveMode);
+    const profile = profileOverride ?? this.resolveProfile(effectiveType, effectiveMode);
     const coordinates = [
       `${request.originLongitude.toFixed(7)},${request.originLatitude.toFixed(7)}`,
       `${request.destinationLongitude.toFixed(7)},${request.destinationLatitude.toFixed(7)}`,
@@ -201,11 +225,12 @@ export class OsrmRoutingClient {
     }
     const rawDistance = this.numberOrZero(route.distance);
     const rawDuration = Math.round(this.numberOrZero(route.duration));
+    const effectiveType = this.resolveVehicleType(vehicleType, vehicleMode);
     const calibrated = this.calibrateDuration(
       rawDistance,
       rawDuration,
       steps,
-      vehicleType,
+      effectiveType,
       vehicleMode,
     );
 
@@ -224,34 +249,35 @@ export class OsrmRoutingClient {
     vehicleType?: VehicleType,
     vehicleMode?: string,
   ): { durationSeconds: number; steps: RouteStepResponse[] } {
-    if (distanceMeters <= 0 || !vehicleType) {
+    const effectiveType = this.resolveVehicleType(vehicleType, vehicleMode);
+    if (distanceMeters <= 0 || !effectiveType) {
       return { durationSeconds, steps };
     }
 
     let targetDuration = durationSeconds;
     let factor = 1.0;
 
-    if (vehicleType === 'PEDESTRIAN' || vehicleMode === 'WALKING') {
+    if (effectiveType === 'PEDESTRIAN' || vehicleMode === 'WALKING') {
       const impliedSpeed = durationSeconds > 0 ? distanceMeters / durationSeconds : 0;
       if (impliedSpeed > 1.8) {
         targetDuration = Math.max(1, Math.round(distanceMeters / OsrmRoutingClient.PEDESTRIAN_SPEED_MPS));
         factor = durationSeconds > 0 ? targetDuration / durationSeconds : 1.0;
       }
-    } else if (vehicleType === 'BICYCLE' || vehicleMode === 'CYCLING') {
+    } else if (effectiveType === 'BICYCLE' || vehicleMode === 'CYCLING') {
       const impliedSpeed = durationSeconds > 0 ? distanceMeters / durationSeconds : 0;
       if (impliedSpeed > 5.5) {
         targetDuration = Math.max(1, Math.round(distanceMeters / OsrmRoutingClient.BICYCLE_SPEED_MPS));
         factor = durationSeconds > 0 ? targetDuration / durationSeconds : 1.0;
       }
-    } else if (vehicleType === 'TRUCK') {
+    } else if (effectiveType === 'TRUCK') {
       targetDuration = Math.max(1, Math.round(durationSeconds * OsrmRoutingClient.TRUCK_DURATION_FACTOR));
       factor = OsrmRoutingClient.TRUCK_DURATION_FACTOR;
-    } else if (vehicleType === 'BUS') {
+    } else if (effectiveType === 'BUS') {
       targetDuration = Math.max(1, Math.round(durationSeconds * OsrmRoutingClient.BUS_DURATION_FACTOR));
       factor = OsrmRoutingClient.BUS_DURATION_FACTOR;
-    } else if (vehicleType === 'MOTORCYCLE') {
-      targetDuration = Math.max(1, Math.round(durationSeconds * OsrmRoutingClient.MOTORCYCLE_DURATION_FACTOR));
-      factor = OsrmRoutingClient.MOTORCYCLE_DURATION_FACTOR;
+    } else if (effectiveType === 'MOTORCYCLE') {
+      targetDuration = Math.max(1, Math.round(durationSeconds * this.motorcycleDurationFactor));
+      factor = this.motorcycleDurationFactor;
     }
 
     const calibratedSteps = steps.map((step) => {
@@ -260,9 +286,9 @@ export class OsrmRoutingClient {
         ...step,
         durationSeconds: stepDuration,
         roadClass:
-          vehicleType === 'PEDESTRIAN' || vehicleMode === 'WALKING'
+          effectiveType === 'PEDESTRIAN' || vehicleMode === 'WALKING'
             ? 'walking'
-            : vehicleType === 'BICYCLE' || vehicleMode === 'CYCLING'
+            : effectiveType === 'BICYCLE' || vehicleMode === 'CYCLING'
               ? 'cycling'
               : step.roadClass,
       };

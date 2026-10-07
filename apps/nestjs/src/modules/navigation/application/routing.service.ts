@@ -10,11 +10,32 @@ export class RoutingService {
   constructor(private readonly osrm: OsrmRoutingClient) {}
 
   findDirections(request: RouteDirectionsRequest) {
+    this.normalizeVehicle(request);
     return this.osrm.findDirections(
       request,
       request.alternativeThresholdPercent ??
         RoutingService.DEFAULT_ALTERNATIVE_THRESHOLD_PERCENT,
       request.maxAlternatives ?? RoutingService.DEFAULT_MAX_ALTERNATIVES,
     );
+  }
+
+  normalizeVehicle(request: RouteDirectionsRequest): void {
+    const rawMode = (request.vehicleMode ?? request._vehicleMode ?? '').toString().toUpperCase();
+    if (!request.vehicleMode && rawMode) {
+      if (['DRIVING', 'CYCLING', 'WALKING', 'BIKE', 'MOTORCYCLE'].includes(rawMode)) {
+        request.vehicleMode = rawMode as any;
+      }
+    }
+    if (!request.vehicleType && rawMode) {
+      if (rawMode === 'BIKE' || rawMode === 'MOTORCYCLE') {
+        request.vehicleType = 'MOTORCYCLE';
+      } else if (rawMode === 'DRIVING' || rawMode === 'CAR') {
+        request.vehicleType = 'CAR';
+      } else if (rawMode === 'CYCLING' || rawMode === 'BICYCLE') {
+        request.vehicleType = 'BICYCLE';
+      } else if (rawMode === 'WALKING' || rawMode === 'PEDESTRIAN') {
+        request.vehicleType = 'PEDESTRIAN';
+      }
+    }
   }
 }
