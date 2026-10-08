@@ -392,8 +392,35 @@ export class RevalidationService {
     };
   }
   async listEvidencesForTask(taskId: string) {
-    if (!await this.tasks.findOne({ where: { id: taskId } })) throw new NotFoundException('RevalidationTask ' + taskId + ' not found');
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(taskId);
+    if (!isUuid) return [];
+    const task = await this.tasks.findOne({ where: { id: taskId } });
+    if (!task) {
+      const signTasks = await this.tasks.findOne({ where: { verifiedSignId: taskId } });
+      if (signTasks) {
+        return this.listEvidencesForSign(taskId);
+      }
+      throw new NotFoundException('RevalidationTask ' + taskId + ' not found');
+    }
     const rows: any[] = await this.dataSource.query('SELECT id, task_id, user_id, media_url, evidence_type, submitted_at, ST_AsText(location) as location_wkt FROM revalidation_evidences WHERE task_id=$1 ORDER BY submitted_at ASC', [taskId]);
+    return rows.map((r) => ({
+      ...r,
+      media_url: this.toS3Url(r.media_url, r.task_id),
+      mediaUrl: this.toS3Url(r.media_url, r.task_id),
+    }));
+  }
+
+  async listEvidencesForSign(signId: string) {
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(signId);
+    if (!isUuid) return [];
+    const rows: any[] = await this.dataSource.query(
+      `SELECT ev.id, ev.task_id, ev.user_id, ev.media_url, ev.evidence_type, ev.submitted_at, ST_AsText(ev.location) as location_wkt
+       FROM revalidation_evidences ev
+       JOIN revalidation_tasks rt ON rt.id = ev.task_id
+       WHERE rt.verified_sign_id = $1
+       ORDER BY ev.submitted_at DESC`,
+      [signId],
+    );
     return rows.map((r) => ({
       ...r,
       media_url: this.toS3Url(r.media_url, r.task_id),
