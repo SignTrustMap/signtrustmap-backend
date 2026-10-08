@@ -41,6 +41,8 @@ export interface VerifiedSign {
   longitude: number;
   trafficDirection: number | null;
   signCropUrl: string;
+  frameUrl?: string | null;
+  bestFrameUrl?: string | null;
   status: string;
   freshnessScore: number;
   confirmationCount?: number;
