@@ -59,7 +59,8 @@ _SIGNS_IN_BBOX = text(
         usc.best_frame_url,
         vts.status,
         vts.freshness_score,
-        vts.last_verified_at
+        vts.last_verified_at,
+        vts.created_at
     FROM verified_traffic_signs vts
     JOIN traffic_sign_types tst ON tst.id = vts.sign_type_id
     LEFT JOIN unverified_sign_candidates usc ON usc.id = vts.origin_candidate_id
@@ -159,6 +160,9 @@ async def get_signs_in_viewport(
                 "freshnessScore": float(r["freshness_score"]),
                 "lastVerifiedAt": (
                     r["last_verified_at"].isoformat() if r["last_verified_at"] else None
+                ),
+                "createdAt": (
+                    r["created_at"].isoformat() if r["created_at"] else None
                 ),
             },
         )

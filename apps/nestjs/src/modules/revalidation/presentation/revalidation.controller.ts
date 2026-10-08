@@ -81,6 +81,10 @@ export class RevalidationController {
   @Get('revalidation/tasks/:taskId/evidences')
   listEvidences(@Param('taskId', ParseUUIDPipe) taskId: string) { return this.svc.listEvidencesForTask(taskId); }
 
+  @ApiOperation({ summary: 'List evidences for sign', description: 'Retrieve surveyor evidence submissions and photos across all revalidations for a verified sign' })
+  @Get('revalidation/signs/:signId/evidences')
+  listEvidencesForSign(@Param('signId', ParseUUIDPipe) signId: string) { return this.svc.listEvidencesForSign(signId); }
+
   @ApiBearerAuth()
   @Roles('SURVEYOR', 'ADMIN')
   @ApiOperation({ summary: 'Submit task evidence', description: 'Upload photo evidence and location verification from on-site inspection' })
