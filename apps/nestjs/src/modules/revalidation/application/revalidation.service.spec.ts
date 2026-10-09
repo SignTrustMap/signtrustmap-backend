@@ -132,6 +132,49 @@ describe('RevalidationService', () => {
       expect(task.rewardCredits).toBe(15);
       expect(tasks.save).toHaveBeenCalledWith(existingTask);
     });
+
+    it('dispatches missing sign notifications to surveyors when dispute task is created', async () => {
+      const tasks = {
+        findOne: jest.fn().mockResolvedValue(null),
+        create: jest.fn((val) => ({ ...val, id: 'new-dispute-task-id' })),
+        save: jest.fn(async (val) => val),
+      } as unknown as Repository<RevalidationTask>;
+
+      const query = jest.fn().mockImplementation(async (sql: string) => {
+        if (sql.includes('FROM surveyor_profiles')) {
+          return [{ user_id: 'surveyor-1' }, { user_id: 'surveyor-2' }];
+        }
+        return [];
+      });
+      const notifications = {
+        createBulk: jest.fn().mockResolvedValue([]),
+      } as unknown as NotificationsService;
+
+      const service = new RevalidationService(
+        tasks,
+        {} as Repository<RevalidationEvidence>,
+        {} as Repository<RevalidationDecision>,
+        { query } as unknown as DataSource,
+        {} as MinioStorageService,
+        {} as WalletService,
+        notifications,
+      );
+
+      await service.createOrEscalateDisputeTask('sign-missing-123', 'user-456');
+
+      expect(notifications.createBulk).toHaveBeenCalledWith([
+        expect.objectContaining({
+          userId: 'surveyor-1',
+          type: 'SIGN_MISSING_DISPATCH',
+          relatedEntityId: 'new-dispute-task-id',
+        }),
+        expect.objectContaining({
+          userId: 'surveyor-2',
+          type: 'SIGN_MISSING_DISPATCH',
+          relatedEntityId: 'new-dispute-task-id',
+        }),
+      ]);
+    });
   });
 
   describe('submitEvidence (Scenario #3 guardrails)', () => {

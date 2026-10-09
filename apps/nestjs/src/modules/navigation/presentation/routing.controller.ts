@@ -14,8 +14,13 @@ export class RoutingController {
   @Get('vehicle-modes')
   vehicleModes() {
     return {
-      defaultMode: 'DRIVING',
-      modes: [{ id: 'DRIVING', label: 'Driving' }],
+      defaultMode: 'MOTORCYCLE',
+      modes: [
+        { id: 'MOTORCYCLE', label: 'Xe máy (Motorcycle)' },
+        { id: 'DRIVING', label: 'Ô tô (Car)' },
+        { id: 'CYCLING', label: 'Xe đạp (Bicycle)' },
+        { id: 'WALKING', label: 'Đi bộ (Walking)' },
+      ],
     };
   }
 

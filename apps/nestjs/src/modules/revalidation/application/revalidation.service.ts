@@ -912,7 +912,39 @@ export class RevalidationService {
       }
     }
 
+    await this.notifySurveyorsForMissingSign(task, signId);
+
     return task;
+  }
+
+  async notifySurveyorsForMissingSign(task: RevalidationTask, signId: string): Promise<number> {
+    try {
+      if (!this.dataSource?.query) return 0;
+      const surveyorRows: Array<{ user_id: string }> = await this.dataSource.query(
+        `SELECT sp.user_id
+         FROM surveyor_profiles sp
+         ORDER BY sp.user_id
+         LIMIT 20`,
+      );
+      if (!surveyorRows || surveyorRows.length === 0) {
+        return 0;
+      }
+      const notifs = surveyorRows.map((row) => ({
+        userId: row.user_id,
+        type: 'SIGN_MISSING_DISPATCH',
+        title: 'Cần kiểm tra biển báo báo mất',
+        message: `Biển báo ${signId.slice(0, 8)} được báo cáo không còn tồn tại. Nhiệm vụ kiểm tra đã được kích hoạt (+${task.rewardCredits} credits).`,
+        relatedEntityType: 'revalidation_task',
+        relatedEntityId: task.id,
+      }));
+      if (this.notificationsService?.createBulk) {
+        await this.notificationsService.createBulk(notifs as any);
+      }
+      return notifs.length;
+    } catch (e: any) {
+      this.logger.warn(`Failed to dispatch missing sign notifications: ${e?.message}`);
+      return 0;
+    }
   }
 
   /**
