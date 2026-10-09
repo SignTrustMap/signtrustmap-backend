@@ -46,7 +46,7 @@ describe('SurveyService submission contract', () => {
       status: SubmissionStatus.DRAFT,
       rewardStatus: 'PENDING' as any,
       rewardAmount: 0,
-      capturedAt: new Date('2026-09-08T02:00:00.000Z'),
+      capturedAt: new Date(Date.now() - 3600000),
       coordinateSource: CoordinateSource.DEVICE_GPS,
       note: 'Northbound lane',
       validationErrors: [],
@@ -202,8 +202,9 @@ describe('SurveyService submission contract', () => {
       .mockResolvedValueOnce({ id: 'sess-1', submissionId: 'sub-frame-1' } as any)
       .mockResolvedValueOnce({ id: 'media-1', submissionId: 'sub-frame-1' } as any);
 
+    const recentCapturedAt = new Date(Date.now() - 3600000).toISOString();
     const result = await service.createFrameBatchSession(userId, {
-      capturedAt: '2026-09-08T02:00:00.000Z',
+      capturedAt: recentCapturedAt,
       fps: 5.0,
       frames: [
         {
@@ -236,7 +237,7 @@ describe('SurveyService submission contract', () => {
   it('creates a draft before any upload session', async () => {
     const result = await service.createSubmission(userId, {
       submissionType: SubmissionType.VIDEO_GPX,
-      capturedAt: '2026-09-08T02:00:00.000Z',
+      capturedAt: new Date(Date.now() - 3600000).toISOString(),
       coordinateSource: CoordinateSource.GPX_FILE,
       note: 'Morning survey',
     });
@@ -759,7 +760,7 @@ describe('SurveyService submission contract', () => {
 
     const res = await service.createSubmission(userId, {
       submissionType: SubmissionType.SINGLE_IMAGE,
-      capturedAt: '2026-09-08T02:00:00.000Z',
+      capturedAt: new Date(Date.now() - 3600000).toISOString(),
       coordinateSource: CoordinateSource.DEVICE_GPS,
       latitude: 10.762622,
       longitude: 106.660172,
@@ -793,7 +794,7 @@ describe('SurveyService submission contract', () => {
     await expect(
       service.createSubmission(userId, {
         submissionType: SubmissionType.SINGLE_IMAGE,
-        capturedAt: '2026-09-08T02:00:00.000Z',
+        capturedAt: new Date(Date.now() - 3600000).toISOString(),
         coordinateSource: CoordinateSource.DEVICE_GPS,
       }),
     ).rejects.toThrow('Daily submission quota exceeded');
@@ -803,7 +804,7 @@ describe('SurveyService submission contract', () => {
     await expect(
       service.createSubmission(userId, {
         submissionType: SubmissionType.SINGLE_IMAGE,
-        capturedAt: '2026-09-08T02:00:00.000Z',
+        capturedAt: new Date(Date.now() - 3600000).toISOString(),
         coordinateSource: CoordinateSource.DEVICE_GPS,
         latitude: 48.8566, // Paris
         longitude: 2.3522,

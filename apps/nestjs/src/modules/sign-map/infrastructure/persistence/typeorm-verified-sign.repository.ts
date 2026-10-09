@@ -19,6 +19,7 @@ interface VerifiedSignRow {
   latitude: number | string;
   traffic_direction: number | string | null;
   sign_crop_url: string;
+  scene_photo_url?: string | null;
   status: string;
   freshness_score: number | string;
   confirmation_count?: number | string | null;
@@ -80,6 +81,12 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
            ORDER BY mapping.id
            LIMIT 1
          ) AS navigation_value,
+         (
+           SELECT cand.best_frame_url
+           FROM unverified_sign_candidates cand
+           WHERE cand.id = sign.origin_candidate_id
+           LIMIT 1
+         ) AS scene_photo_url,
          category.code AS category_code,
          category.name_vi AS category_name_vi,
          category.name_en AS category_name_en`;
@@ -350,6 +357,7 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
       trafficDirection:
         row.traffic_direction == null ? null : Number(row.traffic_direction),
       signCropUrl: row.sign_crop_url,
+      scenePhotoUrl: row.scene_photo_url ?? null,
       status: row.status,
       freshnessScore: Number(row.freshness_score),
       confirmationCount: Number(row.confirmation_count ?? 0),
