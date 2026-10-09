@@ -130,6 +130,7 @@ export class OsrmRoutingClient {
       longitude: request.destinationLongitude,
     };
     const snappedOrigin = this.waypoint(root.waypoints, 0, origin);
+    const snappedDestination = this.waypoint(root.waypoints, 1, destination);
     const effectiveMode = request.vehicleMode ?? request._vehicleMode;
     const effectiveType = this.resolveVehicleType(request.vehicleType, effectiveMode);
     const parsedRoutes = root.routes
