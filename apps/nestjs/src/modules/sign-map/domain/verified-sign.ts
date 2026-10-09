@@ -43,6 +43,8 @@ export interface VerifiedSign {
   trafficDirection: number | null;
   signCropUrl: string;
   scenePhotoUrl?: string | null;
+  frameUrl?: string | null;
+  bestFrameUrl?: string | null;
   status: string;
   freshnessScore: number;
   confirmationCount?: number;

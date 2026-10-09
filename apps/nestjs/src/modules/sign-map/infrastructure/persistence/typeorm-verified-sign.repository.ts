@@ -20,6 +20,7 @@ interface VerifiedSignRow {
   traffic_direction: number | string | null;
   sign_crop_url: string;
   scene_photo_url?: string | null;
+  best_frame_url?: string | null;
   status: string;
   freshness_score: number | string;
   confirmation_count?: number | string | null;
@@ -54,6 +55,7 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
          ST_Y(sign.location::geometry) AS latitude,
          sign.traffic_direction,
          sign.sign_crop_url,
+         candidate.best_frame_url AS best_frame_url,
          sign.status,
          sign.freshness_score,
          COALESCE(sign.confirmation_count, 0) AS confirmation_count,
@@ -94,7 +96,8 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
   private static readonly FROM_JOIN_SIGN = `
        FROM verified_traffic_signs sign
        JOIN traffic_sign_types sign_type ON sign_type.id = sign.sign_type_id
-       JOIN sign_categories category ON category.id = sign_type.category_id`;
+       JOIN sign_categories category ON category.id = sign_type.category_id
+       LEFT JOIN unverified_sign_candidates candidate ON candidate.id = sign.origin_candidate_id`;
 
   private static readonly SELECT_SIGN = `SELECT ${TypeOrmVerifiedSignRepository.SELECT_COLUMNS} ${TypeOrmVerifiedSignRepository.FROM_JOIN_SIGN}`;
 
@@ -358,6 +361,8 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
         row.traffic_direction == null ? null : Number(row.traffic_direction),
       signCropUrl: row.sign_crop_url,
       scenePhotoUrl: row.scene_photo_url ?? null,
+      frameUrl: row.best_frame_url ?? row.scene_photo_url ?? null,
+      bestFrameUrl: row.best_frame_url ?? row.scene_photo_url ?? null,
       status: row.status,
       freshnessScore: Number(row.freshness_score),
       confirmationCount: Number(row.confirmation_count ?? 0),
