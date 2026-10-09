@@ -95,6 +95,8 @@ describe('RoutePreviewService', () => {
           lat: 10.006,
           lon: 106.005,
           routeOffsetMeters: 820,
+          actualCropUrl: 'sign-3892.jpg',
+          scenePhotoUrl: undefined,
         },
         {
           id: 'sign-4112',
@@ -102,6 +104,8 @@ describe('RoutePreviewService', () => {
           lat: 10.009,
           lon: 106.009,
           routeOffsetMeters: 1_430,
+          actualCropUrl: 'sign-4112.jpg',
+          scenePhotoUrl: undefined,
         },
       ],
     });

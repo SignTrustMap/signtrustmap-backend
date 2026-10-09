@@ -67,15 +67,41 @@ export class RouteSignQueryService {
 
     const vehicleType = request.vehicleType;
     const enabledCategoryCodes = request.enabledCategoryCodes;
+    const onlyFixedSigns = request.onlyFixedSigns;
 
     const signs = candidates
       .filter((sign) => {
-        // 1. Category filter
+        // 0. Fixed signs filter (P=Prohibitory, W=Warning, R=Mandatory, I=Information fixed infrastructure signs)
+        if (onlyFixedSigns) {
+          const catCode = sign.signType.category.code?.toUpperCase() ?? '';
+          const isFixed = [
+            'P', 'PROHIBITORY', 'PROHIBITION',
+            'W', 'WARNING',
+            'R', 'MANDATORY',
+            'I', 'INFORMATION', 'INFO', 'GUIDE',
+          ].includes(catCode);
+          if (!isFixed) return false;
+        }
+
+        // 1. Category filter (supports both short codes and full category names)
         if (enabledCategoryCodes && enabledCategoryCodes.length > 0) {
-          const catCode = sign.signType.category.code?.toUpperCase();
-          const matches = enabledCategoryCodes.some(
-            (c) => c.toUpperCase() === catCode,
-          );
+          const catCode = sign.signType.category.code?.toUpperCase() ?? '';
+          const matches = enabledCategoryCodes.some((c) => {
+            const norm = c.toUpperCase();
+            return (
+              norm === catCode ||
+              ((norm === 'P' || norm === 'PROHIBITORY' || norm === 'PROHIBITION') &&
+                (catCode === 'P' || catCode === 'PROHIBITORY' || catCode === 'PROHIBITION')) ||
+              ((norm === 'W' || norm === 'WARNING') &&
+                (catCode === 'W' || catCode === 'WARNING')) ||
+              ((norm === 'R' || norm === 'MANDATORY') &&
+                (catCode === 'R' || catCode === 'MANDATORY')) ||
+              ((norm === 'I' || norm === 'INFORMATION' || norm === 'INFO' || norm === 'GUIDE') &&
+                (catCode === 'I' || catCode === 'INFORMATION' || catCode === 'INFO' || catCode === 'GUIDE')) ||
+              ((norm === 'TEMPORARY' || norm === 'S') &&
+                (catCode === 'TEMPORARY' || catCode === 'S'))
+            );
+          });
           if (!matches) return false;
         }
 

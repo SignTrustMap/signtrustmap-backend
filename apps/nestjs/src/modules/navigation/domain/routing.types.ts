@@ -76,6 +76,8 @@ export interface RoutePreviewResponse {
     value?: number;
     lat: number;
     lon: number;
+    actualCropUrl?: string;
+    scenePhotoUrl?: string;
     routeOffsetMeters: number;
   }>;
 }
