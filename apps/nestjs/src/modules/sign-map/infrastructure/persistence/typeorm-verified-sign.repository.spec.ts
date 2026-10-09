@@ -146,6 +146,7 @@ describe('TypeOrmVerifiedSignRepository', () => {
       latitude: '10.7725',
       traffic_direction: '90',
       sign_crop_url: 'https://images.test/sign.jpg',
+      best_frame_url: 'https://images.test/frame.jpg',
       status: 'ACTIVE',
       freshness_score: '0.95',
       last_verified_at: new Date('2026-08-25T00:00:00Z'),

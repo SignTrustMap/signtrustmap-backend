@@ -9,6 +9,7 @@ describe('RevalidationController', () => {
     listTasks: jest.Mock;
     getTask: jest.Mock;
     listEvidencesForTask: jest.Mock;
+    listEvidencesForSign: jest.Mock;
     submitEvidence: jest.Mock;
     finalizeTask: jest.Mock;
     voteOnEvidence: jest.Mock;
@@ -25,6 +26,7 @@ describe('RevalidationController', () => {
       listTasks: jest.fn().mockResolvedValue({ items: [], total: 0 }),
       getTask: jest.fn().mockResolvedValue({ id: 'task-1' }),
       listEvidencesForTask: jest.fn().mockResolvedValue([]),
+      listEvidencesForSign: jest.fn().mockResolvedValue([]),
       submitEvidence: jest.fn().mockResolvedValue({ id: 'ev-1' }),
       finalizeTask: jest.fn().mockResolvedValue({ id: 'task-1', status: 'COMPLETED' }),
       voteOnEvidence: jest.fn().mockResolvedValue({ id: 'vote-1' }),
@@ -104,6 +106,12 @@ describe('RevalidationController', () => {
       const res = await controller.listEvidences('task-1');
       expect(res).toEqual([]);
       expect(service.listEvidencesForTask).toHaveBeenCalledWith('task-1');
+    });
+
+    it('listEvidencesForSign calls service.listEvidencesForSign', async () => {
+      const res = await controller.listEvidencesForSign('sign-1');
+      expect(res).toEqual([]);
+      expect(service.listEvidencesForSign).toHaveBeenCalledWith('sign-1');
     });
 
     it('submitEvidence calls service.submitEvidence', async () => {
