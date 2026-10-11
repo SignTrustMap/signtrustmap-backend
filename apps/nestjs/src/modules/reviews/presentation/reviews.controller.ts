@@ -2,8 +2,9 @@ import { Controller, Body, Param, ParseUUIDPipe, Post, Query, Get, Patch, Delete
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { Public } from '../../../common/decorators/public.decorator';
+import { Roles } from '../../../common/decorators/roles.decorator';
 import { ReviewsService } from '../application/reviews.service';
-import { VoteDto, ReportDto, TestReviewDto, TestAssignDto } from './dto/vote.dto';
+import { VoteDto, ReportDto, TestReviewDto, TestAssignDto, RequestRecaptureDto } from './dto/vote.dto';
 import { InternalTokenGuard } from '../../../common/guards/internal-token.guard';
 
 @ApiTags('Reviews')
@@ -67,6 +68,50 @@ export class ReviewsController {
   @Post('candidates/:candidateId/can-not-identify')
   async canNotIdentify(@CurrentUser() user: any, @Param('candidateId', ParseUUIDPipe) candidateId: string, @Body() body?: { note?: string }) {
     return this.reviewsService.canNotIdentify(user.id, candidateId, body?.note);
+  }
+
+  @ApiBearerAuth()
+  @Roles('REVIEWER', 'ADMIN', 'STAFF')
+  @ApiOperation({
+    summary: 'Request image recapture from surveyor',
+    description: 'Reviewer or Admin requests original surveyor to capture a clearer image because the existing image is too hard to verify (e.g. blurry, poor lighting, obscured, bad angle)',
+  })
+  @Post('candidates/:candidateId/request-recapture')
+  async requestRecapture(
+    @CurrentUser() user: any,
+    @Param('candidateId', ParseUUIDPipe) candidateId: string,
+    @Body() dto: RequestRecaptureDto,
+  ) {
+    const allowSelf = user?.role === 'ADMIN';
+    return this.reviewsService.requestRecapture(user.id, candidateId, dto, allowSelf);
+  }
+
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Get recapture requests for candidate',
+    description: 'Retrieve history of recapture requests and reviewer feedback submitted for this candidate sign',
+  })
+  @Get('candidates/:candidateId/recaptures')
+  async getCandidateRecaptures(
+    @Param('candidateId', ParseUUIDPipe) candidateId: string,
+  ) {
+    return this.reviewsService.getRecapturesForCandidate(candidateId);
+  }
+
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Get my pending recapture requests as surveyor',
+    description: 'List sign candidates where reviewers or admins have requested the current user to recapture clearer images',
+  })
+  @Get('me/recaptures')
+  async getMyRecaptures(
+    @CurrentUser() user: any,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+  ) {
+    const p = page ? parseInt(page, 10) : 1;
+    const ps = pageSize ? parseInt(pageSize, 10) : 20;
+    return this.reviewsService.getMyRecaptures(user.id, Number.isNaN(p) ? 1 : p, Number.isNaN(ps) ? 20 : ps);
   }
 
   @ApiBearerAuth()

@@ -27,6 +27,17 @@ export class ReportDto {
   reason: string;
 }
 
+export class RequestRecaptureDto {
+  @IsString()
+  @MaxLength(100)
+  reason: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  note?: string;
+}
+
 export class TestReviewDto {
   @IsString()
   candidateId: string;

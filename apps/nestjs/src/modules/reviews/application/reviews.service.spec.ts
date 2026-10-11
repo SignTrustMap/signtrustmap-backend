@@ -1,4 +1,4 @@
-import { ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { Repository, SelectQueryBuilder } from 'typeorm';
 import { TrafficSignType } from '../../catalog/traffic-sign-type.entity';
 import { ConsensusService } from '../../consensus/application/consensus.service';
@@ -384,6 +384,223 @@ describe('ReviewsService test helpers', () => {
       expect.stringContaining("UPDATE unverified_sign_candidates SET status = 'PENDING_REVIEW'"),
       [['c-1', 'c-2']],
     );
+  });
+
+  describe('requestRecapture', () => {
+    it('throws NotFoundException when candidate does not exist', async () => {
+      const candidates = {
+        findOne: jest.fn().mockResolvedValue(null),
+      } as unknown as Repository<UnverifiedSignCandidate>;
+      const service = new ReviewsService(candidates, {} as any, {} as any, {} as any);
+
+      await expect(
+        service.requestRecapture('rev-1', 'cand-404', { reason: 'BLURRY' }),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('throws BadRequestException when candidate status is already VERIFIED, REJECTED, or RECAPTURE_REQUESTED', async () => {
+      const candidates = {
+        findOne: jest.fn().mockResolvedValue({
+          id: 'cand-1',
+          status: CandidateStatus.VERIFIED,
+        }),
+      } as unknown as Repository<UnverifiedSignCandidate>;
+      const service = new ReviewsService(candidates, {} as any, {} as any, {} as any);
+
+      await expect(
+        service.requestRecapture('rev-1', 'cand-1', { reason: 'BLURRY' }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('throws ForbiddenException when reviewer is the surveyor and allowSelfReview is false', async () => {
+      const candidates = {
+        findOne: jest.fn().mockResolvedValue({
+          id: 'cand-1',
+          status: CandidateStatus.PENDING_REVIEW,
+          submission: { surveyorId: 'rev-1' },
+        }),
+      } as unknown as Repository<UnverifiedSignCandidate>;
+      const service = new ReviewsService(candidates, {} as any, {} as any, {} as any);
+
+      await expect(
+        service.requestRecapture('rev-1', 'cand-1', { reason: 'BLURRY' }, false),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('successfully creates recapture request, updates candidate status, and dispatches notification', async () => {
+      const rawQuery = jest.fn().mockResolvedValue([]);
+      const candidates = {
+        findOne: jest.fn().mockResolvedValue({
+          id: 'cand-1',
+          status: CandidateStatus.PENDING_REVIEW,
+          submission: { surveyorId: 'surv-1' },
+          predictedSignType: { nameVi: 'Biển báo nguy hiểm' },
+        }),
+        update: jest.fn().mockResolvedValue({ affected: 1 }),
+        manager: { query: rawQuery },
+      } as unknown as Repository<UnverifiedSignCandidate>;
+
+      const recaptureRepo = {
+        create: jest.fn((dto) => dto),
+        save: jest.fn(async (dto) => ({ id: 'req-1', ...dto, createdAt: new Date() })),
+      } as any;
+
+      const notifications = {
+        create: jest.fn().mockResolvedValue({ id: 'notif-1' }),
+      } as any;
+
+      const dailyTasks = {
+        recordProgress: jest.fn().mockResolvedValue(undefined),
+      } as any;
+
+      const service = new ReviewsService(
+        candidates,
+        {} as any,
+        {} as any,
+        {} as any,
+        undefined,
+        undefined,
+        dailyTasks,
+        recaptureRepo,
+        notifications,
+      );
+
+      const res = await service.requestRecapture(
+        'rev-1',
+        'cand-1',
+        { reason: 'BLURRY', note: 'Too dark to verify sign' },
+        false,
+      );
+
+      expect(res.success).toBe(true);
+      expect(res.candidateId).toBe('cand-1');
+      expect(res.status).toBe(CandidateStatus.RECAPTURE_REQUESTED);
+      expect(res.surveyorId).toBe('surv-1');
+      expect(res.notificationSent).toBe(true);
+
+      expect(candidates.update).toHaveBeenCalledWith('cand-1', {
+        status: CandidateStatus.RECAPTURE_REQUESTED,
+      });
+      expect(recaptureRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          candidateId: 'cand-1',
+          reviewerId: 'rev-1',
+          surveyorId: 'surv-1',
+          reason: 'BLURRY',
+          note: 'Too dark to verify sign',
+        }),
+      );
+      expect(notifications.create).toHaveBeenCalledWith(
+        'surv-1',
+        'IMAGE_RECAPTURE_REQUESTED',
+        'Yêu cầu chụp lại ảnh biển báo',
+        expect.stringContaining('Biển báo nguy hiểm quá mờ hoặc khó xác định (BLURRY: Too dark to verify sign)'),
+        'candidate',
+        'cand-1',
+      );
+      expect(dailyTasks.recordProgress).toHaveBeenCalledWith('rev-1', 'REVIEW', 1);
+    });
+
+    it('allows recapture request when allowSelfReview is true even if reviewer is surveyor', async () => {
+      const candidates = {
+        findOne: jest.fn().mockResolvedValue({
+          id: 'cand-1',
+          status: CandidateStatus.PENDING_REVIEW,
+          submission: { surveyorId: 'rev-admin' },
+        }),
+        update: jest.fn().mockResolvedValue({ affected: 1 }),
+        manager: { query: jest.fn().mockResolvedValue([]) },
+      } as unknown as Repository<UnverifiedSignCandidate>;
+
+      const recaptureRepo = {
+        create: jest.fn((dto) => dto),
+        save: jest.fn(async (dto) => ({ id: 'req-admin', ...dto })),
+      } as any;
+
+      const service = new ReviewsService(
+        candidates,
+        {} as any,
+        {} as any,
+        {} as any,
+        undefined,
+        undefined,
+        undefined,
+        recaptureRepo,
+        undefined,
+      );
+
+      const res = await service.requestRecapture(
+        'rev-admin',
+        'cand-1',
+        { reason: 'OBSCURED' },
+        true,
+      );
+
+      expect(res.success).toBe(true);
+      expect(candidates.update).toHaveBeenCalledWith('cand-1', {
+        status: CandidateStatus.RECAPTURE_REQUESTED,
+      });
+    });
+  });
+
+  describe('getRecapturesForCandidate and getMyRecaptures', () => {
+    it('getRecapturesForCandidate queries recaptureRepo when provided', async () => {
+      const recaptureRepo = {
+        find: jest.fn().mockResolvedValue([{ id: 'req-1', reason: 'BLURRY' }]),
+      } as any;
+      const service = new ReviewsService(
+        {} as any,
+        {} as any,
+        {} as any,
+        {} as any,
+        undefined,
+        undefined,
+        undefined,
+        recaptureRepo,
+      );
+
+      const res = await service.getRecapturesForCandidate('cand-1');
+      expect(res).toEqual([{ id: 'req-1', reason: 'BLURRY' }]);
+      expect(recaptureRepo.find).toHaveBeenCalledWith({
+        where: { candidateId: 'cand-1' },
+        order: { createdAt: 'DESC' },
+      });
+    });
+
+    it('getMyRecaptures queries and returns paginated list of surveyor recaptures', async () => {
+      const rawQuery = jest
+        .fn()
+        .mockResolvedValueOnce([{ cnt: 1 }])
+        .mockResolvedValueOnce([
+          {
+            request_id: 'req-1',
+            candidate_id: 'cand-1',
+            reason: 'POOR_LIGHTING',
+            note: 'Night photo',
+            sign_crop_url: 'https://s3/crop.jpg',
+            latitude: 10.7,
+            longitude: 106.6,
+          },
+        ]);
+
+      const candidates = {
+        manager: { query: rawQuery },
+      } as unknown as Repository<UnverifiedSignCandidate>;
+
+      const service = new ReviewsService(candidates, {} as any, {} as any, {} as any);
+
+      const res = await service.getMyRecaptures('surv-1', 1, 10);
+      expect(res.total).toBe(1);
+      expect(res.page).toBe(1);
+      expect(res.pageSize).toBe(10);
+      expect(res.totalPages).toBe(1);
+      expect(res.items).toHaveLength(1);
+      expect(res.items[0].reason).toBe('POOR_LIGHTING');
+      expect(rawQuery).toHaveBeenCalledWith(
+        expect.stringContaining('WHERE crr.surveyor_id = $1'),
+        ['surv-1'],
+      );
+    });
   });
 });
 

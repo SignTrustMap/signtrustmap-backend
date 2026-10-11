@@ -737,4 +737,100 @@ describe('RevalidationService', () => {
       });
     });
   });
+
+  describe('requestEvidenceRecapture', () => {
+    it('throws NotFoundException when evidence does not exist', async () => {
+      const evidences = {
+        findOne: jest.fn().mockResolvedValue(null),
+      } as unknown as Repository<RevalidationEvidence>;
+      const service = new RevalidationService(
+        {} as any,
+        evidences,
+        {} as any,
+        {} as any,
+        {} as any,
+        {} as any,
+        {} as any,
+      );
+
+      await expect(
+        service.requestEvidenceRecapture('non-existent', 'rev-1', { reason: 'BLURRY' }),
+      ).rejects.toThrow('RevalidationEvidence non-existent not found');
+    });
+
+    it('throws ForbiddenException when reviewer is the submitter of the evidence', async () => {
+      const evidences = {
+        findOne: jest.fn().mockResolvedValue({ id: 'ev-1', userId: 'user-1' }),
+      } as unknown as Repository<RevalidationEvidence>;
+      const service = new RevalidationService(
+        {} as any,
+        evidences,
+        {} as any,
+        {} as any,
+        {} as any,
+        {} as any,
+        {} as any,
+      );
+
+      await expect(
+        service.requestEvidenceRecapture('ev-1', 'user-1', { reason: 'BLURRY' }),
+      ).rejects.toThrow('You cannot request recapture on your own submitted evidence');
+    });
+
+    it('creates UNCLEAR decision, dispatches notification, and records daily task progress', async () => {
+      const evidences = {
+        findOne: jest.fn().mockResolvedValue({ id: 'ev-1', userId: 'surv-1', taskId: 'task-uuid-1234' }),
+      } as unknown as Repository<RevalidationEvidence>;
+      const decisions = {
+        findOne: jest.fn().mockResolvedValue(null),
+        create: jest.fn((val) => val),
+        save: jest.fn(async (val) => val),
+      } as unknown as Repository<RevalidationDecision>;
+      const notifications = {
+        create: jest.fn().mockResolvedValue({ id: 'notif-1' }),
+      } as unknown as NotificationsService;
+      const dailyTasks = {
+        recordProgress: jest.fn().mockResolvedValue(undefined),
+      };
+
+      const service = new RevalidationService(
+        {} as any,
+        evidences,
+        decisions,
+        {} as any,
+        {} as any,
+        {} as any,
+        notifications,
+        undefined,
+        dailyTasks as any,
+      );
+
+      const res = await service.requestEvidenceRecapture('ev-1', 'rev-1', {
+        reason: 'BLURRY',
+        note: 'Tree branch covering sign',
+      });
+
+      expect(res.success).toBe(true);
+      expect(res.evidenceId).toBe('ev-1');
+      expect(res.surveyorId).toBe('surv-1');
+      expect(res.notificationSent).toBe(true);
+      expect(decisions.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          evidenceId: 'ev-1',
+          reviewerId: 'rev-1',
+          decision: 'UNCLEAR',
+          note: 'Recapture requested: BLURRY - Tree branch covering sign',
+        }),
+      );
+      expect(notifications.create).toHaveBeenCalledWith(
+        'surv-1',
+        'REVALIDATION_RECAPTURE_REQUESTED',
+        'Yêu cầu chụp lại ảnh xác thực biển báo',
+        expect.stringContaining('BLURRY: Tree branch covering sign'),
+        'revalidation_evidence',
+        'ev-1',
+      );
+      expect(dailyTasks.recordProgress).toHaveBeenCalledWith('rev-1', 'REVIEW', 1);
+    });
+  });
 });
