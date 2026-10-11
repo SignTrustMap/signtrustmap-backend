@@ -21,3 +21,8 @@ export class EvidenceQueryDto {
 export class EarlyClassifyDto {
   @IsOptional() @IsString() mediaUrl?: string;
 }
+
+export class RequestEvidenceRecaptureDto {
+  @IsString() reason: string;
+  @IsOptional() @IsString() note?: string;
+}

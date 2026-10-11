@@ -531,6 +531,63 @@ export class RevalidationService {
     return this.decisions.find({ where: { evidenceId }, order: { decidedAt: 'ASC' } });
   }
 
+  async requestEvidenceRecapture(evidenceId: string, reviewerId: string, dto: { reason: string; note?: string }) {
+    const ev = await this.evidences.findOne({ where: { id: evidenceId } });
+    if (!ev) throw new NotFoundException('RevalidationEvidence ' + evidenceId + ' not found');
+    if (ev.userId === reviewerId) {
+      throw new ForbiddenException('You cannot request recapture on your own submitted evidence');
+    }
+    const reason = dto.reason.trim();
+    const note = dto.note?.trim() || null;
+
+    let decisionRow: RevalidationDecision | null = await this.decisions.findOne({ where: { evidenceId, reviewerId } });
+    if (!decisionRow) {
+      decisionRow = (this.decisions.create as any)({
+        evidenceId,
+        reviewerId,
+        decision: RevalDecision.UNCLEAR,
+        note: `Recapture requested: ${reason}${note ? ' - ' + note : ''}`,
+      }) as RevalidationDecision;
+      await this.decisions.save(decisionRow);
+    } else {
+      decisionRow.decision = RevalDecision.UNCLEAR;
+      decisionRow.note = `Recapture requested: ${reason}${note ? ' - ' + note : ''}`;
+      await this.decisions.save(decisionRow);
+    }
+
+    let notificationSent = false;
+    if (ev.userId && this.notificationsService) {
+      try {
+        const msg = `Ảnh bằng chứng cho nhiệm vụ ${ev.taskId.slice(0, 8)} quá mờ hoặc khó xác thực (${reason}${note ? ': ' + note : ''}). Vui lòng chụp lại ảnh rõ nét tại vị trí biển báo.`;
+        await this.notificationsService.create(
+          ev.userId,
+          'REVALIDATION_RECAPTURE_REQUESTED',
+          'Yêu cầu chụp lại ảnh xác thực biển báo',
+          msg,
+          'revalidation_evidence',
+          evidenceId,
+        );
+        notificationSent = true;
+      } catch (err: any) {
+        // Notification failure should not fail request
+      }
+    }
+
+    if (this.dailyTasksService) {
+      this.dailyTasksService.recordProgress(reviewerId, 'REVIEW', 1).catch(() => {});
+    }
+
+    return {
+      success: true,
+      evidenceId,
+      taskId: ev.taskId,
+      surveyorId: ev.userId,
+      reason,
+      note,
+      notificationSent,
+    };
+  }
+
   /**
    * Scenario #3 — automated multi-reviewer consensus.
    * Called after each vote; settles the task as soon as >= minVotesRequired
