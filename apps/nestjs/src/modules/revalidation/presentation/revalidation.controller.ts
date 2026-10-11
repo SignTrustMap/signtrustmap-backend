@@ -4,7 +4,7 @@ import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagg
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RevalidationService } from '../application/revalidation.service';
-import { SubmitEvidenceDto, EvidenceVoteDto, EarlyClassifyDto } from './dto/revalidation.dto';
+import { SubmitEvidenceDto, EvidenceVoteDto, EarlyClassifyDto, RequestEvidenceRecaptureDto } from './dto/revalidation.dto';
 
 @ApiTags('Revalidation')
 @Controller()
@@ -129,4 +129,19 @@ export class RevalidationController {
   @ApiOperation({ summary: 'List evidence decisions', description: 'Retrieve history of consensus decisions for a specific evidence item' })
   @Get('revalidation/evidence/:evidenceId/decisions')
   listDecisions(@Param('evidenceId', ParseUUIDPipe) evidenceId: string) { return this.svc.listDecisions(evidenceId); }
+
+  @ApiBearerAuth()
+  @Roles('REVIEWER', 'ADMIN', 'STAFF')
+  @ApiOperation({
+    summary: 'Request recapture on revalidation evidence',
+    description: 'Reviewer or Admin requests surveyor to recapture on-site verification photo when submitted evidence is blurry, obscured, or inconclusive',
+  })
+  @Post('revalidation/evidence/:evidenceId/request-recapture')
+  requestEvidenceRecapture(
+    @Param('evidenceId', ParseUUIDPipe) evidenceId: string,
+    @CurrentUser() user: any,
+    @Body() dto: RequestEvidenceRecaptureDto,
+  ) {
+    return this.svc.requestEvidenceRecapture(evidenceId, user.id, dto);
+  }
 }

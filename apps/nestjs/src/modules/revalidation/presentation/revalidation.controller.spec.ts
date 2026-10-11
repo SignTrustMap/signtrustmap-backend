@@ -16,6 +16,7 @@ describe('RevalidationController', () => {
     listEvidenceQueue: jest.Mock;
     listDecisions: jest.Mock;
     triggerEarlyClassification: jest.Mock;
+    requestEvidenceRecapture: jest.Mock;
   };
 
   const mockUser = { id: 'u-user', role: 'SURVEYOR' };
@@ -33,6 +34,7 @@ describe('RevalidationController', () => {
       listEvidenceQueue: jest.fn().mockResolvedValue({ items: [], total: 0 }),
       listDecisions: jest.fn().mockResolvedValue([]),
       triggerEarlyClassification: jest.fn().mockResolvedValue({ taskId: 'task-1', classification: { className: 'No_entry' } }),
+      requestEvidenceRecapture: jest.fn().mockResolvedValue({ success: true }),
     };
 
     controller = new RevalidationController(service as unknown as RevalidationService);
@@ -150,6 +152,13 @@ describe('RevalidationController', () => {
       const res = await controller.earlyClassify('task-1', { mediaUrl: 'https://s3.example.com/test.jpg' });
       expect(res).toEqual({ taskId: 'task-1', classification: { className: 'No_entry' } });
       expect(service.triggerEarlyClassification).toHaveBeenCalledWith('task-1', 'https://s3.example.com/test.jpg');
+    });
+
+    it('requestEvidenceRecapture calls service.requestEvidenceRecapture', async () => {
+      const dto = { reason: 'BLURRY', note: 'Sign obscured by tree' };
+      const res = await controller.requestEvidenceRecapture('ev-1', mockUser, dto);
+      expect(res).toEqual({ success: true });
+      expect(service.requestEvidenceRecapture).toHaveBeenCalledWith('ev-1', mockUser.id, dto);
     });
   });
 });

@@ -18,6 +18,9 @@ describe('ReviewsController', () => {
     vote: jest.Mock;
     testReviewCandidate: jest.Mock;
     directCandidatesToReviewer: jest.Mock;
+    requestRecapture: jest.Mock;
+    getRecapturesForCandidate: jest.Mock;
+    getMyRecaptures: jest.Mock;
   };
 
   const mockUser = { id: 'rev-1', email: 'reviewer@stm.dev' };
@@ -38,6 +41,9 @@ describe('ReviewsController', () => {
       vote: jest.fn(),
       testReviewCandidate: jest.fn(),
       directCandidatesToReviewer: jest.fn(),
+      requestRecapture: jest.fn(),
+      getRecapturesForCandidate: jest.fn(),
+      getMyRecaptures: jest.fn(),
     };
     controller = new ReviewsController(service as unknown as ReviewsService);
   });
@@ -145,5 +151,36 @@ describe('ReviewsController', () => {
     const res = await controller.testAssign(mockUser, { candidateIds: ['cand-1'] });
     expect(res).toEqual({ success: true, count: 5 });
     expect(service.directCandidatesToReviewer).toHaveBeenCalledWith(mockUser.id, ['cand-1']);
+  });
+
+  it('requestRecapture calls service.requestRecapture with reviewer and dto', async () => {
+    service.requestRecapture.mockResolvedValue({ success: true, requestId: 'req-1' });
+    const dto = { reason: 'BLURRY', note: 'Too blurry to read speed limit' };
+    const res = await controller.requestRecapture(mockUser, 'cand-1', dto);
+    expect(res).toEqual({ success: true, requestId: 'req-1' });
+    expect(service.requestRecapture).toHaveBeenCalledWith(mockUser.id, 'cand-1', dto, false);
+  });
+
+  it('requestRecapture passes allowSelf=true when user is ADMIN', async () => {
+    service.requestRecapture.mockResolvedValue({ success: true, requestId: 'req-2' });
+    const adminUser = { id: 'admin-1', role: 'ADMIN' };
+    const dto = { reason: 'POOR_LIGHTING' };
+    const res = await controller.requestRecapture(adminUser, 'cand-1', dto);
+    expect(res).toEqual({ success: true, requestId: 'req-2' });
+    expect(service.requestRecapture).toHaveBeenCalledWith('admin-1', 'cand-1', dto, true);
+  });
+
+  it('getCandidateRecaptures calls service.getRecapturesForCandidate', async () => {
+    service.getRecapturesForCandidate.mockResolvedValue([{ id: 'req-1', reason: 'BLURRY' }]);
+    const res = await controller.getCandidateRecaptures('cand-1');
+    expect(res).toEqual([{ id: 'req-1', reason: 'BLURRY' }]);
+    expect(service.getRecapturesForCandidate).toHaveBeenCalledWith('cand-1');
+  });
+
+  it('getMyRecaptures calls service.getMyRecaptures with parsed pagination', async () => {
+    service.getMyRecaptures.mockResolvedValue({ items: [], total: 0 });
+    const res = await controller.getMyRecaptures(mockUser, '2', '10');
+    expect(res).toEqual({ items: [], total: 0 });
+    expect(service.getMyRecaptures).toHaveBeenCalledWith(mockUser.id, 2, 10);
   });
 });

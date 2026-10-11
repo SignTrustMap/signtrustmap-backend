@@ -7,11 +7,13 @@ import {
   UnverifiedSignCandidate,
 } from '../../survey/infrastructure/persistence/unverified-sign-candidate.entity';
 import { TrafficSignType } from '../../catalog/traffic-sign-type.entity';
-import { VoteDto } from '../presentation/dto/vote.dto';
+import { VoteDto, RequestRecaptureDto } from '../presentation/dto/vote.dto';
 import { ConsensusService } from '../../consensus/application/consensus.service';
 import { SpatialAdminService } from '../../spatial-admin/application/spatial-admin.service';
 import { ReviewerSkippedCandidate } from '../infrastructure/persistence/reviewer-skipped-candidate.entity';
 import { DailyTasksService } from '../../daily-tasks/daily-tasks.service';
+import { CandidateRecaptureRequest } from '../infrastructure/persistence/candidate-recapture-request.entity';
+import { NotificationsService } from '../../notifications/notifications.service';
 
 @Injectable()
 export class ReviewsService implements OnModuleInit {
@@ -23,10 +25,15 @@ export class ReviewsService implements OnModuleInit {
     @Optional() private readonly spatialAdminService?: SpatialAdminService,
     @Optional() @InjectRepository(ReviewerSkippedCandidate) private readonly skippedRepo?: Repository<ReviewerSkippedCandidate>,
     @Optional() private readonly dailyTasksService?: DailyTasksService,
+    @Optional() @InjectRepository(CandidateRecaptureRequest) private readonly recaptureRepo?: Repository<CandidateRecaptureRequest>,
+    @Optional() private readonly notificationsService?: NotificationsService,
   ) {}
 
   async onModuleInit() {
     try {
+      await (this.candidateRepo.manager as any).query(`
+        ALTER TYPE candidate_status ADD VALUE IF NOT EXISTS 'RECAPTURE_REQUESTED';
+      `);
       await (this.candidateRepo.manager as any).query(`
         CREATE TABLE IF NOT EXISTS reviewer_skipped_candidates (
           reviewer_id uuid NOT NULL,
@@ -34,6 +41,19 @@ export class ReviewsService implements OnModuleInit {
           skipped_at timestamptz NOT NULL DEFAULT now(),
           PRIMARY KEY (reviewer_id, candidate_id)
         );
+      `);
+      await (this.candidateRepo.manager as any).query(`
+        CREATE TABLE IF NOT EXISTS candidate_recapture_requests (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          candidate_id UUID NOT NULL REFERENCES unverified_sign_candidates(id) ON DELETE CASCADE,
+          reviewer_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          surveyor_id UUID REFERENCES users(id) ON DELETE SET NULL,
+          reason VARCHAR(100) NOT NULL,
+          note TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_candidate_recapture_requests_candidate ON candidate_recapture_requests(candidate_id);
+        CREATE INDEX IF NOT EXISTS idx_candidate_recapture_requests_surveyor ON candidate_recapture_requests(surveyor_id);
       `);
     } catch {}
   }
@@ -533,6 +553,174 @@ export class ReviewsService implements OnModuleInit {
       assignedCount: targetIds.length,
       candidateIds: targetIds,
       message: `Assigned ${targetIds.length} candidate(s) to reviewer ${reviewerId} for testing`,
+    };
+  }
+
+  async requestRecapture(reviewerId: string, candidateId: string, dto: RequestRecaptureDto, allowSelfReview = false) {
+    if (!dto.reason?.trim()) {
+      throw new BadRequestException('Recapture reason is required');
+    }
+    const candidate = await this.candidateRepo.findOne({
+      where: { id: candidateId },
+      relations: ['predictedSignType', 'submission'],
+    });
+    if (!candidate) {
+      throw new NotFoundException('Candidate ' + candidateId + ' not found');
+    }
+    if (
+      candidate.status === CandidateStatus.VERIFIED ||
+      candidate.status === CandidateStatus.REJECTED ||
+      candidate.status === CandidateStatus.RECAPTURE_REQUESTED
+    ) {
+      throw new BadRequestException(
+        `Cannot request recapture for candidate ${candidateId} with status ${candidate.status}`,
+      );
+    }
+
+    const canSelfReview = allowSelfReview || process.env.ALLOW_SELF_REVIEW === 'true';
+    if (!canSelfReview && candidate.submission && candidate.submission.surveyorId === reviewerId) {
+      throw new ForbiddenException('You cannot request recapture on sign candidates from your own survey submission');
+    }
+
+    let surveyorId: string | null = candidate.submission?.surveyorId ?? null;
+    if (!surveyorId && candidate.submissionId) {
+      try {
+        const rows = await (this.candidateRepo.manager as any).query(
+          'SELECT surveyor_id FROM survey_submissions WHERE id = $1',
+          [candidate.submissionId],
+        );
+        if (rows.length && rows[0].surveyor_id) surveyorId = rows[0].surveyor_id;
+      } catch {}
+    }
+
+    const reason = dto.reason.trim();
+    const note = dto.note?.trim() || null;
+
+    // Update candidate status
+    await this.candidateRepo.update(candidateId, { status: CandidateStatus.RECAPTURE_REQUESTED });
+
+    // Persist recapture request record
+    let savedRequest: any = null;
+    if (this.recaptureRepo) {
+      savedRequest = await this.recaptureRepo.save(
+        this.recaptureRepo.create({
+          candidateId,
+          reviewerId,
+          surveyorId,
+          reason,
+          note,
+        }),
+      );
+    } else {
+      const rows = await (this.candidateRepo.manager as any).query(
+        `INSERT INTO candidate_recapture_requests (candidate_id, reviewer_id, surveyor_id, reason, note)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING *`,
+        [candidateId, reviewerId, surveyorId, reason, note],
+      );
+      savedRequest = rows[0];
+    }
+
+    // Audit log in moderation case
+    try {
+      await (this.candidateRepo.manager as any).query(
+        `INSERT INTO moderation_cases (case_type, target_entity_type, target_entity_id, status, resolution_note)
+         VALUES ('RECAPTURE_REQUEST', 'candidate', $1, 'RESOLVED', $2)`,
+        [candidateId, `Recapture requested by reviewer ${reviewerId}: ${reason}`],
+      );
+    } catch {}
+
+    // Dispatch notification to surveyor
+    let notificationSent = false;
+    if (surveyorId && this.notificationsService) {
+      try {
+        const signName =
+          candidate.predictedSignType?.nameVi || candidate.predictedSignType?.nameEn || 'biển báo';
+        const msg = `Ảnh chụp cho ${signName} quá mờ hoặc khó xác định (${reason}${note ? ': ' + note : ''}). Vui lòng chụp lại ảnh rõ nét hơn tại vị trí này.`;
+        await this.notificationsService.create(
+          surveyorId,
+          'IMAGE_RECAPTURE_REQUESTED',
+          'Yêu cầu chụp lại ảnh biển báo',
+          msg,
+          'candidate',
+          candidateId,
+        );
+        notificationSent = true;
+      } catch (err: any) {
+        // Notification failure should not fail request
+      }
+    }
+
+    if (this.dailyTasksService) {
+      this.dailyTasksService.recordProgress(reviewerId, 'REVIEW', 1).catch(() => {});
+    }
+
+    return {
+      success: true,
+      candidateId,
+      status: CandidateStatus.RECAPTURE_REQUESTED,
+      surveyorId,
+      recaptureRequest: savedRequest,
+      notificationSent,
+    };
+  }
+
+  async getRecapturesForCandidate(candidateId: string) {
+    if (this.recaptureRepo) {
+      return this.recaptureRepo.find({
+        where: { candidateId },
+        order: { createdAt: 'DESC' },
+      });
+    }
+    return (this.candidateRepo.manager as any).query(
+      `SELECT * FROM candidate_recapture_requests WHERE candidate_id = $1 ORDER BY created_at DESC`,
+      [candidateId],
+    );
+  }
+
+  async getMyRecaptures(surveyorId: string, page = 1, pageSize = 20) {
+    const p = Math.max(1, page);
+    const ps = Math.min(Math.max(1, pageSize), 100);
+
+    const countRows = await (this.candidateRepo.manager as any).query(
+      `SELECT COUNT(*)::int AS cnt
+       FROM candidate_recapture_requests crr
+       WHERE crr.surveyor_id = $1`,
+      [surveyorId],
+    );
+    const total = countRows[0]?.cnt ?? 0;
+
+    const items = await (this.candidateRepo.manager as any).query(
+      `SELECT
+         crr.id AS request_id,
+         crr.candidate_id,
+         crr.reason,
+         crr.note,
+         crr.created_at AS requested_at,
+         c.sign_crop_url,
+         c.best_frame_url,
+         c.confidence_score,
+         tst.sign_code,
+         tst.name_vi,
+         tst.name_en,
+         ST_X(cge.sign_location::geometry) AS longitude,
+         ST_Y(cge.sign_location::geometry) AS latitude
+       FROM candidate_recapture_requests crr
+       JOIN unverified_sign_candidates c ON c.id = crr.candidate_id
+       LEFT JOIN traffic_sign_types tst ON tst.id = c.predicted_sign_type_id
+       LEFT JOIN candidate_geo_estimations cge ON cge.candidate_id = c.id
+       WHERE crr.surveyor_id = $1
+       ORDER BY crr.created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [surveyorId, ps, (p - 1) * ps],
+    );
+
+    return {
+      items,
+      total,
+      page: p,
+      pageSize: ps,
+      totalPages: Math.ceil(total / ps),
     };
   }
 }

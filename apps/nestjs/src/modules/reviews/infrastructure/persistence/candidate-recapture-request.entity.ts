@@ -1,0 +1,30 @@
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, ManyToOne, JoinColumn } from 'typeorm';
+import { UnverifiedSignCandidate } from '../../../survey/infrastructure/persistence/unverified-sign-candidate.entity';
+
+@Entity('candidate_recapture_requests')
+export class CandidateRecaptureRequest {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column({ name: 'candidate_id', type: 'uuid' })
+  candidateId: string;
+
+  @Column({ name: 'reviewer_id', type: 'uuid' })
+  reviewerId: string;
+
+  @Column({ name: 'surveyor_id', type: 'uuid', nullable: true })
+  surveyorId: string | null;
+
+  @Column({ type: 'varchar', length: 100 })
+  reason: string;
+
+  @Column({ type: 'text', nullable: true })
+  note: string | null;
+
+  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
+  createdAt: Date;
+
+  @ManyToOne(() => UnverifiedSignCandidate, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'candidate_id' })
+  candidate?: UnverifiedSignCandidate;
+}

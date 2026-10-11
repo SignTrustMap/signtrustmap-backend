@@ -37,7 +37,8 @@ export class ConsensusService {
       candidate.status === CandidateStatus.VERIFIED ||
       candidate.status === CandidateStatus.REJECTED ||
       candidate.status === CandidateStatus.ESCALATED_MODERATION ||
-      candidate.status === CandidateStatus.MISSING_TYPE_HOLD
+      candidate.status === CandidateStatus.MISSING_TYPE_HOLD ||
+      candidate.status === CandidateStatus.RECAPTURE_REQUESTED
     ) {
       return null;
     }
