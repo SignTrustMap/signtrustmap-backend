@@ -11,6 +11,8 @@ import { SpatialAdminModule } from '../spatial-admin/spatial-admin.module';
 import { DailyTasksModule } from '../daily-tasks/daily-tasks.module';
 import { ReviewerSkippedCandidate } from './infrastructure/persistence/reviewer-skipped-candidate.entity';
 import { ReviewerProfile } from './infrastructure/persistence/reviewer-profile.entity';
+import { CandidateRecaptureRequest } from './infrastructure/persistence/candidate-recapture-request.entity';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
@@ -21,10 +23,12 @@ import { ReviewerProfile } from './infrastructure/persistence/reviewer-profile.e
       TrafficSignType,
       ReviewerSkippedCandidate,
       ReviewerProfile,
+      CandidateRecaptureRequest,
     ]),
     ConsensusModule,
     SpatialAdminModule,
     DailyTasksModule,
+    NotificationsModule,
   ],
   controllers: [ReviewsController],
   providers: [ReviewsService],

@@ -1,4 +1,4 @@
-﻿import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { MissingSignTypeReport, MissingTypeStatus } from '../infrastructure/persistence/missing-sign-type-report.entity';
@@ -201,6 +201,34 @@ export class ModerationService {
       const rid = mc.targetEntityId;
       if (rid && actionType === 'APPROVED') await this.handleApprovedReport(rid, staffId, dto);
       else if (rid && actionType === 'MERGED' && targetTypeId) await this.handleMergedReport(rid, staffId, dto, targetTypeId);
+    } else if (actionType === 'REQUEST_RECAPTURE' && mc.targetEntityType === 'candidate' && mc.targetEntityId) {
+      try {
+        await this.candRepo.update(mc.targetEntityId, { status: CandidateStatus.RECAPTURE_REQUESTED });
+        const subRows: any[] = await this.dataSource.query(
+          `SELECT s.surveyor_id FROM survey_submissions s
+           JOIN unverified_sign_candidates c ON c.submission_id = s.id
+           WHERE c.id = $1`,
+          [mc.targetEntityId],
+        );
+        const surveyorId = subRows[0]?.surveyor_id ?? null;
+        await this.dataSource.query(
+          `INSERT INTO candidate_recapture_requests (candidate_id, reviewer_id, surveyor_id, reason, note)
+           VALUES ($1, $2, $3, 'MODERATION_RECAPTURE_REQUESTED', $4)`,
+          [mc.targetEntityId, staffId, surveyorId, dto.resolutionNote],
+        );
+        if (surveyorId && this.notificationsService) {
+          await this.notificationsService.create(
+            surveyorId,
+            'IMAGE_RECAPTURE_REQUESTED',
+            'Yêu cầu chụp lại ảnh biển báo',
+            `Quản trị viên yêu cầu chụp lại ảnh biển báo: ${dto.resolutionNote}`,
+            'candidate',
+            mc.targetEntityId,
+          );
+        }
+      } catch (err: any) {
+        this.logger.warn(`Failed to process moderation recapture request: ${err?.message}`);
+      }
     }
     mc.status = ModerationStatus.RESOLVED;
     mc.resolutionNote = dto.resolutionNote;
