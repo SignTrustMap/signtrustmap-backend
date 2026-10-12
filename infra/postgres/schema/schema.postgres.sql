@@ -687,6 +687,8 @@ CREATE TABLE "road_hazard_events" (
   "id" uuid PRIMARY KEY DEFAULT (gen_random_uuid()),
   "reported_by" uuid NOT NULL,
   "hazard_type" varchar(64) NOT NULL,
+  "title" varchar(160),
+  "severity" varchar(16),
   "description" text,
   "location" geometry(Point,4326) NOT NULL,
   "status" varchar(32) NOT NULL DEFAULT 'UNCONFIRMED',

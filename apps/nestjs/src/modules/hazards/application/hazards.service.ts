@@ -42,6 +42,8 @@ export interface HazardEventResponse {
   id: string;
   reportedBy: string;
   hazardType: string;
+  title: string | null;
+  severity: string | null;
   description: string | null;
   status: HazardStatus;
   confirmationsCount: number;
@@ -83,7 +85,7 @@ export class HazardsService {
     userId: string,
     dto: CreateHazardReportDto,
   ): Promise<HazardEventResponse> {
-    const { hazardType, latitude: lat, longitude: lon, description } = dto;
+    const { hazardType, title, severity, latitude: lat, longitude: lon, description } = dto;
 
     if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
       throw new BadRequestException('Invalid latitude or longitude');
@@ -94,7 +96,7 @@ export class HazardsService {
       `SELECT
          id,
          reported_by,
-         hazard_type,
+         hazard_type, title, severity,
          description,
          status,
          confirmations_count,
@@ -162,10 +164,10 @@ export class HazardsService {
     const hazardId = randomUUID();
     await this.dataSource.query(
       `INSERT INTO road_hazard_events
-         (id, reported_by, hazard_type, description, location, status, confirmations_count, dismissals_count, reward_paid, expires_at, created_at, updated_at)
+         (id, reported_by, hazard_type, title, severity, description, location, status, confirmations_count, dismissals_count, reward_paid, expires_at, created_at, updated_at)
        VALUES
          ($1, $2, $3, $4, ST_SetSRID(ST_MakePoint($5, $6), 4326), 'UNCONFIRMED', 1, 0, false, NOW() + INTERVAL '${INITIAL_TTL_MINUTES} minutes', NOW(), NOW())`,
-      [hazardId, userId, hazardType, description ?? null, lon, lat],
+       [hazardId, userId, hazardType, title ?? null, severity ?? null, description ?? null, lon, lat],
     );
 
     // Initial reporter also registers confirmation
@@ -409,7 +411,7 @@ export class HazardsService {
       `SELECT
          id,
          reported_by,
-         hazard_type,
+         hazard_type, title, severity,
          description,
          status,
          confirmations_count,
@@ -446,7 +448,7 @@ export class HazardsService {
       `SELECT
          id,
          reported_by,
-         hazard_type,
+         hazard_type, title, severity,
          description,
          status,
          confirmations_count,
@@ -534,6 +536,8 @@ export class HazardsService {
       id: row.id,
       reportedBy: row.reported_by,
       hazardType: row.hazard_type,
+      title: row.title ?? null,
+      severity: row.severity ?? null,
       description: row.description,
       status: row.status as HazardStatus,
       confirmationsCount: Number(row.confirmations_count),
