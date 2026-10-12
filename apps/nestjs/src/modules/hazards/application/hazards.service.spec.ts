@@ -7,6 +7,7 @@ import { WalletService } from '../../wallet/application/wallet.service';
 import { TransactionType } from '../../wallet/infrastructure/persistence/credit-transaction.entity';
 import { DailyTasksService } from '../../daily-tasks/daily-tasks.service';
 import { NotificationsService } from '../../notifications/notifications.service';
+import { HazardEvidence, HazardEvidenceType } from '../infrastructure/persistence/hazard-evidence.entity';
 
 describe('HazardsService', () => {
   let service: HazardsService;
@@ -16,6 +17,8 @@ describe('HazardsService', () => {
   let walletService: jest.Mocked<WalletService>;
   let dailyTasksService: jest.Mocked<DailyTasksService>;
   let notificationsService: jest.Mocked<NotificationsService>;
+  let evidenceRepo: jest.Mocked<Repository<HazardEvidence>>;
+  let storageService: any;
   let queryMock: jest.Mock;
 
   beforeEach(() => {
@@ -41,6 +44,18 @@ describe('HazardsService', () => {
     notificationsService = {
       create: jest.fn().mockResolvedValue({} as any),
     } as any;
+    evidenceRepo = {
+      findOne: jest.fn(),
+      create: jest.fn((value) => value as any),
+      save: jest.fn(),
+      find: jest.fn(),
+    } as any;
+    storageService = {
+      bucketForMediaType: jest.fn().mockReturnValue('stm-sign-crops'),
+      putObject: jest.fn().mockResolvedValue(undefined),
+      removeObject: jest.fn().mockResolvedValue(undefined),
+      presignedGetObject: jest.fn().mockResolvedValue('https://storage.test/signed-evidence'),
+    };
 
     service = new HazardsService(
       hazardRepo,
@@ -49,6 +64,8 @@ describe('HazardsService', () => {
       walletService,
       dailyTasksService,
       notificationsService,
+      storageService,
+      evidenceRepo,
     );
   });
 
@@ -451,6 +468,41 @@ describe('HazardsService', () => {
     it('throws NotFoundException when hazard does not exist', async () => {
       queryMock.mockResolvedValueOnce([]);
       await expect(service.getHazard('missing-h')).rejects.toThrow();
+    });
+  });
+
+  describe('uploadEvidence', () => {
+    const image = {
+      buffer: Buffer.from([0xff, 0xd8, 0xff, 0x00]),
+      size: 4,
+      originalname: 'evidence.jpg',
+      mimetype: 'image/jpeg',
+    } as Express.Multer.File;
+
+    it('validates, stores, and associates image evidence with the owning hazard', async () => {
+      queryMock.mockResolvedValueOnce([{ id: 'hazard-1', reported_by: 'u-1' }]);
+      evidenceRepo.findOne.mockResolvedValueOnce(null);
+      evidenceRepo.save.mockImplementation(async (value: any) => ({
+        ...value,
+        id: 'evidence-1',
+        uploadedAt: new Date(),
+      } as HazardEvidence));
+
+      const result = await service.uploadEvidence('u-1', 'hazard-1', HazardEvidenceType.IMAGE, image);
+
+      expect(storageService.putObject).toHaveBeenCalled();
+      expect(evidenceRepo.save).toHaveBeenCalledWith(expect.objectContaining({ hazardId: 'hazard-1', uploadedBy: 'u-1', mediaType: 'IMAGE' }));
+      expect(result.fileUrl).toBe('https://storage.test/signed-evidence');
+    });
+
+    it('rejects invalid content and another user cannot attach evidence', async () => {
+      queryMock.mockResolvedValueOnce([{ id: 'hazard-1', reported_by: 'owner' }]);
+      await expect(service.uploadEvidence('other-user', 'hazard-1', HazardEvidenceType.IMAGE, image)).rejects.toThrow('Only the report owner');
+
+      queryMock.mockResolvedValueOnce([{ id: 'hazard-1', reported_by: 'u-1' }]);
+      const invalid = { ...image, buffer: Buffer.from('not-an-image') } as Express.Multer.File;
+      await expect(service.uploadEvidence('u-1', 'hazard-1', HazardEvidenceType.IMAGE, invalid)).rejects.toThrow('does not match');
+      expect(storageService.putObject).not.toHaveBeenCalled();
     });
   });
 });
