@@ -22,6 +22,11 @@ import { WalletService } from '../../wallet/application/wallet.service';
 import { TransactionType } from '../../wallet/infrastructure/persistence/credit-transaction.entity';
 import { DailyTasksService } from '../../daily-tasks/daily-tasks.service';
 import { NotificationsService } from '../../notifications/notifications.service';
+import { MinioStorageService } from '../../../integrations/minio/minio-storage.service';
+import { createHash } from 'crypto';
+import { HazardEvidence, HazardEvidenceType } from '../infrastructure/persistence/hazard-evidence.entity';
+import { validateFileSignature } from '../../survey/domain/media-validator';
+import { MediaFileType, MEDIA_SIZE_LIMITS } from '../../survey/domain/submission-contract';
 
 const INITIAL_TTL_MINUTES = 45;
 const EXTENSION_TTL_MINUTES = 15;
@@ -47,6 +52,7 @@ export interface HazardEventResponse {
   createdAt: Date;
   updatedAt: Date;
   isMerged?: boolean;
+  evidence?: Array<{ id: string; mediaType: string; fileUrl: string; fileSizeBytes: number; contentType: string | null; uploadedAt: Date }>;
 }
 
 @Injectable()
@@ -62,6 +68,9 @@ export class HazardsService {
     private readonly walletService: WalletService,
     private readonly dailyTasksService: DailyTasksService,
     private readonly notificationsService: NotificationsService,
+    @Optional() private readonly storageService?: MinioStorageService,
+    @InjectRepository(HazardEvidence)
+    @Optional() private readonly evidenceRepo?: Repository<HazardEvidence>,
   ) {}
 
   /**

@@ -708,6 +708,18 @@ CREATE TABLE "hazard_confirmations" (
   CONSTRAINT "uq_hazard_user_confirmation" UNIQUE ("hazard_id", "user_id")
 );
 
+CREATE TABLE "hazard_evidence" (
+  "id" uuid PRIMARY KEY DEFAULT (gen_random_uuid()),
+  "hazard_id" uuid NOT NULL REFERENCES "road_hazard_events" ("id") ON DELETE CASCADE,
+  "uploaded_by" uuid NOT NULL,
+  "media_type" varchar(16) NOT NULL CHECK ("media_type" IN ('IMAGE', 'VIDEO')),
+  "file_url" varchar(500) NOT NULL,
+  "storage_key" varchar(500) NOT NULL,
+  "file_size_bytes" bigint NOT NULL CHECK ("file_size_bytes" > 0),
+  "content_type" varchar(128),
+  "uploaded_at" timestamptz NOT NULL DEFAULT (now())
+);
+
 CREATE TABLE "revalidation_decisions" (
   "id" BIGSERIAL PRIMARY KEY,
   "evidence_id" uuid NOT NULL,
