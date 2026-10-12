@@ -23,6 +23,7 @@ describe('OsrmRoutingClient', () => {
           osrm: {
             baseUrl: 'https://osrm.test/',
             profile: 'driving',
+            motorcycleProfile: 'motorcycle',
             timeoutMs: 1_000,
           },
         },
@@ -217,7 +218,7 @@ describe('OsrmRoutingClient', () => {
     expect(response.shortestPath.durationSeconds).toBe(240);
   });
 
-  it('routes with motorcycle vehicleType and calibrates duration with motorcycle factor', async () => {
+  it('routes with a motorcycle profile and calibrates duration with motorcycle factor', async () => {
     const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue({
       ok: true,
       status: 200,
@@ -232,7 +233,7 @@ describe('OsrmRoutingClient', () => {
     const response = await client().findDirections(motorcycleRequest, 25, 3);
 
     const url = String(fetchMock.mock.calls[0][0]);
-    expect(url).toContain('/route/v1/driving/');
+    expect(url).toContain('/route/v1/motorcycle/');
     expect(response.shortestPath.recommendation).toBe('Shortest route (Motorcycle)');
     // 160s * 0.95 = 152s
     expect(response.shortestPath.durationSeconds).toBe(152);
@@ -253,7 +254,7 @@ describe('OsrmRoutingClient', () => {
     const response = await client().findDirections(bikeRequest, 25, 3);
 
     const url = String(fetchMock.mock.calls[0][0]);
-    expect(url).toContain('/route/v1/driving/');
+    expect(url).toContain('/route/v1/motorcycle/');
     expect(response.shortestPath.recommendation).toBe('Shortest route (Motorcycle)');
     expect(response.shortestPath.durationSeconds).toBe(152);
   });
@@ -273,7 +274,7 @@ describe('OsrmRoutingClient', () => {
     const response = await client().findDirections(bikeRequest, 25, 3);
 
     const url = String(fetchMock.mock.calls[0][0]);
-    expect(url).toContain('/route/v1/driving/');
+    expect(url).toContain('/route/v1/motorcycle/');
     expect(response.shortestPath.recommendation).toBe('Shortest route (Motorcycle)');
     expect(response.shortestPath.durationSeconds).toBe(152);
   });
