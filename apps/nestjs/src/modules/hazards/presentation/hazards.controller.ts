@@ -6,14 +6,19 @@ import {
   Param,
   Query,
   ParseUUIDPipe,
+  UseInterceptors,
+  UploadedFile,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { HazardsService } from '../application/hazards.service';
 import { CreateHazardReportDto } from './dto/create-hazard-report.dto';
 import { ConfirmHazardDto } from './dto/confirm-hazard.dto';
 import { QueryHazardsDto } from './dto/query-hazards.dto';
+import { UploadHazardEvidenceDto } from './dto/upload-hazard-evidence.dto';
+import { HazardEvidenceType } from '../infrastructure/persistence/hazard-evidence.entity';
 
 @ApiTags('Hazards')
 @Controller()
@@ -33,6 +38,20 @@ export class HazardsController {
     @Body() dto: CreateHazardReportDto,
   ) {
     return this.hazardsService.reportHazard(user.id, dto);
+  }
+
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Upload image or video evidence for a hazard report' })
+  @ApiConsumes('multipart/form-data')
+  @Post('hazards/:id/evidence')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 50 * 1024 * 1024 } }))
+  async uploadEvidence(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: any,
+    @Body() dto: UploadHazardEvidenceDto,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    return this.hazardsService.uploadEvidence(user.id, id, dto.mediaType as HazardEvidenceType, file);
   }
 
   @ApiBearerAuth()
