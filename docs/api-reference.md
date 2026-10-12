@@ -138,6 +138,16 @@ Base: `http://localhost:3000/api/v1`
 | `POST` | `/revalidation/evidence/:evidenceId/vote` | JWT (Reviewer) | Bỏ phiếu cho bằng chứng revalidation. |
 | `GET` | `/revalidation/evidence/:evidenceId/decisions` | JWT | Xem các quyết định trên 1 bằng chứng. |
 
+### 3.5 Map Hazard Reports (`/hazards`)
+
+| Method | Route | Auth | Description |
+|---|---|---|---|
+| `POST` | `/hazards/report` | JWT (DRIVER/SURVEYOR/REVIEWER/STAFF/ADMIN) | Create a point hazard report with optional title, category, severity, and description. Existing 300m deduplication and hazard confirmation workflow apply. |
+| `POST` | `/hazards/:id/evidence` | JWT (report owner) | Upload one validated image or video (`multipart/form-data`: `file`, `mediaType`) using MinIO storage. |
+| `GET` | `/hazards` | JWT | List eligible active reports using radius or bounding-box filters and pagination. |
+| `GET` | `/hazards/:id` | JWT | Retrieve report coordinates, verification status, and attached evidence metadata/URLs. |
+| `POST` | `/hazards/:id/confirm` | JWT (DRIVER/SURVEYOR/REVIEWER/STAFF/ADMIN) | Confirm or dismiss a report through the existing consensus workflow. |
+
 ### 3.6 Daily Tasks / Gamification (`/daily-tasks`)
 
 | Method | Path | Auth | Mô tả chức năng |

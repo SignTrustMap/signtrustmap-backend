@@ -3,6 +3,8 @@ import {
   NotFoundException,
   BadRequestException,
   Logger,
+  ForbiddenException,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
@@ -464,7 +466,67 @@ export class HazardsService {
       throw new NotFoundException(`Hazard event ${id} not found`);
     }
 
-    return this.formatHazardRow(rows[0]);
+    const response = this.formatHazardRow(rows[0]);
+    response.evidence = await this.getEvidence(id);
+    return response;
+  }
+
+  async uploadEvidence(userId: string, hazardId: string, mediaType: HazardEvidenceType, file: Express.Multer.File) {
+    if (!file?.buffer) throw new BadRequestException('Evidence file is required');
+    const hazardRows: any[] = await this.dataSource.query('SELECT id, reported_by FROM road_hazard_events WHERE id = $1', [hazardId]);
+    if (!hazardRows.length) throw new NotFoundException(`Hazard event ${hazardId} not found`);
+    if (hazardRows[0].reported_by !== userId) throw new ForbiddenException('Only the report owner can attach evidence');
+
+    const type = mediaType === HazardEvidenceType.IMAGE ? MediaFileType.IMAGE : MediaFileType.VIDEO;
+    const limits = MEDIA_SIZE_LIMITS[type];
+    if (file.size < limits.minBytes || file.size > limits.maxBytes) {
+      throw new BadRequestException(`Evidence file size is invalid for ${mediaType}`);
+    }
+    const signature = validateFileSignature(type, file.buffer);
+    if (!signature.valid) throw new BadRequestException(signature.error ?? 'Unsupported evidence format');
+
+    const digest = createHash('sha256').update(file.buffer).digest('hex');
+    const bucket = this.storageService.bucketForMediaType(mediaType);
+    const safeName = (file.originalname || `${mediaType.toLowerCase()}.bin`).replace(/[^a-zA-Z0-9._-]/g, '_');
+    const objectName = `hazards/${hazardId}/${digest.slice(0, 16)}_${safeName}`;
+    const storageKey = `${bucket}/${objectName}`;
+    const existing = await this.evidenceRepo.findOne({ where: { hazardId, storageKey } });
+    if (existing) return this.serializeEvidence(existing);
+    await this.storageService.putObject(bucket, objectName, file.buffer, file.mimetype);
+    const evidence = this.evidenceRepo.create({
+      hazardId,
+      uploadedBy: userId,
+      mediaType,
+      fileUrl: storageKey,
+      storageKey,
+      fileSizeBytes: String(file.size),
+      contentType: file.mimetype || null,
+    });
+    try {
+      const saved = await this.evidenceRepo.save(evidence);
+      return this.serializeEvidence(saved);
+    } catch (error) {
+      // A concurrent identical upload may have committed the same unique row.
+      // Never remove an object that an existing evidence row now references.
+      const committed = await this.evidenceRepo.findOne({ where: { hazardId, storageKey } }).catch(() => null);
+      if (committed) return this.serializeEvidence(committed);
+      await this.storageService.removeObject({ bucket, objectName }).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private async getEvidence(hazardId: string) {
+    if (!this.evidenceRepo) return [];
+    const rows = (await this.evidenceRepo.find({ where: { hazardId }, order: { uploadedAt: 'ASC' } })) ?? [];
+    return Promise.all(rows.map((row) => this.serializeEvidence(row)));
+  }
+
+  private async serializeEvidence(row: HazardEvidence) {
+    const separator = row.storageKey.indexOf('/');
+    const bucket = separator >= 0 ? row.storageKey.slice(0, separator) : row.storageKey;
+    const objectName = separator >= 0 ? row.storageKey.slice(separator + 1) : '';
+    const fileUrl = await this.storageService.presignedGetObject(bucket, objectName, 3600);
+    return { id: row.id, mediaType: row.mediaType, fileUrl, fileSizeBytes: Number(row.fileSizeBytes), contentType: row.contentType, uploadedAt: row.uploadedAt };
   }
 
   private formatHazardRow(row: any, isMerged = false): HazardEventResponse {

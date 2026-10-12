@@ -1033,6 +1033,8 @@ CREATE INDEX ON "road_hazard_events" ("reported_by");
 
 CREATE INDEX ON "hazard_confirmations" ("hazard_id");
 CREATE INDEX ON "hazard_confirmations" ("user_id");
+CREATE INDEX ON "hazard_evidence" ("hazard_id");
+CREATE UNIQUE INDEX ON "hazard_evidence" ("hazard_id", "storage_key");
 
 CREATE UNIQUE INDEX ON "revalidation_decisions" ("evidence_id", "reviewer_id");
 
