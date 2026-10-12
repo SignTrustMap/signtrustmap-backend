@@ -1,11 +1,22 @@
-import { IsString, IsNotEmpty, IsNumber, Min, Max, IsOptional } from 'class-validator';
+import { IsString, IsNotEmpty, IsNumber, Min, Max, IsOptional, IsIn } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateHazardReportDto {
+  @ApiPropertyOptional({ description: 'Short title shown in the map detail panel', example: 'Damaged traffic sign' })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  title?: string;
+
   @ApiProperty({ description: 'Type of road hazard (e.g. SPEED_CHECK, POTHOLE, ACCIDENT, OBSTACLE, ROAD_WORK)', example: 'SPEED_CHECK' })
   @IsString()
   @IsNotEmpty()
   hazardType: string;
+
+  @ApiPropertyOptional({ description: 'Severity of the reported anomaly', enum: ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'], example: 'HIGH' })
+  @IsOptional()
+  @IsIn(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'])
+  severity?: string;
 
   @ApiProperty({ description: 'Latitude coordinate of the hazard', example: 10.7769 })
   @IsNumber()

@@ -23,6 +23,12 @@ export class RoadHazardEvent {
   @Column({ name: 'hazard_type', type: 'varchar', length: 64 })
   hazardType: string;
 
+  @Column({ type: 'varchar', length: 160, nullable: true })
+  title: string | null;
+
+  @Column({ type: 'varchar', length: 16, nullable: true })
+  severity: string | null;
+
   @Column({ type: 'text', nullable: true })
   description: string | null;
 
