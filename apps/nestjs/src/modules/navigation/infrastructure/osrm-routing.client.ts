@@ -38,12 +38,15 @@ export class OsrmRoutingClient {
 
   private readonly baseUrl: string;
   private readonly profile: string;
+  private readonly motorcycleProfile: string;
   private readonly timeoutMs: number;
   private readonly motorcycleDurationFactor: number;
 
   constructor(config: ConfigService) {
     this.baseUrl = config.get<string>('routing.osrm.baseUrl') ?? 'https://router.project-osrm.org';
     this.profile = config.get<string>('routing.osrm.profile') ?? 'driving';
+    this.motorcycleProfile =
+      config.get<string>('routing.osrm.motorcycleProfile') ?? 'motorcycle';
     this.timeoutMs = config.get<number>('routing.osrm.timeoutMs') ?? 5_000;
     this.motorcycleDurationFactor =
       config.get<number>('routing.osrm.motorcycleDurationFactor') ??
@@ -62,7 +65,10 @@ export class OsrmRoutingClient {
     try {
       body = await this.fetchResponse(this.routeUrl(request, maxAlternatives, profile));
     } catch (error) {
-      if (profile !== this.profile) {
+      // Do not silently turn a motorcycle request into a car request. A missing
+      // motorcycle profile must be visible to the caller rather than returning
+      // geometry calculated with the wrong vehicle model.
+      if (profile !== this.profile && effectiveType !== 'MOTORCYCLE') {
         body = await this.fetchResponse(this.routeUrl(request, maxAlternatives, this.profile));
       } else {
         throw error;
@@ -92,6 +98,9 @@ export class OsrmRoutingClient {
     }
     if (effectiveType === 'PEDESTRIAN' || mode === 'WALKING') {
       return 'foot';
+    }
+    if (effectiveType === 'MOTORCYCLE') {
+      return this.motorcycleProfile;
     }
     return this.profile || 'driving';
   }
