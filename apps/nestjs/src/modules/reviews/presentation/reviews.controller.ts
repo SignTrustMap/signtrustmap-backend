@@ -1,5 +1,6 @@
-import { Controller, Body, Param, ParseUUIDPipe, Post, Query, Get, Patch, Delete, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Controller, Body, Param, ParseUUIDPipe, Post, Query, Get, Patch, Delete, UseGuards, UseInterceptors, UploadedFiles } from '@nestjs/common';
+import { FileFieldsInterceptor } from '@nestjs/platform-express';
+import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { Public } from '../../../common/decorators/public.decorator';
 import { Roles } from '../../../common/decorators/roles.decorator';
@@ -84,6 +85,23 @@ export class ReviewsController {
   ) {
     const allowSelf = user?.role === 'ADMIN';
     return this.reviewsService.requestRecapture(user.id, candidateId, dto, allowSelf);
+  }
+
+  @ApiBearerAuth()
+  @Roles('SURVEYOR', 'ADMIN')
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({ summary: 'Submit surveyor recapture evidence', description: 'Upload replacement sign crop and best-frame evidence for an assigned recapture request' })
+  @Post('candidates/:candidateId/recapture')
+  @UseInterceptors(FileFieldsInterceptor([
+    { name: 'signCrop', maxCount: 1 },
+    { name: 'bestFrame', maxCount: 1 },
+  ], { limits: { fileSize: 50 * 1024 * 1024 } }))
+  async submitRecapture(
+    @CurrentUser() user: any,
+    @Param('candidateId', ParseUUIDPipe) candidateId: string,
+    @UploadedFiles() files: { signCrop?: Express.Multer.File[]; bestFrame?: Express.Multer.File[] },
+  ) {
+    return this.reviewsService.submitRecapture(user.id, candidateId, files);
   }
 
   @ApiBearerAuth()
