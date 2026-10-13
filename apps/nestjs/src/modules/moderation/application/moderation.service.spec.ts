@@ -167,4 +167,35 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     expect(result.createdSignType).toMatchObject({ id: 42, signCode: 'P.128' });
     expect(result.report).toMatchObject({ status: MissingTypeStatus.APPROVED });
   });
+
+  it('syncs ModerationCase when a missing-type report is escalated to Admin and handles filter aliases', async () => {
+    const { service, missing, cases, dataSource } = buildService();
+    const report = { id: 'R-ESC', status: MissingTypeStatus.PENDING, candidateId: 'C1', staffNotes: 'Novel sign needing review' };
+    missing.findOne.mockResolvedValue(report);
+    cases.findOne.mockResolvedValue(null);
+    cases.create.mockImplementation((c) => c);
+    cases.save.mockImplementation(async (c) => c);
+    missing.save.mockImplementation(async (r) => r);
+    dataSource.query.mockResolvedValue([]);
+
+    await service.updateMissingReport('R-ESC', 'staff-1', { status: 'IN_REVIEW', staffNotes: 'Escalated to admin' });
+
+    expect(report.status).toBe(MissingTypeStatus.ESCALATED_ADMIN);
+    expect(cases.create).toHaveBeenCalledWith(expect.objectContaining({
+      caseType: 'CATALOG_PROPOSAL',
+      targetEntityType: 'missing_sign_type_report',
+      targetEntityId: 'R-ESC',
+      assignedStaffId: 'staff-1',
+      status: 'PENDING',
+    }));
+    expect(cases.save).toHaveBeenCalled();
+
+    missing.findAndCount.mockResolvedValue([[ { id: 'R-ESC', status: MissingTypeStatus.ESCALATED_ADMIN, candidateId: 'C1' } ], 1]);
+    const listResult = await service.listMissingReports('APPROVED', 1, 10);
+    expect(listResult.items[0]).toMatchObject({
+      id: 'R-ESC',
+      status: 'IN_REVIEW',
+      rawStatus: MissingTypeStatus.ESCALATED_ADMIN,
+    });
+  });
 });

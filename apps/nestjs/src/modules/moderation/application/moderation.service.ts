@@ -1,9 +1,9 @@
 import { Injectable, NotFoundException, BadRequestException, ConflictException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, In } from 'typeorm';
 import { MissingSignTypeReport, MissingTypeStatus } from '../infrastructure/persistence/missing-sign-type-report.entity';
 import { ModerationAction } from '../infrastructure/persistence/moderation-action.entity';
-import { ModerationCase, ModerationStatus } from '../infrastructure/persistence/moderation-case.entity';
+import { ModerationCase, ModerationStatus, ModerationType } from '../infrastructure/persistence/moderation-case.entity';
 import { SignCategory } from '../../catalog/sign-category.entity';
 import { TrafficSignType } from '../../catalog/traffic-sign-type.entity';
 import { UnverifiedSignCandidate, CandidateStatus } from '../../survey/infrastructure/persistence/unverified-sign-candidate.entity';
@@ -85,9 +85,18 @@ export class ModerationService {
     const p = Math.max(1, page), ps = Math.min(Math.max(1, pageSize), 100);
     const where: any = {};
     if (status) {
-      const allowed = Object.values(MissingTypeStatus);
-      if (!allowed.includes(status as MissingTypeStatus)) throw new BadRequestException('status must be one of ' + allowed.join(', '));
-      where.status = status;
+      const upper = status.toUpperCase();
+      if (upper === 'OPEN') {
+        where.status = MissingTypeStatus.PENDING;
+      } else if (upper === 'APPROVED') {
+        where.status = In([MissingTypeStatus.APPROVED, MissingTypeStatus.ESCALATED_ADMIN]);
+      } else if (upper === 'IN_REVIEW' || upper === 'ESCALATED') {
+        where.status = MissingTypeStatus.ESCALATED_ADMIN;
+      } else {
+        const allowed = Object.values(MissingTypeStatus);
+        if (!allowed.includes(upper as MissingTypeStatus)) throw new BadRequestException('status must be one of ' + allowed.join(', '));
+        where.status = upper;
+      }
     }
     const [items, total] = await this.missing.findAndCount({ where, order: { createdAt: 'DESC' }, skip: (p - 1) * ps, take: ps });
     const enriched = await this.enrichWithCandidates(items);
@@ -97,8 +106,11 @@ export class ModerationService {
   async updateMissingReport(reportId: string, reviewerId: string, dto: any) {
     const report: any = await this.missing.findOne({ where: { id: reportId } as any });
     if (!report) throw new NotFoundException('MissingSignTypeReport ' + reportId + ' not found');
+    let requestedStatus = dto.status;
+    if (requestedStatus === 'IN_REVIEW' || requestedStatus === 'ESCALATED') requestedStatus = MissingTypeStatus.ESCALATED_ADMIN;
+    else if (requestedStatus === 'OPEN') requestedStatus = MissingTypeStatus.PENDING;
     const allowed = Object.values(MissingTypeStatus);
-    if (dto.status && !allowed.includes(dto.status)) throw new BadRequestException('status must be one of ' + allowed.join(', '));
+    if (requestedStatus && !allowed.includes(requestedStatus)) throw new BadRequestException('status must be one of ' + allowed.join(', '));
     const mergedId = dto.mergedSignTypeId ?? dto.mergedIntoSignTypeId;
     if (mergedId != null) {
       const t = await this.signTypeRepo.findOne({ where: { id: Number(mergedId) } });
@@ -106,13 +118,35 @@ export class ModerationService {
       report.mergedIntoSignTypeId = Number(mergedId);
     }
     const previousStatus = report.status;
-    if (dto.status) report.status = dto.status;
+    if (requestedStatus) report.status = requestedStatus;
     if (dto.staffNotes != null) report.staffNotes = dto.staffNotes;
     else if (dto.actionNote != null) report.staffNotes = dto.actionNote;
     if (dto.suggestedShape != null) report.suggestedShape = dto.suggestedShape;
     if (dto.suggestedColorScheme != null) report.suggestedColorScheme = dto.suggestedColorScheme;
     report.reviewedBy = reviewerId;
     await this.missing.save(report);
+
+    if (report.status === MissingTypeStatus.ESCALATED_ADMIN) {
+      const existingCase = await this.cases.findOne({
+        where: { targetEntityType: 'missing_sign_type_report', targetEntityId: report.id },
+      });
+      if (!existingCase) {
+        const newCase = this.cases.create({
+          caseType: ModerationType.CATALOG_PROPOSAL,
+          targetEntityType: 'missing_sign_type_report',
+          targetEntityId: report.id,
+          assignedStaffId: reviewerId,
+          status: ModerationStatus.PENDING,
+          resolutionNote: report.staffNotes || 'Escalated to Admin for Catalog creation',
+        });
+        await this.cases.save(newCase);
+      } else if (existingCase.status !== ModerationStatus.RESOLVED) {
+        existingCase.assignedStaffId = reviewerId;
+        if (report.staffNotes) existingCase.resolutionNote = report.staffNotes;
+        await this.cases.save(existingCase);
+      }
+    }
+
     await this.applyCandidateSideEffect(report as MissingSignTypeReport, previousStatus);
     return (await this.enrichWithCandidates([report as MissingSignTypeReport]))[0];
   }
@@ -491,7 +525,12 @@ export class ModerationService {
         });
       }
     }
-    return reports.map(r => ({ ...r, candidate: r.candidateId ? (byId.get(r.candidateId) ?? null) : null })) as any;
+    return reports.map(r => ({
+      ...r,
+      candidate: r.candidateId ? (byId.get(r.candidateId) ?? null) : null,
+      status: r.status === MissingTypeStatus.ESCALATED_ADMIN ? 'IN_REVIEW' : r.status,
+      rawStatus: r.status,
+    })) as any;
   }
 
   private async reportSyncedBackend(signTypeId: number): Promise<void> {
