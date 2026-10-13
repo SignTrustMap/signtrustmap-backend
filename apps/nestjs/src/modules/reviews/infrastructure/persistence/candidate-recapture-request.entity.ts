@@ -15,6 +15,9 @@ export class CandidateRecaptureRequest {
   @Column({ name: 'surveyor_id', type: 'uuid', nullable: true })
   surveyorId: string | null;
 
+  @Column({ name: 'missing_type_report_id', type: 'uuid', nullable: true })
+  missingTypeReportId: string | null;
+
   @Column({ type: 'varchar', length: 100 })
   reason: string;
 
@@ -23,6 +26,9 @@ export class CandidateRecaptureRequest {
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
+
+  @Column({ name: 'completed_at', type: 'timestamptz', nullable: true })
+  completedAt: Date | null;
 
   @ManyToOne(() => UnverifiedSignCandidate, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'candidate_id' })

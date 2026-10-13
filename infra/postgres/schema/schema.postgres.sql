@@ -48,7 +48,8 @@ CREATE TYPE "candidate_status" AS ENUM (
   'VERIFIED',
   'REJECTED',
   'ESCALATED_MODERATION',
-  'MISSING_TYPE_HOLD'
+  'MISSING_TYPE_HOLD',
+  'RECAPTURE_REQUESTED'
 );
 
 CREATE TYPE "spatial_confidence_level" AS ENUM (
@@ -491,6 +492,25 @@ CREATE TABLE "unverified_sign_candidates" (
   "status" candidate_status NOT NULL DEFAULT 'PENDING_REVIEW',
   "created_at" timestamptz NOT NULL DEFAULT (now())
 );
+
+CREATE TABLE "candidate_recapture_requests" (
+  "id" uuid PRIMARY KEY DEFAULT (gen_random_uuid()),
+  "candidate_id" uuid NOT NULL,
+  "reviewer_id" uuid NOT NULL,
+  "surveyor_id" uuid,
+  "missing_type_report_id" uuid,
+  "reason" varchar(100) NOT NULL,
+  "note" text,
+  "created_at" timestamptz NOT NULL DEFAULT (now()),
+  "completed_at" timestamptz
+);
+
+CREATE INDEX ON "candidate_recapture_requests" ("candidate_id");
+CREATE INDEX ON "candidate_recapture_requests" ("surveyor_id");
+CREATE INDEX ON "candidate_recapture_requests" ("missing_type_report_id");
+CREATE UNIQUE INDEX "uq_candidate_recapture_requests_one_active"
+  ON "candidate_recapture_requests" ("candidate_id")
+  WHERE "completed_at" IS NULL;
 
 CREATE TABLE "candidate_detection_metadata" (
   "candidate_id" uuid PRIMARY KEY,
@@ -1151,6 +1171,11 @@ ALTER TABLE "missing_sign_type_reports" ADD FOREIGN KEY ("merged_into_sign_type_
 ALTER TABLE "missing_sign_type_reports" ADD FOREIGN KEY ("reviewed_by") REFERENCES "users" ("id") DEFERRABLE INITIALLY IMMEDIATE;
 
 ALTER TABLE "missing_sign_type_report_evidences" ADD FOREIGN KEY ("report_id") REFERENCES "missing_sign_type_reports" ("id") DEFERRABLE INITIALLY IMMEDIATE;
+
+ALTER TABLE "candidate_recapture_requests" ADD FOREIGN KEY ("candidate_id") REFERENCES "unverified_sign_candidates" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE;
+ALTER TABLE "candidate_recapture_requests" ADD FOREIGN KEY ("reviewer_id") REFERENCES "users" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE;
+ALTER TABLE "candidate_recapture_requests" ADD FOREIGN KEY ("surveyor_id") REFERENCES "users" ("id") ON DELETE SET NULL DEFERRABLE INITIALLY IMMEDIATE;
+ALTER TABLE "candidate_recapture_requests" ADD FOREIGN KEY ("missing_type_report_id") REFERENCES "missing_sign_type_reports" ("id") ON DELETE SET NULL DEFERRABLE INITIALLY IMMEDIATE;
 
 ALTER TABLE "camera_calibration_profiles" ADD FOREIGN KEY ("user_id") REFERENCES "users" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE;
 
