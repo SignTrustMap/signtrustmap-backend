@@ -76,6 +76,71 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     expect(notifications.create).toHaveBeenCalledWith('U1', 'MISSING_TYPE_REJECTED', expect.any(String), expect.any(String), 'missing_sign_type_report', 'R1');
   });
 
+  it('returns reopened PENDING reports with replacement candidate evidence in the Staff queue', async () => {
+    const { service, missing, dataSource } = buildService();
+    missing.findAndCount.mockResolvedValue([[{ id: 'R1', status: MissingTypeStatus.PENDING, candidateId: 'C1' }], 1]);
+    dataSource.query.mockResolvedValue([{
+      id: 'C1', predicted_sign_type_id: 7, confidence_score: 0.9,
+      best_frame_url: 'stm-sign-crops/recaptures/frame.jpg',
+      sign_crop_url: 'stm-sign-crops/recaptures/crop.jpg', status: CandidateStatus.MISSING_TYPE_HOLD,
+      longitude: 106.6, latitude: 10.7,
+    }]);
+    const result = await service.listMissingReports(MissingTypeStatus.PENDING, 1, 20);
+    expect(result.items[0]).toMatchObject({
+      id: 'R1', status: MissingTypeStatus.PENDING,
+      candidate: expect.objectContaining({
+        bestFrameUrl: 'stm-sign-crops/recaptures/frame.jpg',
+        signCropUrl: 'stm-sign-crops/recaptures/crop.jpg',
+        status: CandidateStatus.MISSING_TYPE_HOLD,
+      }),
+    });
+  });
+
+  it('creates an associated recapture request and resolves a moderation case transactionally', async () => {
+    const { service, cases, dataSource } = buildService();
+    cases.findOne.mockResolvedValue({ id: 'CASE1', status: 'IN_REVIEW', targetEntityType: 'candidate', targetEntityId: 'C1' });
+    const manager = {
+      query: jest.fn()
+        .mockResolvedValueOnce([{ id: 'CASE1', status: 'IN_REVIEW', target_entity_id: 'C1' }])
+        .mockResolvedValueOnce([{ id: 'C1', status: CandidateStatus.MISSING_TYPE_HOLD, surveyor_id: 'SURV1' }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'REPORT1' }])
+        .mockResolvedValueOnce({ rowCount: 1 })
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'CASE1', status: 'RESOLVED', target_entity_id: 'C1' }])
+        .mockResolvedValueOnce([]),
+    };
+    dataSource.transaction.mockImplementation((fn: (m: any) => any) => fn(manager));
+
+    const result = await service.resolveCase('CASE1', 'STAFF1', {
+      actionType: 'REQUEST_RECAPTURE',
+      resolutionNote: 'Please recapture',
+    } as any);
+
+    expect(result.status).toBe('RESOLVED');
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining('missing_type_report_id'),
+      ['C1', 'STAFF1', 'SURV1', 'REPORT1', 'Please recapture'],
+    );
+  });
+
+  it('rejects ambiguous moderation recapture association before changing case or candidate', async () => {
+    const { service, cases, dataSource } = buildService();
+    cases.findOne.mockResolvedValue({ id: 'CASE1', status: 'IN_REVIEW', targetEntityType: 'candidate', targetEntityId: 'C1' });
+    const manager = {
+      query: jest.fn()
+        .mockResolvedValueOnce([{ id: 'CASE1', status: 'IN_REVIEW', target_entity_id: 'C1' }])
+        .mockResolvedValueOnce([{ id: 'C1', status: CandidateStatus.MISSING_TYPE_HOLD, surveyor_id: 'SURV1' }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'REPORT1' }, { id: 'REPORT2' }]),
+    };
+    dataSource.transaction.mockImplementation((fn: (m: any) => any) => fn(manager));
+
+    await expect(service.resolveCase('CASE1', 'STAFF1', { actionType: 'REQUEST_RECAPTURE' } as any))
+      .rejects.toThrow('expected exactly one INCOMPLETE');
+    expect(manager.query).not.toHaveBeenCalledWith(expect.stringContaining("SET status = 'RECAPTURE_REQUESTED'"), expect.anything());
+  });
+
   it('approve-and-create-type provisions the sign type, bumps catalog version, releases the held candidate and triggers AI label sync', async () => {
     const { service, missing, catRepo, signTypeRepo, dataSource, notifications, catalogService, catalogSyncService } = buildService();
     const report = { id: 'R1', status: MissingTypeStatus.PENDING, candidateId: 'C1', proposedName: 'No Horn', proposedCategoryId: 1, reporterId: 'U1', suggestedShape: 'CIRCLE', suggestedColorScheme: null };

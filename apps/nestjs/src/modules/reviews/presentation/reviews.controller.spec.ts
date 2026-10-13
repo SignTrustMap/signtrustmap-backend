@@ -19,6 +19,7 @@ describe('ReviewsController', () => {
     testReviewCandidate: jest.Mock;
     directCandidatesToReviewer: jest.Mock;
     requestRecapture: jest.Mock;
+    submitRecapture: jest.Mock;
     getRecapturesForCandidate: jest.Mock;
     getMyRecaptures: jest.Mock;
   };
@@ -42,6 +43,7 @@ describe('ReviewsController', () => {
       testReviewCandidate: jest.fn(),
       directCandidatesToReviewer: jest.fn(),
       requestRecapture: jest.fn(),
+      submitRecapture: jest.fn(),
       getRecapturesForCandidate: jest.fn(),
       getMyRecaptures: jest.fn(),
     };
@@ -168,6 +170,14 @@ describe('ReviewsController', () => {
     const res = await controller.requestRecapture(adminUser, 'cand-1', dto);
     expect(res).toEqual({ success: true, requestId: 'req-2' });
     expect(service.requestRecapture).toHaveBeenCalledWith('admin-1', 'cand-1', dto, true);
+  });
+
+  it('submitRecapture passes authenticated surveyor and multipart files', async () => {
+    service.submitRecapture.mockResolvedValue({ success: true, candidateId: 'cand-1' });
+    const files = { signCrop: [{ originalname: 'crop.jpg' }], bestFrame: [{ originalname: 'frame.jpg' }] } as any;
+    const res = await controller.submitRecapture(mockUser, 'cand-1', files);
+    expect(res).toEqual({ success: true, candidateId: 'cand-1' });
+    expect(service.submitRecapture).toHaveBeenCalledWith(mockUser.id, 'cand-1', files);
   });
 
   it('getCandidateRecaptures calls service.getRecapturesForCandidate', async () => {
