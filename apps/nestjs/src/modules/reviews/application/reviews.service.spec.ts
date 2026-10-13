@@ -660,9 +660,11 @@ describe('ReviewsService test helpers', () => {
         .mockResolvedValueOnce({ rowCount: 1 })
         .mockResolvedValueOnce({ rowCount: 1 })
         .mockResolvedValueOnce({ rowCount: 1 });
-      const managerQuery = jest.fn().mockResolvedValue([
-        { id: 'req-1', missing_type_report_id: 'report-1', completed_at: null },
-      ]);
+      const managerQuery = jest.fn()
+        .mockResolvedValueOnce([
+          { id: 'req-1', missing_type_report_id: 'report-1', completed_at: null },
+        ])
+        .mockResolvedValue([{ distance_meters: 10 }]);
       const candidates = {
         findOne: jest.fn().mockResolvedValue({
           id: 'cand-1',
@@ -686,6 +688,9 @@ describe('ReviewsService test helpers', () => {
     it('uploads replacement evidence and reopens only the associated report', async () => {
       const { service, storage, txQuery } = buildSubmitService();
       const result = await service.submitRecapture('surveyor-1', 'cand-1', {
+        latitude: 10.77,
+        longitude: 106.7,
+      }, {
         signCrop: [image('sign-crop')],
         bestFrame: [image('best-frame')],
       });
@@ -698,7 +703,7 @@ describe('ReviewsService test helpers', () => {
 
     it('rejects a non-owner before storage', async () => {
       const { service, storage } = buildSubmitService();
-      await expect(service.submitRecapture('other-surveyor', 'cand-1', {
+      await expect(service.submitRecapture('other-surveyor', 'cand-1', { latitude: 10.77, longitude: 106.7 }, {
         signCrop: [image('sign-crop')], bestFrame: [image('best-frame')],
       })).rejects.toThrow('does not belong');
       expect(storage.putObject).not.toHaveBeenCalled();
@@ -706,8 +711,8 @@ describe('ReviewsService test helpers', () => {
 
     it('rejects missing, duplicate, or invalid media safely', async () => {
       const { service, storage } = buildSubmitService();
-      await expect(service.submitRecapture('surveyor-1', 'cand-1', { signCrop: [image('sign-crop')] })).rejects.toThrow('Both signCrop');
-      await expect(service.submitRecapture('surveyor-1', 'cand-1', {
+      await expect(service.submitRecapture('surveyor-1', 'cand-1', { latitude: 10.77, longitude: 106.7 }, { signCrop: [image('sign-crop')] })).rejects.toThrow('Both signCrop');
+      await expect(service.submitRecapture('surveyor-1', 'cand-1', { latitude: 10.77, longitude: 106.7 }, {
         signCrop: [{ ...image('sign-crop'), buffer: Buffer.from('not-image') }], bestFrame: [image('best-frame')],
       })).rejects.toThrow('does not match any accepted image signature');
       expect(storage.putObject).not.toHaveBeenCalled();
@@ -716,7 +721,7 @@ describe('ReviewsService test helpers', () => {
     it('cleans newly uploaded objects when persistence fails', async () => {
       const { service, storage, dataSource } = buildSubmitService();
       dataSource.transaction.mockRejectedValueOnce(new Error('database unavailable'));
-      await expect(service.submitRecapture('surveyor-1', 'cand-1', {
+      await expect(service.submitRecapture('surveyor-1', 'cand-1', { latitude: 10.77, longitude: 106.7 }, {
         signCrop: [image('sign-crop')], bestFrame: [image('best-frame')],
       })).rejects.toThrow('database unavailable');
       expect(storage.removeObjects).toHaveBeenCalledWith(expect.arrayContaining([
@@ -727,10 +732,43 @@ describe('ReviewsService test helpers', () => {
     it('cleans uploaded evidence when the storage provider fails mid-upload', async () => {
       const { service, storage } = buildSubmitService();
       storage.putObject.mockRejectedValueOnce(new Error('storage unavailable'));
-      await expect(service.submitRecapture('surveyor-1', 'cand-1', {
+      await expect(service.submitRecapture('surveyor-1', 'cand-1', { latitude: 10.77, longitude: 106.7 }, {
         signCrop: [image('sign-crop')], bestFrame: [image('best-frame')],
       })).rejects.toThrow('storage unavailable');
       expect(storage.removeObjects).toHaveBeenCalled();
+    });
+
+    it('rejects a recapture location beyond the 100m geofence before storage', async () => {
+      const { service, storage, managerQuery } = buildSubmitService();
+      managerQuery.mockReset();
+      managerQuery
+        .mockResolvedValueOnce([{ id: 'req-1', missing_type_report_id: 'report-1', completed_at: null }])
+        .mockResolvedValueOnce([{ distance_meters: 100.01 }]);
+      await expect(service.submitRecapture('surveyor-1', 'cand-1', { latitude: 10.77, longitude: 106.7 }, {
+        signCrop: [image('sign-crop')], bestFrame: [image('best-frame')],
+      })).rejects.toThrow('Vị trí chụp lại không trùng khớp với vị trí biển báo gốc');
+      expect(storage.putObject).not.toHaveBeenCalled();
+    });
+
+    it('rejects missing or invalid coordinates before the geofence query', async () => {
+      const { service, storage, managerQuery } = buildSubmitService();
+      await expect(service.submitRecapture('surveyor-1', 'cand-1', { latitude: Number.NaN, longitude: 106.7 }, {
+        signCrop: [image('sign-crop')], bestFrame: [image('best-frame')],
+      })).rejects.toThrow('Invalid latitude/longitude');
+      expect(managerQuery).toHaveBeenCalledTimes(1);
+      expect(storage.putObject).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when the candidate has no original sign location', async () => {
+      const { service, storage, managerQuery } = buildSubmitService();
+      managerQuery.mockReset();
+      managerQuery
+        .mockResolvedValueOnce([{ id: 'req-1', missing_type_report_id: 'report-1', completed_at: null }])
+        .mockResolvedValueOnce([]);
+      await expect(service.submitRecapture('surveyor-1', 'cand-1', { latitude: 10.77, longitude: 106.7 }, {
+        signCrop: [image('sign-crop')], bestFrame: [image('best-frame')],
+      })).rejects.toThrow('no valid original sign location');
+      expect(storage.putObject).not.toHaveBeenCalled();
     });
   });
 });

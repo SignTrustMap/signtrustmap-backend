@@ -125,7 +125,7 @@ Base: `http://localhost:3000/api/v1`
 | `GET` | `/reviews/me/stats` | JWT (Reviewer) | Thống kê reviewer (Reliability Score, số lượt duyệt) cho Reviewer Home. |
 | `POST` | `/reviews/missing-type` | JWT | Báo biển báo thiếu loại chưa có trong catalog (Flow 10 Missing Type Reports). |
 | `POST` | `/reviews/candidates/:candidateId/request-recapture` | REVIEWER/ADMIN/STAFF | Request replacement evidence; the candidate must have exactly one `INCOMPLETE` Missing Type Report. |
-| `POST` | `/reviews/candidates/:candidateId/recapture` | SURVEYOR | Multipart upload with required `signCrop` and `bestFrame` image files; reopens the associated report as `PENDING`. |
+| `POST` | `/reviews/candidates/:candidateId/recapture` | SURVEYOR | Multipart upload with required `signCrop`, `bestFrame`, numeric `latitude`, and numeric `longitude`; coordinates must be within 100m of the original sign location before evidence is stored and the associated report is reopened as `PENDING`. |
 
 ### 3.5 Revalidation (`/revalidation`)
 

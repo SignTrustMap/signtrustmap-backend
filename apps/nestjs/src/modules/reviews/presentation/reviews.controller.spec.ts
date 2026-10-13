@@ -175,9 +175,10 @@ describe('ReviewsController', () => {
   it('submitRecapture passes authenticated surveyor and multipart files', async () => {
     service.submitRecapture.mockResolvedValue({ success: true, candidateId: 'cand-1' });
     const files = { signCrop: [{ originalname: 'crop.jpg' }], bestFrame: [{ originalname: 'frame.jpg' }] } as any;
-    const res = await controller.submitRecapture(mockUser, 'cand-1', files);
+    const dto = { latitude: 10.77, longitude: 106.7 } as any;
+    const res = await controller.submitRecapture(mockUser, 'cand-1', dto, files);
     expect(res).toEqual({ success: true, candidateId: 'cand-1' });
-    expect(service.submitRecapture).toHaveBeenCalledWith(mockUser.id, 'cand-1', files);
+    expect(service.submitRecapture).toHaveBeenCalledWith(mockUser.id, 'cand-1', dto, files);
   });
 
   it('getCandidateRecaptures calls service.getRecapturesForCandidate', async () => {
