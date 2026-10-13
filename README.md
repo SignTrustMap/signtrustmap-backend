@@ -425,6 +425,8 @@ For Heroku deployments, deploy from the repository root. The root npm workspace 
 | PATCH | `/reviews/internal/:candidateId/active-learning-priority` | Internal | Set AL uncertainty score. Body: `{ priority: 0.0-1.0 }` |
 | POST | `/reviews/internal/active-learning-priorities` | Internal | Bulk set AL priorities. Body: `{ items: [{ candidateId, priority }] }` (max 200 items) |
 | POST | `/reviews/missing-type` | REVIEWER/ADMIN/STAFF | Report a sign type missing from the catalog |
+| POST | `/reviews/candidates/:candidateId/request-recapture` | REVIEWER/ADMIN/STAFF | Request replacement evidence for a candidate linked to exactly one incomplete Missing Type Report |
+| POST | `/reviews/candidates/:candidateId/recapture` | SURVEYOR | Multipart upload of required `signCrop` and `bestFrame` images for the authenticated surveyor's active recapture request |
 
 ### Sign Catalog — `catalog` + System Parameters — `admin/system-parameters`
 
