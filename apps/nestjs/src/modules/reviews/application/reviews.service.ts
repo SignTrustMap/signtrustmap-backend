@@ -20,6 +20,8 @@ import { MinioStorageService } from '../../../integrations/minio/minio-storage.s
 import { MediaFileType, MEDIA_SIZE_LIMITS } from '../../survey/domain/submission-contract';
 import { validateFileSignature, decodeMedia } from '../../survey/domain/media-validator';
 
+const RECAPTURE_GEOFENCE_METERS = 100;
+
 @Injectable()
 export class ReviewsService implements OnModuleInit {
   constructor(
@@ -696,6 +698,7 @@ export class ReviewsService implements OnModuleInit {
   async submitRecapture(
     surveyorId: string,
     candidateId: string,
+    dto: { latitude: number; longitude: number },
     files: { signCrop?: Express.Multer.File[]; bestFrame?: Express.Multer.File[] },
   ) {
     if (!this.storageService) throw new BadRequestException('Recapture storage is not configured');
@@ -736,6 +739,31 @@ export class ReviewsService implements OnModuleInit {
     const request = requestRows[0];
     if (!request.missing_type_report_id) {
       throw new BadRequestException('This recapture request has no unambiguous Missing Type Report association and cannot be submitted');
+    }
+
+    const latitude = dto?.latitude;
+    const longitude = dto?.longitude;
+    if (typeof latitude !== 'number' || typeof longitude !== 'number'
+      || !Number.isFinite(latitude) || !Number.isFinite(longitude)
+      || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
+      throw new BadRequestException('Invalid latitude/longitude');
+    }
+
+    const locationRows: any[] = await (this.candidateRepo.manager as any).query(
+      `SELECT ST_DistanceSphere(
+         cge.sign_location,
+         ST_SetSRID(ST_MakePoint($1, $2), 4326)
+       ) AS distance_meters
+       FROM candidate_geo_estimations cge
+       WHERE cge.candidate_id = $3 AND cge.sign_location IS NOT NULL`,
+      [longitude, latitude, candidateId],
+    );
+    const distanceMeters = locationRows.length > 0 ? Number(locationRows[0].distance_meters) : null;
+    if (distanceMeters == null || !Number.isFinite(distanceMeters)) {
+      throw new BadRequestException('Cannot verify distance: candidate has no valid original sign location');
+    }
+    if (distanceMeters > RECAPTURE_GEOFENCE_METERS) {
+      throw new BadRequestException('Vị trí chụp lại không trùng khớp với vị trí biển báo gốc');
     }
 
     const requestId = request.id;

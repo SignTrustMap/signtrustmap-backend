@@ -5,7 +5,7 @@ import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { Public } from '../../../common/decorators/public.decorator';
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { ReviewsService } from '../application/reviews.service';
-import { VoteDto, ReportDto, TestReviewDto, TestAssignDto, RequestRecaptureDto } from './dto/vote.dto';
+import { VoteDto, ReportDto, TestReviewDto, TestAssignDto, RequestRecaptureDto, SubmitRecaptureDto } from './dto/vote.dto';
 import { InternalTokenGuard } from '../../../common/guards/internal-token.guard';
 
 @ApiTags('Reviews')
@@ -99,9 +99,10 @@ export class ReviewsController {
   async submitRecapture(
     @CurrentUser() user: any,
     @Param('candidateId', ParseUUIDPipe) candidateId: string,
+    @Body() dto: SubmitRecaptureDto,
     @UploadedFiles() files: { signCrop?: Express.Multer.File[]; bestFrame?: Express.Multer.File[] },
   ) {
-    return this.reviewsService.submitRecapture(user.id, candidateId, files);
+    return this.reviewsService.submitRecapture(user.id, candidateId, dto, files);
   }
 
   @ApiBearerAuth()

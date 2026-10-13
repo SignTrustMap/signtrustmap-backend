@@ -1,4 +1,5 @@
-import { IsIn, IsInt, IsOptional, IsString, MaxLength } from 'class-validator';
+import { Type } from 'class-transformer';
+import { IsIn, IsInt, IsNumber, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 
 export class VoteDto {
   @IsIn([1, -1], { message: 'vote must be 1 (approve) or -1 (reject)' })
@@ -36,6 +37,20 @@ export class RequestRecaptureDto {
   @IsString()
   @MaxLength(1000)
   note?: string;
+}
+
+export class SubmitRecaptureDto {
+  @Type(() => Number)
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @Min(-90)
+  @Max(90)
+  latitude: number;
+
+  @Type(() => Number)
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @Min(-180)
+  @Max(180)
+  longitude: number;
 }
 
 export class TestReviewDto {
