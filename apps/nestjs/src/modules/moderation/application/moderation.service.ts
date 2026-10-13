@@ -23,6 +23,12 @@ export interface CandidateEnriched {
   latitude: number | null;
 }
 
+function getAffectedRowCount(result: any): number {
+  if (typeof result?.rowCount === 'number') return result.rowCount;
+  if (Array.isArray(result) && typeof result[1] === 'number') return result[1];
+  return 0;
+}
+
 @Injectable()
 export class ModerationService {
   private readonly logger = new Logger(ModerationService.name);
@@ -302,7 +308,7 @@ export class ModerationService {
          WHERE id = $1 AND status NOT IN ('VERIFIED', 'REJECTED', 'RECAPTURE_REQUESTED')`,
         [candidate.id],
       );
-      if (candidateUpdate.rowCount !== 1) throw new BadRequestException('Candidate state changed before recapture request creation');
+      if (getAffectedRowCount(candidateUpdate) !== 1) throw new BadRequestException('Candidate state changed before recapture request creation');
 
       try {
         await manager.query(

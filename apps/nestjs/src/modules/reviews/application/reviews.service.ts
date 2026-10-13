@@ -22,6 +22,12 @@ import { validateFileSignature, decodeMedia } from '../../survey/domain/media-va
 
 const RECAPTURE_GEOFENCE_METERS = 100;
 
+function getAffectedRowCount(result: any): number {
+  if (typeof result?.rowCount === 'number') return result.rowCount;
+  if (Array.isArray(result) && typeof result[1] === 'number') return result[1];
+  return 0;
+}
+
 @Injectable()
 export class ReviewsService implements OnModuleInit {
   constructor(
@@ -626,7 +632,7 @@ export class ReviewsService implements OnModuleInit {
          WHERE id = $1 AND status NOT IN ('VERIFIED', 'REJECTED', 'RECAPTURE_REQUESTED')`,
         [candidateId],
       );
-      if (candidateUpdate.rowCount !== 1) {
+      if (getAffectedRowCount(candidateUpdate) !== 1) {
         throw new BadRequestException(`Candidate ${candidateId} changed state before recapture request creation`);
       }
       const rows = await manager.query(
@@ -798,19 +804,19 @@ export class ReviewsService implements OnModuleInit {
            WHERE id = $3 AND status = 'RECAPTURE_REQUESTED'`,
           [`${uploaded[0].bucket}/${uploaded[0].objectName}`, `${uploaded[1].bucket}/${uploaded[1].objectName}`, candidateId],
         );
-        if (updated.rowCount !== 1) throw new BadRequestException('Candidate recapture state changed before persistence');
+        if (getAffectedRowCount(updated) !== 1) throw new BadRequestException('Candidate recapture state changed before persistence');
         const report = await tx.query(
           `UPDATE missing_sign_type_reports SET status = 'PENDING'
            WHERE id = $1 AND candidate_id = $2 AND status = 'INCOMPLETE'`,
           [request.missing_type_report_id, candidateId],
         );
-        if (report.rowCount !== 1) throw new BadRequestException('Associated Missing Type Report is no longer incomplete');
+        if (getAffectedRowCount(report) !== 1) throw new BadRequestException('Associated Missing Type Report is no longer incomplete');
         const consumed = await tx.query(
           `UPDATE candidate_recapture_requests SET completed_at = NOW()
            WHERE id = $1 AND completed_at IS NULL`,
           [requestId],
         );
-        if (consumed.rowCount !== 1) throw new BadRequestException('Recapture request was already consumed');
+        if (getAffectedRowCount(consumed) !== 1) throw new BadRequestException('Recapture request was already consumed');
       };
       if (this.dataSource) await this.dataSource.transaction((tx) => persist(tx));
       else await persist(manager);
