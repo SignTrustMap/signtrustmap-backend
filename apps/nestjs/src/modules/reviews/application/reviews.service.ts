@@ -1,4 +1,6 @@
 import { ConflictException, Injectable, NotFoundException, BadRequestException, ForbiddenException, Optional, OnModuleInit } from '@nestjs/common';
+import { DataSource } from 'typeorm';
+import { randomUUID, createHash } from 'crypto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { CandidateReview } from '../infrastructure/persistence/candidate-review.entity';
@@ -14,6 +16,9 @@ import { ReviewerSkippedCandidate } from '../infrastructure/persistence/reviewer
 import { DailyTasksService } from '../../daily-tasks/daily-tasks.service';
 import { CandidateRecaptureRequest } from '../infrastructure/persistence/candidate-recapture-request.entity';
 import { NotificationsService } from '../../notifications/notifications.service';
+import { MinioStorageService } from '../../../integrations/minio/minio-storage.service';
+import { MediaFileType, MEDIA_SIZE_LIMITS } from '../../survey/domain/submission-contract';
+import { validateFileSignature, decodeMedia } from '../../survey/domain/media-validator';
 
 @Injectable()
 export class ReviewsService implements OnModuleInit {
@@ -27,13 +32,12 @@ export class ReviewsService implements OnModuleInit {
     @Optional() private readonly dailyTasksService?: DailyTasksService,
     @Optional() @InjectRepository(CandidateRecaptureRequest) private readonly recaptureRepo?: Repository<CandidateRecaptureRequest>,
     @Optional() private readonly notificationsService?: NotificationsService,
+    @Optional() private readonly dataSource?: DataSource,
+    @Optional() private readonly storageService?: MinioStorageService,
   ) {}
 
   async onModuleInit() {
     try {
-      await (this.candidateRepo.manager as any).query(`
-        ALTER TYPE candidate_status ADD VALUE IF NOT EXISTS 'RECAPTURE_REQUESTED';
-      `);
       await (this.candidateRepo.manager as any).query(`
         CREATE TABLE IF NOT EXISTS reviewer_skipped_candidates (
           reviewer_id uuid NOT NULL,
@@ -41,19 +45,6 @@ export class ReviewsService implements OnModuleInit {
           skipped_at timestamptz NOT NULL DEFAULT now(),
           PRIMARY KEY (reviewer_id, candidate_id)
         );
-      `);
-      await (this.candidateRepo.manager as any).query(`
-        CREATE TABLE IF NOT EXISTS candidate_recapture_requests (
-          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-          candidate_id UUID NOT NULL REFERENCES unverified_sign_candidates(id) ON DELETE CASCADE,
-          reviewer_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-          surveyor_id UUID REFERENCES users(id) ON DELETE SET NULL,
-          reason VARCHAR(100) NOT NULL,
-          note TEXT,
-          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        );
-        CREATE INDEX IF NOT EXISTS idx_candidate_recapture_requests_candidate ON candidate_recapture_requests(candidate_id);
-        CREATE INDEX IF NOT EXISTS idx_candidate_recapture_requests_surveyor ON candidate_recapture_requests(surveyor_id);
       `);
     } catch {}
   }
@@ -595,30 +586,66 @@ export class ReviewsService implements OnModuleInit {
 
     const reason = dto.reason.trim();
     const note = dto.note?.trim() || null;
-
-    // Update candidate status
-    await this.candidateRepo.update(candidateId, { status: CandidateStatus.RECAPTURE_REQUESTED });
-
-    // Persist recapture request record
-    let savedRequest: any = null;
-    if (this.recaptureRepo) {
-      savedRequest = await this.recaptureRepo.save(
-        this.recaptureRepo.create({
-          candidateId,
-          reviewerId,
-          surveyorId,
-          reason,
-          note,
-        }),
+    const persistRequest = async (manager: any) => {
+      const candidateRows = await manager.query(
+        `SELECT status FROM unverified_sign_candidates WHERE id = $1 FOR UPDATE`,
+        [candidateId],
       );
-    } else {
-      const rows = await (this.candidateRepo.manager as any).query(
-        `INSERT INTO candidate_recapture_requests (candidate_id, reviewer_id, surveyor_id, reason, note)
-         VALUES ($1, $2, $3, $4, $5)
+      if (candidateRows.length !== 1) throw new NotFoundException('Candidate ' + candidateId + ' not found');
+      if ([CandidateStatus.VERIFIED, CandidateStatus.REJECTED, CandidateStatus.RECAPTURE_REQUESTED].includes(candidateRows[0].status)) {
+        throw new BadRequestException(
+          `Cannot request recapture for candidate ${candidateId} with status ${candidateRows[0].status}`,
+        );
+      }
+      const activeRows = await manager.query(
+        `SELECT id FROM candidate_recapture_requests
+         WHERE candidate_id = $1 AND completed_at IS NULL
+         FOR UPDATE`,
+        [candidateId],
+      );
+      if (activeRows.length > 0) {
+        throw new ConflictException(`An active recapture request already exists for candidate ${candidateId}`);
+      }
+      const reportRows = await manager.query(
+        `SELECT id, status FROM missing_sign_type_reports
+         WHERE candidate_id = $1 AND status = 'INCOMPLETE'
+         FOR UPDATE`,
+        [candidateId],
+      );
+      if (reportRows.length !== 1) {
+        throw new BadRequestException(
+          `Cannot request recapture for candidate ${candidateId}: expected exactly one INCOMPLETE Missing Type Report, found ${reportRows.length}`,
+        );
+      }
+      const reportId = reportRows[0].id;
+      const candidateUpdate = await manager.query(
+        `UPDATE unverified_sign_candidates
+         SET status = 'RECAPTURE_REQUESTED'
+         WHERE id = $1 AND status NOT IN ('VERIFIED', 'REJECTED', 'RECAPTURE_REQUESTED')`,
+        [candidateId],
+      );
+      if (candidateUpdate.rowCount !== 1) {
+        throw new BadRequestException(`Candidate ${candidateId} changed state before recapture request creation`);
+      }
+      const rows = await manager.query(
+        `INSERT INTO candidate_recapture_requests
+           (candidate_id, reviewer_id, surveyor_id, missing_type_report_id, reason, note)
+         VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING *`,
-        [candidateId, reviewerId, surveyorId, reason, note],
+        [candidateId, reviewerId, surveyorId, reportId, reason, note],
       );
-      savedRequest = rows[0];
+      return rows[0];
+    };
+    let savedRequest: any;
+    try {
+      savedRequest = this.dataSource
+        ? await this.dataSource.transaction((manager) => persistRequest(manager))
+        : await persistRequest(this.candidateRepo.manager);
+    } catch (error: any) {
+      if (error?.code === '23505' || String(error?.detail ?? '').includes('uq_candidate_recapture_requests_one_active')) {
+        throw new ConflictException(`An active recapture request already exists for candidate ${candidateId}`);
+      }
+      throw error;
     }
 
     // Audit log in moderation case
@@ -660,8 +687,119 @@ export class ReviewsService implements OnModuleInit {
       candidateId,
       status: CandidateStatus.RECAPTURE_REQUESTED,
       surveyorId,
+      missingTypeReportId: savedRequest.missing_type_report_id ?? savedRequest.missingTypeReportId,
       recaptureRequest: savedRequest,
       notificationSent,
+    };
+  }
+
+  async submitRecapture(
+    surveyorId: string,
+    candidateId: string,
+    files: { signCrop?: Express.Multer.File[]; bestFrame?: Express.Multer.File[] },
+  ) {
+    if (!this.storageService) throw new BadRequestException('Recapture storage is not configured');
+    const signCrop = files.signCrop?.[0];
+    const bestFrame = files.bestFrame?.[0];
+    if (!signCrop || !bestFrame) throw new BadRequestException('Both signCrop and bestFrame image evidence are required');
+
+    for (const [field, file] of [['signCrop', signCrop], ['bestFrame', bestFrame]] as const) {
+      const limits = MEDIA_SIZE_LIMITS[MediaFileType.IMAGE];
+      if (!file.buffer || file.size < limits.minBytes || file.size > limits.maxBytes) {
+        throw new BadRequestException(`${field} evidence file size is invalid`);
+      }
+      const signature = validateFileSignature(MediaFileType.IMAGE, file.buffer);
+      if (!signature.valid) throw new BadRequestException(`${field}: ${signature.error ?? 'invalid image signature'}`);
+      const decoded = decodeMedia(MediaFileType.IMAGE, file.buffer);
+      if (!decoded.valid) throw new BadRequestException(`${field}: ${decoded.error ?? 'invalid image'}`);
+    }
+
+    const candidate = await this.candidateRepo.findOne({
+      where: { id: candidateId },
+      relations: ['submission'],
+    });
+    if (!candidate) throw new NotFoundException('Candidate ' + candidateId + ' not found');
+    if (candidate.submission?.surveyorId !== surveyorId) throw new ForbiddenException('Candidate does not belong to the authenticated surveyor');
+    if (candidate.status !== CandidateStatus.RECAPTURE_REQUESTED) {
+      throw new BadRequestException(`Candidate ${candidateId} is not awaiting recapture (status=${candidate.status})`);
+    }
+
+    const requestRows: any[] = await (this.candidateRepo.manager as any).query(
+      `SELECT id, missing_type_report_id, completed_at
+       FROM candidate_recapture_requests
+       WHERE candidate_id = $1 AND surveyor_id = $2 AND completed_at IS NULL`,
+      [candidateId, surveyorId],
+    );
+    if (requestRows.length !== 1) {
+      throw new BadRequestException(`Candidate ${candidateId} does not have exactly one active recapture request assigned to this surveyor`);
+    }
+    const request = requestRows[0];
+    if (!request.missing_type_report_id) {
+      throw new BadRequestException('This recapture request has no unambiguous Missing Type Report association and cannot be submitted');
+    }
+
+    const requestId = request.id;
+    const digest = (file: Express.Multer.File) => createHash('sha256').update(file.buffer).digest('hex').slice(0, 16);
+    const objects = [
+      { file: signCrop, field: 'sign-crop', bucket: this.storageService.bucketForMediaType('IMAGE') },
+      { file: bestFrame, field: 'best-frame', bucket: this.storageService.bucketForMediaType('IMAGE') },
+    ].map(({ file, field, bucket }) => ({
+      bucket,
+      objectName: `recaptures/${candidateId}/${requestId}/${field}-${digest(file)}-${randomUUID()}.${(file.originalname || 'image').split('.').pop()?.replace(/[^a-zA-Z0-9]/g, '') || 'bin'}`,
+      file,
+    }));
+    const uploaded = objects.map(({ bucket, objectName }) => ({ bucket, objectName }));
+    try {
+      for (const object of objects) await this.storageService.putObject(object.bucket, object.objectName, object.file.buffer, object.file.mimetype);
+      const manager: any = this.candidateRepo.manager;
+      const persist = async (tx: any) => {
+        const locked = await tx.query(
+          `SELECT c.status, crr.id AS request_id, crr.missing_type_report_id, r.status AS report_status
+           FROM unverified_sign_candidates c
+           JOIN candidate_recapture_requests crr ON crr.candidate_id = c.id
+           JOIN missing_sign_type_reports r ON r.id = crr.missing_type_report_id
+           WHERE c.id = $1 AND crr.id = $2 AND crr.surveyor_id = $3 AND crr.completed_at IS NULL
+           FOR UPDATE OF c, crr, r`,
+          [candidateId, requestId, surveyorId],
+        );
+        if (locked.length !== 1 || locked[0].status !== CandidateStatus.RECAPTURE_REQUESTED) throw new BadRequestException('Recapture request is no longer active');
+        if (locked[0].report_status !== 'INCOMPLETE') throw new BadRequestException('Associated Missing Type Report is not incomplete');
+        const updated = await tx.query(
+          `UPDATE unverified_sign_candidates
+           SET sign_crop_url = $1, best_frame_url = $2, status = 'MISSING_TYPE_HOLD'
+           WHERE id = $3 AND status = 'RECAPTURE_REQUESTED'`,
+          [`${uploaded[0].bucket}/${uploaded[0].objectName}`, `${uploaded[1].bucket}/${uploaded[1].objectName}`, candidateId],
+        );
+        if (updated.rowCount !== 1) throw new BadRequestException('Candidate recapture state changed before persistence');
+        const report = await tx.query(
+          `UPDATE missing_sign_type_reports SET status = 'PENDING'
+           WHERE id = $1 AND candidate_id = $2 AND status = 'INCOMPLETE'`,
+          [request.missing_type_report_id, candidateId],
+        );
+        if (report.rowCount !== 1) throw new BadRequestException('Associated Missing Type Report is no longer incomplete');
+        const consumed = await tx.query(
+          `UPDATE candidate_recapture_requests SET completed_at = NOW()
+           WHERE id = $1 AND completed_at IS NULL`,
+          [requestId],
+        );
+        if (consumed.rowCount !== 1) throw new BadRequestException('Recapture request was already consumed');
+      };
+      if (this.dataSource) await this.dataSource.transaction((tx) => persist(tx));
+      else await persist(manager);
+    } catch (error) {
+      await this.storageService.removeObjects(uploaded).catch(() => undefined);
+      throw error;
+    }
+    return {
+      success: true,
+      candidateId,
+      requestId,
+      missingTypeReportId: request.missing_type_report_id,
+      status: CandidateStatus.MISSING_TYPE_HOLD,
+      evidence: {
+        signCropUrl: `${uploaded[0].bucket}/${uploaded[0].objectName}`,
+        bestFrameUrl: `${uploaded[1].bucket}/${uploaded[1].objectName}`,
+      },
     };
   }
 
@@ -685,7 +823,7 @@ export class ReviewsService implements OnModuleInit {
     const countRows = await (this.candidateRepo.manager as any).query(
       `SELECT COUNT(*)::int AS cnt
        FROM candidate_recapture_requests crr
-       WHERE crr.surveyor_id = $1`,
+       WHERE crr.surveyor_id = $1 AND crr.completed_at IS NULL`,
       [surveyorId],
     );
     const total = countRows[0]?.cnt ?? 0;
@@ -696,6 +834,8 @@ export class ReviewsService implements OnModuleInit {
          crr.candidate_id,
          crr.reason,
          crr.note,
+         crr.missing_type_report_id,
+         crr.completed_at,
          crr.created_at AS requested_at,
          c.sign_crop_url,
          c.best_frame_url,
@@ -709,7 +849,7 @@ export class ReviewsService implements OnModuleInit {
        JOIN unverified_sign_candidates c ON c.id = crr.candidate_id
        LEFT JOIN traffic_sign_types tst ON tst.id = c.predicted_sign_type_id
        LEFT JOIN candidate_geo_estimations cge ON cge.candidate_id = c.id
-       WHERE crr.surveyor_id = $1
+       WHERE crr.surveyor_id = $1 AND crr.completed_at IS NULL
        ORDER BY crr.created_at DESC
        LIMIT $2 OFFSET $3`,
       [surveyorId, ps, (p - 1) * ps],

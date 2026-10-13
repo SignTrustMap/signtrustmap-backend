@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ConflictException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { MissingSignTypeReport, MissingTypeStatus } from '../infrastructure/persistence/missing-sign-type-report.entity';
@@ -191,6 +191,9 @@ export class ModerationService {
     const actionType = (dto.actionType || 'RESOLVE').toUpperCase();
     const reportId: string | null = (dto as any).reportId ?? null;
     const targetTypeId: number | null = (dto as any).targetSignTypeId ?? (dto as any).mergedIntoSignTypeId ?? null;
+    if (actionType === 'REQUEST_RECAPTURE' && mc.targetEntityType === 'candidate' && mc.targetEntityId) {
+      return this.resolveRecaptureCase(id, staffId, dto);
+    }
     // Catalog side-effects for missing-type workflow
     if (actionType === 'APPROVED' && reportId) {
       await this.handleApprovedReport(reportId, staffId, dto);
@@ -247,6 +250,106 @@ export class ModerationService {
     } catch {}
     return mc;
   }
+  private async resolveRecaptureCase(caseId: string, staffId: string, dto: ResolveCaseDto) {
+    let surveyorId: string | null = null;
+    const resolved = await this.dataSource.transaction(async (manager) => {
+      const caseRows: any[] = await manager.query(
+        `SELECT * FROM moderation_cases WHERE id = $1 FOR UPDATE`,
+        [caseId],
+      );
+      const moderationCase = caseRows[0];
+      if (!moderationCase) throw new NotFoundException('ModerationCase ' + caseId + ' not found');
+      if (moderationCase.status === ModerationStatus.RESOLVED) throw new BadRequestException('Case is already resolved');
+
+      const candidateRows: any[] = await manager.query(
+        `SELECT c.id, c.status, s.surveyor_id
+         FROM unverified_sign_candidates c
+         JOIN survey_submissions s ON s.id = c.submission_id
+         WHERE c.id = $1
+         FOR UPDATE OF c`,
+        [moderationCase.target_entity_id],
+      );
+      const candidate = candidateRows[0];
+      if (!candidate) throw new NotFoundException('Candidate ' + moderationCase.target_entity_id + ' not found');
+      if ([CandidateStatus.VERIFIED, CandidateStatus.REJECTED, CandidateStatus.RECAPTURE_REQUESTED].includes(candidate.status)) {
+        throw new BadRequestException(`Cannot request recapture for candidate ${candidate.id} with status ${candidate.status}`);
+      }
+      surveyorId = candidate.surveyor_id ?? null;
+
+      const activeRows: any[] = await manager.query(
+        `SELECT id FROM candidate_recapture_requests
+         WHERE candidate_id = $1 AND completed_at IS NULL
+         FOR UPDATE`,
+        [candidate.id],
+      );
+      if (activeRows.length > 0) throw new ConflictException(`An active recapture request already exists for candidate ${candidate.id}`);
+
+      const reportRows: any[] = await manager.query(
+        `SELECT id FROM missing_sign_type_reports
+         WHERE candidate_id = $1 AND status = 'INCOMPLETE'
+         FOR UPDATE`,
+        [candidate.id],
+      );
+      if (reportRows.length !== 1) {
+        throw new BadRequestException(
+          `Cannot request recapture for candidate ${candidate.id}: expected exactly one INCOMPLETE Missing Type Report, found ${reportRows.length}`,
+        );
+      }
+
+      const candidateUpdate = await manager.query(
+        `UPDATE unverified_sign_candidates
+         SET status = 'RECAPTURE_REQUESTED'
+         WHERE id = $1 AND status NOT IN ('VERIFIED', 'REJECTED', 'RECAPTURE_REQUESTED')`,
+        [candidate.id],
+      );
+      if (candidateUpdate.rowCount !== 1) throw new BadRequestException('Candidate state changed before recapture request creation');
+
+      try {
+        await manager.query(
+          `INSERT INTO candidate_recapture_requests
+             (candidate_id, reviewer_id, surveyor_id, missing_type_report_id, reason, note)
+           VALUES ($1, $2, $3, $4, 'MODERATION_RECAPTURE_REQUESTED', $5)`,
+          [candidate.id, staffId, surveyorId, reportRows[0].id, dto.resolutionNote ?? null],
+        );
+      } catch (error: any) {
+        if (error?.code === '23505' || String(error?.detail ?? '').includes('uq_candidate_recapture_requests_one_active')) {
+          throw new ConflictException(`An active recapture request already exists for candidate ${candidate.id}`);
+        }
+        throw error;
+      }
+
+      const updatedCases: any[] = await manager.query(
+        `UPDATE moderation_cases
+         SET status = 'RESOLVED', resolution_note = $2, resolved_at = NOW(), assigned_staff_id = COALESCE(assigned_staff_id, $3)
+         WHERE id = $1
+         RETURNING *`,
+        [caseId, dto.resolutionNote ?? null, staffId],
+      );
+      await manager.query(
+        `INSERT INTO moderation_actions (case_id, action_type, performed_by, note)
+         VALUES ($1, $2, $3, $4)`,
+        [caseId, 'REQUEST_RECAPTURE', staffId, dto.actionNote ?? dto.resolutionNote ?? null],
+      );
+      return updatedCases[0];
+    });
+
+    if (surveyorId && this.notificationsService) {
+      try {
+        await this.notificationsService.create(
+          surveyorId,
+          'IMAGE_RECAPTURE_REQUESTED',
+          'YÃªu cáº§u chá»¥p láº¡i áº£nh biá»ƒn bÃ¡o',
+          `Quáº£n trá»‹ viÃªn yÃªu cáº§u chá»¥p láº¡i áº£nh biá»ƒn bÃ¡o: ${dto.resolutionNote ?? ''}`,
+          'candidate',
+          resolved.target_entity_id,
+        );
+      } catch (error: any) {
+        this.logger.warn(`Recapture notification failed: ${error?.message}`);
+      }
+    }
+    return resolved;
+  }
+
   private async handleApprovedReport(reportId: string, staffId: string, dto: ResolveCaseDto) {
     const report = await this.missing.findOne({ where: { id: reportId } as any });
     if (!report) throw new NotFoundException('MissingSignTypeReport ' + reportId + ' not found');
