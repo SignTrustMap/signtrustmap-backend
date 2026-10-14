@@ -75,6 +75,55 @@ describe('ReviewsService queue', () => {
   });
 });
 
+describe('ReviewsService sign remedies', () => {
+  it('maps AI top five predictions to catalog sign types', async () => {
+    const candidateRepo = {
+      findOne: jest.fn().mockResolvedValue({ id: 'candidate-1', signCropUrl: 'https://s3.example/crop.jpg' }),
+    } as any;
+    const signTypeRepo = {
+      find: jest.fn().mockResolvedValue([
+        { id: 7, signCode: 'W.227', slug: 'ROAD_WORKS', nameVi: 'Công trường', nameEn: 'Road works', isActive: true },
+      ]),
+    } as any;
+    const aiInferenceService = {
+      classifyEarly: jest.fn().mockResolvedValue({
+        top5: [
+          { classId: 7, standardCode: 'W.227', nameVi: 'Công trường', confidence: 0.82 },
+        ],
+      }),
+    } as any;
+    const service = new ReviewsService(
+      candidateRepo,
+      {} as any,
+      signTypeRepo,
+      {} as any,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      aiInferenceService,
+    );
+
+    await expect(service.getSignRemedies('candidate-1')).resolves.toEqual({
+      candidateId: 'candidate-1',
+      items: [{
+        rank: 1,
+        signTypeId: 7,
+        classId: 7,
+        standardCode: 'W.227',
+        slug: 'ROAD_WORKS',
+        nameVi: 'Công trường',
+        nameEn: 'Road works',
+        confidence: 0.82,
+      }],
+    });
+    expect(aiInferenceService.classifyEarly).toHaveBeenCalledWith({ mediaUrl: 'https://s3.example/crop.jpg' });
+  });
+});
+
 describe('ReviewsService vote', () => {
   it('throws ForbiddenException when reviewer is the surveyor who uploaded the submission', async () => {
     const candidates = {
