@@ -19,6 +19,7 @@ import { NotificationsService } from '../../notifications/notifications.service'
 import { MinioStorageService } from '../../../integrations/minio/minio-storage.service';
 import { MediaFileType, MEDIA_SIZE_LIMITS } from '../../survey/domain/submission-contract';
 import { validateFileSignature, decodeMedia } from '../../survey/domain/media-validator';
+import { SIGN_REMEDIES, SignRemedy } from './sign-remedies.constants';
 
 const RECAPTURE_GEOFENCE_METERS = 100;
 
@@ -37,6 +38,10 @@ export class ReviewsService implements OnModuleInit {
     @Optional() private readonly dataSource?: DataSource,
     @Optional() private readonly storageService?: MinioStorageService,
   ) {}
+
+  getSignRemedies(): readonly SignRemedy[] {
+    return SIGN_REMEDIES;
+  }
 
   async onModuleInit() {
     try {
