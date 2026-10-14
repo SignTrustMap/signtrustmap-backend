@@ -14,6 +14,16 @@ export class ReviewsController {
   constructor(private readonly reviewsService: ReviewsService) {}
 
   @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'List sign rejection remedies',
+    description: 'Return the stable rejection reasons available when reviewing a sign candidate',
+  })
+  @Get('sign-remedies')
+  getSignRemedies() {
+    return this.reviewsService.getSignRemedies();
+  }
+
+  @ApiBearerAuth()
   @ApiOperation({ summary: 'Get my review history', description: 'Paginated list of previous sign reviews and consensus verdicts submitted by current reviewer' })
   @Get('me/history')
   async myHistory(
