@@ -9,6 +9,15 @@ export interface EarlyClassificationRequest {
   taskId?: string;
 }
 
+export interface AiTopCandidate {
+  classId?: number | null;
+  className?: string | null;
+  confidence?: number;
+  classifyConfidence?: number | null;
+  standardCode?: string | null;
+  nameVi?: string | null;
+}
+
 export interface EarlyClassificationResult {
   status: string;
   classId?: number | null;
@@ -23,6 +32,8 @@ export interface EarlyClassificationResult {
   signId?: string | null;
   taskId?: string | null;
   mediaUrl?: string | null;
+  top1?: AiTopCandidate | null;
+  top5?: AiTopCandidate[];
   signs?: any[];
 }
 
@@ -97,6 +108,24 @@ export class AiInferenceService {
           signId: data.sign_id,
           taskId: data.task_id,
           mediaUrl: data.media_url,
+          top1: data.top1
+            ? {
+                classId: data.top1.class_id,
+                className: data.top1.class_name,
+                confidence: data.top1.confidence,
+                classifyConfidence: data.top1.classify_confidence,
+                standardCode: data.top1.standard_code,
+                nameVi: data.top1.name_vi,
+              }
+            : null,
+          top5: (data.top5 ?? []).map((item: any) => ({
+            classId: item.class_id,
+            className: item.class_name,
+            confidence: item.confidence,
+            classifyConfidence: item.classify_confidence,
+            standardCode: item.standard_code,
+            nameVi: item.name_vi,
+          })),
           signs: data.signs,
         };
       } finally {

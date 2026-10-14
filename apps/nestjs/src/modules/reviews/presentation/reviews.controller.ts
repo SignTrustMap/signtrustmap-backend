@@ -15,12 +15,12 @@ export class ReviewsController {
 
   @ApiBearerAuth()
   @ApiOperation({
-    summary: 'List sign rejection remedies',
-    description: 'Return the stable rejection reasons available when reviewing a sign candidate',
+    summary: 'Get AI sign replacement suggestions',
+    description: 'Return up to five AI-ranked traffic sign types that may replace the candidate label',
   })
-  @Get('sign-remedies')
-  getSignRemedies() {
-    return this.reviewsService.getSignRemedies();
+  @Get('candidates/:candidateId/sign-remedies')
+  getSignRemedies(@Param('candidateId', ParseUUIDPipe) candidateId: string) {
+    return this.reviewsService.getSignRemedies(candidateId);
   }
 
   @ApiBearerAuth()

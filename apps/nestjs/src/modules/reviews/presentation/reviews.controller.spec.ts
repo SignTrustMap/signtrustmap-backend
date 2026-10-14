@@ -59,17 +59,14 @@ describe('ReviewsController', () => {
     expect(service.getMyHistory).toHaveBeenCalledWith(mockUser.id, 2, 15, 'APPROVED', 'Speed', 'surv-1');
   });
 
-  it('getSignRemedies returns the service remedies', async () => {
+  it('getSignRemedies returns AI replacement suggestions for a candidate', async () => {
     const remedies = [
-      { code: 'SIGN_NOT_FOUND', label: 'Không tìm thấy biển báo' },
-      { code: 'INCORRECT_SIGN_TYPE', label: 'Sai loại biển báo' },
-      { code: 'POOR_IMAGE_QUALITY', label: 'Chất lượng ảnh quá kém' },
-      { code: 'DUPLICATE_SUBMISSION', label: 'Dữ liệu bị trùng lặp' },
+      { rank: 1, signTypeId: 7, standardCode: 'W.227', confidence: 0.82 },
     ];
     service.getSignRemedies.mockReturnValue(remedies);
 
-    expect(controller.getSignRemedies()).toEqual(remedies);
-    expect(service.getSignRemedies).toHaveBeenCalledTimes(1);
+    expect(controller.getSignRemedies('00000000-0000-0000-0000-000000000001')).toEqual(remedies);
+    expect(service.getSignRemedies).toHaveBeenCalledWith('00000000-0000-0000-0000-000000000001');
   });
 
   it('myStats and stats call service.getMyStats', async () => {

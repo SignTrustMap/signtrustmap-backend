@@ -13,6 +13,7 @@ import { ReviewerSkippedCandidate } from './infrastructure/persistence/reviewer-
 import { ReviewerProfile } from './infrastructure/persistence/reviewer-profile.entity';
 import { CandidateRecaptureRequest } from './infrastructure/persistence/candidate-recapture-request.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { AiInferenceModule } from '../../integrations/ai-inference/ai-inference.module';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
     SpatialAdminModule,
     DailyTasksModule,
     NotificationsModule,
+    AiInferenceModule,
   ],
   controllers: [ReviewsController],
   providers: [ReviewsService],

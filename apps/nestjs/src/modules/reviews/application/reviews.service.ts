@@ -19,7 +19,8 @@ import { NotificationsService } from '../../notifications/notifications.service'
 import { MinioStorageService } from '../../../integrations/minio/minio-storage.service';
 import { MediaFileType, MEDIA_SIZE_LIMITS } from '../../survey/domain/submission-contract';
 import { validateFileSignature, decodeMedia } from '../../survey/domain/media-validator';
-import { SIGN_REMEDIES, SignRemedy } from './sign-remedies.constants';
+import { AiInferenceService } from '../../../integrations/ai-inference/ai-inference.service';
+import { SignRemedySuggestion } from './sign-remedies.constants';
 
 const RECAPTURE_GEOFENCE_METERS = 100;
 
@@ -43,10 +44,39 @@ export class ReviewsService implements OnModuleInit {
     @Optional() private readonly notificationsService?: NotificationsService,
     @Optional() private readonly dataSource?: DataSource,
     @Optional() private readonly storageService?: MinioStorageService,
+    @Optional() private readonly aiInferenceService?: AiInferenceService,
   ) {}
 
-  getSignRemedies(): readonly SignRemedy[] {
-    return SIGN_REMEDIES;
+  async getSignRemedies(candidateId: string): Promise<{ candidateId: string; items: SignRemedySuggestion[] }> {
+    const candidate = await this.candidateRepo.findOne({ where: { id: candidateId } });
+    if (!candidate) throw new NotFoundException('Candidate ' + candidateId + ' not found');
+    if (!this.aiInferenceService) throw new BadRequestException('AI sign suggestion service is unavailable');
+
+    const classification = await this.aiInferenceService.classifyEarly({
+      mediaUrl: candidate.signCropUrl,
+    });
+    const predictions = classification?.top5 ?? [];
+    if (!predictions.length) return { candidateId, items: [] };
+
+    const signTypes = await this.signTypeRepo.find({ where: { isActive: true } as any });
+    const items = predictions.slice(0, 5).map((prediction, index): SignRemedySuggestion => {
+      const signType = signTypes.find((type) =>
+        (prediction.standardCode && type.signCode === prediction.standardCode) ||
+        (prediction.classId != null && type.id === prediction.classId),
+      );
+      return {
+        rank: index + 1,
+        signTypeId: signType?.id ?? null,
+        classId: prediction.classId ?? null,
+        standardCode: prediction.standardCode ?? signType?.signCode ?? null,
+        slug: signType?.slug ?? null,
+        nameVi: prediction.nameVi ?? signType?.nameVi ?? null,
+        nameEn: signType?.nameEn ?? null,
+        confidence: Number(prediction.confidence ?? prediction.classifyConfidence ?? 0),
+      };
+    });
+
+    return { candidateId, items };
   }
 
   async onModuleInit() {
