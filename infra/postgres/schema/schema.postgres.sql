@@ -162,6 +162,7 @@ CREATE TYPE "transaction_type" AS ENUM (
   'HAZARD_REPORT_REWARD',
   'HAZARD_CONFIRM_REWARD',
   'DAILY_TASK_REWARD',
+  'MISSION_REWARD',
   'NAVIGATION_FEE',
   'CUSTOM_PROFILE_SPEND',
   'TOP_UP',
@@ -899,6 +900,22 @@ CREATE TABLE "daily_task_completions" (
   "updated_at" timestamptz NOT NULL DEFAULT (now())
 );
 
+CREATE TABLE "mission_contribution_events" (
+  "id" BIGSERIAL PRIMARY KEY,
+  "user_id" uuid NOT NULL,
+  "event_type" varchar(32) NOT NULL CHECK ("event_type" IN ('VERIFIED_SIGN', 'APPROVED_ANOMALY')),
+  "source_id" uuid NOT NULL,
+  "occurred_at" timestamptz NOT NULL DEFAULT (now()),
+  CONSTRAINT "uq_mission_contribution_user_event_source" UNIQUE ("user_id", "event_type", "source_id")
+);
+
+CREATE TABLE "user_badges" (
+  "user_id" uuid NOT NULL,
+  "badge_code" varchar(64) NOT NULL,
+  "earned_at" timestamptz NOT NULL DEFAULT (now()),
+  CONSTRAINT "pk_user_badges" PRIMARY KEY ("user_id", "badge_code")
+);
+
 CREATE TABLE "moderation_cases" (
   "id" uuid PRIMARY KEY DEFAULT (gen_random_uuid()),
   "case_type" moderation_type NOT NULL,
@@ -1075,6 +1092,8 @@ CREATE INDEX ON "payment_callbacks" ("payment_order_id");
 CREATE UNIQUE INDEX ON "daily_task_completions" ("user_id", "daily_task_id", "completion_date");
 
 CREATE INDEX ON "daily_task_completions" ("user_id", "completion_date");
+
+CREATE INDEX ON "mission_contribution_events" ("user_id", "occurred_at");
 
 CREATE INDEX ON "moderation_cases" ("status", "case_type");
 
@@ -1282,6 +1301,10 @@ ALTER TABLE "payment_callbacks" ADD FOREIGN KEY ("payment_order_id") REFERENCES 
 ALTER TABLE "daily_task_completions" ADD FOREIGN KEY ("user_id") REFERENCES "users" ("id") DEFERRABLE INITIALLY IMMEDIATE;
 
 ALTER TABLE "daily_task_completions" ADD FOREIGN KEY ("daily_task_id") REFERENCES "daily_tasks" ("id") DEFERRABLE INITIALLY IMMEDIATE;
+
+ALTER TABLE "mission_contribution_events" ADD FOREIGN KEY ("user_id") REFERENCES "users" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE;
+
+ALTER TABLE "user_badges" ADD FOREIGN KEY ("user_id") REFERENCES "users" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE;
 
 ALTER TABLE "moderation_cases" ADD FOREIGN KEY ("assigned_staff_id") REFERENCES "users" ("id") DEFERRABLE INITIALLY IMMEDIATE;
 
