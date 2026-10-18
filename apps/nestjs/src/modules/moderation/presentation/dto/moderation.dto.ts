@@ -1,4 +1,4 @@
-﻿import { IsString, IsOptional, IsUUID, IsInt, MaxLength, MinLength } from 'class-validator';
+import { IsString, IsOptional, IsUUID, IsInt, MaxLength, MinLength } from 'class-validator';
 export class CreateMissingTypeReportDto {
   @IsOptional() @IsUUID() candidateId?: string;
   @IsOptional() @IsInt() proposedCategoryId?: number;
@@ -32,5 +32,6 @@ export class ApproveAndCreateTypeDto {
   @IsOptional() @IsString() @MaxLength(30) suggestedShape?: string;
   @IsOptional() @IsString() @MaxLength(30) suggestedColorScheme?: string;
   @IsOptional() @IsString() @MaxLength(1000) aiLabelPrompt?: string;
+  @IsOptional() @IsString() @MaxLength(500) representativeImageKey?: string;
   @IsOptional() @IsString() staffNotes?: string;
 }

@@ -59,11 +59,19 @@ describe('ModerationController', () => {
     expect(service.updateMissingReport).toHaveBeenCalledWith('rep-1', mockUser.id, dto);
   });
 
-  it('approveAndCreateType calls service.approveAndCreateType', async () => {
+  it('approveAndCreateType calls service.approveAndCreateType without file', async () => {
     const dto = { signCode: 'P.102', nameVi: 'Cam di nguoc chieu' } as any;
     const res = await controller.approveAndCreateType('rep-1', mockUser, dto);
     expect(res).toEqual({ signType: { id: 101 }, releasedCandidates: 1 });
-    expect(service.approveAndCreateType).toHaveBeenCalledWith('rep-1', mockUser.id, dto);
+    expect(service.approveAndCreateType).toHaveBeenCalledWith('rep-1', mockUser.id, dto, undefined);
+  });
+
+  it('approveAndCreateType calls service.approveAndCreateType with file', async () => {
+    const dto = { signCode: 'P.102', nameVi: 'Cam di nguoc chieu' } as any;
+    const mockFile = { originalname: 'p102.png', buffer: Buffer.from('test') } as any;
+    const res = await controller.approveAndCreateType('rep-1', mockUser, dto, mockFile);
+    expect(res).toEqual({ signType: { id: 101 }, releasedCandidates: 1 });
+    expect(service.approveAndCreateType).toHaveBeenCalledWith('rep-1', mockUser.id, dto, mockFile);
   });
 
   it('listCases parses pagination and calls service', async () => {

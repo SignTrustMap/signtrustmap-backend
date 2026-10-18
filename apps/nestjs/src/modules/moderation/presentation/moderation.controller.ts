@@ -1,5 +1,6 @@
-import { Controller, Get, Post, Put, Patch, Body, Param, Query, ParseUUIDPipe } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Controller, Get, Post, Put, Patch, Body, Param, Query, ParseUUIDPipe, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ModerationService } from '../application/moderation.service';
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
@@ -33,8 +34,17 @@ export class ModerationController {
 
   @Roles('ADMIN')
   @ApiOperation({ summary: 'Approve and create new sign type', description: 'Creates the TrafficSignType from a missing-type report, publishes a catalog version, releases held candidates, and triggers AI label sync' })
+  @ApiConsumes('multipart/form-data', 'application/json')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 20 * 1024 * 1024 } }))
   @Post('moderation/missing-type-reports/:id/approve-and-create-type')
-  approveAndCreateType(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: any, @Body() dto: ApproveAndCreateTypeDto) { return this.svc.approveAndCreateType(id, user.id, dto); }
+  approveAndCreateType(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: any,
+    @Body() dto: ApproveAndCreateTypeDto,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
+    return this.svc.approveAndCreateType(id, user.id, dto, file);
+  }
 
   @Roles('STAFF', 'ADMIN')
   @ApiOperation({ summary: 'List moderation cases', description: 'Staff/Admin queue of reported signs, suspected spam, or fraud investigations' })

@@ -1,4 +1,4 @@
-﻿import { Module } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ModerationService } from './application/moderation.service';
 import { MissingSignTypeReport } from './infrastructure/persistence/missing-sign-type-report.entity';
@@ -11,8 +11,9 @@ import { UnverifiedSignCandidate } from '../survey/infrastructure/persistence/un
 import { NotificationsModule } from '../notifications/notifications.module';
 import { CatalogModule } from '../catalog/catalog.module';
 import { CatalogSyncModule } from '../../integrations/catalog-sync/catalog-sync.module';
+import { MinioModule } from '../../integrations/minio/minio.module';
 @Module({
-  imports: [TypeOrmModule.forFeature([ModerationCase, ModerationAction, MissingSignTypeReport, SignCategory, TrafficSignType, UnverifiedSignCandidate]), NotificationsModule, CatalogModule, CatalogSyncModule],
+  imports: [TypeOrmModule.forFeature([ModerationCase, ModerationAction, MissingSignTypeReport, SignCategory, TrafficSignType, UnverifiedSignCandidate]), NotificationsModule, CatalogModule, CatalogSyncModule, MinioModule],
   controllers: [ModerationController],
   providers: [ModerationService],
   exports: [ModerationService],

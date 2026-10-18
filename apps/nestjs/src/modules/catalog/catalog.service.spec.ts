@@ -206,6 +206,90 @@ describe('CatalogService', () => {
     expect(mappingRepository.delete).not.toHaveBeenCalled();
   });
 
+  it('rejects creation when representative image is missing or empty', async () => {
+    await expect(
+      service.createSignType({
+        categoryId: 2,
+        signCode: 'P.102',
+        nameVi: 'Cam vao',
+        nameEn: 'No Entry',
+        representativeImageKey: '   ',
+      }),
+    ).rejects.toThrow('Representative image is required for traffic sign types');
+
+    await expect(
+      service.createSignType({
+        categoryId: 2,
+        signCode: 'P.102',
+        nameVi: 'Cam vao',
+        nameEn: 'No Entry',
+        representativeImageKey: undefined as any,
+      }),
+    ).rejects.toThrow('Representative image is required for traffic sign types');
+  });
+
+  it('rejects updating representative image to empty or whitespace', async () => {
+    await expect(
+      service.updateSignType(12, {
+        representativeImageKey: '   ',
+      }),
+    ).rejects.toThrow('Representative image cannot be null or empty');
+  });
+
+  it('allows updating representative image to a valid non-empty URL', async () => {
+    const typeRepository = repository<TrafficSignType>();
+    const imageRepository = repository<SignTypeImage>();
+    const promptRepository = repository<SignTypeAiPrompt>();
+    const mappingRepository = repository<SignTypeOsmMapping>();
+    const manager = {
+      getRepository: jest.fn((target) => {
+        if (target === TrafficSignType) return typeRepository;
+        if (target === SignTypeImage) return imageRepository;
+        if (target === SignCategory) return repository<SignCategory>();
+        if (target === SignTypeAiPrompt) return promptRepository;
+        if (target === SignTypeOsmMapping) return mappingRepository;
+        throw new Error('Unexpected repository');
+      }),
+    } as unknown as EntityManager;
+    const type = trafficSignType();
+    typeRepository.findOne.mockResolvedValue(type);
+    typeRepository.save.mockResolvedValue(type);
+    promptRepository.find.mockResolvedValue([]);
+    mappingRepository.find.mockResolvedValue([]);
+    imageRepository.create.mockImplementation((value) => value as SignTypeImage);
+    imageRepository.find.mockResolvedValue([
+      entity<SignTypeImage>({
+        signTypeId: type.id,
+        imageUrl: 'https://s3.signmap.site/stm-sign-crops/representative/new.png',
+        imageType: 'REPRESENTATIVE',
+        isPrimary: true,
+      }),
+    ]);
+    (dataSource.transaction as jest.Mock).mockImplementation(
+      (callback: (transactionManager: EntityManager) => unknown) => callback(manager),
+    );
+
+    const updated = await service.updateSignType(type.id, {
+      representativeImageKey: 'https://s3.signmap.site/stm-sign-crops/representative/new.png',
+    });
+
+    expect(imageRepository.update).toHaveBeenCalledWith(
+      { signTypeId: type.id, imageType: 'REPRESENTATIVE', isPrimary: true },
+      { isPrimary: false },
+    );
+    expect(imageRepository.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        signTypeId: type.id,
+        imageUrl: 'https://s3.signmap.site/stm-sign-crops/representative/new.png',
+        imageType: 'REPRESENTATIVE',
+        isPrimary: true,
+      }),
+    );
+    expect(updated.representativeImageKey).toBe(
+      'https://s3.signmap.site/stm-sign-crops/representative/new.png',
+    );
+  });
+
   function trafficSignType(): TrafficSignType {
     return entity<TrafficSignType>({
       id: 12,
