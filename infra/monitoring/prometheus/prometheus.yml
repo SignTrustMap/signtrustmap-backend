@@ -11,12 +11,15 @@ remote_write:
     basic_auth:
       username: "3048268"
       password: "glc_eyJvIjoiMTcwMjA2MyIsIm4iOiJzdG0tcHJvbWV0aGV1cy1zdG0tcHJvbWV0aGV1cyIsImsiOiJIVGo3ZUtPOFY1eFpUNDdUZzU5OUo1OXUiLCJtIjp7InIiOiJ1cyJ9fQ=="
+    remote_timeout: 30s
     queue_config:
-      capacity: 2500
-      max_shards: 10
+      capacity: 5000
+      max_shards: 5
       min_shards: 1
       max_samples_per_send: 500
-      batch_send_deadline: 5s
+      batch_send_deadline: 15s
+      min_backoff: 500ms
+      max_backoff: 10s
 
 scrape_configs:
   - job_name: "blackbox-http"
