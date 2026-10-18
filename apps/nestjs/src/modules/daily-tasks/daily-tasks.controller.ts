@@ -44,6 +44,16 @@ export class DailyTasksController {
     return this.dailyTasksService.listCompletions(user.id, date);
   }
 
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Get my daily and weekly mission progress',
+    description: 'Retrieve authenticated-user mission progress, streak status, and earned badges',
+  })
+  @Get('missions/me')
+  async myMissions(@CurrentUser() user: any) {
+    return this.dailyTasksService.getMissionOverview(user.id);
+  }
+
   /** POST /api/v1/daily-tasks/:id/claim */
   @ApiBearerAuth()
   @ApiOperation({

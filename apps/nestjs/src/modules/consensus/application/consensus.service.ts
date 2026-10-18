@@ -13,6 +13,7 @@ import { WalletService } from '../../wallet/application/wallet.service';
 import { NotificationsService } from '../../notifications/notifications.service';
 import { SpatialAdminService } from '../../spatial-admin/application/spatial-admin.service';
 import { ReviewerProfile } from '../../reviews/infrastructure/persistence/reviewer-profile.entity';
+import { DailyTasksService } from '../../daily-tasks/daily-tasks.service';
 
 @Injectable()
 export class ConsensusService {
@@ -28,6 +29,7 @@ export class ConsensusService {
     private readonly notificationsService: NotificationsService,
     @Optional() private readonly spatialAdminService?: SpatialAdminService,
     @Optional() @InjectRepository(ReviewerProfile) private readonly reviewerProfileRepo?: Repository<ReviewerProfile>,
+    @Optional() private readonly dailyTasksService?: DailyTasksService,
   ) {}
 
   async evaluate(candidateId: string): Promise<ConsensusLog | null> {
@@ -233,6 +235,7 @@ export class ConsensusService {
     }
 
     await this.candidateRepo.update(candidate.id, { status: CandidateStatus.VERIFIED });
+    let missionEligible = false;
     try {
       await this.dataSource.query(
         `INSERT INTO verified_traffic_signs (
@@ -251,6 +254,7 @@ export class ConsensusService {
         [candidate.id],
       );
       if (vRows.length > 0) {
+        missionEligible = true;
         const newSignId = vRows[0].id;
         try {
           await this.dataSource.query(
@@ -298,6 +302,16 @@ export class ConsensusService {
       }
     } catch (e: any) {
       this.logger.warn('verified_sign insert failed ' + candidate.id + ': ' + e?.message);
+    }
+
+    if (missionEligible && this.dailyTasksService) {
+      for (const reviewer of voterDetails) {
+        try {
+          await this.dailyTasksService.recordVerifiedSign(reviewer.reviewerId, candidate.id);
+        } catch (error: any) {
+          this.logger.warn(`Failed recording verified-sign mission for ${reviewer.reviewerId}: ${error?.message}`);
+        }
+      }
     }
 
     const baseReward = await this.walletService.resolveRewardAmount(TransactionType.REVIEW_REWARD, 5);

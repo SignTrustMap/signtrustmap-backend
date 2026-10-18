@@ -354,10 +354,32 @@ export class HazardsService {
         this.logger.warn(`Failed sending notification: ${err?.message}`);
       }
 
+      await this.recordApprovedAnomalyMission(hazardId);
       return true;
     }
 
+    await this.recordApprovedAnomalyMission(hazardId);
     return false;
+  }
+
+  private async recordApprovedAnomalyMission(hazardId: string): Promise<void> {
+    try {
+      const rows: Array<{ reported_by: string; status: string }> = await this.dataSource.query(
+        'SELECT reported_by, status FROM road_hazard_events WHERE id = $1',
+        [hazardId],
+      );
+      if (!rows.length || rows[0].status !== HazardStatus.CONFIRMED) return;
+
+      const evidenceRows: Array<{ has_evidence: boolean }> = await this.dataSource.query(
+        'SELECT EXISTS (SELECT 1 FROM hazard_evidence WHERE hazard_id = $1) AS has_evidence',
+        [hazardId],
+      );
+      if (!evidenceRows[0]?.has_evidence) return;
+
+      await this.dailyTasksService.recordApprovedAnomaly(rows[0].reported_by, hazardId);
+    } catch (error: any) {
+      this.logger.warn(`Failed recording approved-anomaly mission for ${hazardId}: ${error?.message}`);
+    }
   }
 
   /**
@@ -493,7 +515,10 @@ export class HazardsService {
     const objectName = `hazards/${hazardId}/${digest.slice(0, 16)}_${safeName}`;
     const storageKey = `${bucket}/${objectName}`;
     const existing = await this.evidenceRepo.findOne({ where: { hazardId, storageKey } });
-    if (existing) return this.serializeEvidence(existing);
+    if (existing) {
+      await this.recordApprovedAnomalyMission(hazardId);
+      return this.serializeEvidence(existing);
+    }
     await this.storageService.putObject(bucket, objectName, file.buffer, file.mimetype);
     const evidence = this.evidenceRepo.create({
       hazardId,
@@ -506,12 +531,16 @@ export class HazardsService {
     });
     try {
       const saved = await this.evidenceRepo.save(evidence);
+      await this.recordApprovedAnomalyMission(hazardId);
       return this.serializeEvidence(saved);
     } catch (error) {
       // A concurrent identical upload may have committed the same unique row.
       // Never remove an object that an existing evidence row now references.
       const committed = await this.evidenceRepo.findOne({ where: { hazardId, storageKey } }).catch(() => null);
-      if (committed) return this.serializeEvidence(committed);
+      if (committed) {
+        await this.recordApprovedAnomalyMission(hazardId);
+        return this.serializeEvidence(committed);
+      }
       await this.storageService.removeObject({ bucket, objectName }).catch(() => undefined);
       throw error;
     }

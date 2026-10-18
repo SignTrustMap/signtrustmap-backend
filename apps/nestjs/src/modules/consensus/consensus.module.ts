@@ -9,6 +9,7 @@ import { ReviewerProfile } from '../reviews/infrastructure/persistence/reviewer-
 import { WalletModule } from '../wallet/wallet.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { SpatialAdminModule } from '../spatial-admin/spatial-admin.module';
+import { DailyTasksModule } from '../daily-tasks/daily-tasks.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { SpatialAdminModule } from '../spatial-admin/spatial-admin.module';
     WalletModule,
     NotificationsModule,
     SpatialAdminModule,
+    DailyTasksModule,
   ],
   providers: [ConsensusService],
   exports: [ConsensusService],
