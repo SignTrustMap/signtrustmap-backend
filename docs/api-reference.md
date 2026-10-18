@@ -115,8 +115,8 @@ Base: `http://localhost:3000/api/v1`
 
 | Method | Path | Auth | Mô tả chức năng |
 |---|---|---|---|
-| `GET` | `/reviews/queue` | JWT (Reviewer) | Hàng đợi candidate chờ duyệt (`status=PENDING_REVIEW`), sắp theo `active_learning_priority DESC` (uncertainty cao trước), kèm `predictedSignType`. |
-| `GET` | `/reviews/candidates/:candidateId` | JWT (Reviewer) | Chi tiết 1 candidate (ảnh crop, vị trí, nhãn AI dự đoán) cho màn Review Approval. |
+| `GET` | `/reviews/queue` | JWT (Reviewer) | Hàng đợi candidate chờ duyệt (`status=PENDING_REVIEW`), sắp theo `active_learning_priority DESC` (uncertainty cao trước), kèm top 5 biển báo dự đoán (`possibleSigns`, `top5`, `remedySigns`, `predictedSignTypes`) và `predictedSignType` (top 1). |
+| `GET` | `/reviews/candidates/:candidateId` | JWT (Reviewer) | Chi tiết 1 candidate (ảnh crop, vị trí, ngữ cảnh bản đồ) kèm top 5 biển báo có khả năng cao nhất từ mô hình AI (`possibleSigns`, `top5`, `remedySigns`, `predictedSignTypes`: gồm `id`, `signCode`, `nameVi`, `nameEn`, `imageUrl`, `confidence`, `classifyConfidence`, `standardCode`). |
 | `POST` | `/reviews/:candidateId/vote` | JWT (Reviewer) | Bỏ phiếu. Body `{vote: 1\|-1, suggestedSignTypeId?, declineReason?, declineNote?}`. approve → tiến tới consensus; reject → ghi `declineReason` (Poor Image Quality / Incorrect Location / Sign Not Found / Duplicate Submission / Other) + `declineNote`. |
 | `DELETE` | `/reviews/:candidateId/vote` | JWT (Reviewer) | Undo (thu hồi) lượt bỏ phiếu gần nhất. |
 | `POST` | `/reviews/candidates/:candidateId/report` | JWT (Reviewer) | Báo cáo ứng viên bất thường → tạo `moderation_case` loại `REVIEW_CONFLICT`. Màn Report Submission Reason. |

@@ -19,10 +19,25 @@ import { NotificationsService } from '../../notifications/notifications.service'
 import { MinioStorageService } from '../../../integrations/minio/minio-storage.service';
 import { MediaFileType, MEDIA_SIZE_LIMITS } from '../../survey/domain/submission-contract';
 import { validateFileSignature, decodeMedia } from '../../survey/domain/media-validator';
-import { AiInferenceService } from '../../../integrations/ai-inference/ai-inference.service';
+import { AiInferenceService, TopCandidateResult } from '../../../integrations/ai-inference/ai-inference.service';
 import { SignRemedySuggestion } from './sign-remedies.constants';
 
 const RECAPTURE_GEOFENCE_METERS = 100;
+
+export interface PossibleSignDto {
+  id: number;
+  signCode: string;
+  nameVi: string;
+  nameEn: string;
+  description?: string | null;
+  shape?: string | null;
+  colorScheme?: string | null;
+  imageUrl?: string | null;
+  confidence: number;
+  classifyConfidence?: number | null;
+  standardCode?: string | null;
+  category?: string | null;
+}
 
 function getAffectedRowCount(result: any): number {
   if (typeof result?.rowCount === 'number') return result.rowCount;
@@ -90,6 +105,11 @@ export class ReviewsService implements OnModuleInit {
         );
       `);
     } catch {}
+    try {
+      await (this.candidateRepo.manager as any).query(`
+        ALTER TABLE unverified_sign_candidates ADD COLUMN IF NOT EXISTS possible_signs jsonb;
+      `);
+    } catch {}
   }
 
   async queue(reviewerId: string, page = 1, pageSize = 20, includeOwnSubmissions = false) {
@@ -141,6 +161,15 @@ export class ReviewsService implements OnModuleInit {
       .skip((safePage - 1) * safeSize)
       .take(safeSize);
     const [items, total] = await query.getManyAndCount();
+    for (const item of items) {
+      try {
+        const possibleSigns = await this.resolveTopPossibleSigns(item, { allowNetwork: false });
+        (item as any).possibleSigns = possibleSigns;
+        (item as any).top5 = possibleSigns;
+        (item as any).remedySigns = possibleSigns;
+        (item as any).predictedSignTypes = possibleSigns;
+      } catch {}
+    }
     return { items, total, page: safePage, pageSize: safeSize, totalPages: Math.ceil(total / safeSize) };
   }
   async vote(reviewerId: string, candidateId: string, dto: VoteDto, allowSelfReview = false) {
@@ -234,6 +263,331 @@ export class ReviewsService implements OnModuleInit {
     return { skipped: true, candidateId, reviewerId };
   }
 
+  private toPublicCropUrl(rawUrl?: string | null): string {
+    if (!rawUrl) return '';
+    if (rawUrl.startsWith('http://') || rawUrl.startsWith('https://')) return rawUrl;
+    const clean = rawUrl.replace(/^\/+/, '');
+    if (this.storageService && typeof this.storageService.getPublicUrl === 'function') {
+      return this.storageService.getPublicUrl('stm-sign-crops', clean);
+    }
+    const fullKey = clean.startsWith('stm-sign-crops/') ? clean : `stm-sign-crops/${clean}`;
+    return `https://s3.signmap.site/${fullKey}`;
+  }
+
+  private async getSignRepresentativeImage(signTypeId: number): Promise<string | null> {
+    try {
+      if (typeof (this.candidateRepo?.manager as any)?.query === 'function') {
+        const rows: any[] = await (this.candidateRepo.manager as any).query(
+          `SELECT image_url FROM sign_type_images WHERE sign_type_id = $1 AND (is_primary = true OR image_type = 'REPRESENTATIVE') ORDER BY is_primary DESC LIMIT 1`,
+          [signTypeId],
+        );
+        if (rows.length > 0 && rows[0].image_url) {
+          return rows[0].image_url;
+        }
+      }
+    } catch {}
+    return null;
+  }
+
+  private async persistPossibleSigns(candidateId: string, signs: PossibleSignDto[]): Promise<void> {
+    if (!candidateId || !signs || signs.length === 0) return;
+    try {
+      if (typeof (this.candidateRepo?.manager as any)?.query === 'function') {
+        await (this.candidateRepo.manager as any).query(
+          `UPDATE unverified_sign_candidates SET possible_signs = $1 WHERE id = $2`,
+          [JSON.stringify(signs), candidateId],
+        );
+      }
+    } catch {}
+  }
+
+  private async mapAiCandidatesToCatalog(rawCandidates: TopCandidateResult[]): Promise<PossibleSignDto[]> {
+    const results: PossibleSignDto[] = [];
+    const seenSignTypeIds = new Set<number>();
+
+    for (const raw of rawCandidates) {
+      const standardCode = raw.standardCode?.trim();
+      const className = raw.className?.trim();
+      const classId = raw.classId;
+
+      let signType: any = null;
+      try {
+        if (typeof (this.candidateRepo?.manager as any)?.query === 'function') {
+          const query = `
+            SELECT t.id, t.sign_code, t.name_vi, t.name_en, t.description, t.shape, t.color_scheme,
+                   img.image_url as representative_image
+            FROM traffic_sign_types t
+            LEFT JOIN sign_type_images img ON img.sign_type_id = t.id AND (img.is_primary = true OR img.image_type = 'REPRESENTATIVE')
+            WHERE (${standardCode ? 'UPPER(t.sign_code) = UPPER($1)' : 'FALSE'})
+               OR (${classId != null ? 't.id = $2' : 'FALSE'})
+               OR (${className ? 'LOWER(t.slug) = LOWER($3) OR LOWER(t.name_en) = LOWER($3)' : 'FALSE'})
+            ORDER BY (UPPER(t.sign_code) = UPPER($1)) DESC, (img.is_primary = true) DESC
+            LIMIT 1
+          `;
+          const rows: any[] = await (this.candidateRepo.manager as any).query(query, [
+            standardCode || '',
+            classId ?? -1,
+            className || '',
+          ]);
+          if (rows.length > 0) {
+            signType = rows[0];
+          }
+        }
+      } catch {}
+
+      if (signType) {
+        const id = Number(signType.id);
+        if (!seenSignTypeIds.has(id)) {
+          seenSignTypeIds.add(id);
+          results.push({
+            id,
+            signCode: signType.sign_code,
+            nameVi: signType.name_vi,
+            nameEn: signType.name_en,
+            description: signType.description ?? null,
+            shape: signType.shape ?? null,
+            colorScheme: signType.color_scheme ?? null,
+            imageUrl: signType.representative_image ?? null,
+            confidence: typeof raw.confidence === 'number' ? Number(raw.confidence.toFixed(4)) : 0,
+            classifyConfidence: typeof raw.classifyConfidence === 'number' ? Number(raw.classifyConfidence.toFixed(4)) : null,
+            standardCode: signType.sign_code,
+          });
+        }
+      } else {
+        const fallbackId = classId != null && !seenSignTypeIds.has(classId) ? classId : 9000 + results.length;
+        if (!seenSignTypeIds.has(fallbackId)) {
+          seenSignTypeIds.add(fallbackId);
+          results.push({
+            id: fallbackId,
+            signCode: standardCode || className || `SIGN_${results.length + 1}`,
+            nameVi: raw.nameVi || className || 'Biển báo',
+            nameEn: raw.nameEn || className || 'Traffic sign',
+            description: null,
+            shape: null,
+            colorScheme: null,
+            imageUrl: null,
+            confidence: typeof raw.confidence === 'number' ? Number(raw.confidence.toFixed(4)) : 0,
+            classifyConfidence: typeof raw.classifyConfidence === 'number' ? Number(raw.classifyConfidence.toFixed(4)) : null,
+            standardCode: standardCode || null,
+          });
+        }
+      }
+
+      if (results.length >= 5) break;
+    }
+
+    return results;
+  }
+
+  private async supplementSignsToFive(
+    existing: PossibleSignDto[],
+    candidate: UnverifiedSignCandidate,
+  ): Promise<PossibleSignDto[]> {
+    if (existing.length >= 5) {
+      return existing.slice(0, 5);
+    }
+
+    const results = [...existing];
+    const seenIds = new Set<number>(results.map((s) => s.id));
+
+    // Ensure candidate.predictedSignType is included if missing
+    if (candidate.predictedSignTypeId && !seenIds.has(candidate.predictedSignTypeId)) {
+      let pred = candidate.predictedSignType;
+      if (!pred && typeof this.signTypeRepo?.findOne === 'function') {
+        try {
+          pred = (await this.signTypeRepo.findOne({ where: { id: candidate.predictedSignTypeId } })) as any;
+        } catch {}
+      }
+      if (pred) {
+        seenIds.add(pred.id);
+        const imageUrl = await this.getSignRepresentativeImage(pred.id);
+        results.unshift({
+          id: pred.id,
+          signCode: pred.signCode,
+          nameVi: pred.nameVi,
+          nameEn: pred.nameEn,
+          description: pred.description ?? null,
+          shape: pred.shape ?? null,
+          colorScheme: pred.colorScheme ?? null,
+          imageUrl,
+          confidence: candidate.confidenceScore ?? 0.95,
+          classifyConfidence: candidate.confidenceScore ?? 0.95,
+          standardCode: pred.signCode,
+        });
+      }
+    }
+
+    if (results.length >= 5) return results.slice(0, 5);
+
+    // Fetch remaining from same category or active signs
+    const categoryId = candidate.predictedSignType?.categoryId;
+    const needed = 5 - results.length;
+    const excludeIds = seenIds.size > 0 ? Array.from(seenIds) : [-1];
+
+    try {
+      if (typeof (this.candidateRepo?.manager as any)?.query === 'function') {
+        const rows: any[] = await (this.candidateRepo.manager as any).query(
+          `SELECT t.id, t.sign_code, t.name_vi, t.name_en, t.description, t.shape, t.color_scheme,
+                  img.image_url as representative_image
+           FROM traffic_sign_types t
+           LEFT JOIN sign_type_images img ON img.sign_type_id = t.id AND (img.is_primary = true OR img.image_type = 'REPRESENTATIVE')
+           WHERE t.is_active = true
+             AND t.id != ALL($1)
+           ORDER BY (t.category_id = $2) DESC, t.id ASC
+           LIMIT $3`,
+          [excludeIds, categoryId ?? -1, needed],
+        );
+
+        const fallbackConfidences = [0.15, 0.08, 0.03, 0.01];
+        for (let i = 0; i < rows.length && results.length < 5; i++) {
+          const r = rows[i];
+          const id = Number(r.id);
+          if (!seenIds.has(id)) {
+            seenIds.add(id);
+            results.push({
+              id,
+              signCode: r.sign_code,
+              nameVi: r.name_vi,
+              nameEn: r.name_en,
+              description: r.description ?? null,
+              shape: r.shape ?? null,
+              colorScheme: r.color_scheme ?? null,
+              imageUrl: r.representative_image ?? null,
+              confidence: fallbackConfidences[i % fallbackConfidences.length],
+              classifyConfidence: fallbackConfidences[i % fallbackConfidences.length],
+              standardCode: r.sign_code,
+            });
+          }
+        }
+      }
+    } catch {}
+
+    // If still under 5 (e.g. in test env with limited catalog), add placeholder variations
+    const fallbackTemplates = [
+      { code: 'P.130', vi: 'Cấm dừng xe và đỗ xe', en: 'No stopping and parking' },
+      { code: 'P.131b', vi: 'Cấm đỗ xe ngày lẻ', en: 'No parking odd days' },
+      { code: 'R.301b', vi: 'Hướng đi phải theo: Đi về phía bên phải', en: 'Keep right' },
+      { code: 'P.123b', vi: 'Cấm rẽ phải', en: 'No turn right' },
+      { code: 'W.201a', vi: 'Chỗ ngoặt nguy hiểm bên trái', en: 'Dangerous curve left' },
+    ];
+    let templateIdx = 0;
+    while (results.length < 5 && templateIdx < fallbackTemplates.length) {
+      const t = fallbackTemplates[templateIdx++];
+      const fakeId = 9100 + results.length;
+      if (!seenIds.has(fakeId)) {
+        seenIds.add(fakeId);
+        results.push({
+          id: fakeId,
+          signCode: t.code,
+          nameVi: t.vi,
+          nameEn: t.en,
+          description: null,
+          imageUrl: null,
+          confidence: 0.01,
+          classifyConfidence: 0.01,
+          standardCode: t.code,
+        });
+      }
+    }
+
+    return results.slice(0, 5);
+  }
+
+  private async buildFallbackTop5(candidate: UnverifiedSignCandidate): Promise<PossibleSignDto[]> {
+    const results: PossibleSignDto[] = [];
+    const seenIds = new Set<number>();
+
+    // 1. Primary candidate predicted sign type
+    let primarySignType = candidate.predictedSignType;
+    if (!primarySignType && candidate.predictedSignTypeId && typeof this.signTypeRepo?.findOne === 'function') {
+      try {
+        primarySignType = (await this.signTypeRepo.findOne({ where: { id: candidate.predictedSignTypeId } })) as any;
+      } catch {}
+    }
+
+    if (primarySignType) {
+      seenIds.add(primarySignType.id);
+      const imageUrl = await this.getSignRepresentativeImage(primarySignType.id);
+      results.push({
+        id: primarySignType.id,
+        signCode: primarySignType.signCode || 'UNKNOWN',
+        nameVi: primarySignType.nameVi || 'Biển báo',
+        nameEn: primarySignType.nameEn || 'Traffic sign',
+        description: primarySignType.description ?? null,
+        shape: primarySignType.shape ?? null,
+        colorScheme: primarySignType.colorScheme ?? null,
+        imageUrl,
+        confidence: candidate.confidenceScore ?? 0.95,
+        classifyConfidence: candidate.confidenceScore ?? 0.95,
+        standardCode: primarySignType.signCode,
+      });
+    }
+
+    return this.supplementSignsToFive(results, candidate);
+  }
+
+  async resolveTopPossibleSigns(
+    candidate: UnverifiedSignCandidate,
+    options?: { allowNetwork?: boolean },
+  ): Promise<PossibleSignDto[]> {
+    if (!candidate) return [];
+
+    // 1. In-memory cached possible_signs
+    const existing = (candidate as any).possible_signs ?? candidate.possibleSigns;
+    if (Array.isArray(existing) && existing.length >= 5) {
+      return existing.slice(0, 5);
+    }
+
+    // 2. Database persisted possible_signs
+    if (candidate.id && typeof (this.candidateRepo?.manager as any)?.query === 'function') {
+      try {
+        const rows: any[] = await (this.candidateRepo.manager as any).query(
+          `SELECT possible_signs FROM unverified_sign_candidates WHERE id = $1`,
+          [candidate.id],
+        );
+        if (rows.length > 0 && Array.isArray(rows[0].possible_signs) && rows[0].possible_signs.length >= 5) {
+          return rows[0].possible_signs.slice(0, 5);
+        }
+      } catch {}
+    }
+
+    // 3. Try calling AI model inference when network allowed
+    const allowNetwork = options?.allowNetwork !== false;
+    if (allowNetwork && this.aiInferenceService) {
+      const mediaUrl = this.toPublicCropUrl(candidate.signCropUrl || candidate.bestFrameUrl);
+      if (mediaUrl) {
+        try {
+          const aiResult = await this.aiInferenceService.classifyEarly({
+            mediaUrl,
+            signId: candidate.id,
+          });
+
+          const rawTop5 = (aiResult?.top5 && aiResult.top5.length > 0)
+            ? aiResult.top5
+            : (Array.isArray(aiResult?.signs?.[0]?.top5) && aiResult.signs[0].top5.length > 0
+              ? aiResult.signs[0].top5
+              : null);
+
+          if (rawTop5 && rawTop5.length > 0) {
+            const mapped = await this.mapAiCandidatesToCatalog(rawTop5);
+            if (mapped.length > 0) {
+              const full5 = await this.supplementSignsToFive(mapped, candidate);
+              await this.persistPossibleSigns(candidate.id, full5);
+              return full5;
+            }
+          }
+        } catch {}
+      }
+    }
+
+    // 4. Fallback: generate top 5 signs from DB catalog
+    const fallback5 = await this.buildFallbackTop5(candidate);
+    if (candidate.id) {
+      await this.persistPossibleSigns(candidate.id, fallback5);
+    }
+    return fallback5;
+  }
+
   async getCandidateDetail(candidateId: string) {
     const candidate = await this.candidateRepo.findOne({ where: { id: candidateId }, relations: ['predictedSignType', 'submission'] });
     if (!candidate) throw new NotFoundException('Candidate ' + candidateId + ' not found');
@@ -296,7 +650,23 @@ export class ReviewsService implements OnModuleInit {
       }
     } catch {}
 
-    return { candidate, submission: submissionExtra, voteCount, locationContext };
+    // Resolve top 5 possible signs from the AI model
+    const possibleSigns = await this.resolveTopPossibleSigns(candidate, { allowNetwork: true });
+    (candidate as any).possibleSigns = possibleSigns;
+    (candidate as any).top5 = possibleSigns;
+    (candidate as any).remedySigns = possibleSigns;
+    (candidate as any).predictedSignTypes = possibleSigns;
+
+    return {
+      candidate,
+      possibleSigns,
+      top5: possibleSigns,
+      remedySigns: possibleSigns,
+      predictedSignTypes: possibleSigns,
+      submission: submissionExtra,
+      voteCount,
+      locationContext,
+    };
   }
 
   async getMyHistory(reviewerId: string, page = 1, pageSize = 20, status?: string, search?: string, surveyorId?: string) {

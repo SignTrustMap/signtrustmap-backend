@@ -9,14 +9,17 @@ export interface EarlyClassificationRequest {
   taskId?: string;
 }
 
-export interface AiTopCandidate {
+export interface TopCandidateResult {
   classId?: number | null;
   className?: string | null;
   confidence?: number;
   classifyConfidence?: number | null;
   standardCode?: string | null;
   nameVi?: string | null;
+  nameEn?: string | null;
 }
+
+export type AiTopCandidate = TopCandidateResult;
 
 export interface EarlyClassificationResult {
   status: string;
@@ -32,8 +35,8 @@ export interface EarlyClassificationResult {
   signId?: string | null;
   taskId?: string | null;
   mediaUrl?: string | null;
-  top1?: AiTopCandidate | null;
-  top5?: AiTopCandidate[];
+  top1?: TopCandidateResult | null;
+  top5?: TopCandidateResult[];
   signs?: any[];
 }
 
@@ -94,6 +97,21 @@ export class AiInferenceService {
           `AI server early classification success: class_id=${data.class_id}, class_name=${data.class_name}, confidence=${data.confidence}`,
         );
 
+        const rawTop1 = data.top1 ?? data.signs?.[0]?.top1 ?? null;
+        const rawTop5 = Array.isArray(data.top5) && data.top5.length > 0
+          ? data.top5
+          : (Array.isArray(data.signs?.[0]?.top5) ? data.signs[0].top5 : []);
+
+        const mapCandidate = (item: any): TopCandidateResult => ({
+          classId: item?.class_id ?? item?.classId ?? null,
+          className: item?.class_name ?? item?.className ?? null,
+          confidence: typeof item?.confidence === 'number' ? item.confidence : 0,
+          classifyConfidence: item?.classify_confidence ?? item?.classifyConfidence ?? null,
+          standardCode: item?.standard_code ?? item?.standardCode ?? null,
+          nameVi: item?.name_vi ?? item?.nameVi ?? null,
+          nameEn: item?.name_en ?? item?.nameEn ?? null,
+        });
+
         return {
           status: data.status,
           classId: data.class_id,
@@ -108,25 +126,9 @@ export class AiInferenceService {
           signId: data.sign_id,
           taskId: data.task_id,
           mediaUrl: data.media_url,
-          top1: data.top1
-            ? {
-                classId: data.top1.class_id,
-                className: data.top1.class_name,
-                confidence: data.top1.confidence,
-                classifyConfidence: data.top1.classify_confidence,
-                standardCode: data.top1.standard_code,
-                nameVi: data.top1.name_vi,
-              }
-            : null,
-          top5: (data.top5 ?? []).map((item: any) => ({
-            classId: item.class_id,
-            className: item.class_name,
-            confidence: item.confidence,
-            classifyConfidence: item.classify_confidence,
-            standardCode: item.standard_code,
-            nameVi: item.name_vi,
-          })),
           signs: data.signs,
+          top1: rawTop1 ? mapCandidate(rawTop1) : null,
+          top5: rawTop5.map(mapCandidate),
         };
       } finally {
         clearTimeout(timer);
