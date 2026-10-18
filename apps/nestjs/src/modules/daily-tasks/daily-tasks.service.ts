@@ -246,7 +246,9 @@ export class DailyTasksService {
         missions: [
           {
             code: 'VERIFY_3_SIGNS',
-            title: 'Verify 3 eligible traffic signs',
+            title: 'Xác minh 3 biển báo giao thông hợp lệ',
+            description:
+              'Tham gia xác minh 3 biển báo được consensus xác nhận trong ngày.',
             progress: Math.min(verifiedSignsToday, 3),
             target: 3,
             completed: verifiedSignsToday >= 3,
@@ -257,7 +259,9 @@ export class DailyTasksService {
           },
           {
             code: 'APPROVED_ANOMALY_REPORT',
-            title: 'Submit an approved anomaly report with evidence',
+            title: 'Gửi báo cáo bất thường kèm bằng chứng',
+            description:
+              'Báo cáo cần có bằng chứng hình ảnh hoặc video và được xác nhận qua consensus.',
             progress: approvedAnomaliesToday,
             target: 1,
             completed: approvedAnomaliesToday > 0,
@@ -270,6 +274,9 @@ export class DailyTasksService {
         ],
       },
       weekly: {
+        title: 'Hoàn thành 5 nhiệm vụ trong tuần',
+        description:
+          'Hoàn thành 5 nhiệm vụ đủ điều kiện từ thứ Hai đến Chủ nhật để nhận thưởng tuần.',
         startDate: weekStart,
         endDate: weekEndDate,
         completedMissions: weeklyCompletedMissions,
@@ -279,6 +286,8 @@ export class DailyTasksService {
         bonusGranted: weeklyBonusGranted,
       },
       streak: {
+        title: 'Chuỗi đóng góp 7 ngày',
+        description: 'Đóng góp ít nhất một lần mỗi ngày trong 7 ngày liên tiếp để nhận huy hiệu.',
         currentDays: currentStreakDays,
         requiredDays: 7,
         badgeCode: STREAK_SEVEN_BADGE,
@@ -329,7 +338,7 @@ export class DailyTasksService {
         TransactionType.MISSION_REWARD,
         'daily_mission',
         sourceId,
-        'Daily mission reward: verified 3 eligible traffic signs',
+        'Thưởng nhiệm vụ ngày: xác minh 3 biển báo giao thông hợp lệ',
         {
           idempotencyKey: this.dailySignRewardKey(userId, contributionDate),
           metadata: { missionCode: 'VERIFY_3_SIGNS', contributionDate, timeZone },
@@ -344,7 +353,7 @@ export class DailyTasksService {
         TransactionType.MISSION_REWARD,
         'road_hazard_event',
         sourceId,
-        'Approved anomaly report mission reward',
+        'Thưởng nhiệm vụ báo cáo bất thường được xác nhận',
         {
           idempotencyKey: `mission:approved-anomaly:${sourceId}`,
           metadata: { missionCode: 'APPROVED_ANOMALY_REPORT', timeZone },
@@ -369,7 +378,7 @@ export class DailyTasksService {
         TransactionType.MISSION_REWARD,
         'weekly_mission',
         sourceId,
-        'Weekly mission bonus: completed 5 eligible missions',
+        'Thưởng tuần: hoàn thành 5 nhiệm vụ đủ điều kiện',
         {
           idempotencyKey: this.weeklyBonusKey(userId, weekStart),
           metadata: { missionCode: 'WEEKLY_FIVE_MISSIONS', weekStart, timeZone },
@@ -410,7 +419,7 @@ export class DailyTasksService {
         TransactionType.MISSION_REWARD,
         'user_badge',
         sourceId,
-        'Seven-day contribution streak bonus',
+        'Thưởng chuỗi đóng góp 7 ngày',
         {
           idempotencyKey,
           metadata: {
@@ -492,7 +501,7 @@ export class DailyTasksService {
   }
 
   private getMissionTimeZone(): string {
-    const timeZone = process.env.MISSIONS_TIME_ZONE || 'UTC';
+    const timeZone = process.env.MISSIONS_TIME_ZONE || 'Asia/Ho_Chi_Minh';
     try {
       new Intl.DateTimeFormat('en-US', { timeZone }).format(new Date());
     } catch {
