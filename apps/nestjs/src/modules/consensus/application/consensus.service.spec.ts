@@ -49,10 +49,18 @@ describe('ConsensusService', () => {
           vote: 1,
           suggestedSignTypeId: null,
         },
+        {
+          reviewerId: 'reviewer-2',
+          vote: -1,
+          suggestedSignTypeId: null,
+        },
       ]),
     } as unknown as Repository<CandidateReview>;
-    const query = jest.fn(async (sql: string) => {
+    const query = jest.fn(async (sql: string, params?: any[]) => {
       if (sql.includes('SELECT reliability_score')) {
+        if (params?.[0] === 'reviewer-2') {
+          return [{ reliability_score: 10, is_provisional: false, total_correct_votes: 10, total_false_votes: 0 }];
+        }
         return [{ reliability_score: 100, is_provisional: false, total_correct_votes: 10, total_false_votes: 0 }];
       }
       if (sql.includes('candidate_geo_estimations')) {
@@ -70,6 +78,9 @@ describe('ConsensusService', () => {
     const notifications = {
       createBulk: jest.fn().mockResolvedValue(undefined),
     } as unknown as NotificationsService;
+    const dailyTasks = {
+      recordVerifiedSign: jest.fn().mockResolvedValue(undefined),
+    };
     const service = new ConsensusService(
       configRepo,
       logRepo,
@@ -78,6 +89,9 @@ describe('ConsensusService', () => {
       { query } as unknown as DataSource,
       wallet,
       notifications,
+      undefined,
+      undefined,
+      dailyTasks as any,
     );
 
     await service.evaluate('candidate-id');
@@ -90,6 +104,8 @@ describe('ConsensusService', () => {
       expect.stringContaining('UPDATE reviewer_profiles SET'),
       expect.arrayContaining([100, 1, 0, 0, true, false, 'reviewer-id']),
     );
+    expect(dailyTasks.recordVerifiedSign).toHaveBeenCalledWith('reviewer-id', 'candidate-id');
+    expect(dailyTasks.recordVerifiedSign).toHaveBeenCalledWith('reviewer-2', 'candidate-id');
   });
 
   it('resolves spatial address fields when spatialAdminService is provided', async () => {
