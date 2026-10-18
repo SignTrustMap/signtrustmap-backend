@@ -820,5 +820,272 @@ describe('ReviewsService test helpers', () => {
       expect(storage.putObject).not.toHaveBeenCalled();
     });
   });
+
+  describe('getCandidateDetail & top 5 possible signs', () => {
+    it('returns top 5 possible signs mapped from AI model with catalog metadata and aliases', async () => {
+      const rawCandidate = {
+        id: 'cand-ai-1',
+        signCropUrl: 'stm-sign-crops/crop-1.jpg',
+        confidenceScore: 0.98,
+        predictedSignTypeId: 102,
+        predictedSignType: {
+          id: 102,
+          signCode: 'P.102',
+          nameVi: 'Cấm đi ngược chiều',
+          nameEn: 'No entry',
+        },
+        submissionId: 'sub-1',
+      };
+
+      const aiInferenceService = {
+        classifyEarly: jest.fn().mockResolvedValue({
+          status: 'success',
+          top5: [
+            { classId: 102, standardCode: 'P.102', className: 'P.102', confidence: 0.982, classifyConfidence: 0.982, nameVi: 'Cấm đi ngược chiều' },
+            { classId: 130, standardCode: 'P.130', className: 'P.130', confidence: 0.012, classifyConfidence: 0.012, nameVi: 'Cấm dừng và đỗ xe' },
+            { classId: 131, standardCode: 'P.131a', className: 'P.131a', confidence: 0.003, classifyConfidence: 0.003, nameVi: 'Cấm đỗ xe' },
+            { classId: 123, standardCode: 'P.123a', className: 'P.123a', confidence: 0.002, classifyConfidence: 0.002, nameVi: 'Cấm rẽ trái' },
+            { classId: 124, standardCode: 'P.124a', className: 'P.124a', confidence: 0.001, classifyConfidence: 0.001, nameVi: 'Cấm quay đầu' },
+          ],
+        }),
+      };
+
+      const managerQuery = jest.fn().mockImplementation(async (sql: string, params: any[]) => {
+        if (sql.includes('survey_submissions')) {
+          return [{ surveyor_id: 'surv-1', captured_at: new Date() }];
+        }
+        if (sql.includes('candidate_geo_estimations')) {
+          return [{ lon: '106.68', lat: '10.76', traffic_direction: 90 }];
+        }
+        if (sql.includes('SELECT possible_signs FROM unverified_sign_candidates')) {
+          return [{ possible_signs: null }];
+        }
+        if (sql.includes('traffic_sign_types') && sql.includes('UPPER(t.sign_code) = UPPER($1)')) {
+          const code = params?.[0];
+          return [
+            {
+              id: code === 'P.102' ? 102 : code === 'P.130' ? 130 : code === 'P.131a' ? 131 : code === 'P.123a' ? 123 : 124,
+              sign_code: code,
+              name_vi: `Tên ${code}`,
+              name_en: `Name ${code}`,
+              representative_image: `https://s3.signmap.site/types/${code}.png`,
+            },
+          ];
+        }
+        if (sql.includes('UPDATE unverified_sign_candidates SET possible_signs')) {
+          return [];
+        }
+        return [];
+      });
+
+      const candidates = {
+        findOne: jest.fn().mockResolvedValue(rawCandidate),
+        manager: { query: managerQuery },
+      } as unknown as Repository<UnverifiedSignCandidate>;
+
+      const reviews = {
+        count: jest.fn().mockResolvedValue(2),
+      } as unknown as Repository<CandidateReview>;
+
+      const service = new ReviewsService(
+        candidates,
+        reviews,
+        {} as any,
+        {} as any,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        aiInferenceService as any,
+      );
+
+      const result = await service.getCandidateDetail('cand-ai-1');
+
+      expect(result).toBeDefined();
+      expect(aiInferenceService.classifyEarly).toHaveBeenCalledWith({
+        mediaUrl: 'https://s3.signmap.site/stm-sign-crops/crop-1.jpg',
+        signId: 'cand-ai-1',
+      });
+
+      // Verify 5 possible signs returned
+      expect(result.possibleSigns).toHaveLength(5);
+      expect(result.possibleSigns[0].signCode).toBe('P.102');
+      expect(result.possibleSigns[0].confidence).toBe(0.982);
+      expect(result.possibleSigns[1].signCode).toBe('P.130');
+
+      // Verify aliases on result
+      expect(result.top5).toEqual(result.possibleSigns);
+      expect(result.remedySigns).toEqual(result.possibleSigns);
+      expect(result.predictedSignTypes).toEqual(result.possibleSigns);
+
+      // Verify candidate object has aliases and preserving predictedSignType
+      expect(result.candidate.possibleSigns).toEqual(result.possibleSigns);
+      expect(result.candidate.top5).toEqual(result.possibleSigns);
+      expect(result.candidate.remedySigns).toEqual(result.possibleSigns);
+      expect(result.candidate.predictedSignType).toBeDefined();
+      expect(result.candidate.predictedSignType.signCode).toBe('P.102');
+
+      // Verify persisted to DB
+      expect(managerQuery).toHaveBeenCalledWith(
+        expect.stringContaining('UPDATE unverified_sign_candidates SET possible_signs'),
+        [expect.any(String), 'cand-ai-1'],
+      );
+    });
+
+    it('falls back to 5 catalog-backed signs when AI service fails or returns null', async () => {
+      const rawCandidate = {
+        id: 'cand-fallback-1',
+        signCropUrl: 'https://s3.signmap.site/stm-sign-crops/crop-2.jpg',
+        confidenceScore: 0.95,
+        predictedSignTypeId: 102,
+        predictedSignType: {
+          id: 102,
+          signCode: 'P.102',
+          nameVi: 'Cấm đi ngược chiều',
+          nameEn: 'No entry',
+        },
+        submissionId: 'sub-2',
+      };
+
+      const aiInferenceService = {
+        classifyEarly: jest.fn().mockRejectedValue(new Error('AI server offline')),
+      };
+
+      const managerQuery = jest.fn().mockImplementation(async (sql: string) => {
+        if (sql.includes('SELECT possible_signs FROM unverified_sign_candidates')) {
+          return [{ possible_signs: null }];
+        }
+        if (sql.includes('SELECT image_url FROM sign_type_images')) {
+          return [{ image_url: 'https://s3.signmap.site/types/P102.png' }];
+        }
+        if (sql.includes('SELECT t.id, t.sign_code, t.name_vi, t.name_en')) {
+          return [
+            { id: 130, sign_code: 'P.130', name_vi: 'Cấm dừng và đỗ xe', name_en: 'No stopping', representative_image: 'img1.png' },
+            { id: 131, sign_code: 'P.131a', name_vi: 'Cấm đỗ xe', name_en: 'No parking', representative_image: 'img2.png' },
+            { id: 123, sign_code: 'P.123a', name_vi: 'Cấm rẽ trái', name_en: 'No left turn', representative_image: 'img3.png' },
+            { id: 124, sign_code: 'P.124a', name_vi: 'Cấm quay đầu', name_en: 'No U-turn', representative_image: 'img4.png' },
+          ];
+        }
+        return [];
+      });
+
+      const candidates = {
+        findOne: jest.fn().mockResolvedValue(rawCandidate),
+        manager: { query: managerQuery },
+      } as unknown as Repository<UnverifiedSignCandidate>;
+
+      const service = new ReviewsService(
+        candidates,
+        { count: jest.fn().mockResolvedValue(0) } as any,
+        {} as any,
+        {} as any,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        aiInferenceService as any,
+      );
+
+      const result = await service.getCandidateDetail('cand-fallback-1');
+
+      expect(result.possibleSigns).toHaveLength(5);
+      expect(result.possibleSigns[0].id).toBe(102);
+      expect(result.possibleSigns[0].signCode).toBe('P.102');
+      expect(result.possibleSigns[1].signCode).toBe('P.130');
+      expect(result.top5).toEqual(result.possibleSigns);
+      expect(result.remedySigns).toEqual(result.possibleSigns);
+    });
+
+    it('uses cached possibleSigns without calling AI service', async () => {
+      const cached5 = [
+        { id: 1, signCode: 'S1', nameVi: 'Sign 1', nameEn: 'Sign 1', confidence: 0.9 },
+        { id: 2, signCode: 'S2', nameVi: 'Sign 2', nameEn: 'Sign 2', confidence: 0.05 },
+        { id: 3, signCode: 'S3', nameVi: 'Sign 3', nameEn: 'Sign 3', confidence: 0.02 },
+        { id: 4, signCode: 'S4', nameVi: 'Sign 4', nameEn: 'Sign 4', confidence: 0.02 },
+        { id: 5, signCode: 'S5', nameVi: 'Sign 5', nameEn: 'Sign 5', confidence: 0.01 },
+      ];
+      const rawCandidate = {
+        id: 'cand-cached-1',
+        possibleSigns: cached5,
+        submissionId: 'sub-3',
+      };
+
+      const aiInferenceService = {
+        classifyEarly: jest.fn(),
+      };
+
+      const candidates = {
+        findOne: jest.fn().mockResolvedValue(rawCandidate),
+        manager: { query: jest.fn().mockResolvedValue([]) },
+      } as unknown as Repository<UnverifiedSignCandidate>;
+
+      const service = new ReviewsService(
+        candidates,
+        { count: jest.fn().mockResolvedValue(1) } as any,
+        {} as any,
+        {} as any,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        aiInferenceService as any,
+      );
+
+      const result = await service.getCandidateDetail('cand-cached-1');
+
+      expect(result.possibleSigns).toEqual(cached5);
+      expect(aiInferenceService.classifyEarly).not.toHaveBeenCalled();
+    });
+
+    it('queue attaches 5 possible signs to each queue item', async () => {
+      const candidateItem: any = {
+        id: 'cand-q-1',
+        predictedSignTypeId: 102,
+        predictedSignType: { id: 102, signCode: 'P.102', nameVi: 'Cấm đi ngược chiều', nameEn: 'No entry' },
+      };
+
+      const query = {
+        addOrderBy: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[candidateItem], 1]),
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+      } as unknown as SelectQueryBuilder<UnverifiedSignCandidate>;
+
+      const candidates = {
+        createQueryBuilder: jest.fn().mockReturnValue(query),
+        manager: { query: jest.fn().mockResolvedValue([]) },
+      } as unknown as Repository<UnverifiedSignCandidate>;
+
+      const service = new ReviewsService(
+        candidates,
+        {} as any,
+        {} as any,
+        {} as any,
+      );
+
+      const res = await service.queue('rev-1', 1, 20);
+      expect(res.items).toHaveLength(1);
+      const item = res.items[0];
+      expect(item.possibleSigns).toHaveLength(5);
+      expect(item.top5).toHaveLength(5);
+      expect(item.remedySigns).toHaveLength(5);
+      expect(item.predictedSignTypes).toHaveLength(5);
+      expect(item.possibleSigns[0].signCode).toBe('P.102');
+    });
+  });
 });
+
 

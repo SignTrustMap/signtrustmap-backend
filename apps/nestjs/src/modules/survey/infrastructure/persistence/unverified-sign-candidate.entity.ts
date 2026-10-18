@@ -51,6 +51,13 @@ export class UnverifiedSignCandidate {
   @Column({ type: 'enum', enum: CandidateStatus, default: CandidateStatus.PENDING_REVIEW })
   status: CandidateStatus;
 
+  @Column({ name: 'possible_signs', type: 'jsonb', nullable: true })
+  possibleSigns?: any;
+
+  top5?: any;
+  remedySigns?: any;
+  predictedSignTypes?: any;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 
