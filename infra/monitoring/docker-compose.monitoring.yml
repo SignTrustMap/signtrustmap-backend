@@ -9,6 +9,18 @@ services:
       - --config.file=/etc/blackbox_exporter/config.yml
     ports:
       - "9115:9115"
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    dns_search:
+      - .
+    dns_opt:
+      - "ndots:0"
+      - "timeout:2"
+      - "attempts:3"
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: 1
+      net.ipv6.conf.default.disable_ipv6: 1
     networks:
       - monitoring-network
 
@@ -30,6 +42,18 @@ services:
       - "9090:9090"
     depends_on:
       - blackbox-exporter
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    dns_search:
+      - .
+    dns_opt:
+      - "ndots:0"
+      - "timeout:2"
+      - "attempts:3"
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: 1
+      net.ipv6.conf.default.disable_ipv6: 1
     networks:
       - monitoring-network
 
@@ -45,6 +69,7 @@ services:
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_INSTALL_PLUGINS=prometheus
       - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/stm_overview.json
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
