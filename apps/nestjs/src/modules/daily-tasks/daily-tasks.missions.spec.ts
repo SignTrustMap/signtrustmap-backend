@@ -12,7 +12,7 @@ describe('DailyTasksService missions', () => {
 
   beforeEach(() => {
     jest.useFakeTimers().setSystemTime(new Date('2026-09-28T12:00:00.000Z'));
-    process.env.MISSIONS_TIME_ZONE = 'UTC';
+    process.env.MISSIONS_TIME_ZONE = 'Asia/Ho_Chi_Minh';
     events = [];
     badges = new Map();
     creditedTransactions = new Map();
@@ -213,21 +213,29 @@ describe('DailyTasksService missions', () => {
     expect(progressQueries.every(([, params]: [string, any[]]) => params[0] === 'user-1')).toBe(true);
   });
 
-  it('uses UTC calendar dates and resets the weekly count on Monday', async () => {
-    jest.setSystemTime(new Date('2026-09-27T23:59:59.000Z'));
+  it('uses UTC+7 calendar dates and resets the weekly count on Monday', async () => {
+    jest.setSystemTime(new Date('2026-09-27T16:59:59.000Z'));
     for (let index = 0; index < 3; index += 1) {
       await service.recordVerifiedSign('user-1', `sunday-candidate-${index}`);
     }
 
-    jest.setSystemTime(new Date('2026-09-28T00:00:00.000Z'));
+    jest.setSystemTime(new Date('2026-09-27T17:00:00.000Z'));
     for (let index = 0; index < 4; index += 1) {
       await service.recordApprovedAnomaly('user-1', `monday-hazard-${index}`);
     }
 
     const overview = await service.getMissionOverview('user-1');
+    expect(overview.timeZone).toBe('Asia/Ho_Chi_Minh');
     expect(overview.daily.date).toBe('2026-09-28');
+    expect(overview.daily.missions.map(({ title }) => title)).toEqual([
+      'Xác minh 3 biển báo giao thông hợp lệ',
+      'Gửi báo cáo bất thường kèm bằng chứng',
+    ]);
+    expect(overview.daily.missions[0].description).toContain('trong ngày');
     expect(overview.weekly.startDate).toBe('2026-09-28');
+    expect(overview.weekly.title).toBe('Hoàn thành 5 nhiệm vụ trong tuần');
     expect(overview.weekly.completedMissions).toBe(4);
     expect(overview.weekly.bonusGranted).toBe(false);
+    expect(overview.streak.title).toBe('Chuỗi đóng góp 7 ngày');
   });
 });
