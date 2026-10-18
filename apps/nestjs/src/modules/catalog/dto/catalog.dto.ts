@@ -141,7 +141,9 @@ export class CreateSignTypeDto {
   osmMapping?: string;
 
   @IsOptional()
+  @Transform(trim)
   @IsString()
+  @MinLength(1)
   @MaxLength(500)
   representativeImageKey?: string;
 
@@ -221,9 +223,11 @@ export class UpdateSignTypeDto {
   osmMapping?: string | null;
 
   @IsOptional()
+  @Transform(trim)
   @IsString()
+  @MinLength(1)
   @MaxLength(500)
-  representativeImageKey?: string | null;
+  representativeImageKey?: string;
 
   @IsOptional()
   @IsString()

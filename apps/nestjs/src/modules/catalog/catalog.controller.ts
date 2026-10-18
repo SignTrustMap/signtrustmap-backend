@@ -9,8 +9,11 @@ import {
   Post,
   Put,
   Query,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CatalogService } from './catalog.service';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -74,13 +77,34 @@ export class CatalogController {
 
   @Roles('ADMIN')
   @ApiOperation({ summary: 'Create sign type', description: 'Admin operation to define a new traffic sign in the catalog' })
+  @ApiConsumes('multipart/form-data', 'application/json')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 20 * 1024 * 1024 } }))
   @Post('catalog/sign-types')
-  createSignType(@Body() dto: CreateSignTypeDto) { return this.svc.createSignType(dto); }
+  async createSignType(
+    @Body() dto: CreateSignTypeDto,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
+    if (file) {
+      dto.representativeImageKey = await this.svc.uploadRepresentativeImage(file, dto.signCode);
+    }
+    return this.svc.createSignType(dto);
+  }
 
   @Roles('ADMIN')
   @ApiOperation({ summary: 'Update sign type', description: 'Admin operation to modify sign code, standard name, or shape' })
+  @ApiConsumes('multipart/form-data', 'application/json')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 20 * 1024 * 1024 } }))
   @Patch('catalog/sign-types/:id')
-  updateSignType(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateSignTypeDto) { return this.svc.updateSignType(id, dto); }
+  async updateSignType(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateSignTypeDto,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
+    if (file) {
+      dto.representativeImageKey = await this.svc.uploadRepresentativeImage(file, dto.signCode);
+    }
+    return this.svc.updateSignType(id, dto);
+  }
 
   @Roles('ADMIN')
   @ApiOperation({ summary: 'Delete sign type', description: 'Admin operation to soft-delete or remove a sign type' })

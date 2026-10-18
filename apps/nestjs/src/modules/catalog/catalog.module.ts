@@ -9,11 +9,12 @@ import { SignTypeAiPrompt } from './sign-type-ai-prompt.entity';
 import { SignTypeImage } from './sign-type-image.entity';
 import { SignTypeOsmMapping } from './sign-type-osm-mapping.entity';
 import { CatalogSyncModule } from '../../integrations/catalog-sync/catalog-sync.module';
-
+import { MinioModule } from '../../integrations/minio/minio.module';
 
 @Module({
   imports: [
     CatalogSyncModule,
+    MinioModule,
     TypeOrmModule.forFeature([
       SignCategory,
       TrafficSignType,

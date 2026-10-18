@@ -17,12 +17,14 @@ import {
   UpsertSystemParameterDto,
 } from './dto/catalog.dto';
 import { SignCategory } from './sign-category.entity';
+import { randomUUID } from 'crypto';
 import { SignTypeAiPrompt } from './sign-type-ai-prompt.entity';
 import { SignTypeImage } from './sign-type-image.entity';
 import { SignTypeOsmMapping } from './sign-type-osm-mapping.entity';
 import { SystemParameter } from './system-parameter.entity';
 import { TrafficSignType } from './traffic-sign-type.entity';
 import { CatalogSyncService } from '../../integrations/catalog-sync/catalog-sync.service';
+import { MinioStorageService } from '../../integrations/minio/minio-storage.service';
 
 export interface ListSignTypesOptions {
   categoryId?: number;
@@ -62,6 +64,8 @@ export class CatalogService {
     private readonly dataSource: DataSource,
     @Optional()
     private readonly catalogSyncService?: CatalogSyncService,
+    @Optional()
+    private readonly minioStorageService?: MinioStorageService,
   ) {}
 
   listCategories() {
@@ -169,7 +173,25 @@ export class CatalogService {
     return (await this.enrichSignTypes([signType]))[0];
   }
 
+  async uploadRepresentativeImage(file: Express.Multer.File, signCode?: string): Promise<string> {
+    if (!file || !file.buffer) {
+      throw new BadRequestException('File is missing or empty');
+    }
+    const cleanCode = signCode ? signCode.toUpperCase().replace(/[^A-Z0-9._-]/g, '') : 'SIGN';
+    const filename = (file.originalname || 'image.png').replace(/[^a-zA-Z0-9._-]/g, '');
+    const key = `catalog/representative/${cleanCode}-${randomUUID()}-${filename}`;
+    if (this.minioStorageService) {
+      await this.minioStorageService.putObject('stm-sign-crops', key, file.buffer, file.mimetype);
+      return this.minioStorageService.getPublicUrl('stm-sign-crops', key);
+    }
+    return `https://s3.signmap.site/stm-sign-crops/${key}`;
+  }
+
   async createSignType(dto: CreateSignTypeDto): Promise<CatalogSignType> {
+    const repImage = this.trimToNull(dto.representativeImageKey);
+    if (!repImage) {
+      throw new BadRequestException('Representative image is required for traffic sign types');
+    }
     return this.dataSource.transaction(async (manager) => {
       const categories = manager.getRepository(SignCategory);
       const signTypes = manager.getRepository(TrafficSignType);
@@ -201,12 +223,21 @@ export class CatalogService {
           category,
         }),
       );
-      await this.syncExtraFields(manager, signType.id, dto);
+      await this.syncExtraFields(manager, signType.id, {
+        ...dto,
+        representativeImageKey: repImage,
+      });
       return (await this.enrichSignTypes([signType], manager))[0];
     });
   }
 
   async updateSignType(id: number, dto: UpdateSignTypeDto): Promise<CatalogSignType> {
+    if (dto.representativeImageKey !== undefined) {
+      const imageUrl = this.trimToNull(dto.representativeImageKey);
+      if (!imageUrl) {
+        throw new BadRequestException('Representative image cannot be null or empty');
+      }
+    }
     return this.dataSource.transaction(async (manager) => {
       const categories = manager.getRepository(SignCategory);
       const signTypes = manager.getRepository(TrafficSignType);
@@ -360,12 +391,16 @@ export class CatalogService {
       }
     }
 
-    return signTypes.map((signType) => ({
-      ...signType,
-      aiLabelPrompt: promptBySignType.get(signType.id) ?? null,
-      osmMapping: mappingsBySignType.get(signType.id)?.join(';') ?? null,
-      representativeImageKey: imageBySignType.get(signType.id) ?? null,
-    }));
+    return signTypes.map((signType) => {
+      const dbImage = imageBySignType.get(signType.id);
+      const fallbackImage = `https://s3.signmap.site/stm-sign-crops/representative/${(signType.slug || signType.signCode).toUpperCase().trim()}.png`;
+      return {
+        ...signType,
+        aiLabelPrompt: promptBySignType.get(signType.id) ?? null,
+        osmMapping: mappingsBySignType.get(signType.id)?.join(';') ?? null,
+        representativeImageKey: dbImage ?? fallbackImage,
+      };
+    });
   }
 
   private async syncExtraFields(
@@ -395,22 +430,23 @@ export class CatalogService {
     }
 
     if (input.representativeImageKey !== undefined) {
+      const imageUrl = this.trimToNull(input.representativeImageKey);
+      if (!imageUrl) {
+        throw new BadRequestException('Representative image cannot be null or empty');
+      }
       const repository = manager.getRepository(SignTypeImage);
       await repository.update(
         { signTypeId, imageType: 'REPRESENTATIVE', isPrimary: true },
         { isPrimary: false },
       );
-      const imageUrl = this.trimToNull(input.representativeImageKey);
-      if (imageUrl) {
-        await repository.save(
-          repository.create({
-            signTypeId,
-            imageUrl,
-            imageType: 'REPRESENTATIVE',
-            isPrimary: true,
-          }),
-        );
-      }
+      await repository.save(
+        repository.create({
+          signTypeId,
+          imageUrl,
+          imageType: 'REPRESENTATIVE',
+          isPrimary: true,
+        }),
+      );
     }
 
     if (input.osmMapping !== undefined) {

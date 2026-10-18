@@ -1,6 +1,7 @@
-import { Injectable, NotFoundException, BadRequestException, ConflictException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ConflictException, Logger, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, In } from 'typeorm';
+import { randomUUID } from 'crypto';
 import { MissingSignTypeReport, MissingTypeStatus } from '../infrastructure/persistence/missing-sign-type-report.entity';
 import { ModerationAction } from '../infrastructure/persistence/moderation-action.entity';
 import { ModerationCase, ModerationStatus, ModerationType } from '../infrastructure/persistence/moderation-case.entity';
@@ -11,6 +12,7 @@ import { CreateMissingTypeReportDto, ResolveCaseDto, ApproveAndCreateTypeDto } f
 import { NotificationsService } from '../../notifications/notifications.service';
 import { CatalogService } from '../../catalog/catalog.service';
 import { CatalogSyncService } from '../../../integrations/catalog-sync/catalog-sync.service';
+import { MinioStorageService } from '../../../integrations/minio/minio-storage.service';
 
 export interface CandidateEnriched {
   id: string;
@@ -43,6 +45,7 @@ export class ModerationService {
     private readonly notificationsService: NotificationsService,
     private readonly catalogService: CatalogService,
     private readonly catalogSyncService: CatalogSyncService,
+    @Optional() private readonly minioStorageService?: MinioStorageService,
   ) {}
 
   /**
@@ -162,7 +165,12 @@ export class ModerationService {
    * the catalog service, publishes a new catalog version, releases held
    * candidates back into the review queue, and triggers the AI label sync.
    */
-  async approveAndCreateType(reportId: string, staffId: string, dto: ApproveAndCreateTypeDto) {
+  async approveAndCreateType(
+    reportId: string,
+    staffId: string,
+    dto: ApproveAndCreateTypeDto,
+    file?: Express.Multer.File,
+  ) {
     const report = await this.missing.findOne({ where: { id: reportId } as any });
     if (!report) throw new NotFoundException('MissingSignTypeReport ' + reportId + ' not found');
     if (report.status === MissingTypeStatus.APPROVED || report.status === MissingTypeStatus.MERGED) throw new BadRequestException('Report already ' + report.status);
@@ -180,6 +188,29 @@ export class ModerationService {
       dto.aiLabelPrompt?.trim() ||
       `Sign "${nameEn}" - road traffic sign (${nameVi || nameEn}). shape=${report.suggestedShape || 'unknown'}, color_scheme=${report.suggestedColorScheme || 'unknown'}`;
 
+    let representativeImageKey = dto.representativeImageKey?.trim();
+    if (file && this.minioStorageService) {
+      const cleanCode = signCode.toUpperCase().replace(/[^A-Z0-9._-]/g, '');
+      const key = `catalog/representative/${cleanCode}-${randomUUID()}-${(file.originalname || 'image.png').replace(/[^a-zA-Z0-9._-]/g, '')}`;
+      await this.minioStorageService.putObject('stm-sign-crops', key, file.buffer, file.mimetype);
+      representativeImageKey = this.minioStorageService.getPublicUrl('stm-sign-crops', key);
+    }
+    if (!representativeImageKey && report.candidateId) {
+      const candRows: any[] = await this.dataSource.query(
+        'SELECT sign_crop_url, best_frame_url FROM unverified_sign_candidates WHERE id = $1',
+        [report.candidateId],
+      );
+      if (candRows.length > 0) {
+        representativeImageKey = candRows[0].sign_crop_url || candRows[0].best_frame_url || undefined;
+      }
+      if (!representativeImageKey) {
+        representativeImageKey = `https://s3.signmap.site/stm-sign-crops/candidates/${report.candidateId}/crop.jpg`;
+      }
+    }
+    if (!representativeImageKey) {
+      representativeImageKey = `https://s3.signmap.site/stm-sign-crops/representative/${signCode}.png`;
+    }
+
     const created = await this.catalogService.createSignType({
       categoryId: resolvedCategoryId,
       signCode,
@@ -192,6 +223,7 @@ export class ModerationService {
       aiLabelPrompt,
       shape: report.suggestedShape ?? dto.suggestedShape ?? undefined,
       colorScheme: report.suggestedColorScheme ?? dto.suggestedColorScheme ?? undefined,
+      representativeImageKey,
       isActive: true,
     });
 
@@ -406,6 +438,24 @@ export class ModerationService {
     while (await this.signTypeRepo.findOne({ where: { signCode } })) { suffix++; signCode = baseCode + '_' + suffix; }
     const created = this.signTypeRepo.create({ categoryId, signCode, nameVi: report.proposedName, nameEn: report.proposedName, description: report.description ?? dto.resolutionNote ?? null, isActive: true, createdAt: new Date(), updatedAt: new Date() } as any);
     const saved = await this.signTypeRepo.save(created) as unknown as TrafficSignType;
+
+    let repUrl: string | null = null;
+    if (report.candidateId) {
+      const candRows: any[] = await this.dataSource.query(
+        'SELECT sign_crop_url, best_frame_url FROM unverified_sign_candidates WHERE id = $1',
+        [report.candidateId],
+      );
+      repUrl = candRows[0]?.sign_crop_url || candRows[0]?.best_frame_url || null;
+    }
+    if (!repUrl) {
+      repUrl = `https://s3.signmap.site/stm-sign-crops/representative/${signCode}.png`;
+    }
+    await this.dataSource.query(
+      `INSERT INTO sign_type_images (sign_type_id, image_url, image_type, is_primary, uploaded_at)
+       VALUES ($1, $2, 'REPRESENTATIVE', true, now())`,
+      [saved.id, repUrl],
+    );
+
     report.status = MissingTypeStatus.APPROVED;
     report.mergedIntoSignTypeId = saved.id;
     report.reviewedBy = staffId;
