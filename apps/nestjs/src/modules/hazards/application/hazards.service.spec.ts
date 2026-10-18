@@ -22,7 +22,7 @@ describe('HazardsService', () => {
   let queryMock: jest.Mock;
 
   beforeEach(() => {
-    queryMock = jest.fn();
+    queryMock = jest.fn().mockResolvedValue([]);
     hazardRepo = {
       findOne: jest.fn(),
       save: jest.fn(),
@@ -40,6 +40,7 @@ describe('HazardsService', () => {
     } as any;
     dailyTasksService = {
       recordProgress: jest.fn().mockResolvedValue([]),
+      recordApprovedAnomaly: jest.fn().mockResolvedValue(undefined),
     } as any;
     notificationsService = {
       create: jest.fn().mockResolvedValue({} as any),
@@ -364,6 +365,47 @@ describe('HazardsService', () => {
 
       expect(result.status).toBe(HazardStatus.DISMISSED);
       expect(result.dismissalsCount).toBe(2);
+    });
+  });
+
+  describe('approved anomaly mission eligibility', () => {
+    it('records mission progress only for a confirmed report with evidence', async () => {
+      queryMock.mockImplementation(async (sql: string) => {
+        const norm = sql.replace(/\s+/g, ' ');
+        if (norm.includes('SELECT id, reported_by, hazard_type')) {
+          return [{ id: 'hazard-1', reported_by: 'reporter-user', hazard_type: 'ACCIDENT', confirmations_count: 3, status: HazardStatus.CONFIRMED, reward_paid: true }];
+        }
+        if (norm.includes('SELECT reported_by, status')) {
+          return [{ reported_by: 'reporter-user', status: HazardStatus.CONFIRMED }];
+        }
+        if (norm.includes('FROM hazard_evidence')) return [{ has_evidence: true }];
+        return [];
+      });
+
+      await service.checkAndTriggerConsensus('hazard-1');
+
+      expect(dailyTasksService.recordApprovedAnomaly).toHaveBeenCalledWith('reporter-user', 'hazard-1');
+    });
+
+    it.each([
+      ['dismissed', HazardStatus.DISMISSED, true],
+      ['without evidence', HazardStatus.CONFIRMED, false],
+    ])('does not reward a report that is %s', async (_label, status, hasEvidence) => {
+      queryMock.mockImplementation(async (sql: string) => {
+        const norm = sql.replace(/\s+/g, ' ');
+        if (norm.includes('SELECT id, reported_by, hazard_type')) {
+          return [{ id: 'hazard-1', reported_by: 'reporter-user', hazard_type: 'ACCIDENT', confirmations_count: 3, status, reward_paid: true }];
+        }
+        if (norm.includes('SELECT reported_by, status')) {
+          return [{ reported_by: 'reporter-user', status }];
+        }
+        if (norm.includes('FROM hazard_evidence')) return [{ has_evidence: hasEvidence }];
+        return [];
+      });
+
+      await service.checkAndTriggerConsensus('hazard-1');
+
+      expect(dailyTasksService.recordApprovedAnomaly).not.toHaveBeenCalled();
     });
   });
 

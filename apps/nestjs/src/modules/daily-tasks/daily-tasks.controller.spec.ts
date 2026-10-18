@@ -14,6 +14,7 @@ describe('DailyTasksController (Phase 3 Controller Endpoints)', () => {
       listActive: jest.fn(),
       listTasksWithProgress: jest.fn(),
       listCompletions: jest.fn(),
+      getMissionOverview: jest.fn(),
       claim: jest.fn(),
       rolloverUnclaimedTasks: jest.fn(),
     } as unknown as jest.Mocked<DailyTasksService>;
@@ -45,6 +46,16 @@ describe('DailyTasksController (Phase 3 Controller Endpoints)', () => {
 
     const result = await controller.myCompletions(mockUser, '2026-09-25');
     expect(service.listCompletions).toHaveBeenCalledWith(mockUser.id, '2026-09-25');
+    expect(result).toBe(expected);
+  });
+
+  it('myMissions derives the requested user from the authenticated principal', async () => {
+    const expected = { daily: [], weekly: {}, streak: {} };
+    service.getMissionOverview.mockResolvedValue(expected as any);
+
+    const result = await controller.myMissions(mockUser);
+
+    expect(service.getMissionOverview).toHaveBeenCalledWith(mockUser.id);
     expect(result).toBe(expected);
   });
 
