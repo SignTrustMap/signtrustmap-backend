@@ -35,7 +35,7 @@ export class AdminController {
   constructor(
     private readonly svc: AdminService,
     private readonly walletService: WalletService,
-  ) {}
+  ) { }
 
   @ApiOperation({ summary: 'List platform users', description: 'Admin operation to search and paginate all users with role and status filtering' })
   @Get('users')
