@@ -9,7 +9,7 @@ import {
 
 @Injectable()
 export class AdminService {
-  constructor(private readonly dataSource: DataSource) {}
+  constructor(private readonly dataSource: DataSource) { }
   async listUsers(q: { role?: string; status?: string; search?: string; page?: number; pageSize?: number }) {
     const p = Math.max(1, q.page ?? 1); const ps = Math.min(Math.max(1, q.pageSize ?? 20), 100); const offset = (p - 1) * ps;
     let where = '1=1'; const params: any[] = []; let idx = 1;
@@ -20,7 +20,9 @@ export class AdminService {
     const countRows: any[] = await this.dataSource.query('SELECT COUNT(DISTINCT u.id)::int AS cnt FROM users u ' + roleJoin + ' WHERE ' + where, params);
     const total = countRows[0]?.cnt ?? 0;
     const rows: any[] = await this.dataSource.query(
-      'SELECT u.id, u.email, u.full_name, u.phone, u.avatar_url, u.status, u.created_at, u.updated_at, COALESCE(json_agg(DISTINCT r2.code) FILTER (WHERE r2.code IS NOT NULL), \'[]\') AS roles FROM users u LEFT JOIN user_roles ur2 ON ur2.user_id = u.id AND ur2.is_active = true LEFT JOIN roles r2 ON r2.id = ur2.role_id ' + (q.role ? 'JOIN user_roles ur ON ur.user_id = u.id AND ur.is_active = true JOIN roles r ON r.id = ur.role_id AND r.code = $' + (params.length+1) : '') + ' WHERE ' + where + ' GROUP BY u.id ORDER BY u.created_at DESC LIMIT $' + idx++ + ' OFFSET $' + idx, q.role ? [...params, ps, offset] : [...params, ps, offset]);
+      'SELECT u.id, u.email, u.full_name, u.phone, u.avatar_url, u.status, u.created_at, u.updated_at, COALESCE(json_agg(DISTINCT r2.code) FILTER (WHERE r2.code IS NOT NULL), \'[]\') AS roles FROM users u LEFT JOIN user_roles ur2 ON ur2.user_id = u.id AND ur2.is_active = true LEFT JOIN roles r2 ON r2.id = ur2.role_id ' + roleJoin + ' WHERE ' + where + ' GROUP BY u.id ORDER BY u.created_at DESC LIMIT $' + idx++ + ' OFFSET $' + idx,
+      [...params, ps, offset],
+    );
     return { items: rows, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
   }
   async updateUserStatus(userId: string, newStatus: string, reason: string | undefined, changedBy: string, ip?: string) {
@@ -662,7 +664,7 @@ export class AdminService {
     if (rows.length > 0 && rows[0].value) {
       try {
         return JSON.parse(rows[0].value);
-      } catch {}
+      } catch { }
     }
     return {
       uncertaintyMargin: 'Top-1 Conf - Top-2 Conf < 0.15',
