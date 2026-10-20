@@ -182,53 +182,82 @@ export class ModerationService {
 
     const nameVi = dto.nameVi?.trim() || report.proposedName.trim();
     const nameEn = dto.nameEn?.trim() || report.proposedName.trim();
-    const signCode = await this.buildSignCode(dto.signCode?.trim() || nameEn, nameEn);
-    const description = dto.description?.trim() || report.description || undefined;
-    const aiLabelPrompt =
-      dto.aiLabelPrompt?.trim() ||
-      `Sign "${nameEn}" - road traffic sign (${nameVi || nameEn}). shape=${report.suggestedShape || 'unknown'}, color_scheme=${report.suggestedColorScheme || 'unknown'}`;
 
-    let representativeImageKey = dto.representativeImageKey?.trim();
-    if (file && this.minioStorageService) {
-      const cleanCode = signCode.toUpperCase().replace(/[^A-Z0-9._-]/g, '');
-      const key = `catalog/representative/${cleanCode}-${randomUUID()}-${(file.originalname || 'image.png').replace(/[^a-zA-Z0-9._-]/g, '')}`;
-      await this.minioStorageService.putObject('stm-sign-crops', key, file.buffer, file.mimetype);
-      representativeImageKey = this.minioStorageService.getPublicUrl('stm-sign-crops', key);
-    }
-    if (!representativeImageKey && report.candidateId) {
-      const candRows: any[] = await this.dataSource.query(
-        'SELECT sign_crop_url, best_frame_url FROM unverified_sign_candidates WHERE id = $1',
-        [report.candidateId],
-      );
-      if (candRows.length > 0) {
-        representativeImageKey = candRows[0].sign_crop_url || candRows[0].best_frame_url || undefined;
+    let created: any;
+    const requestedCode = dto.signCode?.trim()?.toUpperCase();
+    const existingType = requestedCode
+      ? await this.signTypeRepo.findOne({ where: { signCode: requestedCode } })
+      : null;
+
+    let signCode: string;
+    if (existingType) {
+      created = existingType;
+      signCode = existingType.signCode;
+      this.logger.log(`Found existing TrafficSignType #${created.id} (${signCode}), reusing for report ${reportId}`);
+    } else {
+      signCode = await this.buildSignCode(dto.signCode?.trim() || nameEn, nameEn);
+      const description = dto.description?.trim() || report.description || undefined;
+      const aiLabelPrompt =
+        dto.aiLabelPrompt?.trim() ||
+        `Sign "${nameEn}" - road traffic sign (${nameVi || nameEn}). shape=${report.suggestedShape || 'unknown'}, color_scheme=${report.suggestedColorScheme || 'unknown'}`;
+
+      let representativeImageKey = dto.representativeImageKey?.trim();
+      if (file && this.minioStorageService) {
+        const cleanCode = signCode.toUpperCase().replace(/[^A-Z0-9._-]/g, '');
+        const key = `catalog/representative/${cleanCode}-${randomUUID()}-${(file.originalname || 'image.png').replace(/[^a-zA-Z0-9._-]/g, '')}`;
+        await this.minioStorageService.putObject('stm-sign-crops', key, file.buffer, file.mimetype);
+        representativeImageKey = this.minioStorageService.getPublicUrl('stm-sign-crops', key);
+      }
+      if (!representativeImageKey && report.candidateId) {
+        try {
+          const candRows: any[] = await this.dataSource.query(
+            'SELECT sign_crop_url, best_frame_url FROM unverified_sign_candidates WHERE id = $1',
+            [report.candidateId],
+          );
+          if (candRows.length > 0) {
+            representativeImageKey = candRows[0].sign_crop_url || candRows[0].best_frame_url || undefined;
+          }
+        } catch (err: any) {
+          this.logger.warn('Failed to fetch candidate image: ' + (err as any)?.message);
+        }
+        if (!representativeImageKey) {
+          representativeImageKey = `https://s3.signmap.site/stm-sign-crops/candidates/${report.candidateId}/crop.jpg`;
+        }
       }
       if (!representativeImageKey) {
-        representativeImageKey = `https://s3.signmap.site/stm-sign-crops/candidates/${report.candidateId}/crop.jpg`;
+        representativeImageKey = `https://s3.signmap.site/stm-sign-crops/representative/${signCode}.png`;
+      }
+
+      created = await this.catalogService.createSignType({
+        categoryId: resolvedCategoryId,
+        signCode,
+        nameVi,
+        nameEn,
+        description,
+        labelingGuidelines: dto.suggestedShape || dto.suggestedColorScheme
+          ? `Shape: ${report.suggestedShape ?? 'unknown'}; color scheme: ${report.suggestedColorScheme ?? 'unknown'}`
+          : undefined,
+        aiLabelPrompt,
+        shape: report.suggestedShape ?? dto.suggestedShape ?? undefined,
+        colorScheme: report.suggestedColorScheme ?? dto.suggestedColorScheme ?? undefined,
+        representativeImageKey,
+        isActive: true,
+      });
+    }
+
+    try {
+      await this.bumpCatalogVersion(staffId, signCode, created.id);
+    } catch (e: any) {
+      this.logger.warn('Failed to bump catalog version for sign type #' + created.id + ': ' + (e as any)?.message);
+    }
+
+    if (report.candidateId) {
+      try {
+        await this.releaseCandidate(report.candidateId, created.id);
+      } catch (e: any) {
+        this.logger.warn('Failed to release candidate ' + report.candidateId + ': ' + (e as any)?.message);
       }
     }
-    if (!representativeImageKey) {
-      representativeImageKey = `https://s3.signmap.site/stm-sign-crops/representative/${signCode}.png`;
-    }
-
-    const created = await this.catalogService.createSignType({
-      categoryId: resolvedCategoryId,
-      signCode,
-      nameVi,
-      nameEn,
-      description,
-      labelingGuidelines: dto.suggestedShape || dto.suggestedColorScheme
-        ? `Shape: ${report.suggestedShape ?? 'unknown'}; color scheme: ${report.suggestedColorScheme ?? 'unknown'}`
-        : undefined,
-      aiLabelPrompt,
-      shape: report.suggestedShape ?? dto.suggestedShape ?? undefined,
-      colorScheme: report.suggestedColorScheme ?? dto.suggestedColorScheme ?? undefined,
-      representativeImageKey,
-      isActive: true,
-    });
-
-    await this.bumpCatalogVersion(staffId, signCode, created.id);
-    if (report.candidateId) await this.releaseCandidate(report.candidateId, created.id);
 
     report.status = MissingTypeStatus.APPROVED;
     report.mergedIntoSignTypeId = created.id;
@@ -501,32 +530,40 @@ export class ModerationService {
   }
 
   private async bumpCatalogVersion(staffId: string, signCode: string, signTypeId: number): Promise<void> {
-    await this.dataSource.query(
-      `WITH pinned AS MATERIALIZED (
-         SELECT MAX(version_number) AS max_v FROM catalog_versions
-       ),
-       updated AS (
-         UPDATE catalog_versions SET is_current = false WHERE is_current = true
-       ),
-       inserted AS (
-         INSERT INTO catalog_versions (version_number, published_by, change_summary, is_current)
-         SELECT COALESCE(max_v, 0) + 1, $1, $2, true FROM pinned
-         RETURNING id
-       )
-       INSERT INTO catalog_version_sign_types (catalog_version_id, sign_type_id, change_action)
-       SELECT inserted.id, $3, 'ADDED'::catalog_change_action FROM inserted`,
-      [staffId, 'Added sign type "' + signCode + '" from approved missing-type report', signTypeId],
-    );
+    try {
+      await this.dataSource.query(
+        `WITH pinned AS MATERIALIZED (
+           SELECT MAX(version_number) AS max_v FROM catalog_versions
+         ),
+         updated AS (
+           UPDATE catalog_versions SET is_current = false WHERE is_current = true
+         ),
+         inserted AS (
+           INSERT INTO catalog_versions (version_number, published_by, change_summary, is_current)
+           SELECT COALESCE(max_v, 0) + 1, $1::uuid, $2, true FROM pinned
+           RETURNING id
+         )
+         INSERT INTO catalog_version_sign_types (catalog_version_id, sign_type_id, change_action)
+         SELECT inserted.id, $3, 'ADDED'::catalog_change_action FROM inserted`,
+        [staffId, 'Added sign type "' + signCode + '" from approved missing-type report', signTypeId],
+      );
+    } catch (e: any) {
+      this.logger.warn('Failed to bump catalog version for sign type #' + signTypeId + ': ' + (e as any)?.message);
+    }
   }
 
   private async releaseCandidate(candidateId: string, signTypeId: number): Promise<void> {
-    await this.dataSource.query(
-      `UPDATE unverified_sign_candidates
-       SET predicted_sign_type_id = $1, status = 'PENDING_REVIEW'
-       WHERE id = $2 AND status = 'MISSING_TYPE_HOLD'`,
-      [signTypeId, candidateId],
-    );
-    this.logger.log('Released candidate ' + candidateId + ' to PENDING_REVIEW (type #' + signTypeId + ')');
+    try {
+      await this.dataSource.query(
+        `UPDATE unverified_sign_candidates
+         SET predicted_sign_type_id = $1, status = 'PENDING_REVIEW'
+         WHERE id = $2::uuid AND status = 'MISSING_TYPE_HOLD'`,
+        [signTypeId, candidateId],
+      );
+      this.logger.log('Released candidate ' + candidateId + ' to PENDING_REVIEW (type #' + signTypeId + ')');
+    } catch (e: any) {
+      this.logger.warn('Failed to release candidate ' + candidateId + ': ' + (e as any)?.message);
+    }
   }
 
   /** MERGED/REJECTED/INCOMPLETE triage side-effects on the linked candidate. */
