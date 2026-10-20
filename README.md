@@ -11,6 +11,8 @@ Crowdsourced traffic sign mapping with AI verification, gamification, and smart 
 - [Setup & Run](#setup--run)
 - [Project Structure](#project-structure)
 - [API Documentation](#api-documentation)
+- [System Workflows](#system-workflows)
+- [License](#license)
 
 ---
 
@@ -42,35 +44,46 @@ Drivers can use the Smart Navigation feature, which streams real-time proximity 
 
 ## System Architecture
 
+```mermaid
+flowchart TD
+    subgraph Clients["Clients"]
+        CLIENT["Client<br/>(Mobile / Web / Postman)"]
+    end
+
+    subgraph Applications["Application Services"]
+        NEST["NestJS API (:3000)<br/>• /api/v1/*<br/>• JWT + RBAC Guards<br/>• 14 modules, ~65 endpoints<br/>• TypeORM"]
+        FASTAPI["FastAPI GIS (:8000)<br/>• GET /api/v1/spatial/signs<br/>• WS /api/v1/spatial/nav/ws<br/>• POST/PATCH /nav/sessions<br/>• SQLAlchemy async"]
+    end
+
+    subgraph DataStore["Data & Message Layer"]
+        POSTGRES[("PostgreSQL 15 + PostGIS (:5432)<br/>• Primary DB & Spatial Geometries<br/>• infra/postgres/schema/*.sql")]
+        REDIS[("Redis 7 (:6379)<br/>• Broker (db 2)<br/>• Results (db 3)<br/>• Cache (db 0)")]
+        MINIO[("MinIO S3 (:9000 / :9001)<br/>• stm-raw-videos<br/>• stm-gpx-logs<br/>• stm-sign-crops<br/>• stm-revalidation-ev.<br/>• stm-catalog-images")]
+    end
+
+    subgraph Workers["Asynchronous Workers & AI Pipeline"]
+        CELERY["Celery Workers & Beat Scheduler<br/>• ai_pipeline (6-stage AI flow)<br/>• freshness (sign scoring)<br/>• leaderboard (matview refresh)<br/>• default (misc tasks)"]
+        AI["Standalone AI Service (:8001)<br/>• YOLO12 Sign Detector<br/>• BoT-SORT Object Tracker<br/>• CLIP Classifier"]
+    end
+
+    CLIENT -->|"HTTP / REST"| NEST
+    CLIENT -->|"WebSocket & Spatial REST"| FASTAPI
+
+    NEST -->|"TypeORM"| POSTGRES
+    FASTAPI -->|"SQLAlchemy async"| POSTGRES
+
+    NEST -->|"Tasks / Cache"| REDIS
+    FASTAPI -->|"Nav Sessions / Cache"| REDIS
+
+    REDIS -->|"Task Broker"| CELERY
+    CELERY -->|"Sync DB (psycopg)"| POSTGRES
+    CELERY -->|"Inference Request"| AI
+
+    NEST -.->|"Presigned URLs"| MINIO
+    CELERY -->|"Read Videos / GPX / Sign Crops"| MINIO
+    AI -.->|"Download Media / Store Crops"| MINIO
 ```
-                            Client (mobile / web / Postman)
-                                       |
-                    +------------------+------------------+
-                    |  HTTP / REST                        |  WebSocket
-                    v                                     v
-     +----------------------+              +------------------------------+
-     |  NestJS API  :3000   |              |  FastAPI GIS  :8000          |
-     |  /api/v1/*           |              |  GET  /api/v1/spatial/signs  |
-     |  JWT + RBAC guards   |              |  GET  /api/v1/spatial/.../{id}|
-     |  14 modules, ~65 ep. |              |  WS   /api/v1/spatial/nav/ws |
-     |  TypeORM / pg        |              |  POST/PATCH /nav/sessions    |
-     +----------+-----------+              +---------------+--------------+
-                |                                        | SQLAlchemy async
-                | TypeORM                                v
-                v
-     +--------------------------------------------------------------+
-     |  PostgreSQL 15 + PostGIS  :5432                               |
-     |  infra/postgres/schema/*.sql  (auto-loaded)                  |
-     +-----------------------------+------------------+---------------+
-                                   |                  |
-                    +--------------+                  +--------------+
-                    v                                 v
-         +----------------+              +-----------------------------+
-         | Redis  :6379  |              | Celery workers (4 queues)   |
-         | broker  db 2  |              | ai_pipeline  6-stage AI flow|
-         | results db 3  |              | freshness    sign scoring   |
-         | cache   db 0  |              | leaderboard  matview refresh|
-         +----------------+              | default      misc tasks     |
+
 ---
 
 ## Tech Stack
@@ -136,6 +149,18 @@ Open `.env` and review values. Defaults work for local development:
 | `JWT_SECRET` | `dev_jwt_secret_change_me` | Signing key for access tokens — change in production |
 | `JWT_EXPIRES_IN` | `7d` | Token lifetime |
 | `PORT` | `3000` | NestJS listen port |
+| `NODE_ENV` | `development` | Environment mode |
+| `GOOGLE_CLIENT_ID` | `dummy-client-id` | Google OAuth2 client ID |
+| `GOOGLE_CLIENT_SECRET` | `dummy-client-secret` | Google OAuth2 client secret |
+| `GOOGLE_CALLBACK_URL` | `http://localhost:3000/api/v1/auth/google/callback` | OAuth2 redirect URL |
+| `MINIO_ENDPOINT` | `localhost` | MinIO host |
+| `MINIO_PORT` | `9000` | MinIO API port |
+| `MINIO_ACCESS_KEY` | `stm_minio` | MinIO access key |
+| `MINIO_SECRET_KEY` | `stm_minio_secret_123` | MinIO secret key |
+| `MINIO_USE_SSL` | `false` | TLS for MinIO |
+| `INTERNAL_TOKEN` | `stm_internal_secret_dev` | Shared secret for `/internal/*` endpoints — Celery workers call NestJS with `X-Internal-Token: <value>`. Change in production. |
+
+> Note: `apps/nestjs/.env.example` is identical to the root `.env.example`. When running inside Docker Compose, variables are injected via `docker-compose.yml` directly — no separate NestJS `.env` is needed. The per-app `.env` is only used for Option B (running NestJS outside Docker).
 
 ### Step 3 — Start with Docker Compose (recommended)
 
@@ -262,6 +287,12 @@ For subsequent work, follow the standard cycle: `git checkout -b feat/xyz` → c
 
 Start only the infrastructure in Docker, run NestJS directly for faster iteration:
 
+**NestJS `.env`** (Option B only):
+
+```powershell
+Copy-Item apps\nestjs\.env.example apps\nestjs\.env
+```
+
 ```powershell
 # 1. Start infra only
 docker compose up postgres redis minio minio-init -d
@@ -273,6 +304,61 @@ npm install
 # 3. Start with hot-reload
 npm run start:dev
 ```
+
+NestJS will listen at `http://localhost:3000/api/v1`. Make sure `apps/nestjs/.env` exists.
+
+### Alternative: Run FastAPI locally (Option C)
+
+```powershell
+# 1. Install Python dependencies (first time only)
+cd apps\fastapi
+pip install -r requirements.txt
+
+# 2. Start FastAPI with auto-reload
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+# 3. Start Celery worker (separate terminal)
+celery -A app.celery_app worker --loglevel=info --queues=default,freshness,leaderboard,ai_pipeline
+
+# 4. Start Celery beat (separate terminal)
+celery -A app.celery_app beat --loglevel=info
+```
+
+Requires `apps/fastapi/.env` or env vars exported in the shell.
+
+### Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| stm-postgres keeps restarting | Port 5432 already in use | Change POSTGRES_PORT in .env or stop local Postgres |
+| NestJS exits immediately | DATABASE_URL wrong or Postgres not healthy | docker compose logs api-nestjs and docker compose logs postgres |
+| stm-minio-init exits non-zero | Bucket creation race | docker compose logs minio-init; then docker compose up minio-init once |
+| FastAPI asyncpg connect refused | Celery sync URL uses async driver | SYNC_DATABASE_URL must use postgresql+psycopg:// |
+| 403 Forbidden on /internal/* | Missing or wrong X-Internal-Token | Match header to INTERNAL_TOKEN in .env |
+| 409 Conflict on second vote | Duplicate-vote guard | Correct — one reviewer may vote once per candidate |
+| GET /spatial/signs returns 0 | No ACTIVE signs within bbox | Seed data via revalidation / consensus, or widen bbox |
+
+### Quản trị Cơ sở dữ liệu với pgAdmin
+
+> **Lưu ý:** pgAdmin đang được cấu hình chạy ở chế độ Desktop (`SERVER_MODE = False`), do đó bạn sẽ vào thẳng dashboard mà không qua màn hình đăng nhập. (Việc log báo HTTP 302 redirect là hành vi chuẩn của chế độ này; cảnh báo lỗi CSRF khi POST bằng cURL thiếu token có thể bỏ qua hoàn toàn).
+
+#### Hướng dẫn Truy cập và Truy vấn
+
+1. **Mở Dashboard:** Truy cập [http://localhost:5050](http://localhost:5050) trên trình duyệt web.
+2. **Kết nối Server:** Ở thanh điều hướng bên trái, mở rộng **Servers** > **Docker** và double-click vào **SignTrustMap (local)** (Server này đã được pre-register sẵn).
+3. **Xác thực (Lần đầu):** Khi popup yêu cầu mật khẩu hiện lên, nhập `stm_password` và tick chọn **"Save Password"** để hệ thống tự động ghi nhớ.
+4. **Xem Dữ liệu Bảng (UI):** Điều hướng theo cây thư mục sau để xem dữ liệu trực quan:
+
+```mermaid
+flowchart LR
+    Servers["Servers"] --> Docker["SignTrustMap (local)"]
+    Docker --> DB["Databases (signtrustmap)"]
+    DB --> Schemas["Schemas (public)"]
+    Schemas --> Tables["Tables"]
+    Tables --> NS["navigation_sessions<br/>(Chuột phải → Chọn 'View/Edit Data')"]
+```
+
+Để chạy query tự do: click vào `signtrustmap` → menu `Tools > Query Tool` → gõ SQL → F5.
 
 ---
 
@@ -473,6 +559,16 @@ Sign-type create and update requests accept `aiLabelPrompt`, `representativeImag
 | GET | `/notifications` | JWT | List notifications for the authenticated user, unread first. Query: `page`, `pageSize` |
 | PATCH | `/notifications/:id/read` | JWT | Mark a single notification as read |
 | PATCH | `/notifications/read-all` | JWT | Mark all notifications as read |
+
+### Moderation — `moderation`
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/moderation/missing-type-reports` | REVIEWER/STAFF/ADMIN | List missing sign type reports. Query: `page`, `pageSize` |
+| GET | `/moderation/missing-type-reports/:id` | REVIEWER/STAFF/ADMIN | Get a single missing-type report |
+| GET | `/moderation/cases` | STAFF/ADMIN | List moderation cases. Query: `status`, `page`, `pageSize` |
+| GET | `/moderation/cases/:id` | STAFF/ADMIN | Get a single moderation case |
+| PUT | `/moderation/cases/:id/resolve` | STAFF/ADMIN | Resolve a case. Body: `{ resolution, note? }` |
 
 ### Admin — `admin` (requires ADMIN role)
 
@@ -681,125 +777,8 @@ SignTrustMap is a comprehensive platform integrating Crowdsourcing, Artificial I
 
 ---
 
+---
+
 ## License
 
 Proprietary — internal PPL-HK253 project. Not for public distribution.
-
-| GET | `/catalog/sign-types/:id` | JWT | Get a single sign type |
-| POST | `/catalog/sign-types` | ADMIN | Create a sign type |
-| PATCH | `/catalog/sign-types/:id` | ADMIN | Update a sign type |
-| DELETE | `/catalog/sign-types/:id` | ADMIN | Delete a sign type |
-| GET | `/admin/system-parameters` | ADMIN | List tunable system parameters (consensus thresholds, reward amounts, etc.) |
-| GET | `/admin/system-parameters/:key` | ADMIN | Get a single parameter by key |
-| PUT | `/admin/system-parameters/:key` | ADMIN | Upsert a parameter value. Body: `{ value, description? }` |
-
-### Moderation — `moderation`
-
-| Method | Path | Auth | Description |
-|---|---|---|---|
-| GET | `/moderation/missing-type-reports` | REVIEWER/STAFF/ADMIN | List missing sign type reports. Query: `page`, `pageSize` |
-| GET | `/moderation/missing-type-reports/:id` | REVIEWER/STAFF/ADMIN | Get a single missing-type report |
-| GET | `/moderation/cases` | STAFF/ADMIN | List moderation cases. Query: `status`, `page`, `pageSize` |
-| GET | `/moderation/cases/:id` | STAFF/ADMIN | Get a single moderation case |
-| PUT | `/moderation/cases/:id/resolve` | STAFF/ADMIN | Resolve a case. Body: `{ resolution, note? }` |
-
-│               └── leaderboard.py   # Leaderboard materialized view refresh
-```
-
-```
-
-NestJS will listen at http://localhost:3000/api/v1. Make sure apps/nestjs/.env exists.
-
-### Alternative: Run FastAPI locally (Option C)
-
-```powershell
-# 1. Install Python dependencies (first time only)
-cd apps\fastapi
-pip install -r requirements.txt
-
-# 2. Start FastAPI with auto-reload
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-
-# 3. Start Celery worker (separate terminal)
-celery -A app.celery_app worker --loglevel=info --queues=default,freshness,leaderboard,ai_pipeline
-
-# 4. Start Celery beat (separate terminal)
-celery -A app.celery_app beat --loglevel=info
-```
-
-Requires apps/fastapi/.env or env vars exported in the shell.
-
-### Troubleshooting
-
-| Symptom | Likely cause | Fix |
-|---|---|---|
-| stm-postgres keeps restarting | Port 5432 already in use | Change POSTGRES_PORT in .env or stop local Postgres |
-| NestJS exits immediately | DATABASE_URL wrong or Postgres not healthy | docker compose logs api-nestjs and docker compose logs postgres |
-| stm-minio-init exits non-zero | Bucket creation race | docker compose logs minio-init; then docker compose up minio-init once |
-| FastAPI asyncpg connect refused | Celery sync URL uses async driver | SYNC_DATABASE_URL must use postgresql+psycopg:// |
-| 403 Forbidden on /internal/* | Missing or wrong X-Internal-Token | Match header to INTERNAL_TOKEN in .env |
-| 409 Conflict on second vote | Duplicate-vote guard | Correct — one reviewer may vote once per candidate |
-| GET /spatial/signs returns 0 | No ACTIVE signs within bbox | Seed data via revalidation / consensus, or widen bbox |
-
-
-| `NODE_ENV` | `development` | Environment mode |
-| `GOOGLE_CLIENT_ID` | `dummy-client-id` | Google OAuth2 client ID |
-| `GOOGLE_CLIENT_SECRET` | `dummy-client-secret` | Google OAuth2 client secret |
-| `GOOGLE_CALLBACK_URL` | `http://localhost:3000/api/v1/auth/google/callback` | OAuth2 redirect URL |
-| `MINIO_ENDPOINT` | `localhost` | MinIO host |
-| `MINIO_PORT` | `9000` | MinIO API port |
-| `MINIO_ACCESS_KEY` | `stm_minio` | MinIO access key |
-| `MINIO_SECRET_KEY` | `stm_minio_secret_123` | MinIO secret key |
-| `MINIO_USE_SSL` | `false` | TLS for MinIO |
-| `INTERNAL_TOKEN` | `stm_internal_secret_dev` | Shared secret for `/internal/*` endpoints — Celery workers call NestJS with `X-Internal-Token: <value>`. Change in production. |
-
-> Note: `apps/nestjs/.env.example` is identical to the root `.env.example`. When running inside Docker Compose, variables are injected via `docker-compose.yml` directly — no separate NestJS `.env` is needed. The per-app `.env` is only used for Option B (running NestJS outside Docker).
-
-**NestJS `.env`** (Option B only):
-
-```powershell
-Copy-Item apps\nestjs\.env.example apps\nestjs\.env
-```
-
-                                        | + celery-beat (scheduler)   |
-                                        +-----------------------------+
-                                                     |
-                                                     v
-                                        +------------------------+
-                                        | MinIO  :9000 / :9001  |
-                                        | stm-raw-videos         |
-                                        | stm-gpx-logs           |
-                                        | stm-sign-crops         |
-                                        | stm-revalidation-ev.   |
-                                        | stm-catalog-images     |
-                                        +------------------------+
-```
-
-## Quản trị Cơ sở dữ liệu với pgAdmin
-
-> **Lưu ý:** pgAdmin đang được cấu hình chạy ở chế độ Desktop (`SERVER_MODE = False`), do đó bạn sẽ vào thẳng dashboard mà không qua màn hình đăng nhập. (Việc log báo HTTP 302 redirect là hành vi chuẩn của chế độ này; cảnh báo lỗi CSRF khi POST bằng cURL thiếu token có thể bỏ qua hoàn toàn).
-
-
-
-
-### Hướng dẫn Truy cập và Truy vấn
-
-1. **Mở Dashboard:** Truy cập [http://localhost:5050](http://localhost:5050) trên trình duyệt web.
-2. **Kết nối Server:** Ở thanh điều hướng bên trái, mở rộng **Servers** > **Docker** và double-click vào **SignTrustMap (local)** (Server này đã được pre-register sẵn).
-3. **Xác thực (Lần đầu):** Khi popup yêu cầu mật khẩu hiện lên, nhập `stm_password` và tick chọn **"Save Password"** để hệ thống tự động ghi nhớ.
-4. **Xem Dữ liệu Bảng (UI):** Điều hướng theo cây thư mục sau để xem dữ liệu trực quan:
-   ```text
-   Servers
-    └─ SignTrustMap (local)
-        └─ Databases
-            └─ signtrustmap
-                └─ Schemas
-                    └─ public
-                        └─ Tables
-                            └─ navigation_sessions (Chuột phải → Chọn "View/Edit Data")
-
-```
-
-Để chạy query tự do: click vào `signtrustmap` → menu `Tools > Query Tool` → gõ SQL → F5.
-
----
