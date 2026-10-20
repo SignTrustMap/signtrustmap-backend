@@ -46,6 +46,16 @@ class Settings(BaseSettings):
     INTERNAL_API_TOKEN: str = Field(default="stm_internal_secret_dev")
     NESTJS_INTERNAL_URL: str = Field(default="http://localhost:3000")
 
+    # ---- Offline PMTiles maps ----------------------------------------------
+    PMTILES_DATA_DIR: str = Field(
+        default="/data/pmtiles",
+        description="Path to directory containing offline PMTiles archives.",
+    )
+    PMTILES_DEFAULT_FILE: str = Field(
+        default="osm.pmtiles",
+        description="Default PMTiles file name.",
+    )
+
     # ---- Spatial / Navigation tuning ----------------------------------------
     # Search radius (metres) for ST_DWithin when finding nearby signs.
     NAVIGATION_SEARCH_RADIUS_M: int = Field(default=50, gt=0, le=500)
