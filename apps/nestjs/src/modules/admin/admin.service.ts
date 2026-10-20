@@ -1,5 +1,7 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
+import { User } from '../auth/infrastructure/persistence/user.entity';
+import { AuditLog } from './audit-log.entity';
 import {
   UpdateConsensusConfigDto,
   UpdateRouteMatrixDto,
@@ -11,19 +13,63 @@ import {
 export class AdminService {
   constructor(private readonly dataSource: DataSource) { }
   async listUsers(q: { role?: string; status?: string; search?: string; page?: number; pageSize?: number }) {
-    const p = Math.max(1, q.page ?? 1); const ps = Math.min(Math.max(1, q.pageSize ?? 20), 100); const offset = (p - 1) * ps;
-    let where = '1=1'; const params: any[] = []; let idx = 1;
-    if (q.status) { where += ' AND u.status = $' + idx++; params.push(q.status); }
-    if (q.search) { where += ' AND (u.email ILIKE $' + idx + ' OR u.full_name ILIKE $' + idx + ')'; params.push('%' + q.search + '%'); idx++; }
-    let roleJoin = '';
-    if (q.role) { roleJoin = ' JOIN user_roles ur ON ur.user_id = u.id AND ur.is_active = true JOIN roles r ON r.id = ur.role_id AND r.code = $' + idx++; params.push(q.role); }
-    const countRows: any[] = await this.dataSource.query('SELECT COUNT(DISTINCT u.id)::int AS cnt FROM users u ' + roleJoin + ' WHERE ' + where, params);
-    const total = countRows[0]?.cnt ?? 0;
-    const rows: any[] = await this.dataSource.query(
-      'SELECT u.id, u.email, u.full_name, u.phone, u.avatar_url, u.status, u.created_at, u.updated_at, COALESCE(json_agg(DISTINCT r2.code) FILTER (WHERE r2.code IS NOT NULL), \'[]\') AS roles FROM users u LEFT JOIN user_roles ur2 ON ur2.user_id = u.id AND ur2.is_active = true LEFT JOIN roles r2 ON r2.id = ur2.role_id ' + roleJoin + ' WHERE ' + where + ' GROUP BY u.id ORDER BY u.created_at DESC LIMIT $' + idx++ + ' OFFSET $' + idx,
-      [...params, ps, offset],
-    );
-    return { items: rows, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
+    const page = Math.max(1, q.page ?? 1);
+    const pageSize = Math.min(Math.max(1, q.pageSize ?? 20), 100);
+    const skip = (page - 1) * pageSize;
+
+    const qb = this.dataSource
+      .getRepository(User)
+      .createQueryBuilder('u')
+      .leftJoinAndSelect('u.userRoles', 'ur', 'ur.isActive = true')
+      .leftJoinAndSelect('ur.role', 'r');
+
+    if (q.status) {
+      qb.andWhere('u.status = :status', { status: q.status });
+    }
+
+    if (q.search) {
+      qb.andWhere('(u.email ILIKE :search OR u.fullName ILIKE :search)', {
+        search: `%${q.search}%`,
+      });
+    }
+
+    if (q.role) {
+      qb.andWhere(
+        `EXISTS (
+          SELECT 1 FROM user_roles sub_ur
+          JOIN roles sub_r ON sub_r.id = sub_ur.role_id
+          WHERE sub_ur.user_id = u.id AND sub_ur.is_active = true AND sub_r.code = :role
+        )`,
+        { role: q.role },
+      );
+    }
+
+    const [users, total] = await qb
+      .orderBy('u.createdAt', 'DESC')
+      .skip(skip)
+      .take(pageSize)
+      .getManyAndCount();
+
+    const items = users.map((u) => ({
+      id: u.id,
+      email: u.email,
+      fullName: u.fullName,
+      full_name: u.fullName,
+      phone: u.phone,
+      avatarUrl: u.avatarUrl,
+      avatar_url: u.avatarUrl,
+      status: u.status,
+      createdAt: u.createdAt,
+      created_at: u.createdAt,
+      updatedAt: u.updatedAt,
+      updated_at: u.updatedAt,
+      roles: (u.userRoles || [])
+        .filter((ur) => ur.isActive)
+        .map((ur) => ur.role?.code)
+        .filter((code): code is string => Boolean(code)),
+    }));
+
+    return { items, total, page, pageSize, totalPages: Math.ceil(total / pageSize) };
   }
   async updateUserStatus(userId: string, newStatus: string, reason: string | undefined, changedBy: string, ip?: string) {
     const rows: any[] = await this.dataSource.query('SELECT id, status FROM users WHERE id=$1', [userId]);
@@ -48,16 +94,50 @@ export class AdminService {
     return { userId, roleCode, roleId, isActive };
   }
   async listAuditLogs(q: { action?: string; resourceName?: string; userId?: string; page?: number; pageSize?: number }) {
-    const p = Math.max(1, q.page ?? 1); const ps = Math.min(Math.max(1, q.pageSize ?? 20), 100); const offset = (p - 1) * ps;
-    const conds: string[] = []; const params: any[] = []; let idx = 1;
-    if (q.action) { conds.push('action = $' + idx++); params.push(q.action); }
-    if (q.resourceName) { conds.push('resource_name = $' + idx++); params.push(q.resourceName); }
-    if (q.userId) { conds.push('user_id = $' + idx++); params.push(q.userId); }
-    const where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
-    const countRows: any[] = await this.dataSource.query('SELECT COUNT(*)::int AS cnt FROM audit_logs ' + where, params);
-    const total = countRows[0]?.cnt ?? 0;
-    const rows: any[] = await this.dataSource.query('SELECT * FROM audit_logs ' + where + ' ORDER BY created_at DESC LIMIT $' + idx++ + ' OFFSET $' + idx, [...params, ps, offset]);
-    return { items: rows, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
+    const page = Math.max(1, q.page ?? 1);
+    const pageSize = Math.min(Math.max(1, q.pageSize ?? 20), 100);
+    const skip = (page - 1) * pageSize;
+
+    const qb = this.dataSource
+      .getRepository(AuditLog)
+      .createQueryBuilder('a');
+
+    if (q.action) {
+      qb.andWhere('a.action = :action', { action: q.action });
+    }
+    if (q.resourceName) {
+      qb.andWhere('a.resourceName = :resourceName', { resourceName: q.resourceName });
+    }
+    if (q.userId) {
+      qb.andWhere('a.userId = :userId', { userId: q.userId });
+    }
+
+    const [rows, total] = await qb
+      .orderBy('a.createdAt', 'DESC')
+      .skip(skip)
+      .take(pageSize)
+      .getManyAndCount();
+
+    const items = rows.map((r) => ({
+      id: r.id,
+      user_id: r.userId,
+      userId: r.userId,
+      action: r.action,
+      resource_name: r.resourceName,
+      resourceName: r.resourceName,
+      resource_id: r.resourceId,
+      resourceId: r.resourceId,
+      old_values: r.oldValues,
+      oldValues: r.oldValues,
+      new_values: r.newValues,
+      newValues: r.newValues,
+      ip_address: r.ipAddress,
+      ipAddress: r.ipAddress,
+      created_at: r.createdAt,
+      createdAt: r.createdAt,
+    }));
+
+    return { items, total, page, pageSize, totalPages: Math.ceil(total / pageSize) };
   }
   async exportSigns(format: string, status?: string) {
     const where = status ? 'WHERE v.status = $1' : '';

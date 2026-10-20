@@ -388,69 +388,70 @@ export class HazardsService {
   async listHazards(query: QueryHazardsDto) {
     const page = Math.max(1, query.page ?? 1);
     const pageSize = Math.min(Math.max(1, query.pageSize ?? 20), 100);
-    const conditions: string[] = ['status IN (\'UNCONFIRMED\', \'CONFIRMED\')', 'expires_at > NOW()'];
-    const params: any[] = [];
-    let idx = 1;
+    const skip = (page - 1) * pageSize;
+
+    const qb = this.hazardRepo
+      .createQueryBuilder('h')
+      .where("h.status IN ('UNCONFIRMED', 'CONFIRMED')")
+      .andWhere('h.expires_at > NOW()');
 
     if (query.status) {
-      conditions.push(`status = $${idx++}`);
-      params.push(query.status);
+      qb.andWhere('h.status = :status', { status: query.status });
     }
 
-    let selectDistance = 'NULL AS distance_meters';
-    let orderBy = 'created_at DESC';
+    qb.select([
+      'h.id AS id',
+      'h.reported_by AS reported_by',
+      'h.hazard_type AS hazard_type',
+      'h.title AS title',
+      'h.severity AS severity',
+      'h.description AS description',
+      'h.status AS status',
+      'h.confirmations_count AS confirmations_count',
+      'h.dismissals_count AS dismissals_count',
+      'h.reward_paid AS reward_paid',
+      'h.expires_at AS expires_at',
+      'h.created_at AS created_at',
+      'h.updated_at AS updated_at',
+      'ST_Y(h.location::geometry) AS lat',
+      'ST_X(h.location::geometry) AS lon',
+    ]);
 
     if (query.lat != null && query.lon != null) {
       const radius = query.radiusMeters ?? 10000;
-      conditions.push(
-        `ST_DWithin(location::geography, ST_SetSRID(ST_MakePoint($${idx++}, $${idx++}), 4326)::geography, $${idx++})`,
+      qb.andWhere(
+        'ST_DWithin(h.location::geography, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)::geography, :radius)',
+        { lon: query.lon, lat: query.lat, radius },
       );
-      params.push(query.lon, query.lat, radius);
-
-      selectDistance = `ST_Distance(location::geography, ST_SetSRID(ST_MakePoint($${idx - 3}, $${idx - 2}), 4326)::geography) AS distance_meters`;
-      orderBy = 'distance_meters ASC';
+      qb.addSelect(
+        'ST_Distance(h.location::geography, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)::geography)',
+        'distance_meters',
+      );
+      qb.orderBy('distance_meters', 'ASC');
     } else if (
       query.minLat != null &&
       query.minLon != null &&
       query.maxLat != null &&
       query.maxLon != null
     ) {
-      conditions.push(
-        `ST_Within(location, ST_MakeEnvelope($${idx++}, $${idx++}, $${idx++}, $${idx++}, 4326))`,
+      qb.andWhere(
+        'ST_Within(h.location, ST_MakeEnvelope(:minLon, :minLat, :maxLon, :maxLat, 4326))',
+        {
+          minLon: query.minLon,
+          minLat: query.minLat,
+          maxLon: query.maxLon,
+          maxLat: query.maxLat,
+        },
       );
-      params.push(query.minLon, query.minLat, query.maxLon, query.maxLat);
+      qb.addSelect('NULL', 'distance_meters');
+      qb.orderBy('h.created_at', 'DESC');
+    } else {
+      qb.addSelect('NULL', 'distance_meters');
+      qb.orderBy('h.created_at', 'DESC');
     }
 
-    const whereClause = 'WHERE ' + conditions.join(' AND ');
-
-    const countRows: any[] = await this.dataSource.query(
-      `SELECT COUNT(*)::int AS cnt FROM road_hazard_events ${whereClause}`,
-      params,
-    );
-    const total = countRows[0]?.cnt ?? 0;
-
-    const rows: any[] = await this.dataSource.query(
-      `SELECT
-         id,
-         reported_by,
-         hazard_type, title, severity,
-         description,
-         status,
-         confirmations_count,
-         dismissals_count,
-         reward_paid,
-         expires_at,
-         created_at,
-         updated_at,
-         ST_Y(location::geometry) AS lat,
-         ST_X(location::geometry) AS lon,
-         ${selectDistance}
-       FROM road_hazard_events
-       ${whereClause}
-       ORDER BY ${orderBy}
-       LIMIT $${idx++} OFFSET $${idx++}`,
-      [...params, pageSize, (page - 1) * pageSize],
-    );
+    const total = await qb.getCount();
+    const rows = await qb.offset(skip).limit(pageSize).getRawMany();
 
     const items = rows.map((r) => this.formatHazardRow(r));
     return {
