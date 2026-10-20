@@ -1,38 +1,82 @@
 import { DataSource } from 'typeorm';
 import { NotFoundException, BadRequestException } from '@nestjs/common';
 import { AdminService } from './admin.service';
+import { User } from '../auth/infrastructure/persistence/user.entity';
+import { AuditLog } from './audit-log.entity';
 
 describe('AdminService', () => {
   let service: AdminService;
-  let dataSource: { query: jest.Mock };
+  let dataSource: any;
+  let mockUserQueryBuilder: any;
+  let mockAuditQueryBuilder: any;
 
   beforeEach(() => {
+    mockUserQueryBuilder = {
+      leftJoinAndSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getManyAndCount: jest.fn(),
+    };
+
+    mockAuditQueryBuilder = {
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getManyAndCount: jest.fn(),
+    };
+
     dataSource = {
       query: jest.fn(),
+      getRepository: jest.fn().mockImplementation((entity) => {
+        if (entity === User) {
+          return {
+            createQueryBuilder: jest.fn().mockReturnValue(mockUserQueryBuilder),
+          };
+        }
+        if (entity === AuditLog) {
+          return {
+            createQueryBuilder: jest.fn().mockReturnValue(mockAuditQueryBuilder),
+          };
+        }
+        return {
+          createQueryBuilder: jest.fn().mockReturnValue(mockUserQueryBuilder),
+        };
+      }),
     };
     service = new AdminService(dataSource as unknown as DataSource);
   });
 
   describe('listUsers', () => {
     it('returns paginated users without filters', async () => {
-      dataSource.query
-        .mockResolvedValueOnce([{ cnt: 2 }]) // count query
-        .mockResolvedValueOnce([
-          { id: 'u1', email: 'user1@stm.dev', roles: ['ADMIN'] },
-          { id: 'u2', email: 'user2@stm.dev', roles: ['DRIVER'] },
-        ]); // select query
+      mockUserQueryBuilder.getManyAndCount.mockResolvedValueOnce([
+        [
+          { id: 'u1', email: 'user1@stm.dev', fullName: 'User 1', userRoles: [{ isActive: true, role: { code: 'ADMIN' } }] },
+          { id: 'u2', email: 'user2@stm.dev', fullName: 'User 2', userRoles: [{ isActive: true, role: { code: 'DRIVER' } }] },
+        ],
+        2,
+      ]);
 
       const result = await service.listUsers({});
       expect(result.total).toBe(2);
       expect(result.items.length).toBe(2);
       expect(result.page).toBe(1);
       expect(result.pageSize).toBe(20);
+      expect(result.items[0].roles).toEqual(['ADMIN']);
+      expect(result.items[1].roles).toEqual(['DRIVER']);
     });
 
     it('applies status, search, and role filters', async () => {
-      dataSource.query
-        .mockResolvedValueOnce([{ cnt: 1 }])
-        .mockResolvedValueOnce([{ id: 'u1', email: 'test@stm.dev', roles: ['STAFF'] }]);
+      mockUserQueryBuilder.getManyAndCount.mockResolvedValueOnce([
+        [
+          { id: 'u1', email: 'test@stm.dev', fullName: 'Test User', userRoles: [{ isActive: true, role: { code: 'STAFF' } }] },
+        ],
+        1,
+      ]);
 
       const result = await service.listUsers({
         status: 'ACTIVE',
@@ -45,7 +89,15 @@ describe('AdminService', () => {
       expect(result.total).toBe(1);
       expect(result.page).toBe(2);
       expect(result.pageSize).toBe(10);
-      expect(dataSource.query).toHaveBeenCalledTimes(2);
+      expect(mockUserQueryBuilder.andWhere).toHaveBeenCalledWith('u.status = :status', { status: 'ACTIVE' });
+      expect(mockUserQueryBuilder.andWhere).toHaveBeenCalledWith(
+        '(u.email ILIKE :search OR u.fullName ILIKE :search)',
+        { search: '%test%' },
+      );
+      expect(mockUserQueryBuilder.andWhere).toHaveBeenCalledWith(
+        expect.stringContaining('EXISTS'),
+        { role: 'STAFF' },
+      );
     });
   });
 
@@ -117,9 +169,10 @@ describe('AdminService', () => {
 
   describe('listAuditLogs', () => {
     it('returns filtered audit logs', async () => {
-      dataSource.query
-        .mockResolvedValueOnce([{ cnt: 1 }])
-        .mockResolvedValueOnce([{ id: 1, action: 'UPDATE_STATUS' }]);
+      mockAuditQueryBuilder.getManyAndCount.mockResolvedValueOnce([
+        [{ id: '1', action: 'UPDATE_STATUS', resourceName: 'users', userId: 'admin-1', createdAt: new Date() }],
+        1,
+      ]);
 
       const result = await service.listAuditLogs({
         action: 'UPDATE_STATUS',
@@ -131,6 +184,10 @@ describe('AdminService', () => {
 
       expect(result.total).toBe(1);
       expect(result.items.length).toBe(1);
+      expect(result.items[0].action).toBe('UPDATE_STATUS');
+      expect(mockAuditQueryBuilder.andWhere).toHaveBeenCalledWith('a.action = :action', { action: 'UPDATE_STATUS' });
+      expect(mockAuditQueryBuilder.andWhere).toHaveBeenCalledWith('a.resourceName = :resourceName', { resourceName: 'users' });
+      expect(mockAuditQueryBuilder.andWhere).toHaveBeenCalledWith('a.userId = :userId', { userId: 'admin-1' });
     });
   });
 
