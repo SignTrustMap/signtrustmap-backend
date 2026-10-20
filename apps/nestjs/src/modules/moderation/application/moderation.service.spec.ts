@@ -168,6 +168,53 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     expect(result.report).toMatchObject({ status: MissingTypeStatus.APPROVED });
   });
 
+  it('approve-and-create-type completes approval even if bumpCatalogVersion or candidate release throws', async () => {
+    const { service, missing, catRepo, signTypeRepo, dataSource, catalogService } = buildService();
+    const report = { id: 'R1', status: MissingTypeStatus.PENDING, candidateId: 'C1', proposedName: 'No Horn', proposedCategoryId: 1, reporterId: 'U1' };
+    missing.findOne.mockResolvedValue(report);
+    catRepo.findOne.mockResolvedValue({ id: 1, code: 'PROHIBITORY' });
+    signTypeRepo.findOne.mockResolvedValue(null);
+    catalogService.createSignType.mockResolvedValue({ id: 42, signCode: 'P.128' });
+    dataSource.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('catalog_versions') || sql.includes('UPDATE unverified_sign_candidates')) {
+        throw new Error('PostgreSQL error');
+      }
+      return [];
+    });
+
+    const result = await service.approveAndCreateType('R1', 'staff-1', {
+      signCode: 'P.128',
+      nameVi: 'Cấm bấm còi',
+      nameEn: 'No Horn',
+      proposedCategoryId: 1,
+    });
+
+    expect(missing.save).toHaveBeenCalledWith(expect.objectContaining({ status: MissingTypeStatus.APPROVED, mergedIntoSignTypeId: 42 }));
+    expect(result.createdSignType).toMatchObject({ id: 42, signCode: 'P.128' });
+    expect(result.report).toMatchObject({ status: MissingTypeStatus.APPROVED });
+  });
+
+  it('approve-and-create-type reuses existing sign type if signCode already exists (idempotent retry)', async () => {
+    const { service, missing, catRepo, signTypeRepo, dataSource, catalogService } = buildService();
+    const report = { id: 'R1', status: MissingTypeStatus.PENDING, candidateId: 'C1', proposedName: 'No Horn', proposedCategoryId: 1, reporterId: 'U1' };
+    missing.findOne.mockResolvedValue(report);
+    catRepo.findOne.mockResolvedValue({ id: 1, code: 'PROHIBITORY' });
+    signTypeRepo.findOne.mockResolvedValue({ id: 751, signCode: 'T.404' });
+    dataSource.query.mockResolvedValue([]);
+
+    const result = await service.approveAndCreateType('R1', 'staff-1', {
+      signCode: 'T.404',
+      nameVi: 'Biển T.404',
+      nameEn: 'Sign T.404',
+      proposedCategoryId: 1,
+    });
+
+    expect(catalogService.createSignType).not.toHaveBeenCalled();
+    expect(missing.save).toHaveBeenCalledWith(expect.objectContaining({ status: MissingTypeStatus.APPROVED, mergedIntoSignTypeId: 751 }));
+    expect(result.createdSignType).toMatchObject({ id: 751, signCode: 'T.404' });
+    expect(result.report).toMatchObject({ status: MissingTypeStatus.APPROVED });
+  });
+
   it('syncs ModerationCase when a missing-type report is escalated to Admin and handles filter aliases', async () => {
     const { service, missing, cases, dataSource } = buildService();
     const report = { id: 'R-ESC', status: MissingTypeStatus.PENDING, candidateId: 'C1', staffNotes: 'Novel sign needing review' };
