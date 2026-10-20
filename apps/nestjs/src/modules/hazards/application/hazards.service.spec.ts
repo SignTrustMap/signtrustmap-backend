@@ -23,9 +23,22 @@ describe('HazardsService', () => {
 
   beforeEach(() => {
     queryMock = jest.fn().mockResolvedValue([]);
+    const mockHazardQueryBuilder: any = {
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      addSelect: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      offset: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      getCount: jest.fn(),
+      getRawMany: jest.fn(),
+    };
+
     hazardRepo = {
       findOne: jest.fn(),
       save: jest.fn(),
+      createQueryBuilder: jest.fn().mockReturnValue(mockHazardQueryBuilder),
     } as any;
     confirmRepo = {
       findOne: jest.fn(),
@@ -411,29 +424,26 @@ describe('HazardsService', () => {
 
   describe('listHazards', () => {
     it('queries active hazards with proximity coordinates and distance', async () => {
-      queryMock.mockImplementation(async (sql: string) => {
-        if (sql.includes('COUNT(*)')) {
-          return [{ cnt: 1 }];
-        }
-        return [
-          {
-            id: 'hazard-1',
-            reported_by: 'reporter-1',
-            hazard_type: 'SPEED_CHECK',
-            description: 'Radar',
-            status: HazardStatus.CONFIRMED,
-            confirmations_count: 3,
-            dismissals_count: 0,
-            reward_paid: true,
-            lat: 10.7769,
-            lon: 106.7009,
-            distance_meters: 154.2,
-            expires_at: new Date(Date.now() + 30 * 60 * 1000),
-            created_at: new Date(),
-            updated_at: new Date(),
-          },
-        ];
-      });
+      const qb = hazardRepo.createQueryBuilder();
+      (qb.getCount as jest.Mock).mockResolvedValueOnce(1);
+      (qb.getRawMany as jest.Mock).mockResolvedValueOnce([
+        {
+          id: 'hazard-1',
+          reported_by: 'reporter-1',
+          hazard_type: 'SPEED_CHECK',
+          description: 'Radar',
+          status: HazardStatus.CONFIRMED,
+          confirmations_count: 3,
+          dismissals_count: 0,
+          reward_paid: true,
+          lat: 10.7769,
+          lon: 106.7009,
+          distance_meters: 154.2,
+          expires_at: new Date(Date.now() + 30 * 60 * 1000),
+          created_at: new Date(),
+          updated_at: new Date(),
+        },
+      ]);
 
       const result = await service.listHazards({
         lat: 10.775,
@@ -447,26 +457,25 @@ describe('HazardsService', () => {
     });
 
     it('queries active hazards with bbox and status filter', async () => {
-      queryMock.mockImplementation(async (sql: string) => {
-        if (sql.includes('COUNT(*)')) return [{ cnt: 2 }];
-        return [
-          {
-            id: 'h-1',
-            reported_by: 'u-1',
-            hazard_type: 'POTHOLE',
-            status: HazardStatus.UNCONFIRMED,
-            confirmations_count: 1,
-            dismissals_count: 0,
-            reward_paid: false,
-            lat: 10.5,
-            lon: 106.5,
-            distance_meters: null,
-            expires_at: new Date(),
-            created_at: new Date(),
-            updated_at: new Date(),
-          },
-        ];
-      });
+      const qb = hazardRepo.createQueryBuilder();
+      (qb.getCount as jest.Mock).mockResolvedValueOnce(2);
+      (qb.getRawMany as jest.Mock).mockResolvedValueOnce([
+        {
+          id: 'h-1',
+          reported_by: 'u-1',
+          hazard_type: 'POTHOLE',
+          status: HazardStatus.UNCONFIRMED,
+          confirmations_count: 1,
+          dismissals_count: 0,
+          reward_paid: false,
+          lat: 10.5,
+          lon: 106.5,
+          distance_meters: null,
+          expires_at: new Date(),
+          created_at: new Date(),
+          updated_at: new Date(),
+        },
+      ]);
 
       const res = await service.listHazards({
         status: HazardStatus.UNCONFIRMED,
