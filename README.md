@@ -652,6 +652,9 @@ No authentication — intended for map clients.
 |---|---|---|---|
 | GET | `/api/v1/spatial/signs` | Public | GeoJSON FeatureCollection of ACTIVE verified signs within a bounding box. Query: `min_lat`, `min_lon`, `max_lat`, `max_lon`, `sign_type_id?`, `category_id?` |
 | GET | `/api/v1/spatial/signs/{sign_id}` | Public | Full detail of a single verified sign including type metadata (404 if not found) |
+| GET | `/api/v1/spatial/tiles/offline/packs` | Public | List available offline PMTiles map packs with metadata (file size, zoom range, bounds, download URLs) |
+| GET | `/api/v1/spatial/tiles/offline/download/:packId` | Public | Download or stream a PMTiles archive with RFC 7233 HTTP Range request support (`206 Partial Content`) |
+| GET | `/api/v1/spatial/tiles/offline/:packId.pmtiles` | Public | Direct `.pmtiles` extension endpoint for MapLibre PMTiles protocol streaming adapters |
 
 ### FastAPI — Smart Navigation — `spatial/navigation`
 
