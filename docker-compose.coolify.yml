@@ -99,6 +99,8 @@ services:
       MINIO_REGION: ${MINIO_REGION:-}
       INTERNAL_API_TOKEN: ${INTERNAL_TOKEN:-stm_internal_secret_dev}
       NESTJS_INTERNAL_URL: http://api-nestjs:3000
+    volumes:
+      - ${PMTILES_DIR:-/home/ubuntu/pmtiles}:/data/pmtiles:ro
     ports:
       - "${FASTAPI_PORT:-8088}:8000"
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
