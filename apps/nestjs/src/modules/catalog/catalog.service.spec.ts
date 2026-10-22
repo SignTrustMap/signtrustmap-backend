@@ -180,6 +180,67 @@ describe('CatalogService', () => {
     );
   });
 
+  it('rejects a sign code that is not abbreviation.number with an optional alphanumeric suffix', async () => {
+    const typeRepository = repository<TrafficSignType>();
+    const categoryRepository = repository<SignCategory>();
+    const manager = {
+      getRepository: jest.fn((target) => {
+        if (target === SignCategory) return categoryRepository;
+        if (target === TrafficSignType) return typeRepository;
+        return repository<any>();
+      }),
+    } as unknown as EntityManager;
+    categoryRepository.findOne.mockResolvedValue(entity<SignCategory>({ id: 2 }));
+    typeRepository.create.mockImplementation((value) => value as TrafficSignType);
+    typeRepository.save.mockImplementation(async (value) => ({
+      ...(value as TrafficSignType),
+      id: 12,
+    }));
+    typeRepository.find.mockResolvedValue([]);
+    (dataSource.transaction as jest.Mock).mockImplementation(
+      (callback: (transactionManager: EntityManager) => unknown) => callback(manager),
+    );
+
+    await expect(service.createSignType({
+      categoryId: 2,
+      signCode: 'P.127-40',
+      nameVi: 'Tốc độ',
+      nameEn: 'Speed',
+      representativeImageKey: 'existing-image.png',
+    })).rejects.toThrow('sign_code must match');
+    expect(typeRepository.findOne).not.toHaveBeenCalled();
+  });
+
+  it('maps a database unique violation to a conflict during concurrent sign creation', async () => {
+    const typeRepository = repository<TrafficSignType>();
+    const categoryRepository = repository<SignCategory>();
+    const manager = {
+      getRepository: jest.fn((target) => {
+        if (target === SignCategory) return categoryRepository;
+        if (target === TrafficSignType) return typeRepository;
+        return repository<any>();
+      }),
+    } as unknown as EntityManager;
+    categoryRepository.findOne.mockResolvedValue(entity<SignCategory>({ id: 2 }));
+    typeRepository.findOne.mockResolvedValue(null);
+    typeRepository.create.mockImplementation((value) => value as TrafficSignType);
+    typeRepository.save.mockRejectedValue(Object.assign(new Error('duplicate key'), {
+      code: '23505',
+      constraint: 'UQ_traffic_sign_types_sign_code',
+    }));
+    (dataSource.transaction as jest.Mock).mockImplementation(
+      (callback: (transactionManager: EntityManager) => unknown) => callback(manager),
+    );
+
+    await expect(service.createSignType({
+      categoryId: 2,
+      signCode: 'P.999',
+      nameVi: 'Tốc độ',
+      nameEn: 'Speed',
+      representativeImageKey: 'existing-image.png',
+    })).rejects.toThrow('sign_code "P.999" exists');
+  });
+
   it('rejects malformed OSM mappings before replacing stored mappings', async () => {
     const typeRepository = repository<TrafficSignType>();
     const mappingRepository = repository<SignTypeOsmMapping>();
@@ -401,6 +462,65 @@ describe('CatalogService', () => {
 
     it('triggerPrototypeRebuild throws if catalogSyncService is missing', async () => {
       await expect(service.triggerPrototypeRebuild()).rejects.toThrow();
+    });
+  });
+
+  describe('Representative image upload', () => {
+    it('rejects an unsupported MIME type before touching storage', async () => {
+      const storage = {
+        putObject: jest.fn(),
+        removeObject: jest.fn(),
+      } as any;
+      const uploadService = new CatalogService(
+        categories,
+        signTypes,
+        parameters,
+        aiPrompts,
+        osmMappings,
+        images,
+        dataSource,
+        undefined,
+        storage,
+      );
+      signTypes.findOne.mockResolvedValue(entity<TrafficSignType>({ id: 12 }));
+
+      await expect(uploadService.uploadRepresentativeImage(12, {
+        buffer: Buffer.from('not-an-image'),
+        size: 12,
+        mimetype: 'application/pdf',
+      } as Express.Multer.File)).rejects.toThrow('must be JPEG');
+      expect(storage.putObject).not.toHaveBeenCalled();
+    });
+
+    it('removes only the newly uploaded object when database persistence fails', async () => {
+      const storage = {
+        putObject: jest.fn().mockResolvedValue(undefined),
+        removeObject: jest.fn().mockResolvedValue(undefined),
+        getPublicUrl: jest.fn().mockReturnValue('https://s3.test/new.jpg'),
+      } as any;
+      const uploadDataSource = { transaction: jest.fn().mockRejectedValue(new Error('db down')) } as any;
+      const uploadService = new CatalogService(
+        categories,
+        signTypes,
+        parameters,
+        aiPrompts,
+        osmMappings,
+        images,
+        uploadDataSource,
+        undefined,
+        storage,
+      );
+      signTypes.findOne.mockResolvedValue(entity<TrafficSignType>({ id: 12 }));
+      const file = {
+        buffer: Buffer.from([0xff, 0xd8, 0xff, 0x00]),
+        size: 4,
+        mimetype: 'image/jpeg',
+      } as Express.Multer.File;
+
+      await expect(uploadService.uploadRepresentativeImage(12, file)).rejects.toThrow('db down');
+      expect(storage.putObject).toHaveBeenCalledTimes(1);
+      expect(storage.removeObject).toHaveBeenCalledTimes(1);
+      expect(storage.removeObject.mock.calls[0][0].bucket).toBe('stm-sign-crops');
     });
   });
 

@@ -175,6 +175,8 @@ export class CatalogService {
     return (await this.enrichSignTypes([signType]))[0];
   }
 
+  async uploadRepresentativeImage(file: Express.Multer.File, signCode?: string): Promise<string>;
+  async uploadRepresentativeImage(signTypeId: number, file?: Express.Multer.File): Promise<CatalogSignType>;
   async uploadRepresentativeImage(
     fileOrSignTypeId: Express.Multer.File | number,
     signCodeOrFile?: string | Express.Multer.File,

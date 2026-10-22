@@ -6,6 +6,7 @@ import { CatalogService } from './catalog.service';
 describe('CatalogController', () => {
   const service = {
     listSignTypes: jest.fn(),
+    uploadRepresentativeImage: jest.fn(),
   } as unknown as CatalogService;
   const controller = new CatalogController(service);
 
@@ -35,6 +36,9 @@ describe('CatalogController', () => {
       'ADMIN',
     ]);
     expect(Reflect.getMetadata(ROLES_KEY, CatalogController.prototype.updateSignType)).toEqual([
+      'ADMIN',
+    ]);
+    expect(Reflect.getMetadata(ROLES_KEY, CatalogController.prototype.uploadRepresentativeImage)).toEqual([
       'ADMIN',
     ]);
   });
