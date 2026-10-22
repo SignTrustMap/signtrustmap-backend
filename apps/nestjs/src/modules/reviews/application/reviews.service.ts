@@ -9,7 +9,7 @@ import {
   UnverifiedSignCandidate,
 } from '../../survey/infrastructure/persistence/unverified-sign-candidate.entity';
 import { TrafficSignType } from '../../catalog/traffic-sign-type.entity';
-import { VoteDto, RequestRecaptureDto } from '../presentation/dto/vote.dto';
+import { VoteDto, RequestRecaptureDto, SelectSignRemedyDto } from '../presentation/dto/vote.dto';
 import { ConsensusService } from '../../consensus/application/consensus.service';
 import { SpatialAdminService } from '../../spatial-admin/application/spatial-admin.service';
 import { ReviewerSkippedCandidate } from '../infrastructure/persistence/reviewer-skipped-candidate.entity';
@@ -88,10 +88,44 @@ export class ReviewsService implements OnModuleInit {
         nameVi: prediction.nameVi ?? signType?.nameVi ?? null,
         nameEn: signType?.nameEn ?? null,
         confidence: Number(prediction.confidence ?? prediction.classifyConfidence ?? 0),
+        reason: 'AI top-5 classification match',
       };
     });
 
+    candidate.possibleSigns = items;
+    await this.candidateRepo.save(candidate);
+
     return { candidateId, items };
+  }
+
+  async selectSignRemedy(reviewerId: string, candidateId: string, dto: SelectSignRemedyDto) {
+    const candidate = await this.candidateRepo.findOne({ where: { id: candidateId } });
+    if (!candidate) throw new NotFoundException('Candidate ' + candidateId + ' not found');
+    if (![CandidateStatus.PENDING_REVIEW, CandidateStatus.IN_CONSENSUS].includes(candidate.status)) {
+      throw new BadRequestException('Candidate is not available for remedy selection');
+    }
+
+    const suggestions = Array.isArray(candidate.possibleSigns) ? candidate.possibleSigns : [];
+    if (!suggestions.some((item: any) => Number(item?.signTypeId) === dto.signTypeId)) {
+      throw new BadRequestException('signTypeId must be one of the persisted AI suggestions');
+    }
+
+    const signType = await this.signTypeRepo.findOne({ where: { id: dto.signTypeId, isActive: true } as any });
+    if (!signType) throw new BadRequestException('Selected sign type is not active');
+
+    candidate.selectedSignTypeId = signType.id;
+    candidate.selectedBy = reviewerId;
+    candidate.selectedAt = new Date();
+    candidate.selectionReason = dto.reason ?? null;
+    await this.candidateRepo.save(candidate);
+
+    return {
+      candidateId,
+      selectedSignTypeId: candidate.selectedSignTypeId,
+      selectedBy: candidate.selectedBy,
+      selectedAt: candidate.selectedAt,
+      reason: candidate.selectionReason,
+    };
   }
 
   async onModuleInit() {

@@ -7,4 +7,5 @@ export interface SignRemedySuggestion {
   nameVi: string | null;
   nameEn: string | null;
   confidence: number;
+  reason: string;
 }

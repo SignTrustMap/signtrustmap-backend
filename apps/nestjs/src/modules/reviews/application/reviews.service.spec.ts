@@ -79,6 +79,7 @@ describe('ReviewsService sign remedies', () => {
   it('maps AI top five predictions to catalog sign types', async () => {
     const candidateRepo = {
       findOne: jest.fn().mockResolvedValue({ id: 'candidate-1', signCropUrl: 'https://s3.example/crop.jpg' }),
+      save: jest.fn().mockImplementation(async (candidate) => candidate),
     } as any;
     const signTypeRepo = {
       find: jest.fn().mockResolvedValue([
@@ -118,9 +119,44 @@ describe('ReviewsService sign remedies', () => {
         nameVi: 'Công trường',
         nameEn: 'Road works',
         confidence: 0.82,
+        reason: 'AI top-5 classification match',
       }],
     });
     expect(aiInferenceService.classifyEarly).toHaveBeenCalledWith({ mediaUrl: 'https://s3.example/crop.jpg' });
+    expect(candidateRepo.save).toHaveBeenCalledWith(expect.objectContaining({
+      possibleSigns: [expect.objectContaining({ signTypeId: 7, confidence: 0.82 })],
+    }));
+  });
+
+  it('allows a reviewer to select one persisted AI suggestion', async () => {
+    const candidate = {
+      id: 'candidate-1',
+      status: CandidateStatus.PENDING_REVIEW,
+      possibleSigns: [{ signTypeId: 7, confidence: 0.82, reason: 'AI top-5 classification match' }],
+    };
+    const candidateRepo = {
+      findOne: jest.fn().mockResolvedValue(candidate),
+      save: jest.fn().mockImplementation(async (value) => value),
+    } as any;
+    const signTypeRepo = {
+      findOne: jest.fn().mockResolvedValue({ id: 7, isActive: true }),
+    } as any;
+    const service = new ReviewsService(candidateRepo, {} as any, signTypeRepo, {} as any);
+
+    await expect(service.selectSignRemedy('reviewer-1', 'candidate-1', { signTypeId: 7 }))
+      .resolves.toMatchObject({ candidateId: 'candidate-1', selectedSignTypeId: 7, selectedBy: 'reviewer-1' });
+    expect(candidateRepo.save).toHaveBeenCalledWith(expect.objectContaining({ selectedSignTypeId: 7, selectedBy: 'reviewer-1' }));
+  });
+
+  it('rejects selection outside the persisted AI suggestions', async () => {
+    const candidateRepo = {
+      findOne: jest.fn().mockResolvedValue({ id: 'candidate-1', status: CandidateStatus.PENDING_REVIEW, possibleSigns: [{ signTypeId: 7 }] }),
+    } as any;
+    const signTypeRepo = { findOne: jest.fn().mockResolvedValue({ id: 8, isActive: true }) } as any;
+    const service = new ReviewsService(candidateRepo, {} as any, signTypeRepo, {} as any);
+
+    await expect(service.selectSignRemedy('reviewer-1', 'candidate-1', { signTypeId: 8 }))
+      .rejects.toThrow('must be one of the persisted AI suggestions');
   });
 });
 

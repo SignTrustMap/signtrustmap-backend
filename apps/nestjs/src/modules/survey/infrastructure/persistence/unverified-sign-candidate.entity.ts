@@ -54,6 +54,18 @@ export class UnverifiedSignCandidate {
   @Column({ name: 'possible_signs', type: 'jsonb', nullable: true })
   possibleSigns?: any;
 
+  @Column({ name: 'selected_sign_type_id', type: 'int', nullable: true })
+  selectedSignTypeId?: number | null;
+
+  @Column({ name: 'selected_by', type: 'uuid', nullable: true })
+  selectedBy?: string | null;
+
+  @Column({ name: 'selected_at', type: 'timestamptz', nullable: true })
+  selectedAt?: Date | null;
+
+  @Column({ name: 'selection_reason', type: 'varchar', length: 500, nullable: true })
+  selectionReason?: string | null;
+
   top5?: any;
   remedySigns?: any;
   predictedSignTypes?: any;
