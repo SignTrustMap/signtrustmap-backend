@@ -5,7 +5,7 @@ import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { Public } from '../../../common/decorators/public.decorator';
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { ReviewsService } from '../application/reviews.service';
-import { VoteDto, ReportDto, TestReviewDto, TestAssignDto, RequestRecaptureDto, SubmitRecaptureDto } from './dto/vote.dto';
+import { VoteDto, ReportDto, TestReviewDto, TestAssignDto, RequestRecaptureDto, SubmitRecaptureDto, SelectSignRemedyDto } from './dto/vote.dto';
 import { InternalTokenGuard } from '../../../common/guards/internal-token.guard';
 
 @ApiTags('Reviews')
@@ -21,6 +21,18 @@ export class ReviewsController {
   @Get('candidates/:candidateId/sign-remedies')
   getSignRemedies(@Param('candidateId', ParseUUIDPipe) candidateId: string) {
     return this.reviewsService.getSignRemedies(candidateId);
+  }
+
+  @ApiBearerAuth()
+  @Roles('REVIEWER', 'ADMIN', 'STAFF')
+  @ApiOperation({ summary: 'Select an AI sign replacement suggestion', description: 'Persist the active AI top-five suggestion selected by the reviewer for this candidate' })
+  @Post('candidates/:candidateId/sign-remedies/select')
+  selectSignRemedy(
+    @CurrentUser() user: any,
+    @Param('candidateId', ParseUUIDPipe) candidateId: string,
+    @Body() dto: SelectSignRemedyDto,
+  ) {
+    return this.reviewsService.selectSignRemedy(user.id, candidateId, dto);
   }
 
   @ApiBearerAuth()

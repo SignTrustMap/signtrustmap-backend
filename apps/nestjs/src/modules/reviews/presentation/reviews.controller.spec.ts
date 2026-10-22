@@ -7,6 +7,7 @@ describe('ReviewsController', () => {
     getMyHistory: jest.Mock;
     getMyStats: jest.Mock;
     getSignRemedies: jest.Mock;
+    selectSignRemedy: jest.Mock;
     getCandidateDetail: jest.Mock;
     reportCandidate: jest.Mock;
     skipCandidate: jest.Mock;
@@ -32,6 +33,7 @@ describe('ReviewsController', () => {
       getMyHistory: jest.fn(),
       getMyStats: jest.fn(),
       getSignRemedies: jest.fn(),
+      selectSignRemedy: jest.fn(),
       getCandidateDetail: jest.fn(),
       reportCandidate: jest.fn(),
       skipCandidate: jest.fn(),
@@ -67,6 +69,15 @@ describe('ReviewsController', () => {
 
     expect(controller.getSignRemedies('00000000-0000-0000-0000-000000000001')).toEqual(remedies);
     expect(service.getSignRemedies).toHaveBeenCalledWith('00000000-0000-0000-0000-000000000001');
+  });
+
+  it('selectSignRemedy passes reviewer selection to the service', async () => {
+    const selection = { candidateId: 'cand-1', selectedSignTypeId: 7 };
+    const dto = { signTypeId: 7, reason: 'Best visual match' };
+    service.selectSignRemedy.mockResolvedValue(selection);
+
+    await expect(controller.selectSignRemedy(mockUser, 'cand-1', dto)).resolves.toEqual(selection);
+    expect(service.selectSignRemedy).toHaveBeenCalledWith(mockUser.id, 'cand-1', dto);
   });
 
   it('myStats and stats call service.getMyStats', async () => {

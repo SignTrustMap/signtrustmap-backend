@@ -53,6 +53,17 @@ export class SubmitRecaptureDto {
   longitude: number;
 }
 
+export class SelectSignRemedyDto {
+  @Type(() => Number)
+  @IsInt({ message: 'signTypeId must be an integer' })
+  signTypeId: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
+}
+
 export class TestReviewDto {
   @IsString()
   candidateId: string;
