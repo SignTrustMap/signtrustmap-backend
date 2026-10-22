@@ -17,14 +17,16 @@ import {
   UpsertSystemParameterDto,
 } from './dto/catalog.dto';
 import { SignCategory } from './sign-category.entity';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { SignTypeAiPrompt } from './sign-type-ai-prompt.entity';
 import { SignTypeImage } from './sign-type-image.entity';
 import { SignTypeOsmMapping } from './sign-type-osm-mapping.entity';
 import { SystemParameter } from './system-parameter.entity';
 import { TrafficSignType } from './traffic-sign-type.entity';
 import { CatalogSyncService } from '../../integrations/catalog-sync/catalog-sync.service';
-import { MinioStorageService } from '../../integrations/minio/minio-storage.service';
+import { MinioStorageService, STM_BUCKETS } from '../../integrations/minio/minio-storage.service';
+import { validateFileSignature } from '../survey/domain/media-validator';
+import { MediaFileType } from '../survey/domain/submission-contract';
 
 export interface ListSignTypesOptions {
   categoryId?: number;
@@ -173,10 +175,24 @@ export class CatalogService {
     return (await this.enrichSignTypes([signType]))[0];
   }
 
-  async uploadRepresentativeImage(file: Express.Multer.File, signCode?: string): Promise<string> {
+  async uploadRepresentativeImage(
+    fileOrSignTypeId: Express.Multer.File | number,
+    signCodeOrFile?: string | Express.Multer.File,
+  ): Promise<string | CatalogSignType> {
+    if (typeof fileOrSignTypeId === 'number') {
+      return this.replaceRepresentativeImage(fileOrSignTypeId, signCodeOrFile as Express.Multer.File);
+    }
+    const file = fileOrSignTypeId;
+    const signCode = typeof signCodeOrFile === 'string' ? signCodeOrFile : undefined;
     if (!file || !file.buffer) {
       throw new BadRequestException('File is missing or empty');
     }
+    if (!['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'].includes(file.mimetype)) {
+      throw new BadRequestException('Representative image must be JPEG, PNG, WebP, or HEIF');
+    }
+    if (file.size > 50 * 1024 * 1024) throw new BadRequestException('Representative image exceeds 50 MB');
+    const signature = validateFileSignature(MediaFileType.IMAGE, file.buffer);
+    if (!signature.valid) throw new BadRequestException(signature.error);
     const cleanCode = signCode ? signCode.toUpperCase().replace(/[^A-Z0-9._-]/g, '') : 'SIGN';
     const filename = (file.originalname || 'image.png').replace(/[^a-zA-Z0-9._-]/g, '');
     const key = `catalog/representative/${cleanCode}-${randomUUID()}-${filename}`;
@@ -201,12 +217,15 @@ export class CatalogService {
       }
 
       const signCode = dto.signCode.trim().toUpperCase();
+      this.validateSignCode(signCode);
       if (await signTypes.findOne({ where: { signCode: ILike(signCode) } })) {
         throw new ConflictException(`sign_code "${signCode}" exists`);
       }
       const now = new Date();
-      const signType = await signTypes.save(
-        signTypes.create({
+      let signType: TrafficSignType;
+      try {
+        signType = await signTypes.save(
+          signTypes.create({
           categoryId: dto.categoryId,
           signCode,
           slug: this.trimToNull(dto.slug)?.toUpperCase() ?? undefined,
@@ -221,8 +240,19 @@ export class CatalogService {
           createdAt: now,
           updatedAt: now,
           category,
-        }),
-      );
+          }),
+        );
+      } catch (error: any) {
+        if (error?.code === '23505') {
+          const duplicateField = this.uniqueViolationField(error);
+          throw new ConflictException(
+            duplicateField === 'sign_code'
+              ? `sign_code "${signCode}" exists`
+              : 'Catalog sign type violates a unique constraint',
+          );
+        }
+        throw error;
+      }
       await this.syncExtraFields(manager, signType.id, {
         ...dto,
         representativeImageKey: repImage,
@@ -257,6 +287,7 @@ export class CatalogService {
       }
       if (dto.signCode !== undefined) {
         const signCode = dto.signCode.trim().toUpperCase();
+        this.validateSignCode(signCode);
         const duplicate = await signTypes.findOne({
           where: { signCode: ILike(signCode) },
         });
@@ -295,7 +326,19 @@ export class CatalogService {
       }
       signType.updatedAt = new Date();
 
-      await signTypes.save(signType);
+      try {
+        await signTypes.save(signType);
+      } catch (error: any) {
+        if (error?.code === '23505') {
+          const duplicateField = this.uniqueViolationField(error);
+          throw new ConflictException(
+            duplicateField === 'sign_code'
+              ? `sign_code "${signType.signCode}" exists`
+              : 'Catalog sign type violates a unique constraint',
+          );
+        }
+        throw error;
+      }
       await this.syncExtraFields(manager, id, dto);
       return (await this.enrichSignTypes([signType], manager))[0];
     });
@@ -492,6 +535,19 @@ export class CatalogService {
     return value.trim() || null;
   }
 
+  private validateSignCode(signCode: string): void {
+    if (!/^[A-Z]+\.[0-9]+[A-Z0-9]*$/.test(signCode)) {
+      throw new BadRequestException(
+        'sign_code must match abbreviation.number with an optional alphanumeric suffix',
+      );
+    }
+  }
+
+  private uniqueViolationField(error: any): 'sign_code' | 'other' {
+    const text = `${error?.constraint ?? ''} ${error?.detail ?? ''} ${error?.message ?? ''}`.toLowerCase();
+    return text.includes('sign_code') ? 'sign_code' : 'other';
+  }
+
   // --- Support Shots (Few-Shot Visual Learning) Management Methods ---
 
   async listSupportShots(signTypeId: number) {
@@ -563,6 +619,42 @@ export class CatalogService {
     shot.isPinned = Boolean(isPinned);
     const updated = await this.signTypeImages.save(shot);
     return { updated: true, imageId, isPinned: updated.isPinned };
+  }
+
+  async replaceRepresentativeImage(signTypeId: number, file?: Express.Multer.File) {
+    if (!this.minioStorageService) throw new BadRequestException('Catalog image storage is not configured');
+    const signType = await this.signTypes.findOne({ where: { id: signTypeId } });
+    if (!signType) throw new NotFoundException(`TrafficSignType #${signTypeId} not found`);
+    if (!file?.buffer?.length) throw new BadRequestException('Representative image file is required');
+    if (!['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'].includes(file.mimetype)) {
+      throw new BadRequestException('Representative image must be JPEG, PNG, WebP, or HEIF');
+    }
+    if (file.size > 50 * 1024 * 1024) throw new BadRequestException('Representative image exceeds 50 MB');
+    const signature = validateFileSignature(MediaFileType.IMAGE, file.buffer);
+    if (!signature.valid) throw new BadRequestException(signature.error);
+
+    const reference = {
+      bucket: STM_BUCKETS.IMAGE,
+      objectName: `catalog/representative/${signTypeId}/${createHash('sha256').update(file.buffer).digest('hex').slice(0, 24)}-${randomUUID()}`,
+    };
+    try {
+      await this.minioStorageService.putObject(reference.bucket, reference.objectName, file.buffer, file.mimetype);
+      await this.dataSource.transaction(async (manager) => {
+        const images = manager.getRepository(SignTypeImage);
+        await images.update({ signTypeId, imageType: 'REPRESENTATIVE', isPrimary: true }, { isPrimary: false });
+        await images.save(images.create({
+          signTypeId,
+          imageUrl: this.minioStorageService!.getPublicUrl(reference.bucket, reference.objectName),
+          imageType: 'REPRESENTATIVE',
+          isPrimary: true,
+          role: 'REPRESENTATIVE',
+        }));
+      });
+    } catch (error) {
+      await this.minioStorageService.removeObject(reference).catch(() => undefined);
+      throw error;
+    }
+    return this.getSignType(signTypeId);
   }
 
   async triggerPrototypeRebuild() {

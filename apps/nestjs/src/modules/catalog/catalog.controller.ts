@@ -13,7 +13,7 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CatalogService } from './catalog.service';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -104,6 +104,22 @@ export class CatalogController {
       dto.representativeImageKey = await this.svc.uploadRepresentativeImage(file, dto.signCode);
     }
     return this.svc.updateSignType(id, dto);
+  }
+
+  @Roles('ADMIN')
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({ schema: { type: 'object', properties: { file: { type: 'string', format: 'binary' } }, required: ['file'] } })
+  @ApiOperation({
+    summary: 'Upload representative image for sign type',
+    description: 'Admin-only multipart upload that replaces the primary representative image while retaining prior stored objects.',
+  })
+  @Post('catalog/sign-types/:id/representative-image')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 50 * 1024 * 1024 } }))
+  uploadRepresentativeImage(
+    @Param('id', ParseIntPipe) id: number,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    return this.svc.uploadRepresentativeImage(id, file);
   }
 
   @Roles('ADMIN')
