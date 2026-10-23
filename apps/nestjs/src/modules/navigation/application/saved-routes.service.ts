@@ -1,15 +1,11 @@
-import {
-  BadRequestException,
-  Injectable,
-  NotFoundException,
-  Optional,
-} from '@nestjs/common';
+import { Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { VEHICLE_TYPES, VehicleType } from '../../../common/vehicle-types';
+import { VehicleType } from '../../../common/vehicle-types';
 import { RouteSignQueryService } from '../../sign-map/application/route-sign-query.service';
 import { decodePolyline, encodePolyline } from '../domain/encoded-polyline';
 import { RoutePointResponse } from '../domain/routing.types';
+import { RouteSignsResponse } from '../../sign-map/domain/verified-sign';
 import { SavedRoute } from '../infrastructure/persistence/saved-route.entity';
 import {
   CreateSavedRouteDto,
@@ -150,8 +146,7 @@ export class SavedRoutesService {
     const enabledCategories = route.filterRules?.categories;
     const onlyFixedSigns = route.filterRules?.onlyFixedSigns !== false;
 
-    const result = await this.routeSigns.findAlongRoute({
-      geometry,
+    const result = await this.findSignsForGeometry(geometry, {
       vehicleType,
       enabledCategoryCodes: enabledCategories,
       onlyFixedSigns,
@@ -164,6 +159,56 @@ export class SavedRoutesService {
       distanceMeters: route.distanceMeters,
       signCount: result.signCount,
       signs: result.signs,
+    };
+  }
+
+  private async findSignsForGeometry(
+    geometry: RoutePointResponse[],
+    options: Pick<Parameters<RouteSignQueryService['findAlongRoute']>[0],
+      'vehicleType' | 'enabledCategoryCodes' | 'onlyFixedSigns'>,
+  ): Promise<RouteSignsResponse> {
+    const maxPointsPerQuery = 5_000;
+    if (geometry.length <= maxPointsPerQuery) {
+      return this.routeSigns!.findAlongRoute({ geometry, ...options });
+    }
+
+    const signsById = new Map<string, RouteSignsResponse['signs'][number]>();
+    let routeDistanceMeters = 0;
+    let corridorWidthMeters = 30;
+    let start = 0;
+    const step = maxPointsPerQuery - 1;
+
+    while (start < geometry.length - 1) {
+      const chunk = geometry.slice(start, start + maxPointsPerQuery);
+      const result = await this.routeSigns!.findAlongRoute({ geometry: chunk, ...options });
+      corridorWidthMeters = result.corridorWidthMeters;
+
+      for (const upcoming of result.signs) {
+        const normalized = {
+          ...upcoming,
+          distanceAlongRouteMeters:
+            upcoming.distanceAlongRouteMeters + routeDistanceMeters,
+        };
+        const existing = signsById.get(upcoming.sign.id);
+        if (
+          !existing ||
+          normalized.distanceAlongRouteMeters < existing.distanceAlongRouteMeters
+        ) {
+          signsById.set(upcoming.sign.id, normalized);
+        }
+      }
+
+      routeDistanceMeters += result.routeDistanceMeters;
+      start += step;
+    }
+
+    return {
+      routeDistanceMeters,
+      corridorWidthMeters,
+      signCount: signsById.size,
+      signs: [...signsById.values()].sort(
+        (left, right) => left.distanceAlongRouteMeters - right.distanceAlongRouteMeters,
+      ),
     };
   }
 
