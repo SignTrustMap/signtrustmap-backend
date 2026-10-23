@@ -266,7 +266,7 @@ export class ModerationService {
     await this.missing.save(report);
 
     await this.reportSyncedBackend(created.id);
-    await this.notifyReporter(report, 'APPROVED', 'Missing-type report approved', 'Sign type "' + report.proposedName + '" was approved and added to the catalog as "' + signCode + '".');
+    await this.notifyReporter(report, 'APPROVED', 'Báo cáo loại biển báo đã được chấp thuận', 'Loại biển báo "' + report.proposedName + '" đã được chấp thuận và thêm vào danh mục với mã "' + signCode + '".');
 
     const [enriched] = await this.enrichWithCandidates([report]);
     return { report: enriched, createdSignType: created };
@@ -346,7 +346,8 @@ export class ModerationService {
       const relatedReportId = reportId || (mc.caseType === 'CATALOG_PROPOSAL' as any ? mc.targetEntityId : null);
       if (relatedReportId) {
         const rep: any = await this.missing.findOne({ where: { id: relatedReportId } as any });
-        if (rep?.reporterId) await this.notificationsService.create(rep.reporterId, 'MODERATION_RESOLVED', 'Missing-type report ' + actionType, 'Your report "' + rep.proposedName + '" was ' + actionType.toLowerCase() + '.', 'moderation_case', mc.id);
+        const actionText: Record<string, string> = { APPROVED: 'đã được chấp thuận', MERGED: 'đã được gộp vào loại biển báo hiện có', REJECTED: 'đã bị từ chối' };
+        if (rep?.reporterId) await this.notificationsService.create(rep.reporterId, 'MODERATION_RESOLVED', 'Cập nhật báo cáo loại biển báo', 'Báo cáo "' + rep.proposedName + '" của bạn ' + (actionText[actionType] ?? 'đã được xử lý') + '.', 'moderation_case', mc.id);
       }
     } catch {}
     return mc;
@@ -439,8 +440,8 @@ export class ModerationService {
         await this.notificationsService.create(
           surveyorId,
           'IMAGE_RECAPTURE_REQUESTED',
-          'YÃªu cáº§u chá»¥p láº¡i áº£nh biá»ƒn bÃ¡o',
-          `Quáº£n trá»‹ viÃªn yÃªu cáº§u chá»¥p láº¡i áº£nh biá»ƒn bÃ¡o: ${dto.resolutionNote ?? ''}`,
+          'Yêu cầu chụp lại ảnh biển báo',
+          `Quản trị viên yêu cầu chụp lại ảnh biển báo: ${dto.resolutionNote ?? ''}`,
           'candidate',
           resolved.target_entity_id,
         );
@@ -573,15 +574,16 @@ export class ModerationService {
     if (!candidate) return;
     if (report.status === MissingTypeStatus.REJECTED) {
       await this.candRepo.update({ id: report.candidateId }, { status: CandidateStatus.REJECTED });
-      await this.notifyReporter(report, 'REJECTED', 'Missing-type report rejected', 'Your report "' + report.proposedName + '" was rejected by staff.');
+      await this.notifyReporter(report, 'REJECTED', 'Báo cáo loại biển báo bị từ chối', 'Báo cáo "' + report.proposedName + '" của bạn đã bị nhân viên từ chối.');
     } else if (report.status === MissingTypeStatus.MERGED && report.mergedIntoSignTypeId != null) {
       await this.releaseCandidate(report.candidateId, report.mergedIntoSignTypeId);
-      await this.notifyReporter(report, 'MERGED', 'Missing-type report merged', 'Your report "' + report.proposedName + '" was mapped to existing sign type #' + report.mergedIntoSignTypeId + '.');
+      await this.notifyReporter(report, 'MERGED', 'Báo cáo loại biển báo đã được gộp', 'Báo cáo "' + report.proposedName + '" của bạn đã được gộp vào loại biển báo hiện có #' + report.mergedIntoSignTypeId + '.');
     } else if (report.status === MissingTypeStatus.APPROVED && previousStatus !== MissingTypeStatus.APPROVED && report.mergedIntoSignTypeId != null) {
       await this.releaseCandidate(report.candidateId, report.mergedIntoSignTypeId);
     } else if (report.status === MissingTypeStatus.INCOMPLETE || report.status === MissingTypeStatus.ESCALATED_ADMIN) {
       // candidate stays on hold; staff asked for more info
-      await this.notifyReporter(report, report.status, 'Missing-type report needs attention', 'Your report "' + report.proposedName + '" status: ' + report.status + '.');
+      const statusText = report.status === MissingTypeStatus.INCOMPLETE ? 'chưa đầy đủ' : 'được chuyển đến quản trị viên';
+      await this.notifyReporter(report, report.status, 'Báo cáo loại biển báo cần được bổ sung', 'Báo cáo "' + report.proposedName + '" của bạn đang ở trạng thái ' + statusText + '.');
     }
   }
 

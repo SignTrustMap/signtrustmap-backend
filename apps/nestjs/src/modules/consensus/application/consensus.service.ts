@@ -564,17 +564,23 @@ export class ConsensusService {
     logId: string,
   ) {
     try {
+      const outcomeText: Record<string, string> = {
+        APPROVED: 'đã được chấp thuận',
+        REJECTED: 'đã bị từ chối',
+        ESCALATED: 'đã được chuyển đến bộ phận kiểm duyệt',
+      };
+      const voteText = (vote: number) => (vote === 1 ? 'chấp thuận' : 'từ chối');
       const notifs = voterDetails.map((v) => ({
         userId: v.reviewerId,
         type: 'CONSENSUS_RESOLVED',
-        title: 'Candidate ' + outcomeLabel,
+        title: 'Ứng viên ' + (outcomeText[outcomeLabel] ?? outcomeLabel),
         message:
-          'Your vote (' +
-          (v.vote === 1 ? 'approve' : 'reject') +
-          ') on ' +
+          'Phiếu đánh giá (' +
+          voteText(v.vote) +
+          ') của bạn cho ứng viên ' +
           candidate.id.slice(0, 8) +
-          '... resolved as ' +
-          outcomeLabel +
+          '... có kết quả: ' +
+          (outcomeText[outcomeLabel] ?? outcomeLabel) +
           '.',
         relatedEntityType: 'consensus_log',
         relatedEntityId: logId,

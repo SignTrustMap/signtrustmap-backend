@@ -947,7 +947,9 @@ export class RevalidationService {
   private async notifySubmitters(taskId: string, evidenceRows: EvidenceRow[], winningDecision: RevalDecision, rewardAmount: number) {
     try {
       const uniqueSubmitters = [...new Set(evidenceRows.map(e => e.user_id as string))];
-      const notifs = uniqueSubmitters.map(uid => ({ userId: uid, type: 'REVALIDATION_CLOSED', title: 'Revalidation ' + winningDecision, message: 'Task ' + taskId.slice(0,8) + ' closed as ' + winningDecision + ' (+' + rewardAmount + ' credits).', relatedEntityType: 'revalidation_task', relatedEntityId: taskId }));
+      const decisionText: Record<string, string> = { UNCHANGED: 'không thay đổi', STILL_ACTIVE: 'vẫn đang hoạt động', CHANGED: 'đã thay đổi', MISSING: 'không còn tồn tại', REMOVED: 'đã bị gỡ bỏ', UNCLEAR: 'chưa thể xác định rõ', INVALID: 'không hợp lệ' };
+      const decisionLabel = decisionText[winningDecision] ?? winningDecision;
+      const notifs = uniqueSubmitters.map(uid => ({ userId: uid, type: 'REVALIDATION_CLOSED', title: 'Đã hoàn tất kiểm tra lại biển báo', message: 'Nhiệm vụ ' + taskId.slice(0,8) + ' đã hoàn tất với kết quả: ' + decisionLabel + ' (+' + rewardAmount + ' credits).', relatedEntityType: 'revalidation_task', relatedEntityId: taskId }));
       if (notifs.length) await this.notificationsService.createBulk(notifs as any);
     } catch {}
   }
