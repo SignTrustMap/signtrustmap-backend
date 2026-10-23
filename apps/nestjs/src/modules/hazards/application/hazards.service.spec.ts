@@ -327,7 +327,7 @@ describe('HazardsService', () => {
       expect(notificationsService.create).toHaveBeenCalledWith(
         'reporter-user',
         'HAZARD_CONFIRMED',
-        'Roadside Hazard Confirmed',
+        'Đã xác nhận cảnh báo nguy hiểm',
         expect.stringContaining('+10 credits'),
         'road_hazard_event',
         'hazard-1',

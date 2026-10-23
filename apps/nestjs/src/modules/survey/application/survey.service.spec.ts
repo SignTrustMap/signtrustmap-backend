@@ -912,8 +912,8 @@ describe('SurveyService submission contract', () => {
     expect(notificationsService.create).toHaveBeenCalledWith(
       userId,
       'SURVEY_NO_SIGNS',
-      'No signs detected',
-      expect.stringContaining('no traffic signs were detected'),
+      'Không phát hiện biển báo',
+      expect.stringContaining('không phát hiện biển báo giao thông nào'),
       'survey_submission',
       submissionId,
     );

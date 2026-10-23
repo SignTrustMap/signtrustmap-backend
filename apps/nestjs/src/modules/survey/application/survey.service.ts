@@ -1016,8 +1016,8 @@ export class SurveyService {
         await this.notificationsService.create(
           sub.surveyorId,
           'SURVEY_NO_SIGNS',
-          'No signs detected',
-          'Your submission ' + sub.id.slice(0, 8) + ' was processed, but no traffic signs were detected.',
+          'Không phát hiện biển báo',
+          'Bản gửi ' + sub.id.slice(0, 8) + ' đã được xử lý nhưng không phát hiện biển báo giao thông nào.',
           'survey_submission',
           sub.id,
         );
@@ -1073,7 +1073,7 @@ export class SurveyService {
     try { await this.dataSource.query('INSERT INTO submission_status_history (submission_id, old_status, new_status, note) VALUES ($1,$2::submission_status,$3::submission_status,$4)', [sub.id, String(oldStatus), String(SubmissionStatus.COMPLETED), note ?? 'AI pipeline completed']); } catch {}
     if (rewardAmount > 0) {
       try { await this.dataSource.query('INSERT INTO surveyor_profiles (user_id, total_submissions, total_verified_signs, total_credits_earned) VALUES ($1, 1, 0, $2) ON CONFLICT (user_id) DO UPDATE SET total_submissions = surveyor_profiles.total_submissions + 1, total_credits_earned = surveyor_profiles.total_credits_earned + $2', [sub.surveyorId, rewardAmount]); } catch {}
-      try { await this.notificationsService.create(sub.surveyorId, 'SURVEY_COMPLETED', 'Survey completed', 'Your submission ' + sub.id.slice(0,8) + ' has been processed (+' + rewardAmount + ' credits).', 'survey_submission', sub.id); } catch {}
+      try { await this.notificationsService.create(sub.surveyorId, 'SURVEY_COMPLETED', 'Khảo sát đã hoàn tất', 'Bản gửi ' + sub.id.slice(0,8) + ' đã được xử lý. Bạn nhận được +' + rewardAmount + ' credits.', 'survey_submission', sub.id); } catch {}
     }
     return { alreadyCompleted: false, submission: sub, rewardAmount };
   }

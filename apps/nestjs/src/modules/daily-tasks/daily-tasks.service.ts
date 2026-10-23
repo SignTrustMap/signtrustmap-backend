@@ -673,8 +673,8 @@ export class DailyTasksService {
         await this.notificationsService.create(
           userId,
           'DAILY_TASK_CLAIMED',
-          'Daily Challenge Completed!',
-          `You earned +${task.rewardCredits} credits for completing "${task.name}".`,
+          'Đã hoàn thành thử thách hằng ngày!',
+          `Bạn nhận được +${task.rewardCredits} credits khi hoàn thành nhiệm vụ "${task.name}".`,
           'daily_task',
           String(task.id),
         );

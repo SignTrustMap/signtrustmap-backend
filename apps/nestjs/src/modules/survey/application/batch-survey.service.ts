@@ -142,8 +142,8 @@ export class BatchSurveyService {
         await this.notificationsService.create(
           batch.userId,
           'BATCH_COMPLETED_NO_SIGNS',
-          'Batch Survey Completed',
-          `Batch ${batch.id.slice(0, 8)} processed ${batch.processedImages} images. No traffic signs detected (0 credits).`,
+          'Lô khảo sát đã hoàn tất',
+          `Lô khảo sát ${batch.id.slice(0, 8)} đã xử lý ${batch.processedImages} ảnh nhưng không phát hiện biển báo giao thông nào (0 credits).`,
           'batch_submission',
           batch.id,
         );
@@ -171,8 +171,8 @@ export class BatchSurveyService {
         await this.notificationsService.create(
           batch.userId,
           'BATCH_REWARD_WITHHELD',
-          'Batch Under Review',
-          `Batch ${batch.id.slice(0, 8)} has been submitted for verification due to contribution velocity limits.`,
+          'Lô khảo sát đang được kiểm tra',
+          `Lô khảo sát ${batch.id.slice(0, 8)} đã được gửi kiểm tra do vượt giới hạn tần suất đóng góp.`,
           'batch_submission',
           batch.id,
         );
@@ -197,8 +197,8 @@ export class BatchSurveyService {
         await this.notificationsService.create(
           batch.userId,
           'BATCH_DAILY_LIMIT',
-          'Daily Limit Reached',
-          `Batch ${batch.id.slice(0, 8)} processed successfully. Daily survey reward limit reached.`,
+          'Đã đạt giới hạn hằng ngày',
+          `Lô khảo sát ${batch.id.slice(0, 8)} đã được xử lý thành công nhưng đã đạt giới hạn thưởng khảo sát trong ngày.`,
           'batch_submission',
           batch.id,
         );
@@ -246,8 +246,8 @@ export class BatchSurveyService {
       await this.notificationsService.create(
         batch.userId,
         'BATCH_REWARD_PAID',
-        'Batch Survey Reward Paid',
-        `Batch ${batch.id.slice(0, 8)} verified! Extracted ${batch.extractedCandidates} sign candidate(s) (+${payoutAmount} credits).`,
+        'Đã nhận thưởng lô khảo sát',
+        `Lô khảo sát ${batch.id.slice(0, 8)} đã được xác minh và trích xuất ${batch.extractedCandidates} ứng viên biển báo (+${payoutAmount} credits).`,
         'batch_submission',
         batch.id,
       );

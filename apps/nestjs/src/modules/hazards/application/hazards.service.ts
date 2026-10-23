@@ -345,8 +345,8 @@ export class HazardsService {
         await this.notificationsService.create(
           hazard.reported_by,
           'HAZARD_CONFIRMED',
-          'Roadside Hazard Confirmed',
-          `Your reported hazard (${hazard.hazard_type}) reached consensus (+${reportReward} credits).`,
+          'Đã xác nhận cảnh báo nguy hiểm',
+          `Cảnh báo nguy hiểm (${hazard.hazard_type}) do bạn báo cáo đã được cộng đồng xác nhận (+${reportReward} credits).`,
           'road_hazard_event',
           hazardId,
         );
