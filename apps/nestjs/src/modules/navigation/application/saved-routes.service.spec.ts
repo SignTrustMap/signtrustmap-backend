@@ -184,5 +184,36 @@ describe('SavedRoutesService', () => {
         }),
       );
     });
+
+    it('queries long saved routes in overlapping chunks without losing signs', async () => {
+      const longGeometry = Array.from({ length: 5_001 }, (_, index) => ({
+        latitude: 10.7 + index * 0.00001,
+        longitude: 106.7 + index * 0.00001,
+      }));
+      mockRepo.findOne.mockResolvedValue({
+        ...sampleRoute,
+        encodedPolyline: encodePolyline(longGeometry),
+      });
+      mockRouteSigns.findAlongRoute.mockImplementation(async ({ geometry }: any) => ({
+        routeDistanceMeters: 100,
+        corridorWidthMeters: 30,
+        signCount: 1,
+        signs: [
+          {
+            sign: { id: 'sign-1', signType: { signCode: 'P.103a' } },
+            distanceAlongRouteMeters: geometry.length === 5_000 ? 50 : 10,
+          },
+        ],
+      }));
+
+      const preview = await service.getSignsForSavedRoute('user-uuid-1', 'route-uuid-1');
+
+      expect(mockRouteSigns.findAlongRoute).toHaveBeenCalledTimes(2);
+      expect(mockRouteSigns.findAlongRoute.mock.calls.map(([request]: any) => request.geometry.length))
+        .toEqual([5_000, 2]);
+      expect(preview.signCount).toBe(1);
+      expect(preview.signs[0].distanceAlongRouteMeters).toBe(50);
+      expect(preview.distanceMeters).toBe(sampleRoute.distanceMeters);
+    });
   });
 });
