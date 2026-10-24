@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, UnauthorizedException } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import { AuthService } from './auth.service';
+import { UserStatus } from '../infrastructure/persistence/user.entity';
 
 describe('AuthService (Registration and Role Assignment)', () => {
   let service: AuthService;
@@ -183,6 +184,45 @@ describe('AuthService (Registration and Role Assignment)', () => {
       expect(res.accessToken).toBe('mock-jwt-token');
       expect(res.user.roles).toEqual(['DRIVER']);
     });
+  });
+
+  describe('googleLogin', () => {
+    const googleUser = {
+      email: 'google@test.dev',
+      fullName: 'Google User',
+      avatarUrl: null,
+      providerUserId: 'google-sub-1',
+    };
+
+    it('issues a token for an ACTIVE existing user', async () => {
+      mockUserRepo.findOne.mockResolvedValue({
+        id: 'user-1',
+        email: googleUser.email,
+        fullName: googleUser.fullName,
+        status: UserStatus.ACTIVE,
+      });
+      mockUserRoleRepo.find.mockResolvedValue([]);
+
+      const result = await service.googleLogin(googleUser);
+
+      expect(result.accessToken).toBe('mock-jwt-token');
+      expect(mockJwtService.sign).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([UserStatus.SUSPENDED, UserStatus.BANNED])(
+      'rejects a %s existing user before issuing a token',
+      async (status) => {
+        mockUserRepo.findOne.mockResolvedValue({
+          id: 'user-1',
+          email: googleUser.email,
+          fullName: googleUser.fullName,
+          status,
+        });
+
+        await expect(service.googleLogin(googleUser)).rejects.toThrow(UnauthorizedException);
+        expect(mockJwtService.sign).not.toHaveBeenCalled();
+      },
+    );
   });
 
   describe('getProfile & updateProfile', () => {

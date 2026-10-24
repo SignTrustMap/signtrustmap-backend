@@ -111,6 +111,9 @@ export class AuthService {
         return { user: { id: saved.id, email: saved.email, fullName: saved.fullName, roles }, accessToken: this.signToken(saved, roles) };
       });
     }
+    if (user.status !== UserStatus.ACTIVE) {
+      throw new UnauthorizedException(`Account is ${user.status}`);
+    }
     await this.dataSource.query(`INSERT INTO "oauth_accounts" ("user_id","provider","provider_user_id","email") VALUES ($1,'GOOGLE',$2,$3) ON CONFLICT ("provider","provider_user_id") DO NOTHING`, [user.id, googleUser.providerUserId, googleUser.email]);
     const exists = await this.walletRepo.findOne({ where: { userId: user.id } });
     if (!exists) await this.walletRepo.save(this.walletRepo.create({ userId: user.id, balance: '0' }));
