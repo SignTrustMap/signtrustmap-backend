@@ -13,6 +13,14 @@ import { Wallet } from '../../wallet/infrastructure/persistence/wallet.entity';
 import { RegisterDto, LoginDto } from '../presentation/dto/auth.dto';
 import { JwtPayload } from '../domain/auth.types';
 
+type GoogleUserProfile = {
+  email: string;
+  fullName: string;
+  avatarUrl: string | null;
+  providerUserId: string;
+  emailVerified: boolean;
+};
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -87,23 +95,45 @@ export class AuthService {
     } catch {
       throw new UnauthorizedException('Invalid or expired Google token');
     }
-    if (!payload?.email) throw new UnauthorizedException('Google token contains no email');
+    if (!payload?.email || !payload.sub) throw new UnauthorizedException('Google token contains no stable identity');
+    if (payload.email_verified !== true) throw new UnauthorizedException('Google email is not verified');
     return this.googleLogin({
       email: payload.email,
       fullName: payload.name || payload.given_name || payload.email,
       avatarUrl: payload.picture || null,
       providerUserId: payload.sub,
+      emailVerified: true,
     });
   }
 
-  async googleLogin(googleUser: { email: string; fullName: string; avatarUrl: string | null; providerUserId: string }) {
+  async googleLogin(googleUser: GoogleUserProfile) {
     if (!googleUser.email) throw new BadRequestException('Google profile has no email');
+    if (!googleUser.providerUserId) throw new UnauthorizedException('Google profile has no stable identity');
+    const provider = 'GOOGLE';
+    const linkedAccounts: Array<{ user_id: string }> = await this.dataSource.query(
+      `SELECT "user_id" FROM "oauth_accounts" WHERE "provider" = $1 AND "provider_user_id" = $2 LIMIT 2`,
+      [provider, googleUser.providerUserId],
+    );
+    if (linkedAccounts.length > 1) throw new ConflictException('Google identity is linked more than once');
+    if (linkedAccounts.length === 1) {
+      const linkedUser = await this.userRepo.findOne({ where: { id: linkedAccounts[0].user_id } });
+      if (!linkedUser) throw new ConflictException('Google identity is linked to a missing account');
+      if (linkedUser.status !== UserStatus.ACTIVE) throw new UnauthorizedException(`Account is ${linkedUser.status}`);
+      const roles = await this.getRolesForUser(linkedUser.id);
+      return { user: { id: linkedUser.id, email: linkedUser.email, fullName: linkedUser.fullName, roles }, accessToken: this.signToken(linkedUser, roles) };
+    }
+    if (googleUser.emailVerified !== true) throw new UnauthorizedException('Google email is not verified');
     const user = await this.userRepo.findOne({ where: { email: googleUser.email } });
     if (!user) {
       return this.dataSource.transaction(async (manager) => {
         const newUser = manager.create(User, { email: googleUser.email, passwordHash: null, fullName: googleUser.fullName, avatarUrl: googleUser.avatarUrl, status: UserStatus.ACTIVE });
         const saved = await manager.save(newUser);
-        await manager.query(`INSERT INTO "oauth_accounts" ("user_id","provider","provider_user_id","email") VALUES ($1,'GOOGLE',$2,$3) ON CONFLICT ("provider","provider_user_id") DO NOTHING`, [saved.id, googleUser.providerUserId, googleUser.email]);
+        try {
+          await manager.query(`INSERT INTO "oauth_accounts" ("user_id","provider","provider_user_id","email") VALUES ($1,$2,$3,$4)`, [saved.id, provider, googleUser.providerUserId, googleUser.email]);
+        } catch (error: any) {
+          if (error?.code === '23505') throw new ConflictException('Google identity is already linked to another account');
+          throw error;
+        }
         const defaultRole = await manager.findOne(Role, { where: { code: 'SURVEYOR' } });
         if (defaultRole) await manager.save(manager.create(UserRole, { userId: saved.id, roleId: defaultRole.id, isActive: true }));
         await manager.save(manager.create(Wallet, { userId: saved.id, balance: '0' }));
@@ -114,7 +144,19 @@ export class AuthService {
     if (user.status !== UserStatus.ACTIVE) {
       throw new UnauthorizedException(`Account is ${user.status}`);
     }
-    await this.dataSource.query(`INSERT INTO "oauth_accounts" ("user_id","provider","provider_user_id","email") VALUES ($1,'GOOGLE',$2,$3) ON CONFLICT ("provider","provider_user_id") DO NOTHING`, [user.id, googleUser.providerUserId, googleUser.email]);
+    const existingLinks: Array<{ providerUserId: string }> = await this.dataSource.query(
+      `SELECT "provider_user_id" AS "providerUserId" FROM "oauth_accounts" WHERE "user_id" = $1 AND "provider" = $2 LIMIT 2`,
+      [user.id, provider],
+    );
+    if (existingLinks.some((link) => link.providerUserId !== googleUser.providerUserId)) {
+      throw new ConflictException('A different Google identity is already linked to this account');
+    }
+    try {
+      await this.dataSource.query(`INSERT INTO "oauth_accounts" ("user_id","provider","provider_user_id","email") VALUES ($1,$2,$3,$4)`, [user.id, provider, googleUser.providerUserId, googleUser.email]);
+    } catch (error: any) {
+      if (error?.code === '23505') throw new ConflictException('Google identity is already linked to another account');
+      throw error;
+    }
     const exists = await this.walletRepo.findOne({ where: { userId: user.id } });
     if (!exists) await this.walletRepo.save(this.walletRepo.create({ userId: user.id, balance: '0' }));
     const roles = await this.getRolesForUser(user.id);

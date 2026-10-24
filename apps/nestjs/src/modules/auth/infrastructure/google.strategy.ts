@@ -38,6 +38,7 @@ export class GoogleStrategy extends PassportStrategy(Strategy, 'google') {
       avatarUrl,
       provider: 'GOOGLE',
       providerUserId,
+      emailVerified: profile.emails?.[0]?.verified === true,
       accessToken,
     };
     done(null, user);

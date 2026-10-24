@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, UnauthorizedException } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
+import { OAuth2Client } from 'google-auth-library';
 import { AuthService } from './auth.service';
 import { UserStatus } from '../infrastructure/persistence/user.entity';
 
@@ -192,6 +193,7 @@ describe('AuthService (Registration and Role Assignment)', () => {
       fullName: 'Google User',
       avatarUrl: null,
       providerUserId: 'google-sub-1',
+      emailVerified: true,
     };
 
     it('issues a token for an ACTIVE existing user', async () => {
@@ -223,6 +225,84 @@ describe('AuthService (Registration and Role Assignment)', () => {
         expect(mockJwtService.sign).not.toHaveBeenCalled();
       },
     );
+
+    it('resolves an existing linked Google identity before matching by email', async () => {
+      mockDataSource.query.mockImplementation(async (sql: string) => {
+        if (sql.includes('FROM "oauth_accounts"') && sql.includes('provider_user_id')) {
+          return [{ user_id: 'linked-user-1' }];
+        }
+        return [];
+      });
+      mockUserRepo.findOne.mockResolvedValue({
+        id: 'linked-user-1',
+        email: 'local-email@example.com',
+        fullName: 'Linked User',
+        status: UserStatus.ACTIVE,
+      });
+      mockUserRoleRepo.find.mockResolvedValue([]);
+
+      const result = await service.googleLogin({
+        ...googleUser,
+        email: 'changed-google-email@example.com',
+        emailVerified: false,
+      });
+
+      expect(result.accessToken).toBe('mock-jwt-token');
+      expect(mockUserRepo.findOne).toHaveBeenCalledWith({ where: { id: 'linked-user-1' } });
+    });
+
+    it('rejects an unverified Google email before email-based linking', async () => {
+      await expect(service.googleLogin({ ...googleUser, emailVerified: false })).rejects.toThrow(UnauthorizedException);
+      expect(mockUserRepo.findOne).not.toHaveBeenCalled();
+      expect(mockJwtService.sign).not.toHaveBeenCalled();
+    });
+
+    it('requires email_verified in a Google ID token', async () => {
+      mockConfigService.get.mockReturnValue('google-client-id');
+      const verifySpy = jest.spyOn(OAuth2Client.prototype, 'verifyIdToken');
+      (verifySpy as any).mockResolvedValue({
+        getPayload: () => ({ email: 'google@test.dev', email_verified: false, sub: 'google-sub-1' }),
+      } as any);
+
+      await expect(service.googleTokenLogin('id-token')).rejects.toThrow(UnauthorizedException);
+      expect(mockUserRepo.findOne).not.toHaveBeenCalled();
+      verifySpy.mockRestore();
+    });
+
+    it('rejects linking when the local account already has another Google identity', async () => {
+      mockUserRepo.findOne.mockResolvedValue({
+        id: 'local-user-1',
+        email: googleUser.email,
+        fullName: 'Local User',
+        status: UserStatus.ACTIVE,
+      });
+      mockDataSource.query.mockImplementation(async (sql: string) => {
+        if (sql.includes('WHERE "user_id" = $1') && sql.includes('"provider" = $2')) {
+          return [{ id: 'oauth-1', providerUserId: 'different-google-sub' }];
+        }
+        return [];
+      });
+
+      await expect(service.googleLogin(googleUser)).rejects.toThrow(ConflictException);
+      expect(mockJwtService.sign).not.toHaveBeenCalled();
+    });
+
+    it('rejects a conflicting OAuth insert instead of silently ignoring it', async () => {
+      mockUserRepo.findOne.mockResolvedValue({
+        id: 'local-user-1',
+        email: googleUser.email,
+        fullName: 'Local User',
+        status: UserStatus.ACTIVE,
+      });
+      mockDataSource.query.mockImplementation(async (sql: string) => {
+        if (sql.includes('WHERE "user_id" = $1') && sql.includes('"provider" = $2')) return [];
+        if (sql.startsWith('INSERT INTO "oauth_accounts"')) throw { code: '23505' };
+        return [];
+      });
+
+      await expect(service.googleLogin(googleUser)).rejects.toThrow(ConflictException);
+      expect(mockJwtService.sign).not.toHaveBeenCalled();
+    });
   });
 
   describe('getProfile & updateProfile', () => {
