@@ -49,7 +49,12 @@ export class MomoPaymentService {
   /**
    * Initiates a payment request with MoMo Sandbox API
    */
-  async createPayment(userId: string, dto: CreateMomoPaymentDto) {
+  async createPayment(userId: string, dto: CreateMomoPaymentDto): Promise<any> {
+    const idempotencyKey = dto.idempotencyKey?.trim();
+    if (idempotencyKey) {
+      const existing = await this.orderRepo.findOne({ where: { userId, idempotencyKey } });
+      if (existing) return { paymentOrder: existing, idempotentReplay: true };
+    }
     let pkg: TopupPackage | null = null;
     let amountVnd = 0;
     let creditAmount = 0;
@@ -114,8 +119,32 @@ export class MomoPaymentService {
       amountVnd: String(amountVnd),
       gateway: 'MOMO',
       status: PaymentStatus.PENDING,
+      idempotencyKey: idempotencyKey || null,
     });
-    const savedOrder = await this.orderRepo.save(order);
+    let savedOrder: PaymentOrder;
+    try {
+      savedOrder = await this.orderRepo.save(order);
+    } catch (error: any) {
+      if (error?.code !== '23505' || !idempotencyKey) throw error;
+      const existing = await this.orderRepo.findOne({
+        where: { userId, idempotencyKey },
+      });
+      if (!existing) throw error;
+      return {
+        paymentOrder: {
+          id: existing.id,
+          orderCode: existing.orderCode,
+          packageId: existing.packageId,
+          packageName,
+          amountVnd: existing.amountVnd,
+          creditAmount,
+          gateway: existing.gateway,
+          status: existing.status,
+          createdAt: existing.createdAt,
+        },
+        idempotentReplay: true,
+      };
+    }
 
     const requestId = `${orderCode}-${Date.now()}`;
     const orderId = orderCode;
@@ -274,7 +303,10 @@ export class MomoPaymentService {
 
     // Transactional settlement
     return this.dataSource.transaction(async (manager) => {
-      const freshOrder = await manager.findOne(PaymentOrder, { where: { id: order.id } });
+      const freshOrder = await manager.findOne(PaymentOrder, {
+        where: { id: order.id },
+        lock: { mode: 'pessimistic_write' },
+      });
       if (!freshOrder) {
         throw new NotFoundException('PaymentOrder disappeared');
       }
@@ -303,6 +335,7 @@ export class MomoPaymentService {
         transactionType: TransactionType.TOP_UP,
         referenceType: 'payment_order',
         referenceId: freshOrder.id,
+        idempotencyKey: `payment:${freshOrder.id}`,
         description: `Top-up via MoMo (${freshOrder.orderCode}, transId: ${dto.transId})`,
       });
       await manager.save(tx);

@@ -134,7 +134,10 @@ export class PaymentsService {
 
     // Atomic: set order SUCCESS, credit wallet, insert credit transaction
     return this.dataSource.transaction(async (manager) => {
-      const fresh = await manager.findOne(PaymentOrder, { where: { id: order.id } });
+      const fresh = await manager.findOne(PaymentOrder, {
+        where: { id: order.id },
+        lock: { mode: 'pessimistic_write' },
+      });
       if (!fresh) throw new NotFoundException('PaymentOrder disappeared');
       if (fresh.status === PaymentStatus.SUCCESS) {
         return { callbackId: savedCb.id, orderId: fresh.id, orderCode: fresh.orderCode, status: PaymentStatus.SUCCESS, credited: false, message: 'Already settled inside transaction — no double credit' };
@@ -152,6 +155,7 @@ export class PaymentsService {
 
       const tx = manager.create(CreditTransaction, {
         walletId: wallet.id, amount: pkg.creditAmount, transactionType: TransactionType.TOP_UP,
+        idempotencyKey: `payment:${fresh.id}`,
         referenceType: 'payment_order', referenceId: fresh.id,
         description: `Top-up ${pkg.packageName} via ${fresh.gateway} (${fresh.orderCode})`,
       });

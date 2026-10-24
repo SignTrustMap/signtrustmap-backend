@@ -105,7 +105,10 @@ export class WalletService {
 
     const gateway = (dto.gateway || 'MOCK').toUpperCase();
     if (gateway === 'MOMO' && this.momoService) {
-      return this.momoService.createPayment(userId, { packageId: dto.packageId });
+      return this.momoService.createPayment(userId, {
+        packageId: dto.packageId,
+        ...(dto.idempotencyKey ? { idempotencyKey: dto.idempotencyKey } : {}),
+      });
     }
 
     await this.ensureWallet(userId);
@@ -117,8 +120,27 @@ export class WalletService {
       amountVnd: pkg.priceVnd,
       gateway: dto.gateway || 'MOCK',
       status: PaymentStatus.PENDING,
+      idempotencyKey: dto.idempotencyKey?.trim() || null,
     } as any);
-    const saved = (await this.orderRepo.save(order as any)) as unknown as PaymentOrder;
+    let saved: PaymentOrder;
+    try {
+      saved = (await this.orderRepo.save(order as any)) as unknown as PaymentOrder;
+    } catch (error: any) {
+      if (error?.code !== '23505' || !dto.idempotencyKey) throw error;
+      const existing = await this.orderRepo.findOne({
+        where: { userId, idempotencyKey: dto.idempotencyKey.trim() },
+      });
+      if (!existing) throw error;
+      return {
+        paymentOrder: {
+          id: existing.id, orderCode: existing.orderCode, packageId: existing.packageId,
+          packageName: pkg.packageName, amountVnd: existing.amountVnd,
+          creditAmount: pkg.creditAmount, gateway: existing.gateway,
+          status: existing.status, createdAt: existing.createdAt,
+        },
+        idempotentReplay: true,
+      };
+    }
     return {
       paymentOrder: {
         id: saved.id, orderCode: saved.orderCode, packageId: saved.packageId,
@@ -138,7 +160,10 @@ export class WalletService {
 
     const gateway = (dto.gateway || 'MOCK').toUpperCase();
     if (gateway === 'MOMO' && this.momoService) {
-      return this.momoService.createPayment(userId, { customAmount: amount });
+      return this.momoService.createPayment(userId, {
+        customAmount: amount,
+        ...(dto.idempotencyKey ? { idempotencyKey: dto.idempotencyKey } : {}),
+      });
     }
 
     await this.ensureWallet(userId);
@@ -168,8 +193,26 @@ export class WalletService {
     const order = this.orderRepo.create({
       userId, packageId: (pkg as any).id > 0 ? (pkg as any).id : 1,
       orderCode, amountVnd, gateway: dto.gateway || 'MOCK', status: PaymentStatus.PENDING,
+      idempotencyKey: dto.idempotencyKey?.trim() || null,
     } as any);
-    const saved = (await this.orderRepo.save(order as any)) as unknown as PaymentOrder;
+    let saved: PaymentOrder;
+    try {
+      saved = (await this.orderRepo.save(order as any)) as unknown as PaymentOrder;
+    } catch (error: any) {
+      if (error?.code !== '23505' || !dto.idempotencyKey) throw error;
+      const existing = await this.orderRepo.findOne({
+        where: { userId, idempotencyKey: dto.idempotencyKey.trim() },
+      });
+      if (!existing) throw error;
+      return {
+        paymentOrder: {
+          id: existing.id, orderCode: existing.orderCode, packageId: existing.packageId,
+          customAmount: amount, amountVnd: existing.amountVnd,
+          gateway: existing.gateway, status: existing.status, createdAt: existing.createdAt,
+        },
+        idempotentReplay: true,
+      };
+    }
     // Override credit amount for custom orders (stored in note / callback payload)
     return {
       paymentOrder: {
@@ -266,6 +309,23 @@ export class WalletService {
         wallet = await manager.save(wallet);
       }
 
+      if (options?.idempotencyKey) {
+        const existingAfterWalletLock = await manager.findOne(CreditTransaction, {
+          where: { idempotencyKey: options.idempotencyKey },
+        });
+        if (existingAfterWalletLock) {
+          const balance = existingAfterWalletLock.balanceAfter
+            ? Number(existingAfterWalletLock.balanceAfter)
+            : Number(wallet.balance);
+          return {
+            walletId: existingAfterWalletLock.walletId,
+            newBalance: balance,
+            txId: existingAfterWalletLock.id,
+            idempotentReplay: true,
+          };
+        }
+      }
+
       if (wallet.isFrozen) {
         throw new BadRequestException('Wallet is frozen. Credit operation rejected.');
       }
@@ -336,6 +396,22 @@ export class WalletService {
         lock: { mode: 'pessimistic_write' },
       });
       if (!wallet) throw new BadRequestException(`No wallet found for user ${userId}`);
+
+      if (options?.idempotencyKey) {
+        const existingAfterWalletLock = await manager.findOne(CreditTransaction, {
+          where: { idempotencyKey: options.idempotencyKey },
+        });
+        if (existingAfterWalletLock) {
+          return {
+            walletId: existingAfterWalletLock.walletId,
+            newBalance: existingAfterWalletLock.balanceAfter
+              ? Number(existingAfterWalletLock.balanceAfter)
+              : Number(wallet.balance),
+            txId: existingAfterWalletLock.id,
+            idempotentReplay: true,
+          };
+        }
+      }
 
       if (wallet.isFrozen) {
         throw new BadRequestException('Wallet is frozen. Deduction operation rejected.');

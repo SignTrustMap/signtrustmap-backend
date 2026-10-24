@@ -587,7 +587,7 @@ describe('ReviewsService test helpers', () => {
 
       expect(rawQuery).toHaveBeenCalledWith(
         expect.stringContaining('missing_type_report_id'),
-        ['cand-1', 'rev-1', 'surv-1', 'report-1', 'BLURRY', 'Too dark to verify sign'],
+        ['cand-1', 'rev-1', 'surv-1', 'report-1', 'BLURRY', 'Too dark to verify sign', null],
       );
       expect(notifications.create).toHaveBeenCalledWith(
         'surv-1',
@@ -661,6 +661,42 @@ describe('ReviewsService test helpers', () => {
       expect(candidates.manager.query).toHaveBeenCalledWith(
         expect.stringContaining("SET status = 'RECAPTURE_REQUESTED'"),
         ['cand-1'],
+      );
+    });
+
+    it('replays an existing recapture request for the same idempotency key', async () => {
+      const existing = {
+        id: 'req-existing',
+        candidate_id: 'cand-1',
+        surveyor_id: 'surv-1',
+        missing_type_report_id: 'report-1',
+        completed_at: null,
+      };
+      const rawQuery = jest.fn().mockResolvedValue([existing]);
+      const candidates = {
+        findOne: jest.fn().mockResolvedValue({
+          id: 'cand-1',
+          status: CandidateStatus.PENDING_REVIEW,
+          submission: { surveyorId: 'surv-1' },
+        }),
+        manager: { query: rawQuery },
+      } as any;
+      const service = new ReviewsService(candidates, {} as any, {} as any, {} as any);
+
+      const result = await service.requestRecapture(
+        'rev-1',
+        'cand-1',
+        { reason: 'BLURRY', idempotencyKey: 'recapture-retry-1' },
+      );
+
+      expect(result).toMatchObject({
+        success: true,
+        candidateId: 'cand-1',
+        missingTypeReportId: 'report-1',
+      });
+      expect(rawQuery).toHaveBeenCalledWith(
+        expect.stringContaining('idempotency_key = $2'),
+        ['rev-1', 'recapture-retry-1'],
       );
     });
   });
@@ -783,7 +819,7 @@ describe('ReviewsService test helpers', () => {
       expect(result.missingTypeReportId).toBe('report-1');
       expect(storage.putObject).toHaveBeenCalledTimes(2);
       expect(txQuery).toHaveBeenCalledWith(expect.stringContaining("status = 'PENDING'"), ['report-1', 'cand-1']);
-      expect(txQuery).toHaveBeenCalledWith(expect.stringContaining('completed_at = NOW()'), ['req-1']);
+      expect(txQuery).toHaveBeenCalledWith(expect.stringContaining('completed_at = NOW()'), ['req-1', null]);
     });
 
     it('rejects a non-owner before storage', async () => {

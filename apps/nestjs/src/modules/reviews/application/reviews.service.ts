@@ -1033,6 +1033,27 @@ export class ReviewsService implements OnModuleInit {
 
     const reason = dto.reason.trim();
     const note = dto.note?.trim() || null;
+    const idempotencyKey = dto.idempotencyKey?.trim() || null;
+    if (idempotencyKey) {
+      const existingRows = await (this.candidateRepo.manager as any).query(
+        `SELECT * FROM candidate_recapture_requests
+         WHERE reviewer_id = $1 AND idempotency_key = $2
+         LIMIT 1`,
+        [reviewerId, idempotencyKey],
+      );
+      if (existingRows.length === 1) {
+        const existing = existingRows[0];
+        return {
+          success: true,
+          candidateId: existing.candidate_id,
+          status: CandidateStatus.RECAPTURE_REQUESTED,
+          surveyorId: existing.surveyor_id,
+          missingTypeReportId: existing.missing_type_report_id,
+          recaptureRequest: existing,
+          notificationSent: false,
+        };
+      }
+    }
     const persistRequest = async (manager: any) => {
       const candidateRows = await manager.query(
         `SELECT status FROM unverified_sign_candidates WHERE id = $1 FOR UPDATE`,
@@ -1076,10 +1097,10 @@ export class ReviewsService implements OnModuleInit {
       }
       const rows = await manager.query(
         `INSERT INTO candidate_recapture_requests
-           (candidate_id, reviewer_id, surveyor_id, missing_type_report_id, reason, note)
-         VALUES ($1, $2, $3, $4, $5, $6)
+           (candidate_id, reviewer_id, surveyor_id, missing_type_report_id, reason, note, idempotency_key)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING *`,
-        [candidateId, reviewerId, surveyorId, reportId, reason, note],
+        [candidateId, reviewerId, surveyorId, reportId, reason, note, idempotencyKey],
       );
       return rows[0];
     };
@@ -1090,6 +1111,26 @@ export class ReviewsService implements OnModuleInit {
         : await persistRequest(this.candidateRepo.manager);
     } catch (error: any) {
       if (error?.code === '23505' || String(error?.detail ?? '').includes('uq_candidate_recapture_requests_one_active')) {
+        if (idempotencyKey) {
+          const existingRows = await (this.candidateRepo.manager as any).query(
+            `SELECT * FROM candidate_recapture_requests
+             WHERE reviewer_id = $1 AND idempotency_key = $2
+             LIMIT 1`,
+            [reviewerId, idempotencyKey],
+          );
+          if (existingRows.length === 1) {
+            const existing = existingRows[0];
+            return {
+              success: true,
+              candidateId: existing.candidate_id,
+              status: CandidateStatus.RECAPTURE_REQUESTED,
+              surveyorId: existing.surveyor_id,
+              missingTypeReportId: existing.missing_type_report_id,
+              recaptureRequest: existing,
+              notificationSent: false,
+            };
+          }
+        }
         throw new ConflictException(`An active recapture request already exists for candidate ${candidateId}`);
       }
       throw error;
@@ -1143,7 +1184,7 @@ export class ReviewsService implements OnModuleInit {
   async submitRecapture(
     surveyorId: string,
     candidateId: string,
-    dto: { latitude: number; longitude: number },
+    dto: { latitude: number; longitude: number; idempotencyKey?: string },
     files: { signCrop?: Express.Multer.File[]; bestFrame?: Express.Multer.File[] },
   ) {
     if (!this.storageService) throw new BadRequestException('Recapture storage is not configured');
@@ -1179,6 +1220,30 @@ export class ReviewsService implements OnModuleInit {
       [candidateId, surveyorId],
     );
     if (requestRows.length !== 1) {
+      if (dto.idempotencyKey?.trim()) {
+        const completedRows: any[] = await (this.candidateRepo.manager as any).query(
+          `SELECT id, missing_type_report_id, completed_at
+           FROM candidate_recapture_requests
+           WHERE candidate_id = $1 AND surveyor_id = $2
+             AND submission_idempotency_key = $3 AND completed_at IS NOT NULL
+           LIMIT 1`,
+          [candidateId, surveyorId, dto.idempotencyKey.trim()],
+        );
+        if (completedRows.length === 1) {
+          return {
+            success: true,
+            candidateId,
+            requestId: completedRows[0].id,
+            missingTypeReportId: completedRows[0].missing_type_report_id,
+            status: CandidateStatus.MISSING_TYPE_HOLD,
+            evidence: {
+              signCropUrl: candidate.signCropUrl,
+              bestFrameUrl: candidate.bestFrameUrl,
+            },
+            idempotentReplay: true,
+          };
+        }
+      }
       throw new BadRequestException(`Candidate ${candidateId} does not have exactly one active recapture request assigned to this surveyor`);
     }
     const request = requestRows[0];
@@ -1251,9 +1316,10 @@ export class ReviewsService implements OnModuleInit {
         );
         if (getAffectedRowCount(report) !== 1) throw new BadRequestException('Associated Missing Type Report is no longer incomplete');
         const consumed = await tx.query(
-          `UPDATE candidate_recapture_requests SET completed_at = NOW()
+          `UPDATE candidate_recapture_requests
+           SET completed_at = NOW(), submission_idempotency_key = $2
            WHERE id = $1 AND completed_at IS NULL`,
-          [requestId],
+          [requestId, dto.idempotencyKey?.trim() || null],
         );
         if (getAffectedRowCount(consumed) !== 1) throw new BadRequestException('Recapture request was already consumed');
       };

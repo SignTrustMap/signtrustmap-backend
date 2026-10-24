@@ -254,6 +254,27 @@ describe('SurveyService submission contract', () => {
     });
   });
 
+  it('replays createSubmission for the same idempotency key', async () => {
+    submissionRepo.findOne.mockResolvedValueOnce(null);
+    await service.createSubmission(userId, {
+      submissionType: SubmissionType.VIDEO_GPX,
+      capturedAt: new Date(Date.now() - 3600000).toISOString(),
+      coordinateSource: CoordinateSource.GPX_FILE,
+      idempotencyKey: 'submission-retry-1',
+    });
+
+    submissionRepo.findOne.mockResolvedValueOnce({ ...submission, idempotencyKey: 'submission-retry-1' });
+    const replay = await service.createSubmission(userId, {
+      submissionType: SubmissionType.VIDEO_GPX,
+      capturedAt: new Date(Date.now() - 3600000).toISOString(),
+      coordinateSource: CoordinateSource.GPX_FILE,
+      idempotencyKey: 'submission-retry-1',
+    });
+
+    expect(replay.id).toBe(submissionId);
+    expect(submissionRepo.save).toHaveBeenCalledTimes(1);
+  });
+
   it('attaches an accepted media upload session to the draft', async () => {
     const result = await service.initialize(userId, submissionId, {
       originalFilename: 'sign.jpg',
@@ -268,6 +289,29 @@ describe('SurveyService submission contract', () => {
       mediaType: MediaFileType.IMAGE,
     }));
     expect(result.submissionId).toBe(submissionId);
+  });
+
+  it('replays initialize upload for the same idempotency key', async () => {
+    sessionRepo.findOne.mockResolvedValueOnce(null);
+    await service.initialize(userId, submissionId, {
+      originalFilename: 'sign.jpg',
+      mediaType: MediaFileType.IMAGE,
+      totalSizeBytes: 12,
+      totalChunks: 2,
+      idempotencyKey: 'upload-retry-1',
+    });
+
+    sessionRepo.findOne.mockResolvedValueOnce({ ...session, idempotencyKey: 'upload-retry-1' });
+    const replay = await service.initialize(userId, submissionId, {
+      originalFilename: 'sign.jpg',
+      mediaType: MediaFileType.IMAGE,
+      totalSizeBytes: 12,
+      totalChunks: 2,
+      idempotencyKey: 'upload-retry-1',
+    });
+
+    expect(replay.sessionId).toBe(sessionId);
+    expect(sessionRepo.save).toHaveBeenCalledTimes(1);
   });
 
   it('rejects media that is not part of the submission contract', async () => {
@@ -447,6 +491,44 @@ describe('SurveyService submission contract', () => {
 
     expect(result).toMatchObject({ readyToComplete: true, receivedChunks: 1, submissionId });
     expect(storage.putObject).not.toHaveBeenCalled();
+  });
+
+  it('replays a concurrent identical chunk after the unique constraint wins elsewhere', async () => {
+    const fileBuffer = Buffer.from('same sign image');
+    const fileChecksum = createHash('sha256').update(fileBuffer).digest('hex');
+    session.totalChunks = 1;
+    session.totalSizeBytes = String(fileBuffer.length);
+    const existingChunk = {
+      ...chunks[0],
+      checksum: fileChecksum,
+      sizeBytes: fileBuffer.length,
+      storageKey: `stm-sign-crops/chunks/${userId}/${sessionId}/000000-${fileChecksum}`,
+    };
+    const chunkRepository = {
+      count: jest.fn().mockResolvedValue(1),
+      findOne: jest.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(existingChunk),
+      create: jest.fn((value) => value),
+      save: jest.fn().mockRejectedValue({ code: '23505' }),
+    } as unknown as Repository<UploadChunk>;
+    const retryService = new SurveyService(
+      sessionRepo,
+      chunkRepository,
+      submissionRepo,
+      storage,
+      dataSource,
+      {} as WalletService,
+      {} as NotificationsService,
+    );
+
+    const result = await retryService.uploadChunk(
+      userId,
+      sessionId,
+      { chunkIndex: 0 },
+      { buffer: fileBuffer, size: fileBuffer.length } as Express.Multer.File,
+    );
+
+    expect(result).toMatchObject({ readyToComplete: true, receivedChunks: 1, storageKey: existingChunk.storageKey });
+    expect(storage.removeObject).not.toHaveBeenCalled();
   });
 
   it('enforces total-size and chunk count limits during upload initialization', async () => {

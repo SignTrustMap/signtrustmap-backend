@@ -98,6 +98,19 @@ describe('MomoPaymentService (MoMo Sandbox Gateway Integration)', () => {
     );
   });
 
+  it('replays an existing order before calling the gateway for the same idempotency key', async () => {
+    const existing = { id: 'order-1', userId: 'user-1', idempotencyKey: 'momo-key', status: PaymentStatus.PENDING };
+    orderRepo.findOne.mockResolvedValue(existing);
+
+    const result: any = await service.createPayment('user-1', {
+      packageId: 1,
+      idempotencyKey: 'momo-key',
+    });
+
+    expect(result).toEqual({ paymentOrder: existing, idempotentReplay: true });
+    expect(orderRepo.create).not.toHaveBeenCalled();
+  });
+
   afterEach(() => {
     global.fetch = originalFetch;
   });

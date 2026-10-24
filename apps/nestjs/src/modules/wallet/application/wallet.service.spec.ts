@@ -46,6 +46,7 @@ describe('WalletService (Phase 1 Ledger & Double-Entry Tests)', () => {
     orderRepo = {
       create: jest.fn((dto: any) => dto as any),
       save: jest.fn(async (dto: any) => dto),
+      findOne: jest.fn(),
     };
 
     methodRepo = {
@@ -227,6 +228,36 @@ describe('WalletService (Phase 1 Ledger & Double-Entry Tests)', () => {
       expect(res.txId).toBe('tx-existing');
       expect(res.newBalance).toBe(150);
       expect(dataSource.transaction).not.toHaveBeenCalled();
+    });
+
+    it('rechecks idempotency after acquiring the wallet lock', async () => {
+      const wallet = { id: 'w-1', userId: 'user-1', balance: '100', isFrozen: false };
+      const existingTx = {
+        id: 'tx-race',
+        walletId: 'w-1',
+        amount: 25,
+        balanceAfter: '125',
+      };
+      txRepo.findOne.mockResolvedValue(null);
+      mockManager.findOne
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(wallet)
+        .mockResolvedValueOnce(existingTx);
+
+      const result = await service.creditUser(
+        'user-1',
+        25,
+        TransactionType.SURVEY_REWARD,
+        null,
+        null,
+        'Survey reward',
+        { idempotencyKey: 'race-key-1' },
+      );
+
+      expect(result.idempotentReplay).toBe(true);
+      expect(result.txId).toBe('tx-race');
+      expect(mockManager.update).not.toHaveBeenCalled();
+      expect(mockManager.save).not.toHaveBeenCalled();
     });
   });
 
@@ -490,6 +521,22 @@ describe('WalletService (Phase 1 Ledger & Double-Entry Tests)', () => {
       const res: any = await serviceWithMomo.topUp('user-1', { packageId: 1, gateway: 'MOMO' });
       expect(mockMomoService.createPayment).toHaveBeenCalledWith('user-1', { packageId: 1 });
       expect(res.payUrl).toBe('https://test-payment.momo.vn/pay');
+    });
+
+    it('replays a MOCK payment order when the database reports an idempotency conflict', async () => {
+      packageRepo.findOne.mockResolvedValue({ id: 1, packageName: 'Starter', priceVnd: '50000', creditAmount: 50, isActive: true });
+      walletRepo.findOne.mockResolvedValue({ id: 'w-1', userId: 'user-1', balance: '0' });
+      orderRepo.save.mockRejectedValueOnce({ code: '23505' });
+      orderRepo.findOne.mockResolvedValue({
+        id: 'ord-1', orderCode: 'STM-1', packageId: 1, amountVnd: '50000',
+        gateway: 'MOCK', status: 'PENDING', createdAt: new Date(),
+      });
+
+      const res: any = await service.topUp('user-1', { packageId: 1, idempotencyKey: 'payment-key-1' });
+
+      expect(res.idempotentReplay).toBe(true);
+      expect(res.paymentOrder.id).toBe('ord-1');
+      expect(orderRepo.findOne).toHaveBeenCalledWith({ where: { userId: 'user-1', idempotencyKey: 'payment-key-1' } });
     });
 
     it('delegates custom topUp to momoService when gateway is MOMO', async () => {

@@ -78,6 +78,13 @@ export class SurveyService {
   }
 
   async createSubmission(userId: string, dto: CreateSubmissionDto) {
+    const idempotencyKey = dto.idempotencyKey?.trim() || null;
+    if (idempotencyKey) {
+      const existing = await this.submissionRepo.findOne({
+        where: { surveyorId: userId, idempotencyKey },
+      });
+      if (existing) return this.submissionResponse(existing);
+    }
     this.validateCapturedAt(dto.capturedAt);
     this.validateCoordinates(dto.latitude, dto.longitude);
 
@@ -107,8 +114,19 @@ export class SurveyService {
       note: formattedNote,
       validationErrors: [],
       correctionRequirements: [],
+      idempotencyKey,
     });
-    const saved = await this.submissionRepo.save(submission);
+    let saved: SurveySubmission;
+    try {
+      saved = await this.submissionRepo.save(submission);
+    } catch (error: any) {
+      if (error?.code !== '23505' || !idempotencyKey) throw error;
+      const existing = await this.submissionRepo.findOne({
+        where: { surveyorId: userId, idempotencyKey },
+      });
+      if (!existing) throw error;
+      return this.submissionResponse(existing);
+    }
     await this.recordStatusChange(saved.id, null, SubmissionStatus.DRAFT, 'Submission created');
     return this.submissionResponse(saved);
   }
@@ -271,10 +289,38 @@ export class SurveyService {
       );
     }
 
+    const idempotencyKey = dto.idempotencyKey?.trim() || null;
+    if (idempotencyKey) {
+      const existing = await this.sessionRepo.findOne({
+        where: { userId, idempotencyKey },
+      });
+      if (existing) {
+        if (existing.submissionId !== submissionId) {
+          throw new ConflictException('Idempotency key is already used for another upload session');
+        }
+        return this.uploadSessionResponse(existing);
+      }
+    }
+
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
-    const session = this.sessionRepo.create({ submissionId, userId, originalFilename: dto.originalFilename, mediaType: dto.mediaType, totalSizeBytes: String(dto.totalSizeBytes), totalChunks: dto.totalChunks, receivedChunks: 0, checksumExpected: dto.checksumExpected ?? null, status: UploadStatus.INITIATED, expiresAt } as any);
-    const saved = await this.sessionRepo.save(session) as unknown as UploadSession;
-    return { sessionId: saved.id, submissionId: saved.submissionId, originalFilename: saved.originalFilename, mediaType: saved.mediaType, totalSizeBytes: saved.totalSizeBytes, totalChunks: saved.totalChunks, receivedChunks: saved.receivedChunks, status: saved.status, expiresAt: saved.expiresAt, createdAt: saved.createdAt };
+    const session = this.sessionRepo.create({ submissionId, userId, originalFilename: dto.originalFilename, mediaType: dto.mediaType, totalSizeBytes: String(dto.totalSizeBytes), totalChunks: dto.totalChunks, receivedChunks: 0, checksumExpected: dto.checksumExpected ?? null, status: UploadStatus.INITIATED, expiresAt, idempotencyKey } as any);
+    let saved: UploadSession;
+    try {
+      saved = await this.sessionRepo.save(session) as unknown as UploadSession;
+    } catch (error: any) {
+      if (error?.code !== '23505' || !idempotencyKey) throw error;
+      const existing = await this.sessionRepo.findOne({ where: { userId, idempotencyKey } });
+      if (!existing) throw error;
+      if (existing.submissionId !== submissionId) {
+        throw new ConflictException('Idempotency key is already used for another upload session');
+      }
+      return this.uploadSessionResponse(existing);
+    }
+    return this.uploadSessionResponse(saved);
+  }
+
+  private uploadSessionResponse(session: UploadSession) {
+    return { sessionId: session.id, submissionId: session.submissionId, originalFilename: session.originalFilename, mediaType: session.mediaType, totalSizeBytes: session.totalSizeBytes, totalChunks: session.totalChunks, receivedChunks: session.receivedChunks, status: session.status, expiresAt: session.expiresAt, createdAt: session.createdAt };
   }
   async uploadChunk(userId: string, sessionId: string, body: UploadChunkBodyDto, file: Express.Multer.File) {
     if (!file) throw new BadRequestException('File chunk (form field "file") is required');
@@ -322,10 +368,37 @@ export class SurveyService {
       };
     }
     const bucket = this.storageService.bucketForMediaType(session.mediaType);
-    const storageKey = 'chunks/' + userId + '/' + sessionId + '/' + String(chunkIndex).padStart(6, '0');
+    // Include the checksum so concurrent retries with different content cannot
+    // overwrite an object that another request has already persisted.
+    const storageKey = 'chunks/' + userId + '/' + sessionId + '/' + String(chunkIndex).padStart(6, '0') + '-' + chunkChecksum;
     try { await this.storageService.putObject(bucket, storageKey, file.buffer, file.mimetype); } catch (err: any) { throw new BadRequestException('Failed to store chunk ' + chunkIndex + ': ' + (err?.message ?? 'unknown storage error')); }
     const chunk: UploadChunk = this.chunkRepo.create({ sessionId: session.id, chunkIndex, sizeBytes: file.size, storageKey: bucket + '/' + storageKey, checksum: chunkChecksum } as unknown as UploadChunk);
-    await this.chunkRepo.save(chunk);
+    try {
+      await this.chunkRepo.save(chunk);
+    } catch (error: any) {
+      if (error?.code !== '23505') throw error;
+      const concurrent = await this.chunkRepo.findOne({ where: { sessionId: session.id, chunkIndex } });
+      if (!concurrent) throw error;
+      if (concurrent.sizeBytes !== file.size || concurrent.checksum !== chunkChecksum) {
+        if (concurrent.storageKey !== chunk.storageKey) {
+          await this.storageService.removeObject({ bucket, objectName: storageKey }).catch(() => undefined);
+        }
+        throw new ConflictException('Chunk ' + chunkIndex + ' already received with different content');
+      }
+      const receivedChunks = await this.chunkRepo.count({ where: { sessionId: session.id } });
+      return {
+        sessionId: session.id,
+        chunkIndex,
+        storageKey: concurrent.storageKey,
+        sizeBytes: concurrent.sizeBytes,
+        receivedChunks,
+        totalChunks: session.totalChunks,
+        status: session.status,
+        readyToComplete: receivedChunks === session.totalChunks,
+        isComplete: false,
+        submissionId: session.submissionId,
+      };
+    }
     const newReceived = await this.chunkRepo.count({ where: { sessionId: session.id } });
     await this.sessionRepo.update(session.id, {
       receivedChunks: newReceived,
