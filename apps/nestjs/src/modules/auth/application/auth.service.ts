@@ -136,6 +136,9 @@ export class AuthService {
         }
         const defaultRole = await manager.findOne(Role, { where: { code: 'SURVEYOR' } });
         if (defaultRole) await manager.save(manager.create(UserRole, { userId: saved.id, roleId: defaultRole.id, isActive: true }));
+        if (defaultRole?.code === 'SURVEYOR') {
+          await manager.query(`INSERT INTO surveyor_profiles (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [saved.id]);
+        }
         await manager.save(manager.create(Wallet, { userId: saved.id, balance: '0' }));
         const roles = defaultRole ? [defaultRole.code] : [];
         return { user: { id: saved.id, email: saved.email, fullName: saved.fullName, roles }, accessToken: this.signToken(saved, roles) };

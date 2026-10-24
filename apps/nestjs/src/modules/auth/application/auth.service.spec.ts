@@ -13,6 +13,7 @@ describe('AuthService (Registration and Role Assignment)', () => {
   let mockJwtService: any;
   let mockDataSource: any;
   let mockConfigService: any;
+  let mockManager: any;
 
   const mockRoleMap: Record<string, { id: number; code: string }> = {
     SURVEYOR: { id: 1, code: 'SURVEYOR' },
@@ -53,7 +54,7 @@ describe('AuthService (Registration and Role Assignment)', () => {
 
     mockDataSource = {
       transaction: jest.fn().mockImplementation(async (cb) => {
-        const mockManager = {
+        mockManager = {
           create: jest.fn().mockImplementation((entityClass, data) => data),
           save: jest.fn().mockImplementation(async (data) => ({ id: 'new-user-id', ...data })),
           findOne: jest.fn().mockImplementation(async (entityClass, opts) => {
@@ -209,6 +210,17 @@ describe('AuthService (Registration and Role Assignment)', () => {
 
       expect(result.accessToken).toBe('mock-jwt-token');
       expect(mockJwtService.sign).toHaveBeenCalledTimes(1);
+    });
+
+    it('initializes a surveyor profile atomically for a new Google user', async () => {
+      mockUserRepo.findOne.mockResolvedValue(null);
+
+      await service.googleLogin(googleUser);
+
+      expect(mockManager.query).toHaveBeenCalledWith(
+        expect.stringContaining('INSERT INTO surveyor_profiles'),
+        ['new-user-id'],
+      );
     });
 
     it.each([UserStatus.SUSPENDED, UserStatus.BANNED])(
