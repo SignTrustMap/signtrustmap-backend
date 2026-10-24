@@ -8,6 +8,11 @@ export class TopUpDto {
   @IsOptional()
   @IsString()
   gateway?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  idempotencyKey?: string;
 }
 
 export class CustomTopUpDto {
@@ -23,6 +28,11 @@ export class CustomTopUpDto {
   @IsOptional()
   @IsString()
   gateway?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  idempotencyKey?: string;
 }
 
 export class CreatePaymentMethodDto {

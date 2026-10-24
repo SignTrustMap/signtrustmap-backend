@@ -51,6 +51,9 @@ export class UploadSession {
   @Column({ name: 'submission_id', type: 'uuid' })
   submissionId: string;
 
+  @Column({ name: 'idempotency_key', type: 'varchar', length: 128, nullable: true })
+  idempotencyKey?: string | null;
+
   @Column({ name: 'expires_at', type: 'timestamptz' })
   expiresAt: Date;
 

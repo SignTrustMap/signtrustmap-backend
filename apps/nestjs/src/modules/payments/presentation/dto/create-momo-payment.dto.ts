@@ -35,4 +35,10 @@ export class CreateMomoPaymentDto {
   @IsString()
   @MaxLength(500)
   extraData?: string;
+
+  @ApiPropertyOptional({ description: 'Client retry key for payment creation' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  idempotencyKey?: string;
 }

@@ -23,4 +23,9 @@ export class InitializeUploadDto {
   @IsString()
   @MaxLength(128)
   checksumExpected?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  idempotencyKey?: string;
 }

@@ -30,6 +30,9 @@ export class PaymentOrder {
   @Column({ type: 'enum', enum: PaymentStatus, default: PaymentStatus.PENDING })
   status: PaymentStatus;
 
+  @Column({ name: 'idempotency_key', type: 'varchar', length: 128, nullable: true })
+  idempotencyKey?: string | null;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 

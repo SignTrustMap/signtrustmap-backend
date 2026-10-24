@@ -67,6 +67,9 @@ export class SurveySubmission {
   @Column({ name: 'reward_amount', type: 'int', default: 0 })
   rewardAmount: number;
 
+  @Column({ name: 'idempotency_key', type: 'varchar', length: 128, nullable: true })
+  idempotencyKey?: string | null;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 

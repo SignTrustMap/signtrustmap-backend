@@ -37,6 +37,11 @@ export class RequestRecaptureDto {
   @IsString()
   @MaxLength(1000)
   note?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  idempotencyKey?: string;
 }
 
 export class SubmitRecaptureDto {
@@ -51,6 +56,11 @@ export class SubmitRecaptureDto {
   @Min(-180)
   @Max(180)
   longitude: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  idempotencyKey?: string;
 }
 
 export class SelectSignRemedyDto {

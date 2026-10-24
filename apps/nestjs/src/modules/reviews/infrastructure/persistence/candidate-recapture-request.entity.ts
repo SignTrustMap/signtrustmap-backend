@@ -24,6 +24,12 @@ export class CandidateRecaptureRequest {
   @Column({ type: 'text', nullable: true })
   note: string | null;
 
+  @Column({ name: 'idempotency_key', type: 'varchar', length: 128, nullable: true })
+  idempotencyKey?: string | null;
+
+  @Column({ name: 'submission_idempotency_key', type: 'varchar', length: 128, nullable: true })
+  submissionIdempotencyKey?: string | null;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 
