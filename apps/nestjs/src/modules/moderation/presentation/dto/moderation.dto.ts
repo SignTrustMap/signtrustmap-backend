@@ -2,7 +2,7 @@ import { IsString, IsOptional, IsUUID, IsInt, MaxLength, MinLength } from 'class
 export class CreateMissingTypeReportDto {
   @IsOptional() @IsUUID() candidateId?: string;
   @IsOptional() @IsInt() proposedCategoryId?: number;
-  @IsString() @MaxLength(255) proposedName: string;
+  @IsOptional() @IsString() @MaxLength(255) proposedName?: string;
   @IsOptional() @IsString() description?: string;
   @IsOptional() @IsString() @MaxLength(30) suggestedShape?: string;
   @IsOptional() @IsString() @MaxLength(30) suggestedColorScheme?: string;

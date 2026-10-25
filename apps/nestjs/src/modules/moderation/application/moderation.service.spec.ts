@@ -39,29 +39,85 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
 
   it('parks the candidate on MISSING_TYPE_HOLD when a reviewer reports a missing type', async () => {
     const { service, candRepo, missing, catRepo, dataSource } = buildService();
-    candRepo.findOne.mockResolvedValue({ id: 'C1', status: CandidateStatus.PENDING_REVIEW });
-    missing.findOne.mockResolvedValue(null);
     catRepo.findOne.mockResolvedValue({ id: 1, code: 'PROHIBITORY' });
     const manager = {
+      query: jest.fn()
+        .mockResolvedValueOnce([{ id: 'C1', status: CandidateStatus.PENDING_REVIEW }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'C1' }]),
       create: jest.fn((_e: any, d: any) => ({ ...d })),
       save: jest.fn(async (r: any) => ({ ...r, id: 'report-1' })),
-      update: jest.fn(async () => undefined),
     };
     dataSource.transaction.mockImplementation((fn: (m: any) => any) => fn(manager));
 
     const result = await service.reportMissingType('U1', {
       candidateId: 'C1',
-      proposedName: 'No Horn',
       proposedCategoryId: 1,
-      suggestedShape: 'CIRCLE',
-      suggestedColorScheme: 'RED_WHITE',
     });
 
-    expect(manager.update).toHaveBeenCalledWith(UnverifiedSignCandidate, { id: 'C1' }, { status: CandidateStatus.MISSING_TYPE_HOLD });
+    expect(manager.query).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining('FOR UPDATE'),
+      ['C1'],
+    );
     expect(manager.create).toHaveBeenCalledWith(MissingSignTypeReport, expect.objectContaining({
-      candidateId: 'C1', proposedName: 'No Horn', suggestedShape: 'CIRCLE', suggestedColorScheme: 'RED_WHITE',
+      candidateId: 'C1',
+      proposedName: null,
+      proposedCategoryId: 1,
     }));
+    expect(manager.query).toHaveBeenLastCalledWith(
+      expect.stringContaining("SET status = $2"),
+      ['C1', CandidateStatus.MISSING_TYPE_HOLD],
+    );
+    expect(candRepo.findOne).not.toHaveBeenCalled();
+    expect(missing.findOne).not.toHaveBeenCalled();
     expect(result.id).toBe('report-1');
+  });
+
+  it('rejects a report without a candidate or legacy proposed name', async () => {
+    const { service, dataSource } = buildService();
+
+    await expect(service.reportMissingType('U1', {} as any)).rejects.toThrow(
+      'candidateId is required when no proposedName is provided',
+    );
+
+    expect(dataSource.transaction).not.toHaveBeenCalled();
+  });
+
+  it('preserves legacy reports that provide a proposed name without a candidate', async () => {
+    const { service, dataSource } = buildService();
+    const manager = {
+      create: jest.fn((_e: any, d: any) => ({ ...d })),
+      save: jest.fn(async (r: any) => ({ ...r, id: 'legacy-report' })),
+    };
+    dataSource.transaction.mockImplementation((fn: (m: any) => any) => fn(manager));
+
+    const result = await service.reportMissingType('U1', { proposedName: 'No Horn' });
+
+    expect(manager.create).toHaveBeenCalledWith(MissingSignTypeReport, expect.objectContaining({
+      candidateId: null,
+      proposedName: 'No Horn',
+    }));
+    expect(result.id).toBe('legacy-report');
+  });
+
+  it('rejects duplicate active reports for a candidate', async () => {
+    const { service, dataSource } = buildService();
+    const manager = {
+      query: jest.fn()
+        .mockResolvedValueOnce([{ id: 'C1', status: CandidateStatus.PENDING_REVIEW }])
+        .mockResolvedValueOnce([{ id: 'report-existing' }]),
+      create: jest.fn(),
+      save: jest.fn(),
+    };
+    dataSource.transaction.mockImplementation((fn: (m: any) => any) => fn(manager));
+
+    await expect(service.reportMissingType('U1', { candidateId: 'C1' })).rejects.toThrow(
+      'An active new-sign report already exists for candidate C1',
+    );
+
+    expect(manager.create).not.toHaveBeenCalled();
+    expect(manager.query).toHaveBeenCalledTimes(2);
   });
 
   it('rejecting a report marks the linked candidate REJECTED and notifies the reporter', async () => {

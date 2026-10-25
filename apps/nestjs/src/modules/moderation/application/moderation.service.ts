@@ -49,18 +49,41 @@ export class ModerationService {
   ) {}
 
   /**
-   * Scenario #4 — reviewer reports a sign that is not in the catalog yet.
+   * Reviewer reports a sign that is not in the catalog yet.
    * The linked candidate is atomically parked in MISSING_TYPE_HOLD so the
    * review/consensus queue stops offering it until staff resolve the report.
    */
   async reportMissingType(reporterId: string, dto: CreateMissingTypeReportDto) {
+    const proposedName = dto.proposedName?.trim() || null;
+    if (!dto.candidateId && !proposedName) {
+      throw new BadRequestException('candidateId is required when no proposedName is provided');
+    }
+
     return this.dataSource.transaction(async (manager) => {
       if (dto.candidateId) {
-        const c = await this.candRepo.findOne({ where: { id: dto.candidateId } });
-        if (!c) throw new BadRequestException('Candidate ' + dto.candidateId + ' not found');
-        if (c.status === CandidateStatus.MISSING_TYPE_HOLD) throw new BadRequestException('Candidate ' + dto.candidateId + ' already under a missing-type review');
-        const active = await this.missing.findOne({ where: { candidateId: dto.candidateId, status: MissingTypeStatus.PENDING } as any });
-        if (active) throw new BadRequestException('A pending missing-type report already exists for candidate ' + dto.candidateId);
+        const candidates: Array<{ id: string; status: CandidateStatus }> = await manager.query(
+          `SELECT id, status
+           FROM unverified_sign_candidates
+           WHERE id = $1
+           FOR UPDATE`,
+          [dto.candidateId],
+        );
+        const candidate = candidates[0];
+        if (!candidate) throw new NotFoundException('Candidate ' + dto.candidateId + ' not found');
+        if (![CandidateStatus.PENDING_REVIEW, CandidateStatus.IN_CONSENSUS].includes(candidate.status)) {
+          throw new BadRequestException('Candidate ' + dto.candidateId + ' is not available for a new-sign report');
+        }
+
+        const activeReports: Array<{ id: string }> = await manager.query(
+          `SELECT id
+           FROM missing_sign_type_reports
+           WHERE candidate_id = $1 AND status NOT IN ('MERGED', 'APPROVED', 'REJECTED')
+           LIMIT 1`,
+          [dto.candidateId],
+        );
+        if (activeReports.length > 0) {
+          throw new ConflictException('An active new-sign report already exists for candidate ' + dto.candidateId);
+        }
       }
       if (dto.proposedCategoryId != null) {
         const cat = await this.catRepo.findOne({ where: { id: dto.proposedCategoryId } });
@@ -70,14 +93,23 @@ export class ModerationService {
         reporterId,
         candidateId: dto.candidateId ?? null,
         proposedCategoryId: dto.proposedCategoryId ?? null,
-        proposedName: dto.proposedName,
+        proposedName,
         description: dto.description ?? null,
         suggestedShape: dto.suggestedShape ?? null,
         suggestedColorScheme: dto.suggestedColorScheme ?? null,
       } as any);
       const saved = (await manager.save(r)) as unknown as MissingSignTypeReport;
       if (dto.candidateId) {
-        await manager.update(UnverifiedSignCandidate, { id: dto.candidateId }, { status: CandidateStatus.MISSING_TYPE_HOLD });
+        const updatedCandidates: Array<{ id: string }> = await manager.query(
+          `UPDATE unverified_sign_candidates
+           SET status = $2
+           WHERE id = $1 AND status IN ('PENDING_REVIEW', 'IN_CONSENSUS')
+           RETURNING id`,
+          [dto.candidateId, CandidateStatus.MISSING_TYPE_HOLD],
+        );
+        if (updatedCandidates.length !== 1) {
+          throw new ConflictException('Candidate ' + dto.candidateId + ' changed state while reporting a new sign');
+        }
         this.logger.log('Parked candidate ' + dto.candidateId + ' on MISSING_TYPE_HOLD (report ' + saved.id + ')');
       }
       return saved;
@@ -180,8 +212,9 @@ export class ModerationService {
     const category = categoryId != null ? await this.catRepo.findOne({ where: { id: categoryId } }) : null;
     const resolvedCategoryId = category?.id ?? (await this.requireFallbackCategory());
 
-    const nameVi = dto.nameVi?.trim() || report.proposedName.trim();
-    const nameEn = dto.nameEn?.trim() || report.proposedName.trim();
+    const reportName = report.proposedName?.trim() || 'Biển báo mới';
+    const nameVi = dto.nameVi?.trim() || reportName;
+    const nameEn = dto.nameEn?.trim() || reportName;
 
     let created: any;
     const requestedCode = dto.signCode?.trim()?.toUpperCase();
@@ -266,7 +299,7 @@ export class ModerationService {
     await this.missing.save(report);
 
     await this.reportSyncedBackend(created.id);
-    await this.notifyReporter(report, 'APPROVED', 'Báo cáo loại biển báo đã được chấp thuận', 'Loại biển báo "' + report.proposedName + '" đã được chấp thuận và thêm vào danh mục với mã "' + signCode + '".');
+    await this.notifyReporter(report, 'APPROVED', 'Báo cáo biển báo mới đã được chấp thuận', 'Báo cáo "' + (report.proposedName || 'biển báo mới') + '" đã được thêm vào danh mục với mã "' + signCode + '".');
 
     const [enriched] = await this.enrichWithCandidates([report]);
     return { report: enriched, createdSignType: created };
@@ -347,7 +380,7 @@ export class ModerationService {
       if (relatedReportId) {
         const rep: any = await this.missing.findOne({ where: { id: relatedReportId } as any });
         const actionText: Record<string, string> = { APPROVED: 'đã được chấp thuận', MERGED: 'đã được gộp vào loại biển báo hiện có', REJECTED: 'đã bị từ chối' };
-        if (rep?.reporterId) await this.notificationsService.create(rep.reporterId, 'MODERATION_RESOLVED', 'Cập nhật báo cáo loại biển báo', 'Báo cáo "' + rep.proposedName + '" của bạn ' + (actionText[actionType] ?? 'đã được xử lý') + '.', 'moderation_case', mc.id);
+        if (rep?.reporterId) await this.notificationsService.create(rep.reporterId, 'MODERATION_RESOLVED', 'Cập nhật báo cáo biển báo mới', 'Báo cáo "' + (rep.proposedName || 'biển báo mới') + '" của bạn ' + (actionText[actionType] ?? 'đã được xử lý') + '.', 'moderation_case', mc.id);
       }
     } catch {}
     return mc;
@@ -462,11 +495,12 @@ export class ModerationService {
       if (!fallback) throw new BadRequestException('No sign category exists to assign the new sign type');
       categoryId = fallback.id;
     }
+    const reportName = report.proposedName?.trim() || 'Biển báo mới';
     const baseCode = (report.proposedName || 'NEW').toUpperCase().replace(/[^A-Z0-9]+/g, '_').slice(0, 20) || 'NEW_SIGN';
     let signCode = baseCode;
     let suffix = 0;
     while (await this.signTypeRepo.findOne({ where: { signCode } })) { suffix++; signCode = baseCode + '_' + suffix; }
-    const created = this.signTypeRepo.create({ categoryId, signCode, nameVi: report.proposedName, nameEn: report.proposedName, description: report.description ?? dto.resolutionNote ?? null, isActive: true, createdAt: new Date(), updatedAt: new Date() } as any);
+    const created = this.signTypeRepo.create({ categoryId, signCode, nameVi: reportName, nameEn: reportName, description: report.description ?? dto.resolutionNote ?? null, isActive: true, createdAt: new Date(), updatedAt: new Date() } as any);
     const saved = await this.signTypeRepo.save(created) as unknown as TrafficSignType;
 
     let repUrl: string | null = null;
@@ -574,16 +608,16 @@ export class ModerationService {
     if (!candidate) return;
     if (report.status === MissingTypeStatus.REJECTED) {
       await this.candRepo.update({ id: report.candidateId }, { status: CandidateStatus.REJECTED });
-      await this.notifyReporter(report, 'REJECTED', 'Báo cáo loại biển báo bị từ chối', 'Báo cáo "' + report.proposedName + '" của bạn đã bị nhân viên từ chối.');
+      await this.notifyReporter(report, 'REJECTED', 'Báo cáo biển báo mới bị từ chối', 'Báo cáo "' + (report.proposedName || 'biển báo mới') + '" của bạn đã bị nhân viên từ chối.');
     } else if (report.status === MissingTypeStatus.MERGED && report.mergedIntoSignTypeId != null) {
       await this.releaseCandidate(report.candidateId, report.mergedIntoSignTypeId);
-      await this.notifyReporter(report, 'MERGED', 'Báo cáo loại biển báo đã được gộp', 'Báo cáo "' + report.proposedName + '" của bạn đã được gộp vào loại biển báo hiện có #' + report.mergedIntoSignTypeId + '.');
+      await this.notifyReporter(report, 'MERGED', 'Báo cáo biển báo mới đã được gộp', 'Báo cáo "' + (report.proposedName || 'biển báo mới') + '" của bạn đã được gộp vào loại biển báo hiện có #' + report.mergedIntoSignTypeId + '.');
     } else if (report.status === MissingTypeStatus.APPROVED && previousStatus !== MissingTypeStatus.APPROVED && report.mergedIntoSignTypeId != null) {
       await this.releaseCandidate(report.candidateId, report.mergedIntoSignTypeId);
     } else if (report.status === MissingTypeStatus.INCOMPLETE || report.status === MissingTypeStatus.ESCALATED_ADMIN) {
       // candidate stays on hold; staff asked for more info
       const statusText = report.status === MissingTypeStatus.INCOMPLETE ? 'chưa đầy đủ' : 'được chuyển đến quản trị viên';
-      await this.notifyReporter(report, report.status, 'Báo cáo loại biển báo cần được bổ sung', 'Báo cáo "' + report.proposedName + '" của bạn đang ở trạng thái ' + statusText + '.');
+      await this.notifyReporter(report, report.status, 'Báo cáo biển báo mới cần được bổ sung', 'Báo cáo "' + (report.proposedName || 'biển báo mới') + '" của bạn đang ở trạng thái ' + statusText + '.');
     }
   }
 

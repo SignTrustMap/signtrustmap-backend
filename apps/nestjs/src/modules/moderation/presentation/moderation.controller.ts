@@ -13,7 +13,7 @@ export class ModerationController {
   constructor(private readonly svc: ModerationService) {}
 
   @Roles('REVIEWER', 'ADMIN')
-  @ApiOperation({ summary: 'Report missing sign type', description: 'Reviewer reports a novel or uncataloged sign type found during peer review' })
+  @ApiOperation({ summary: 'Report a new sign', description: 'Reviewer sends a candidate and its existing photo/location evidence to the staff queue without entering sign details' })
   @Post('reviews/missing-type')
   reportMissing(@CurrentUser() user: any, @Body() dto: CreateMissingTypeReportDto) { return this.svc.reportMissingType(user.id, dto); }
 

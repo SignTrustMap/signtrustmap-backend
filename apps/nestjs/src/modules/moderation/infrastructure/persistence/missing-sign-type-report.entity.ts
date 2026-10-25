@@ -29,8 +29,8 @@ export class MissingSignTypeReport {
   @Column({ name: 'proposed_category_id', type: 'int', nullable: true })
   proposedCategoryId: number | null;
 
-  @Column({ name: 'proposed_name', type: 'varchar', length: 255 })
-  proposedName: string;
+  @Column({ name: 'proposed_name', type: 'varchar', length: 255, nullable: true })
+  proposedName: string | null;
 
   @Column({ type: 'text', nullable: true })
   description: string | null;

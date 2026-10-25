@@ -294,6 +294,8 @@ export class SignMapSchemaInitializer implements OnModuleInit {
         ALTER TABLE "missing_sign_type_reports"
           ADD COLUMN IF NOT EXISTS "suggested_shape" VARCHAR(30),
           ADD COLUMN IF NOT EXISTS "suggested_color_scheme" VARCHAR(30);
+        ALTER TABLE "missing_sign_type_reports"
+          ALTER COLUMN "proposed_name" DROP NOT NULL;
 
         ALTER TABLE "revalidation_evidences"
           ADD COLUMN IF NOT EXISTS "evidence_type" VARCHAR(32) NOT NULL DEFAULT 'STILL_ACTIVE';

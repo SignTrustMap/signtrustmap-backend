@@ -379,7 +379,7 @@ CREATE TABLE "missing_sign_type_reports" (
   "reporter_id" uuid NOT NULL,
   "candidate_id" uuid,
   "proposed_category_id" int,
-  "proposed_name" varchar(255) NOT NULL,
+  "proposed_name" varchar(255),
   "description" text,
   "status" missing_type_status NOT NULL DEFAULT 'PENDING',
   "merged_into_sign_type_id" int,
