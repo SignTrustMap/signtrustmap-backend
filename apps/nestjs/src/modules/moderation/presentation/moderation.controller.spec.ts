@@ -8,6 +8,7 @@ describe('ModerationController', () => {
     listMissingReports: jest.Mock;
     getMissingReport: jest.Mock;
     updateMissingReport: jest.Mock;
+    applyAdminMissingReportAction: jest.Mock;
     approveAndCreateType: jest.Mock;
     listCases: jest.Mock;
     getCase: jest.Mock;
@@ -22,6 +23,7 @@ describe('ModerationController', () => {
       listMissingReports: jest.fn().mockResolvedValue({ items: [], total: 0 }),
       getMissingReport: jest.fn().mockResolvedValue({ id: 'rep-1' }),
       updateMissingReport: jest.fn().mockResolvedValue({ id: 'rep-1', status: 'IN_REVIEW' }),
+      applyAdminMissingReportAction: jest.fn().mockResolvedValue({ id: 'rep-1', status: 'REJECTED' }),
       approveAndCreateType: jest.fn().mockResolvedValue({ signType: { id: 101 }, releasedCandidates: 1 }),
       listCases: jest.fn().mockResolvedValue({ items: [], total: 0 }),
       getCase: jest.fn().mockResolvedValue({ id: 'case-1' }),
@@ -57,6 +59,13 @@ describe('ModerationController', () => {
     const res = await controller.updateMissing('rep-1', mockUser, dto);
     expect(res).toEqual({ id: 'rep-1', status: 'IN_REVIEW' });
     expect(service.updateMissingReport).toHaveBeenCalledWith('rep-1', mockUser.id, dto);
+  });
+
+  it('adminMissingAction calls service.applyAdminMissingReportAction', async () => {
+    const dto = { actionType: 'REJECT', reason: 'Invalid report' } as any;
+    const res = await controller.adminMissingAction('rep-1', mockUser, dto);
+    expect(res).toEqual({ id: 'rep-1', status: 'REJECTED' });
+    expect(service.applyAdminMissingReportAction).toHaveBeenCalledWith('rep-1', mockUser.id, dto);
   });
 
   it('approveAndCreateType calls service.approveAndCreateType without file', async () => {

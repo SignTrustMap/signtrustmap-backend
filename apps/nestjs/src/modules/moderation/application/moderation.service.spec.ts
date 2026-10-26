@@ -18,10 +18,22 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     const catRepo = { findOne: jest.fn(), create: jest.fn((v: any) => v), save: jest.fn((v: any) => v) };
     const signTypeRepo = { findOne: jest.fn(), create: jest.fn((v: any) => v), save: jest.fn((v: any) => v) };
     const candRepo = { findOne: jest.fn(), update: jest.fn().mockResolvedValue(undefined), create: jest.fn((v: any) => v), save: jest.fn((v: any) => v) };
-    const dataSource = { query: jest.fn().mockResolvedValue([]), transaction: jest.fn() };
+    const dataSource = {
+      query: jest.fn().mockImplementation((sql: string) =>
+        sql.includes('SELECT DISTINCT split_part')
+          ? [{ prefix: 'P' }, { prefix: 'W' }, { prefix: 'I' }]
+          : [],
+      ),
+      transaction: jest.fn(),
+    };
     const notifications = { create: jest.fn().mockResolvedValue(undefined), createBulk: jest.fn().mockResolvedValue(undefined) };
     const catalogService = { createSignType: jest.fn() };
     const catalogSyncService = { syncLabels: jest.fn().mockResolvedValue(undefined) };
+    const minioStorageService = {
+      putObject: jest.fn().mockResolvedValue(undefined),
+      getPublicUrl: jest.fn().mockImplementation((_bucket: string, objectName: string) => 'https://s3.test/' + objectName),
+      removeObject: jest.fn().mockResolvedValue(undefined),
+    };
     const service = new ModerationService(
       cases as unknown as Repository<ModerationCase>,
       actions as unknown as Repository<ModerationAction>,
@@ -33,8 +45,18 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
       notifications as unknown as NotificationsService,
       catalogService as unknown as CatalogService,
       catalogSyncService as unknown as CatalogSyncService,
+      minioStorageService as any,
     );
-    return { service, cases, actions, missing, catRepo, signTypeRepo, candRepo, dataSource, notifications, catalogService, catalogSyncService };
+    return { service, cases, actions, missing, catRepo, signTypeRepo, candRepo, dataSource, notifications, catalogService, catalogSyncService, minioStorageService };
+  }
+
+  function representativeImage(): Express.Multer.File {
+    return {
+      originalname: 'sign.jpg',
+      mimetype: 'image/jpeg',
+      buffer: Buffer.from([0xff, 0xd8, 0xff, 0x00]),
+      size: 4,
+    } as Express.Multer.File;
   }
 
   it('parks the candidate on MISSING_TYPE_HOLD when a reviewer reports a missing type', async () => {
@@ -132,6 +154,386 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     expect(notifications.create).toHaveBeenCalledWith('U1', 'MISSING_TYPE_REJECTED', expect.any(String), expect.any(String), 'missing_sign_type_report', 'R1');
   });
 
+  it('rejects a staff action when the report is no longer actionable', async () => {
+    const { service, missing } = buildService();
+    missing.findOne.mockResolvedValue({ id: 'R1', status: MissingTypeStatus.MERGED });
+
+    await expect(service.updateMissingReport('R1', 'staff-1', { actionType: 'REJECT' }))
+      .rejects.toThrow('Report must be PENDING or INCOMPLETE');
+    expect(missing.save).not.toHaveBeenCalled();
+  });
+
+  it('escalates a report with preliminary notes and records an audit action', async () => {
+    const { service, missing, dataSource } = buildService();
+    const report = {
+      id: 'R1',
+      status: MissingTypeStatus.PENDING,
+      candidateId: null,
+      reporterId: 'U1',
+      proposedName: 'Unknown sign',
+      staffNotes: null,
+    };
+    missing.findOne
+      .mockResolvedValueOnce(report)
+      .mockResolvedValueOnce({ ...report, status: MissingTypeStatus.ESCALATED_ADMIN });
+    const manager = {
+      query: jest.fn()
+        .mockResolvedValueOnce([{ id: 'R1', status: MissingTypeStatus.PENDING }])
+        .mockResolvedValueOnce([{ id: 'R1' }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'CASE1' }])
+        .mockResolvedValueOnce([]),
+    };
+    dataSource.transaction.mockImplementation((fn: (m: any) => any) => fn(manager));
+
+    await service.updateMissingReport('R1', 'staff-1', {
+      actionType: 'ESCALATE_ADMIN',
+      staffNotes: 'Possible regulatory sign; needs admin review.',
+    });
+
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining('SET status = $2, staff_notes = $3'),
+      ['R1', MissingTypeStatus.ESCALATED_ADMIN, 'Possible regulatory sign; needs admin review.', 'staff-1', MissingTypeStatus.PENDING],
+    );
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining("'ESCALATE_ADMIN'"),
+      ['CASE1', 'staff-1', 'Possible regulatory sign; needs admin review.'],
+    );
+  });
+
+  it('requires preliminary notes before escalating a report', async () => {
+    const { service, missing, cases } = buildService();
+    missing.findOne.mockResolvedValue({ id: 'R1', status: MissingTypeStatus.PENDING });
+
+    await expect(service.updateMissingReport('R1', 'staff-1', { actionType: 'ESCALATE_ADMIN' }))
+      .rejects.toThrow('staffNotes is required for ESCALATE_ADMIN');
+    expect(cases.save).not.toHaveBeenCalled();
+  });
+
+  it('rejects a report and its held candidate atomically with an audit action', async () => {
+    const { service, missing, dataSource, notifications } = buildService();
+    const report = {
+      id: 'R1',
+      status: MissingTypeStatus.PENDING,
+      candidateId: 'C1',
+      reporterId: 'U1',
+      proposedName: 'Unknown sign',
+    };
+    missing.findOne
+      .mockResolvedValueOnce(report)
+      .mockResolvedValueOnce({ ...report, status: MissingTypeStatus.REJECTED });
+    const manager = {
+      query: jest.fn()
+        .mockResolvedValueOnce([{
+          id: 'R1',
+          candidate_id: 'C1',
+          reporter_id: 'U1',
+          proposed_name: 'Unknown sign',
+          status: MissingTypeStatus.PENDING,
+        }])
+        .mockResolvedValueOnce([{ id: 'C1', status: CandidateStatus.MISSING_TYPE_HOLD }])
+        .mockResolvedValueOnce([{ id: 'R1' }])
+        .mockResolvedValueOnce([{ id: 'C1' }])
+        .mockResolvedValueOnce([{ id: 'CASE1' }])
+        .mockResolvedValueOnce([]),
+    };
+    dataSource.transaction.mockImplementation((fn: (m: any) => any) => fn(manager));
+
+    await service.updateMissingReport('R1', 'staff-1', { actionType: 'REJECT' });
+
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining('UPDATE unverified_sign_candidates'),
+      ['C1', CandidateStatus.REJECTED, null, CandidateStatus.MISSING_TYPE_HOLD],
+    );
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining("VALUES ($1, $2, $3, $4)"),
+      ['CASE1', 'REJECT', 'staff-1', null],
+    );
+    expect(notifications.create).toHaveBeenCalledWith(
+      'U1', 'MISSING_TYPE_REJECTED', expect.any(String), expect.any(String),
+      'missing_sign_type_report', 'R1',
+    );
+  });
+
+  it('preserves catalog merge semantics while applying the staff merge transactionally', async () => {
+    const { service, missing, signTypeRepo, dataSource } = buildService();
+    const report = {
+      id: 'R1',
+      status: MissingTypeStatus.PENDING,
+      candidateId: 'C1',
+      reporterId: 'U1',
+      proposedName: 'Unknown sign',
+    };
+    missing.findOne
+      .mockResolvedValueOnce(report)
+      .mockResolvedValueOnce({ ...report, status: MissingTypeStatus.MERGED, mergedIntoSignTypeId: 42 });
+    signTypeRepo.findOne.mockResolvedValue({ id: 42 });
+    const manager = {
+      query: jest.fn()
+        .mockResolvedValueOnce([{ id: 'R1', candidate_id: 'C1', reporter_id: 'U1', proposed_name: 'Unknown sign', status: MissingTypeStatus.PENDING }])
+        .mockResolvedValueOnce([{ id: 'C1', status: CandidateStatus.MISSING_TYPE_HOLD }])
+        .mockResolvedValueOnce([{ id: 'R1' }])
+        .mockResolvedValueOnce([{ id: 'C1' }])
+        .mockResolvedValueOnce([{ id: 'CASE1' }])
+        .mockResolvedValueOnce([]),
+    };
+    dataSource.transaction.mockImplementation((fn: (m: any) => any) => fn(manager));
+
+    await service.updateMissingReport('R1', 'staff-1', {
+      actionType: 'MERGE',
+      mergedSignTypeId: 42,
+    });
+
+    expect(signTypeRepo.findOne).toHaveBeenCalledWith({ where: { id: 42 } });
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining('SET status = $2, predicted_sign_type_id'),
+      ['C1', CandidateStatus.PENDING_REVIEW, 42, CandidateStatus.MISSING_TYPE_HOLD],
+    );
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining("VALUES ($1, $2, $3, $4)"),
+      ['CASE1', 'MERGE', 'staff-1', null],
+    );
+  });
+
+  it('requests a report-linked recapture and updates report, candidate, case, and audit atomically', async () => {
+    const { service, missing, dataSource, notifications } = buildService();
+    const report = {
+      id: 'R1',
+      status: MissingTypeStatus.INCOMPLETE,
+      candidateId: 'C1',
+      reporterId: 'U1',
+      proposedName: null,
+    };
+    missing.findOne.mockResolvedValue(report);
+    const manager = {
+      query: jest.fn()
+        .mockResolvedValueOnce([{
+          id: 'R1',
+          candidate_id: 'C1',
+          reporter_id: 'U1',
+          proposed_name: null,
+          status: MissingTypeStatus.PENDING,
+        }])
+        .mockResolvedValueOnce([{
+          id: 'C1',
+          status: CandidateStatus.MISSING_TYPE_HOLD,
+          surveyor_id: 'SURVEYOR1',
+        }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'R1' }])
+        .mockResolvedValueOnce([{ id: 'C1' }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'CASE1' }])
+        .mockResolvedValueOnce([]),
+    };
+    dataSource.transaction.mockImplementation((fn: (m: any) => any) => fn(manager));
+
+    const result = await service.updateMissingReport('R1', 'staff-1', {
+      actionType: 'REQUEST_RECAPTURE',
+      actionNote: 'Please recapture from the same location.',
+    });
+
+    expect(result).toMatchObject({ id: 'R1', status: MissingTypeStatus.INCOMPLETE });
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining('missing_type_report_id'),
+      ['C1', 'staff-1', 'SURVEYOR1', 'R1', 'Please recapture from the same location.'],
+    );
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining("SET status = $2"),
+      ['C1', CandidateStatus.RECAPTURE_REQUESTED, CandidateStatus.MISSING_TYPE_HOLD],
+    );
+    expect(notifications.create).toHaveBeenCalledWith(
+      'U1',
+      'MISSING_TYPE_INCOMPLETE',
+      expect.any(String),
+      expect.any(String),
+      'missing_sign_type_report',
+      'R1',
+    );
+    expect(notifications.create).toHaveBeenCalledWith(
+      'SURVEYOR1',
+      'IMAGE_RECAPTURE_REQUESTED',
+      expect.any(String),
+      'Please recapture from the same location.',
+      'candidate',
+      'C1',
+    );
+  });
+
+  it('rejects an escalated report through the admin decision path and records the action', async () => {
+    const { service, missing, dataSource, notifications } = buildService();
+    missing.findOne.mockResolvedValue({
+      id: 'R1',
+      status: MissingTypeStatus.REJECTED,
+      candidateId: null,
+      reporterId: 'REVIEWER1',
+      proposedName: null,
+    });
+    const manager = {
+      query: jest.fn()
+        .mockResolvedValueOnce([{
+          id: 'R1',
+          candidate_id: null,
+          reporter_id: 'REVIEWER1',
+          proposed_name: null,
+          status: MissingTypeStatus.ESCALATED_ADMIN,
+        }])
+        .mockResolvedValueOnce([{ id: 'R1' }])
+        .mockResolvedValueOnce([{ id: 'CASE1' }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([]),
+    };
+    dataSource.transaction.mockImplementation((fn: (m: any) => any) => fn(manager));
+
+    const result = await service.applyAdminMissingReportAction('R1', 'ADMIN1', {
+      actionType: 'REJECT',
+      reason: 'Evidence does not support the report.',
+    });
+
+    if (!('status' in result)) throw new Error('Expected admin report rejection response');
+    expect(result.status).toBe(MissingTypeStatus.REJECTED);
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO moderation_actions'),
+      ['CASE1', 'REJECT', 'ADMIN1', 'Evidence does not support the report.'],
+    );
+    expect(notifications.create).toHaveBeenCalledWith(
+      'REVIEWER1', 'MISSING_TYPE_REJECTED', expect.any(String), expect.any(String),
+      'missing_sign_type_report', 'R1',
+    );
+  });
+
+  it('requires a ban target and reason for admin ban decisions', async () => {
+    const { service, dataSource } = buildService();
+
+    await expect(service.applyAdminMissingReportAction('R1', 'ADMIN1', {
+      actionType: 'BAN_USER',
+      reason: 'Policy violation',
+    })).rejects.toThrow('banTarget is required for BAN_USER');
+    await expect(service.applyAdminMissingReportAction('R1', 'ADMIN1', {
+      actionType: 'REJECT',
+      reason: '   ',
+    })).rejects.toThrow('reason is required for an admin decision');
+    expect(dataSource.transaction).not.toHaveBeenCalled();
+  });
+
+  it('bans only the selected report reporter and atomically records status history and moderation audit', async () => {
+    const { service, missing, dataSource, notifications } = buildService();
+    missing.findOne.mockResolvedValue({
+      id: 'R1',
+      status: MissingTypeStatus.REJECTED,
+      candidateId: null,
+      reporterId: 'REVIEWER1',
+      proposedName: 'Unknown sign',
+    });
+    const manager = {
+      query: jest.fn()
+        .mockResolvedValueOnce([{
+          id: 'R1',
+          candidate_id: null,
+          reporter_id: 'REVIEWER1',
+          proposed_name: 'Unknown sign',
+          status: MissingTypeStatus.ESCALATED_ADMIN,
+          reviewed_by: 'STAFF1',
+        }])
+        .mockResolvedValueOnce([{ id: 'REVIEWER1', status: 'ACTIVE' }])
+        .mockResolvedValueOnce([{ id: 'R1' }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'CASE1' }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([]),
+    };
+    dataSource.transaction.mockImplementation((fn: (m: any) => any) => fn(manager));
+
+    const result = await service.applyAdminMissingReportAction('R1', 'ADMIN1', {
+      actionType: 'BAN_USER',
+      banTarget: 'REVIEWER',
+      reason: 'Confirmed abuse of reporting.',
+    });
+
+    if (!('bannedUser' in result)) throw new Error('Expected admin ban response');
+    expect(result.bannedUser).toEqual({ id: 'REVIEWER1', oldStatus: 'ACTIVE', newStatus: 'BANNED' });
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining('FROM users u'),
+      ['REVIEWER1', 'REVIEWER'],
+    );
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO user_status_history'),
+      ['REVIEWER1', 'ACTIVE', 'Confirmed abuse of reporting.', 'ADMIN1'],
+    );
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining('ADMIN_NEW_SIGN_USER_BAN'),
+      [
+        'ADMIN1',
+        'REVIEWER1',
+        JSON.stringify({ status: 'ACTIVE' }),
+        JSON.stringify({
+          status: 'BANNED',
+          reason: 'Confirmed abuse of reporting.',
+          reportId: 'R1',
+          targetRole: 'REVIEWER',
+        }),
+      ],
+    );
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO moderation_actions'),
+      ['CASE1', 'BAN_USER', 'ADMIN1', 'REVIEWER user REVIEWER1 banned: Confirmed abuse of reporting.'],
+    );
+    expect(notifications.create).toHaveBeenCalled();
+  });
+
+  it('lets Admin request recapture from an escalated report and resolves the escalation case', async () => {
+    const { service, missing, dataSource } = buildService();
+    missing.findOne.mockResolvedValue({
+      id: 'R1',
+      status: MissingTypeStatus.INCOMPLETE,
+      candidateId: 'C1',
+      reporterId: 'REVIEWER1',
+      proposedName: 'Unknown sign',
+    });
+    const manager = {
+      query: jest.fn()
+        .mockResolvedValueOnce([{
+          id: 'R1',
+          candidate_id: 'C1',
+          reporter_id: 'REVIEWER1',
+          proposed_name: 'Unknown sign',
+          status: MissingTypeStatus.ESCALATED_ADMIN,
+        }])
+        .mockResolvedValueOnce([{
+          id: 'C1',
+          status: CandidateStatus.MISSING_TYPE_HOLD,
+          surveyor_id: 'SURVEYOR1',
+        }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'R1' }])
+        .mockResolvedValueOnce([{ id: 'C1' }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'ESCALATION_CASE' }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([]),
+    };
+    dataSource.transaction.mockImplementation((fn: (m: any) => any) => fn(manager));
+
+    const result = await service.applyAdminMissingReportAction('R1', 'ADMIN1', {
+      actionType: 'REQUEST_RECAPTURE',
+      reason: 'Image evidence is insufficient.',
+    });
+
+    if (!('status' in result)) throw new Error('Expected admin recapture response');
+    expect(result.status).toBe(MissingTypeStatus.INCOMPLETE);
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining('WHERE id = $1 AND status = $5'),
+      ['R1', MissingTypeStatus.INCOMPLETE, 'Image evidence is insufficient.', 'ADMIN1', MissingTypeStatus.ESCALATED_ADMIN],
+    );
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining('UPDATE moderation_cases'),
+      ['ESCALATION_CASE', 'RESOLVED', 'Image evidence is insufficient.'],
+    );
+  });
+
   it('returns reopened PENDING reports with replacement candidate evidence in the Staff queue', async () => {
     const { service, missing, dataSource } = buildService();
     missing.findAndCount.mockResolvedValue([[{ id: 'R1', status: MissingTypeStatus.PENDING, candidateId: 'C1' }], 1]);
@@ -198,29 +600,47 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
   });
 
   it('approve-and-create-type provisions the sign type, bumps catalog version, releases the held candidate and triggers AI label sync', async () => {
-    const { service, missing, catRepo, signTypeRepo, dataSource, notifications, catalogService, catalogSyncService } = buildService();
+    const { service, missing, catRepo, signTypeRepo, dataSource, notifications, catalogService, catalogSyncService, minioStorageService } = buildService();
     const report = { id: 'R1', status: MissingTypeStatus.PENDING, candidateId: 'C1', proposedName: 'No Horn', proposedCategoryId: 1, reporterId: 'U1', suggestedShape: 'CIRCLE', suggestedColorScheme: null };
     missing.findOne.mockResolvedValue(report);
     catRepo.findOne.mockResolvedValue({ id: 1, code: 'PROHIBITORY' });
     signTypeRepo.findOne.mockResolvedValue(null);
-    catalogService.createSignType.mockResolvedValue({ id: 42, signCode: 'P.128' });
-    dataSource.query.mockResolvedValue([]);
+    catalogService.createSignType.mockResolvedValue({ id: 42, signCode: 'P.128a' });
+    dataSource.query.mockImplementation((sql: string) =>
+      sql.includes('SELECT DISTINCT split_part')
+        ? [{ prefix: 'P' }, { prefix: 'W' }, { prefix: 'I' }]
+        : [],
+    );
 
     const result = await service.approveAndCreateType('R1', 'staff-1', {
-      signCode: 'P.128',
+      signCode: 'P. 128A',
       nameVi: 'Cấm bấm còi',
       nameEn: 'No Horn',
       proposedCategoryId: 1,
       aiLabelPrompt: 'a circular white sign with red border showing a crossed-out horn',
-    });
+      allowedVehicles: ['CAR', 'MOTORCYCLE'],
+    }, representativeImage());
 
-    expect(catalogService.createSignType).toHaveBeenCalledWith(expect.objectContaining({ signCode: 'P.128', categoryId: 1, nameVi: 'Cấm bấm còi' }));
+    expect(catalogService.createSignType).toHaveBeenCalledWith(expect.objectContaining({
+      signCode: 'P.128a',
+      categoryId: 1,
+      nameVi: 'Cấm bấm còi',
+      allowedVehicles: ['CAR', 'MOTORCYCLE'],
+      representativeImageKey: expect.stringContaining('catalog/representative/P.128a-'),
+    }));
+    expect(minioStorageService.putObject).toHaveBeenCalledWith(
+      'stm-sign-crops',
+      expect.stringContaining('catalog/representative/P.128a-'),
+      representativeImage().buffer,
+      'image/jpeg',
+    );
+    expect(dataSource.query).toHaveBeenCalledWith(expect.stringContaining('SELECT DISTINCT split_part'));
     expect(dataSource.query).toHaveBeenCalledWith(expect.stringContaining('catalog_versions'), ['staff-1', expect.any(String), 42]);
     expect(dataSource.query).toHaveBeenCalledWith(expect.stringContaining('UPDATE unverified_sign_candidates'), [42, 'C1']);
     expect(missing.save).toHaveBeenCalledWith(expect.objectContaining({ status: MissingTypeStatus.APPROVED, mergedIntoSignTypeId: 42 }));
     expect(notifications.create).toHaveBeenCalledWith('U1', expect.stringContaining('MISSING_TYPE_APPROVED'), expect.any(String), expect.any(String), 'missing_sign_type_report', 'R1');
     expect(catalogSyncService.syncLabels).toHaveBeenCalledTimes(1);
-    expect(result.createdSignType).toMatchObject({ id: 42, signCode: 'P.128' });
+    expect(result.createdSignType).toMatchObject({ id: 42, signCode: 'P.128a' });
     expect(result.report).toMatchObject({ status: MissingTypeStatus.APPROVED });
   });
 
@@ -232,6 +652,7 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     signTypeRepo.findOne.mockResolvedValue(null);
     catalogService.createSignType.mockResolvedValue({ id: 42, signCode: 'P.128' });
     dataSource.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('SELECT DISTINCT split_part')) return [{ prefix: 'P' }];
       if (sql.includes('catalog_versions') || sql.includes('UPDATE unverified_sign_candidates')) {
         throw new Error('PostgreSQL error');
       }
@@ -243,32 +664,87 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
       nameVi: 'Cấm bấm còi',
       nameEn: 'No Horn',
       proposedCategoryId: 1,
-    });
+      allowedVehicles: ['CAR'],
+    }, representativeImage());
 
     expect(missing.save).toHaveBeenCalledWith(expect.objectContaining({ status: MissingTypeStatus.APPROVED, mergedIntoSignTypeId: 42 }));
     expect(result.createdSignType).toMatchObject({ id: 42, signCode: 'P.128' });
     expect(result.report).toMatchObject({ status: MissingTypeStatus.APPROVED });
   });
 
-  it('approve-and-create-type reuses existing sign type if signCode already exists (idempotent retry)', async () => {
+  it('rejects an existing sign code instead of silently approving a different report into it', async () => {
     const { service, missing, catRepo, signTypeRepo, dataSource, catalogService } = buildService();
     const report = { id: 'R1', status: MissingTypeStatus.PENDING, candidateId: 'C1', proposedName: 'No Horn', proposedCategoryId: 1, reporterId: 'U1' };
     missing.findOne.mockResolvedValue(report);
     catRepo.findOne.mockResolvedValue({ id: 1, code: 'PROHIBITORY' });
-    signTypeRepo.findOne.mockResolvedValue({ id: 751, signCode: 'T.404' });
-    dataSource.query.mockResolvedValue([]);
+    signTypeRepo.findOne.mockResolvedValue({ id: 751, signCode: 'P.128a' });
+    dataSource.query.mockImplementation((sql: string) =>
+      sql.includes('SELECT DISTINCT split_part') ? [{ prefix: 'P' }] : [],
+    );
 
-    const result = await service.approveAndCreateType('R1', 'staff-1', {
-      signCode: 'T.404',
-      nameVi: 'Biển T.404',
-      nameEn: 'Sign T.404',
+    await expect(service.approveAndCreateType('R1', 'staff-1', {
+      signCode: 'P.128a',
+      nameVi: 'Biển P.128',
+      nameEn: 'Sign P.128',
       proposedCategoryId: 1,
-    });
+      allowedVehicles: ['CAR'],
+    }, representativeImage())).rejects.toThrow('sign_code "P.128a" exists');
 
     expect(catalogService.createSignType).not.toHaveBeenCalled();
-    expect(missing.save).toHaveBeenCalledWith(expect.objectContaining({ status: MissingTypeStatus.APPROVED, mergedIntoSignTypeId: 751 }));
-    expect(result.createdSignType).toMatchObject({ id: 751, signCode: 'T.404' });
-    expect(result.report).toMatchObject({ status: MissingTypeStatus.APPROVED });
+    expect(missing.save).not.toHaveBeenCalled();
+    expect(dataSource.query).toHaveBeenCalledWith(expect.stringContaining('SELECT DISTINCT split_part'));
+  });
+
+  it('requires a valid image upload, sign-code prefix, and numbered sign-code format before creating a type', async () => {
+    const { service, missing, catRepo, signTypeRepo, dataSource } = buildService();
+    missing.findOne.mockResolvedValue({
+      id: 'R1',
+      status: MissingTypeStatus.PENDING,
+      proposedName: 'Unknown sign',
+    });
+    catRepo.findOne.mockResolvedValue({ id: 1 });
+    signTypeRepo.findOne.mockResolvedValue(null);
+
+    await expect(service.approveAndCreateType('R1', 'ADMIN1', {
+      signCode: 'P.128',
+      allowedVehicles: ['CAR'],
+    })).rejects.toThrow('Representative image upload is required');
+
+    await expect(service.approveAndCreateType('R1', 'ADMIN1', {
+      signCode: 'CUSTOM',
+      allowedVehicles: ['CAR'],
+    }, representativeImage())).rejects.toThrow('signCode must match PREFIX.number');
+
+    await expect(service.approveAndCreateType('R1', 'ADMIN1', {
+      signCode: 'X.128',
+      allowedVehicles: ['CAR'],
+    }, representativeImage())).rejects.toThrow('signCode prefix must match an existing catalog prefix');
+
+    expect(dataSource.query).toHaveBeenCalledWith(expect.stringContaining('SELECT DISTINCT split_part'));
+  });
+
+  it('does not approve a report when catalog creation fails and removes the uploaded image', async () => {
+    const { service, missing, catRepo, signTypeRepo, catalogService, minioStorageService } = buildService();
+    missing.findOne.mockResolvedValue({
+      id: 'R1',
+      status: MissingTypeStatus.PENDING,
+      proposedName: 'Unknown sign',
+    });
+    catRepo.findOne.mockResolvedValue({ id: 1 });
+    signTypeRepo.findOne.mockResolvedValue(null);
+    catalogService.createSignType.mockRejectedValue(new Error('catalog insert failed'));
+
+    await expect(service.approveAndCreateType('R1', 'ADMIN1', {
+      signCode: 'P.128a',
+      allowedVehicles: ['CAR'],
+    }, representativeImage())).rejects.toThrow('catalog insert failed');
+
+    expect(missing.save).not.toHaveBeenCalled();
+    expect(minioStorageService.putObject).toHaveBeenCalledTimes(1);
+    expect(minioStorageService.removeObject).toHaveBeenCalledWith({
+      bucket: 'stm-sign-crops',
+      objectName: expect.stringContaining('catalog/representative/P.128a-'),
+    });
   });
 
   it('syncs ModerationCase when a missing-type report is escalated to Admin and handles filter aliases', async () => {

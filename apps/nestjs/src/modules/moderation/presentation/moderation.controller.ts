@@ -4,7 +4,7 @@ import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagg
 import { ModerationService } from '../application/moderation.service';
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
-import { CreateMissingTypeReportDto, ResolveCaseDto, UpdateMissingTypeReportDto, ApproveAndCreateTypeDto } from './dto/moderation.dto';
+import { CreateMissingTypeReportDto, ResolveCaseDto, UpdateMissingTypeReportDto, ApproveAndCreateTypeDto, AdminMissingTypeActionDto } from './dto/moderation.dto';
 
 @ApiTags('Moderation')
 @ApiBearerAuth()
@@ -33,8 +33,22 @@ export class ModerationController {
   updateMissing(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: any, @Body() dto: UpdateMissingTypeReportDto) { return this.svc.updateMissingReport(id, user.id, dto); }
 
   @Roles('ADMIN')
-  @ApiOperation({ summary: 'Approve and create new sign type', description: 'Creates the TrafficSignType from a missing-type report, publishes a catalog version, releases held candidates, and triggers AI label sync' })
-  @ApiConsumes('multipart/form-data', 'application/json')
+  @ApiOperation({
+    summary: 'Apply an admin decision to an escalated new-sign report',
+    description: 'Reject the report, request a recapture, or ban an involved non-admin user.',
+  })
+  @Patch('moderation/missing-type-reports/:id/admin-action')
+  adminMissingAction(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: any,
+    @Body() dto: AdminMissingTypeActionDto,
+  ) {
+    return this.svc.applyAdminMissingReportAction(id, user.id, dto);
+  }
+
+  @Roles('ADMIN')
+  @ApiOperation({ summary: 'Approve and create new sign type', description: 'Creates the TrafficSignType from a missing-type report with a validated representative image upload, publishes a catalog version, releases held candidates, and triggers AI label sync' })
+  @ApiConsumes('multipart/form-data')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 20 * 1024 * 1024 } }))
   @Post('moderation/missing-type-reports/:id/approve-and-create-type')
   approveAndCreateType(
