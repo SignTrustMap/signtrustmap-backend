@@ -218,7 +218,6 @@ describe('ModelRetrainingSpec (MLOps Flow 14 & Req 1.5)', () => {
       .mockResolvedValueOnce([{ id: 'job-99', model_type: 'YOLO12', started_at: new Date() }])
       .mockResolvedValueOnce([]);
 
-    const req = { ip: '127.0.0.1', headers: {} };
     const adminRes = await adminController.triggerModelRetraining(
       { modelType: 'YOLO12' },
       { id: 'admin-1' },

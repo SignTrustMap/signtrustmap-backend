@@ -1,7 +1,7 @@
 import { ROUTE_ARGS_METADATA } from '@nestjs/common/constants';
 import { CurrentUser } from './current-user.decorator';
 
-function getParamDecoratorFactory(decorator: Function) {
+function getParamDecoratorFactory(decorator: (...args: any[]) => any) {
   class TestClass {
     testMethod(@decorator() value: any) {
       return value;

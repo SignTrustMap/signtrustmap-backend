@@ -2,7 +2,7 @@
 // =============================================================================
 // seed_allowed_vehicles.mjs
 // Applies the Task 2 (schema) + Task 3 (data) migration for per-vehicle sign
-// eligibility against the production Neon database.
+// eligibility against the database.
 //
 // Groups (from AI_Agent_Routing_Implementation_Guide.md; empty = prohibition):
 //   A: 3,31,32,33,34,45,46,109               => [] (banned for every vehicle)
@@ -17,7 +17,7 @@
 //   J: every other sign type                  => all six vehicle types
 //
 // Usage (from apps/nestjs so `pg` resolves):
-//   $env:DATABASE_URL="postgres://user:pass@ep-xx-xx.region.aws.neon.tech/neondb?sslmode=require"
+//   $env:DATABASE_URL="postgres://user:pass@localhost:5432/signtrustmap"
 //   npm run db:seed-vehicles            # dry run (prints plan + verification)
 //   npm run db:seed-vehicles -- --yes   # applies the migration + seed
 //
@@ -129,10 +129,10 @@ async function main() {
   }
 
   const apply = process.argv.includes('--yes');
-  const isNeon = /neon\.tech/i.test(connectionString);
+  const isSsl = /sslmode=require/i.test(connectionString) || process.env.PGSSL === '1';
   const pool = new Pool({
     connectionString,
-    ssl: isNeon || process.env.PGSSL === '1' ? { rejectUnauthorized: false } : false,
+    ssl: isSsl ? { rejectUnauthorized: false } : false,
   });
 
   const client = await pool.connect();

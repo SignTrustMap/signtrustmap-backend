@@ -87,7 +87,9 @@ describe('MinioStorageService', () => {
     it('concatenates stream sources and hashes output', async () => {
       mockMinioClient.putObject.mockImplementation(async (bucket, obj, stream) => {
         if (stream && typeof stream[Symbol.asyncIterator] === 'function') {
-          for await (const _ of stream) {}
+          for await (const chunk of stream) {
+            void chunk;
+          }
         }
         return { etag: '123' };
       });

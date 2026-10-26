@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, NotFoundException, BadRequestException, ForbiddenException, Optional, OnModuleInit } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException, BadRequestException, ForbiddenException, Optional, OnModuleInit, Logger } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { randomUUID, createHash } from 'crypto';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -47,6 +47,7 @@ function getAffectedRowCount(result: any): number {
 
 @Injectable()
 export class ReviewsService implements OnModuleInit {
+  private readonly logger = new Logger(ReviewsService.name);
   constructor(
     @InjectRepository(UnverifiedSignCandidate) private readonly candidateRepo: Repository<UnverifiedSignCandidate>,
     @InjectRepository(CandidateReview) private readonly reviewRepo: Repository<CandidateReview>,
@@ -138,15 +139,28 @@ export class ReviewsService implements OnModuleInit {
           PRIMARY KEY (reviewer_id, candidate_id)
         );
       `);
-    } catch {}
+    } catch (err: any) {
+      this.logger.warn(`Failed to verify reviewer_skipped_candidates table: ${err?.message}`);
+    }
     try {
       await (this.candidateRepo.manager as any).query(`
-        ALTER TABLE unverified_sign_candidates ADD COLUMN IF NOT EXISTS possible_signs jsonb;
+        ALTER TABLE unverified_sign_candidates
+          ADD COLUMN IF NOT EXISTS possible_signs jsonb,
+          ADD COLUMN IF NOT EXISTS selected_sign_type_id int REFERENCES traffic_sign_types(id) ON DELETE SET NULL,
+          ADD COLUMN IF NOT EXISTS selected_by uuid REFERENCES users(id) ON DELETE SET NULL,
+          ADD COLUMN IF NOT EXISTS selected_at timestamptz,
+          ADD COLUMN IF NOT EXISTS selection_reason varchar(500);
+        CREATE INDEX IF NOT EXISTS idx_unverified_sign_candidates_selected_sign_type
+          ON unverified_sign_candidates (selected_sign_type_id);
+        ALTER TABLE survey_submissions
+          ADD COLUMN IF NOT EXISTS idempotency_key varchar(128);
       `);
-    } catch {}
+    } catch (err: any) {
+      this.logger.warn(`Failed to verify unverified_sign_candidates schema: ${err?.message}`);
+    }
   }
 
-  async queue(reviewerId: string, page = 1, pageSize = 20, includeOwnSubmissions = false) {
+  async queue(reviewerId?: string, page = 1, pageSize = 20, includeOwnSubmissions = false) {
     const safePage = Math.max(1, page); const safeSize = Math.min(Math.max(1, pageSize), 100);
     const allowSelfReview = includeOwnSubmissions || process.env.ALLOW_SELF_REVIEW === 'true';
     const query = this.candidateRepo.createQueryBuilder('candidate')
@@ -156,45 +170,79 @@ export class ReviewsService implements OnModuleInit {
         statuses: [CandidateStatus.PENDING_REVIEW, CandidateStatus.IN_CONSENSUS],
       });
 
-    if (!allowSelfReview) {
+    if (!allowSelfReview && reviewerId) {
       query.andWhere(
         '(submission.surveyor_id IS NULL OR submission.surveyor_id != :reviewerId)',
         { reviewerId },
       );
     }
 
-    query.andWhere(
-        `NOT EXISTS (
-          SELECT 1 FROM candidate_reviews review
-          WHERE review.candidate_id = candidate.id AND review.reviewer_id = :reviewerId
-        )`,
-        { reviewerId },
-      )
-      .andWhere(
-        `NOT EXISTS (
-          SELECT 1
-          FROM moderation_cases moderation_case
-          JOIN moderation_actions moderation_action
-            ON moderation_action.case_id = moderation_case.id
-          WHERE moderation_case.target_entity_type = 'candidate'
-            AND moderation_case.target_entity_id = candidate.id
-            AND moderation_action.action_type = 'REPORT_FROM_REVIEW'
-            AND moderation_action.performed_by = :reviewerId
-        )`,
-        { reviewerId },
-      )
-      .andWhere(
-        `NOT EXISTS (
-          SELECT 1 FROM reviewer_skipped_candidates rsc
-          WHERE rsc.candidate_id = candidate.id AND rsc.reviewer_id = :reviewerId
-        )`,
-        { reviewerId },
-      )
+    if (reviewerId) {
+      query.andWhere(
+          `NOT EXISTS (
+            SELECT 1 FROM candidate_reviews review
+            WHERE review.candidate_id = candidate.id AND review.reviewer_id = :reviewerId
+          )`,
+          { reviewerId },
+        )
+        .andWhere(
+          `NOT EXISTS (
+            SELECT 1
+            FROM moderation_cases moderation_case
+            JOIN moderation_actions moderation_action
+              ON moderation_action.case_id = moderation_case.id
+            WHERE moderation_case.target_entity_type = 'candidate'
+              AND moderation_case.target_entity_id = candidate.id
+              AND moderation_action.action_type = 'REPORT_FROM_REVIEW'
+              AND moderation_action.performed_by = :reviewerId
+          )`,
+          { reviewerId },
+        )
+        .andWhere(
+          `NOT EXISTS (
+            SELECT 1 FROM reviewer_skipped_candidates rsc
+            WHERE rsc.candidate_id = candidate.id AND rsc.reviewer_id = :reviewerId
+          )`,
+          { reviewerId },
+        );
+    }
+
+    query
       .orderBy('candidate.activeLearningPriority', 'DESC')
       .addOrderBy('candidate.createdAt', 'ASC')
       .skip((safePage - 1) * safeSize)
       .take(safeSize);
-    const [items, total] = await query.getManyAndCount();
+
+    let items: UnverifiedSignCandidate[] = [];
+    let total = 0;
+    try {
+      [items, total] = await query.getManyAndCount();
+    } catch (queryErr: any) {
+      this.logger.warn(`ReviewsService.queue primary query failed: ${queryErr?.message}. Attempting auto-repair.`);
+      try {
+        await (this.candidateRepo.manager as any).query(`
+          ALTER TABLE unverified_sign_candidates
+            ADD COLUMN IF NOT EXISTS possible_signs jsonb,
+            ADD COLUMN IF NOT EXISTS selected_sign_type_id int REFERENCES traffic_sign_types(id) ON DELETE SET NULL,
+            ADD COLUMN IF NOT EXISTS selected_by uuid REFERENCES users(id) ON DELETE SET NULL,
+            ADD COLUMN IF NOT EXISTS selected_at timestamptz,
+            ADD COLUMN IF NOT EXISTS selection_reason varchar(500);
+          ALTER TABLE survey_submissions
+            ADD COLUMN IF NOT EXISTS idempotency_key varchar(128);
+          CREATE TABLE IF NOT EXISTS reviewer_skipped_candidates (
+            reviewer_id uuid NOT NULL,
+            candidate_id uuid NOT NULL,
+            skipped_at timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (reviewer_id, candidate_id)
+          );
+        `);
+        [items, total] = await query.getManyAndCount();
+      } catch (retryErr: any) {
+        this.logger.error(`ReviewsService.queue retry failed: ${retryErr?.message}`);
+        return { items: [], total: 0, page: safePage, pageSize: safeSize, totalPages: 0 };
+      }
+    }
+
     for (const item of items) {
       try {
         const possibleSigns = await this.resolveTopPossibleSigns(item, { allowNetwork: false });

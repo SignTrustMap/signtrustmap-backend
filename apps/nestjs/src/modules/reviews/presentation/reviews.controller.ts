@@ -15,6 +15,7 @@ import {
   SelectSignRemedyDto,
   SetActiveLearningPriorityDto,
   SetBulkActiveLearningPrioritiesDto,
+  ReviewQueueQueryDto,
 } from './dto/vote.dto';
 import { InternalTokenGuard } from '../../../common/guards/internal-token.guard';
 
@@ -177,14 +178,32 @@ export class ReviewsController {
   @Get('queue')
   async queue(
     @CurrentUser() user: any,
-    @Query('page') page?: string,
-    @Query('pageSize') pageSize?: string,
-    @Query('includeOwnSubmissions') includeOwnSubmissions?: string,
+    @Query() queryDto?: ReviewQueueQueryDto | any,
+    @Query('pageSize') legacyPageSize?: string,
+    @Query('includeOwnSubmissions') legacyIncludeOwnSubmissions?: string,
   ) {
-    const p = page ? parseInt(page, 10) : 1;
-    const ps = pageSize ? parseInt(pageSize, 10) : 20;
-    const allowSelf = includeOwnSubmissions === 'true' || includeOwnSubmissions === '1';
-    return this.reviewsService.queue(user.id, Number.isNaN(p) ? 1 : p, Number.isNaN(ps) ? 20 : ps, allowSelf);
+    let p = 1;
+    let ps = 20;
+    let allowSelf = false;
+
+    if (typeof queryDto === 'string' || typeof queryDto === 'number') {
+      p = parseInt(String(queryDto), 10);
+      ps = legacyPageSize ? parseInt(legacyPageSize, 10) : 20;
+      allowSelf = legacyIncludeOwnSubmissions === 'true' || legacyIncludeOwnSubmissions === '1';
+    } else if (queryDto && typeof queryDto === 'object') {
+      p = queryDto.page ? Number(queryDto.page) : 1;
+      ps = queryDto.pageSize ? Number(queryDto.pageSize) : 20;
+      allowSelf = queryDto.includeOwnSubmissions === true ||
+        queryDto.includeOwnSubmissions === 'true' ||
+        queryDto.includeOwnSubmissions === '1';
+    }
+
+    return this.reviewsService.queue(
+      user?.id,
+      Number.isNaN(p) ? 1 : p,
+      Number.isNaN(ps) ? 20 : ps,
+      allowSelf,
+    );
   }
 
   @ApiBearerAuth()

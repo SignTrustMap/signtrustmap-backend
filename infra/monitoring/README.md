@@ -12,7 +12,7 @@ flowchart TD
         CORE["NestJS Core API<br/>(api.signmap.site/api/v1/health/ready)"]
         SPATIAL["FastAPI Spatial<br/>(api.signmap.site/api/v1/spatial/...)"]
         AI["Jetson Orin AI<br/>(ai.signmap.site)"]
-        DB["Neon PostgreSQL & Upstash Redis"]
+        DB["PostgreSQL & Redis"]
     end
 
     BLACKBOX["Blackbox Exporter<br/>(Port 9115)"]
@@ -52,7 +52,7 @@ docker compose -f infra/monitoring/docker-compose.monitoring.yml down
    - 🟢 **NestJS Core API** (`api.signmap.site/api/v1/health/ready`)
    - 🟢 **FastAPI Spatial GIS** (`api.signmap.site/api/v1/spatial`)
    - 🟢 **Jetson Orin AI Inference** (`ai.signmap.site`)
-   - 🟢 **Neon PostgreSQL Database** (verified via NestJS `/api/v1/health/ready`)
+   - 🟢 **PostgreSQL Database** (verified via NestJS `/api/v1/health/ready`)
 2. **Response Latency (Time-Series)**:
    - Live chart tracking endpoint latency over time with green/yellow/red SLA thresholds.
 3. **24h Availability SLA (%)**:

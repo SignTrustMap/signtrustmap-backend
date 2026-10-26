@@ -126,7 +126,7 @@ describe('ReviewsController', () => {
 
   it('queue calls service.queue with pagination defaults', async () => {
     service.queue.mockResolvedValue({ items: [], total: 0 });
-    const res = await controller.queue(mockUser, '1', '25');
+    const res = await controller.queue(mockUser, { page: 1, pageSize: 25 });
     expect(res).toEqual({ items: [], total: 0 });
     expect(service.queue).toHaveBeenCalledWith(mockUser.id, 1, 25, false);
   });

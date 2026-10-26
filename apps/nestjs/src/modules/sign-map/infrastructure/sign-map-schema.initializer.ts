@@ -392,6 +392,40 @@ export class SignMapSchemaInitializer implements OnModuleInit {
           ADD COLUMN IF NOT EXISTS "role" varchar(50) DEFAULT 'MEDOID',
           ADD COLUMN IF NOT EXISTS "is_pinned" boolean DEFAULT false,
           ADD COLUMN IF NOT EXISTS "sharpness" double precision;
+
+        -- Candidate review and recapture schema integrity
+        ALTER TABLE "unverified_sign_candidates"
+          ADD COLUMN IF NOT EXISTS "possible_signs" JSONB,
+          ADD COLUMN IF NOT EXISTS "selected_sign_type_id" INT REFERENCES "traffic_sign_types"("id") ON DELETE SET NULL,
+          ADD COLUMN IF NOT EXISTS "selected_by" UUID REFERENCES "users"("id") ON DELETE SET NULL,
+          ADD COLUMN IF NOT EXISTS "selected_at" TIMESTAMPTZ,
+          ADD COLUMN IF NOT EXISTS "selection_reason" VARCHAR(500);
+        CREATE INDEX IF NOT EXISTS "idx_unverified_sign_candidates_selected_sign_type"
+          ON "unverified_sign_candidates" ("selected_sign_type_id");
+
+        ALTER TABLE "survey_submissions"
+          ADD COLUMN IF NOT EXISTS "idempotency_key" VARCHAR(128);
+
+        CREATE TABLE IF NOT EXISTS "reviewer_skipped_candidates" (
+          "reviewer_id" UUID NOT NULL,
+          "candidate_id" UUID NOT NULL,
+          "skipped_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          PRIMARY KEY ("reviewer_id", "candidate_id")
+        );
+
+        CREATE TABLE IF NOT EXISTS "candidate_recapture_requests" (
+          "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          "candidate_id" UUID NOT NULL REFERENCES "unverified_sign_candidates"("id") ON DELETE CASCADE,
+          "surveyor_id" UUID NOT NULL REFERENCES "users"("id") ON DELETE CASCADE,
+          "reviewer_id" UUID NOT NULL REFERENCES "users"("id") ON DELETE CASCADE,
+          "missing_type_report_id" UUID,
+          "reason" TEXT NOT NULL,
+          "reviewer_notes" TEXT,
+          "idempotency_key" VARCHAR(128),
+          "submission_idempotency_key" VARCHAR(128),
+          "completed_at" TIMESTAMPTZ,
+          "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
        `);
       this.logger.log('SignMap schema preflight verified (admin_boundaries, osm_roads, verified_traffic_signs columns, phases 1-7 gamification & governance tables).');
 

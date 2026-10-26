@@ -148,3 +148,24 @@ export class SetBulkActiveLearningPrioritiesDto {
   items: BulkPriorityItemDto[];
 }
 
+export class ReviewQueueQueryDto {
+  @ApiProperty({ required: false, default: 1, description: 'Page number (1-based)' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number = 1;
+
+  @ApiProperty({ required: false, default: 20, description: 'Page size (1-100)' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  pageSize?: number = 20;
+
+  @ApiProperty({ required: false, default: false, description: 'Whether to include own submitted candidates' })
+  @IsOptional()
+  includeOwnSubmissions?: string | boolean;
+}
+
