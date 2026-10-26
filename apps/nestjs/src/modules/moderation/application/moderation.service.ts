@@ -31,6 +31,7 @@ export interface CandidateEnriched {
 function getAffectedRowCount(result: any): number {
   if (typeof result?.rowCount === 'number') return result.rowCount;
   if (Array.isArray(result) && typeof result[1] === 'number') return result[1];
+  if (Array.isArray(result)) return result.length;
   return 0;
 }
 
@@ -110,7 +111,7 @@ export class ModerationService {
            RETURNING id`,
           [dto.candidateId, CandidateStatus.MISSING_TYPE_HOLD],
         );
-        if (updatedCandidates.length !== 1) {
+        if (getAffectedRowCount(updatedCandidates) !== 1) {
           throw new ConflictException('Candidate ' + dto.candidateId + ' changed state while reporting a new sign');
         }
         this.logger.log('Parked candidate ' + dto.candidateId + ' on MISSING_TYPE_HOLD (report ' + saved.id + ')');
@@ -277,7 +278,7 @@ export class ModerationService {
          RETURNING id`,
         [reportId, nextStatus, signTypeId, note, staffId, MissingTypeStatus.PENDING, MissingTypeStatus.INCOMPLETE],
       );
-      if (updatedReports.length !== 1) throw new ConflictException('Report state changed before applying staff decision');
+      if (getAffectedRowCount(updatedReports) !== 1) throw new ConflictException('Report state changed before applying staff decision');
 
       if (report.candidate_id) {
         const candidateStatus = decision === 'MERGE' ? CandidateStatus.PENDING_REVIEW : CandidateStatus.REJECTED;
@@ -288,7 +289,7 @@ export class ModerationService {
            RETURNING id`,
           [report.candidate_id, candidateStatus, signTypeId, CandidateStatus.MISSING_TYPE_HOLD],
         );
-        if (candidateUpdate.length !== 1) throw new ConflictException('Candidate state changed before applying staff decision');
+        if (getAffectedRowCount(candidateUpdate) !== 1) throw new ConflictException('Candidate state changed before applying staff decision');
       }
 
       const caseRows: any[] = await manager.query(
@@ -341,7 +342,7 @@ export class ModerationService {
          RETURNING id`,
         [reportId, MissingTypeStatus.ESCALATED_ADMIN, note, staffId, MissingTypeStatus.PENDING],
       );
-      if (updatedReports.length !== 1) throw new ConflictException('Report state changed before escalation');
+      if (getAffectedRowCount(updatedReports) !== 1) throw new ConflictException('Report state changed before escalation');
 
       const existingCases: any[] = await manager.query(
         `SELECT id, status FROM moderation_cases
@@ -437,7 +438,7 @@ export class ModerationService {
            RETURNING id`,
           [candidate.id, CandidateStatus.REJECTED, candidate.status],
         );
-        if (updatedCandidates.length !== 1) throw new ConflictException('Candidate state changed while rejecting report');
+        if (getAffectedRowCount(updatedCandidates) !== 1) throw new ConflictException('Candidate state changed while rejecting report');
         await manager.query(
           `UPDATE candidate_recapture_requests
            SET completed_at = NOW()
@@ -453,7 +454,7 @@ export class ModerationService {
          RETURNING id`,
         [reportId, MissingTypeStatus.REJECTED, reason, adminId, MissingTypeStatus.ESCALATED_ADMIN],
       );
-      if (updatedReports.length !== 1) throw new ConflictException('Report state changed while applying admin rejection');
+      if (getAffectedRowCount(updatedReports) !== 1) throw new ConflictException('Report state changed while applying admin rejection');
       await this.resolveAdminReportCase(manager, reportId, adminId, 'REJECT', reason);
       return { reporterId: report.reporter_id, proposedName: report.proposed_name };
     });
@@ -575,7 +576,7 @@ export class ModerationService {
            RETURNING id`,
           [candidate.id, CandidateStatus.REJECTED, candidate.status],
         );
-        if (updatedCandidates.length !== 1) throw new ConflictException('Candidate state changed while banning involved user');
+        if (getAffectedRowCount(updatedCandidates) !== 1) throw new ConflictException('Candidate state changed while banning involved user');
         await manager.query(
           `UPDATE candidate_recapture_requests
            SET completed_at = NOW()
@@ -591,7 +592,7 @@ export class ModerationService {
          RETURNING id`,
         [reportId, MissingTypeStatus.REJECTED, reason, adminId, MissingTypeStatus.ESCALATED_ADMIN],
       );
-      if (updatedReports.length !== 1) throw new ConflictException('Report state changed while banning involved user');
+      if (getAffectedRowCount(updatedReports) !== 1) throw new ConflictException('Report state changed while banning involved user');
 
       await manager.query(
         `UPDATE users SET status = 'BANNED', updated_at = NOW() WHERE id = $1`,
@@ -735,7 +736,7 @@ export class ModerationService {
          RETURNING id`,
         [reportId, MissingTypeStatus.INCOMPLETE, note, staffId, expectedStatus],
       );
-      if (updatedReports.length !== 1) throw new ConflictException('Report state changed before recapture request creation');
+      if (getAffectedRowCount(updatedReports) !== 1) throw new ConflictException('Report state changed before recapture request creation');
 
       const updatedCandidates: any[] = await manager.query(
         `UPDATE unverified_sign_candidates
@@ -744,7 +745,7 @@ export class ModerationService {
          RETURNING id`,
         [candidate.id, CandidateStatus.RECAPTURE_REQUESTED, CandidateStatus.MISSING_TYPE_HOLD],
       );
-      if (updatedCandidates.length !== 1) {
+      if (getAffectedRowCount(updatedCandidates) !== 1) {
         throw new ConflictException('Candidate state changed before recapture request creation');
       }
 
