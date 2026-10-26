@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException, ForbiddenException, HttpException, HttpStatus, Logger, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource, In } from 'typeorm';
+import { Repository, DataSource, EntityManager, In } from 'typeorm';
 import { RevalidationDecision, RevalDecision } from '../infrastructure/persistence/revalidation-decision.entity';
 import { RevalidationEvidence } from '../infrastructure/persistence/revalidation-evidence.entity';
 import { RevalidationTask, TaskPriority, TaskStatus } from '../infrastructure/persistence/revalidation-task.entity';
@@ -30,6 +30,8 @@ interface EvidenceRow {
   media_url?: string;
   evidence_type?: string;
   submitted_at?: Date | string;
+  latitude?: number | string | null;
+  longitude?: number | string | null;
 }
 
 export interface RevalidationConsensusSummary {
@@ -350,11 +352,46 @@ export class RevalidationService {
         ? 'CHANGED'
         : 'STILL_ACTIVE';
     const id = randomUUID();
-    await this.dataSource.query(
-      'INSERT INTO revalidation_evidences (id, task_id, user_id, media_url, location, evidence_type) VALUES ($1,$2,$3,$4,ST_SetSRID(ST_MakePoint($5,$6),4326),$7)',
-      [id, taskId, userId, mediaUrl, lon, lat, evidenceType],
-    );
-    if (task.status === TaskStatus.OPEN) { task.status = TaskStatus.EVALUATING; await this.tasks.save(task); }
+    await this.dataSource.transaction(async (manager) => {
+      const lockedTasks: any[] = await manager.query(
+        `SELECT status
+         FROM revalidation_tasks
+         WHERE id = $1
+         FOR UPDATE`,
+        [taskId],
+      );
+      if (!lockedTasks[0]) throw new NotFoundException('RevalidationTask ' + taskId + ' not found');
+      if (![TaskStatus.OPEN, TaskStatus.EVALUATING].includes(lockedTasks[0].status)) {
+        throw new BadRequestException('Task ' + taskId + ' is not open for new evidence (status=' + lockedTasks[0].status + ')');
+      }
+      const lockedRecentRows: any[] = await manager.query(
+        `SELECT COUNT(*)::int AS cnt
+         FROM revalidation_evidences
+         WHERE task_id = $1 AND submitted_at >= now() - interval '24 hours'`,
+        [taskId],
+      );
+      const lockedRecentCount = Number(lockedRecentRows[0]?.cnt ?? 0);
+      if (lockedRecentCount >= dailySubmissionLimit) {
+        throw new HttpException(
+          `Daily submission limit of ${dailySubmissionLimit} evidences per task exceeded (last 24h: ${lockedRecentCount})`,
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+      await manager.query(
+        `INSERT INTO revalidation_evidences
+           (id, task_id, user_id, media_url, location, evidence_type)
+         VALUES ($1, $2, $3, $4, ST_SetSRID(ST_MakePoint($5, $6), 4326), $7)`,
+        [id, taskId, userId, mediaUrl, lon, lat, evidenceType],
+      );
+      if (lockedTasks[0].status === TaskStatus.OPEN) {
+        await manager.query(
+          `UPDATE revalidation_tasks
+           SET status = 'EVALUATING'
+           WHERE id = $1 AND status = 'OPEN'`,
+          [taskId],
+        );
+      }
+    });
     if (this.dailyTasksService) {
       this.dailyTasksService.recordProgress(userId, 'REVALIDATE', 1).catch(() => {});
     }
@@ -514,10 +551,30 @@ export class RevalidationService {
       const typeRows: any[] = await this.dataSource.query('SELECT id FROM traffic_sign_types WHERE id=$1', [dto.suggestedSignTypeId]);
       if (typeRows.length === 0) throw new BadRequestException('suggestedSignTypeId ' + dto.suggestedSignTypeId + ' does not exist');
     }
-    const existing = await this.decisions.findOne({ where: { evidenceId: evidenceId, reviewerId } });
-    if (existing) throw new BadRequestException('You have already voted on this evidence');
-    const row = this.decisions.create({ evidenceId: evidenceId, reviewerId, decision, suggestedSignTypeId: dto.suggestedSignTypeId ?? null, note: dto.note ?? null } as any);
-    const saved = await this.decisions.save(row);
+    const saved = await this.dataSource.transaction(async (manager) => {
+      const taskRows: any[] = await manager.query(
+        `SELECT rt.status
+         FROM revalidation_tasks rt
+         JOIN revalidation_evidences ev ON ev.task_id = rt.id
+         WHERE ev.id = $1
+         FOR UPDATE OF rt`,
+        [evidenceId],
+      );
+      if (!taskRows[0]) throw new NotFoundException('RevalidationEvidence ' + evidenceId + ' not found');
+      if (![TaskStatus.OPEN, TaskStatus.EVALUATING].includes(taskRows[0].status)) {
+        throw new BadRequestException('Revalidation task is closed to new votes');
+      }
+      const existing = await manager.findOne(RevalidationDecision, { where: { evidenceId, reviewerId } });
+      if (existing) throw new BadRequestException('You have already voted on this evidence');
+      const row = manager.create(RevalidationDecision, {
+        evidenceId,
+        reviewerId,
+        decision,
+        suggestedSignTypeId: dto.suggestedSignTypeId ?? null,
+        note: dto.note ?? null,
+      } as any);
+      return manager.save(RevalidationDecision, row);
+    });
     if (this.dailyTasksService) {
       this.dailyTasksService.recordProgress(reviewerId, 'REVIEW', 1).catch(() => {});
     }
@@ -540,20 +597,29 @@ export class RevalidationService {
     const reason = dto.reason.trim();
     const note = dto.note?.trim() || null;
 
-    let decisionRow: RevalidationDecision | null = await this.decisions.findOne({ where: { evidenceId, reviewerId } });
-    if (!decisionRow) {
-      decisionRow = (this.decisions.create as any)({
+    await this.dataSource.transaction(async (manager) => {
+      const taskRows: any[] = await manager.query(
+        `SELECT rt.status
+         FROM revalidation_tasks rt
+         JOIN revalidation_evidences ev ON ev.task_id = rt.id
+         WHERE ev.id = $1
+         FOR UPDATE OF rt`,
+        [evidenceId],
+      );
+      if (!taskRows[0]) throw new NotFoundException('RevalidationTask ' + ev.taskId + ' not found');
+      if (![TaskStatus.OPEN, TaskStatus.EVALUATING].includes(taskRows[0].status)) {
+        throw new BadRequestException('Revalidation task is closed to recapture requests');
+      }
+
+      const decisionRow = await manager.findOne(RevalidationDecision, { where: { evidenceId, reviewerId } });
+      const updatedDecision = decisionRow ?? manager.create(RevalidationDecision, {
         evidenceId,
         reviewerId,
-        decision: RevalDecision.UNCLEAR,
-        note: `Recapture requested: ${reason}${note ? ' - ' + note : ''}`,
-      }) as RevalidationDecision;
-      await this.decisions.save(decisionRow);
-    } else {
-      decisionRow.decision = RevalDecision.UNCLEAR;
-      decisionRow.note = `Recapture requested: ${reason}${note ? ' - ' + note : ''}`;
-      await this.decisions.save(decisionRow);
-    }
+      } as any);
+      updatedDecision.decision = RevalDecision.UNCLEAR;
+      updatedDecision.note = `Recapture requested: ${reason}${note ? ' - ' + note : ''}`;
+      await manager.save(RevalidationDecision, updatedDecision);
+    });
 
     let notificationSent = false;
     if (ev.userId && this.notificationsService) {
@@ -594,41 +660,89 @@ export class RevalidationService {
    * decisions are in and a clear majority (or a conflict) can be determined.
    */
   async evaluateRevalidationConsensus(taskId: string): Promise<RevalidationConsensusSummary> {
-    const task = await this.tasks.findOne({ where: { id: taskId } });
-    if (!task) throw new NotFoundException('RevalidationTask ' + taskId + ' not found');
-    if (task.status === TaskStatus.COMPLETED || task.status === TaskStatus.EXPIRED || task.status === TaskStatus.ESCALATED_MODERATION) {
-      return { evaluated: false, reason: 'TASK_FINALIZED', taskId };
-    }
-    const { evidenceRows, decisions } = await this.loadTaskEvidenceAndDecisions(taskId);
     const minVotes = await this.resolveMinVotesRequired();
-    if (decisions.length < minVotes) {
-      return { evaluated: false, reason: 'NOT_ENOUGH_VOTES', totalVotes: decisions.length, minVotesRequired: minVotes, taskId };
-    }
-    return this.applyTaskOutcome(task, evidenceRows, decisions, minVotes);
+    return this.dataSource.transaction(async (manager) => {
+      const task = await this.lockTaskForConsensus(manager, taskId);
+      if (![TaskStatus.OPEN, TaskStatus.EVALUATING].includes(task.status)) {
+        return { evaluated: false, reason: 'TASK_FINALIZED', taskId };
+      }
+      const { evidenceRows, decisions } = await this.loadTaskEvidenceAndDecisions(taskId, manager);
+      if (decisions.length < minVotes) {
+        return { evaluated: false, reason: 'NOT_ENOUGH_VOTES', totalVotes: decisions.length, minVotesRequired: minVotes, taskId };
+      }
+      return this.applyTaskOutcome(task, evidenceRows, decisions, minVotes, manager);
+    });
   }
 
   async finalizeTask(taskId: string, _finalizedBy?: string) {
-    const task = await this.tasks.findOne({ where: { id: taskId } });
-    if (!task) throw new NotFoundException('RevalidationTask ' + taskId + ' not found');
-    if (task.status === TaskStatus.COMPLETED || task.status === TaskStatus.EXPIRED) throw new BadRequestException('Task ' + taskId + ' already finalized (status=' + task.status + ')');
-    const { evidenceRows, decisions } = await this.loadTaskEvidenceAndDecisions(taskId);
-    if (evidenceRows.length === 0) throw new BadRequestException('Cannot finalize: no evidence submitted for this task');
-    if (decisions.length === 0) throw new BadRequestException('Cannot finalize: no reviewer decisions yet');
-    return this.applyTaskOutcome(task, evidenceRows, decisions, decisions.length);
+    return this.dataSource.transaction(async (manager) => {
+      const task = await this.lockTaskForConsensus(manager, taskId);
+      if (![TaskStatus.OPEN, TaskStatus.EVALUATING].includes(task.status)) {
+        throw new BadRequestException('Task ' + taskId + ' already finalized (status=' + task.status + ')');
+      }
+      const { evidenceRows, decisions } = await this.loadTaskEvidenceAndDecisions(taskId, manager);
+      if (evidenceRows.length === 0) throw new BadRequestException('Cannot finalize: no evidence submitted for this task');
+      if (decisions.length === 0) throw new BadRequestException('Cannot finalize: no reviewer decisions yet');
+      return this.applyTaskOutcome(task, evidenceRows, decisions, decisions.length, manager);
+    });
   }
 
   // ---------------------------------------------------------------------------
   // HELPERS
   // ---------------------------------------------------------------------------
 
-  private async loadTaskEvidenceAndDecisions(taskId: string): Promise<{ evidenceRows: EvidenceRow[]; decisions: RevalDecisionRow[] }> {
-    const evidenceRows: any[] = await this.dataSource.query(
-      'SELECT id, user_id, media_url, evidence_type, submitted_at FROM revalidation_evidences WHERE task_id=$1 ORDER BY submitted_at DESC',
+  private async lockTaskForConsensus(manager: EntityManager, taskId: string): Promise<RevalidationTask> {
+    const taskRefs: any[] = await manager.query(
+      `SELECT verified_sign_id
+       FROM revalidation_tasks
+       WHERE id = $1`,
+      [taskId],
+    );
+    if (!taskRefs[0]) throw new NotFoundException('RevalidationTask ' + taskId + ' not found');
+
+    const signRows: any[] = await manager.query(
+      `SELECT id
+       FROM verified_traffic_signs
+       WHERE id = $1
+       FOR UPDATE`,
+      [taskRefs[0].verified_sign_id],
+    );
+    if (!signRows[0]) {
+      throw new NotFoundException('VerifiedTrafficSign ' + taskRefs[0].verified_sign_id + ' not found');
+    }
+
+    const rows: any[] = await manager.query(
+      `SELECT id, verified_sign_id, freshness_rule_id, reward_credits, status
+       FROM revalidation_tasks
+       WHERE id = $1
+       FOR UPDATE`,
+      [taskId],
+    );
+    if (!rows[0]) throw new NotFoundException('RevalidationTask ' + taskId + ' not found');
+    return {
+      id: rows[0].id,
+      verifiedSignId: rows[0].verified_sign_id,
+      freshnessRuleId: rows[0].freshness_rule_id,
+      rewardCredits: rows[0].reward_credits,
+      status: rows[0].status,
+    } as RevalidationTask;
+  }
+
+  private async loadTaskEvidenceAndDecisions(
+    taskId: string,
+    manager: EntityManager,
+  ): Promise<{ evidenceRows: EvidenceRow[]; decisions: RevalDecisionRow[] }> {
+    const evidenceRows: any[] = await manager.query(
+      `SELECT id, user_id, media_url, evidence_type, submitted_at,
+              ST_Y(location::geometry) AS latitude, ST_X(location::geometry) AS longitude
+       FROM revalidation_evidences
+       WHERE task_id = $1
+       ORDER BY submitted_at DESC, id DESC`,
       [taskId],
     );
     const evIds = evidenceRows.map(e => e.id as string);
     const decisions: any[] = evIds.length
-      ? await this.dataSource.query('SELECT decision, reviewer_id, evidence_id, suggested_sign_type_id FROM revalidation_decisions WHERE evidence_id = ANY($1)', [evIds])
+      ? await manager.query('SELECT decision, reviewer_id, evidence_id, suggested_sign_type_id FROM revalidation_decisions WHERE evidence_id = ANY($1)', [evIds])
       : [];
     return { evidenceRows, decisions: (decisions as RevalDecisionRow[]) };
   }
@@ -669,6 +783,7 @@ export class RevalidationService {
     evidenceRows: EvidenceRow[],
     decisionRows: RevalDecisionRow[],
     minVotes: number,
+    manager: EntityManager,
   ): Promise<RevalidationConsensusSummary> {
     const counts = new Map<string, number>();
     const suggestedByDecision = new Map<string, Map<number, number>>();
@@ -691,7 +806,7 @@ export class RevalidationService {
 
     if (activeCount === 0 && removedCount === 0 && changedCount === 0) {
       // every decision was UNCLEAR / INVALID — staff must arbitrate
-      await this.escalateToModeration(task, 'No meaningful decision reached (all votes UNCLEAR/INVALID)');
+      await this.escalateToModeration(task, 'No meaningful decision reached (all votes UNCLEAR/INVALID)', manager);
       return { evaluated: true, reason: 'CONFLICT', totalVotes: decisionRows.length, minVotesRequired: minVotes, voteCounts, escalatedToModeration: true, taskId: task.id };
     }
 
@@ -720,12 +835,37 @@ export class RevalidationService {
     const top = groups[0];
     const second = groups[1];
     if (second && top.count === second.count) {
-      await this.escalateToModeration(task, `Revalidation consensus conflict: tie between ${top.name} (${top.count}) and ${second.name} (${second.count})`);
+      await this.escalateToModeration(task, `Revalidation consensus conflict: tie between ${top.name} (${top.count}) and ${second.name} (${second.count})`, manager);
       return { evaluated: true, reason: 'CONFLICT', totalVotes: decisionRows.length, minVotesRequired: minVotes, voteCounts, escalatedToModeration: true, taskId: task.id };
     }
 
     winningDecision = top.decision;
-    const latestEvidenceMediaUrl = evidenceRows.length > 0 ? (evidenceRows[0].media_url ?? null) : null;
+    const relevantEvidenceTypes = winningDecision === RevalDecision.CHANGED
+      ? ['CHANGED']
+      : winningDecision === RevalDecision.MISSING || winningDecision === RevalDecision.REMOVED
+        ? ['REMOVED', 'MISSING']
+        : ['STILL_ACTIVE', 'UNCHANGED'];
+    const latestEvidence = evidenceRows.find((evidence) =>
+      relevantEvidenceTypes.includes((evidence.evidence_type ?? '').toUpperCase()),
+    ) ?? (winningDecision === RevalDecision.CHANGED
+      ? undefined
+      : evidenceRows.find((evidence) => {
+        const evidenceType = (evidence.evidence_type ?? '').toUpperCase();
+        return !['CHANGED', 'REMOVED', 'MISSING', 'STILL_ACTIVE', 'UNCHANGED'].includes(evidenceType);
+      }));
+    if (winningDecision === RevalDecision.CHANGED && !latestEvidence) {
+      await this.escalateToModeration(task, 'Reviewers decided CHANGED but no CHANGED evidence is available', manager);
+      return {
+        evaluated: true,
+        reason: 'CHANGED_WITHOUT_EVIDENCE',
+        totalVotes: decisionRows.length,
+        minVotesRequired: minVotes,
+        voteCounts,
+        escalatedToModeration: true,
+        taskId: task.id,
+      };
+    }
+    const latestEvidenceMediaUrl = latestEvidence?.media_url ?? null;
     let aiEarlyClassification: EarlyClassificationResult | null = null;
 
     if (winningDecision === RevalDecision.CHANGED) {
@@ -766,7 +906,7 @@ export class RevalidationService {
       }
 
       if (!suggestedSignTypeId) {
-        await this.escalateToModeration(task, 'Reviewers decided CHANGED but provided no suggested sign type');
+        await this.escalateToModeration(task, 'Reviewers decided CHANGED but provided no suggested sign type', manager);
         return {
           evaluated: true,
           reason: 'CHANGED_WITHOUT_TYPE',
@@ -784,25 +924,25 @@ export class RevalidationService {
       task,
       winningDecision,
       suggestedSignTypeId,
-      latestEvidenceMediaUrl,
+      latestEvidence,
       aiEarlyClassification,
+      manager,
     );
     const rewards = await this.creditRewards(task, decisionRows, evidenceRows, winningDecision);
-
-    task.status = TaskStatus.COMPLETED;
-    await this.tasks.save(task);
+    await manager.query(
+      `UPDATE revalidation_tasks
+       SET status = 'COMPLETED'
+       WHERE id = $1 AND status IN ('OPEN', 'EVALUATING')`,
+      [task.id],
+    );
 
     // Automatically complete / clear any remaining active revalidation tasks for this sign
-    try {
-      await this.dataSource.query(
-        `UPDATE revalidation_tasks
-         SET status = 'COMPLETED'
-         WHERE verified_sign_id = $1 AND id != $2 AND status IN ('OPEN', 'EVALUATING')`,
-        [task.verifiedSignId, task.id],
-      );
-    } catch (e: any) {
-      this.logger.warn(`Failed to auto-clear sibling revalidation tasks for sign ${task.verifiedSignId}: ${e?.message}`);
-    }
+    await manager.query(
+      `UPDATE revalidation_tasks
+       SET status = 'COMPLETED'
+       WHERE verified_sign_id = $1 AND id != $2 AND status IN ('OPEN', 'EVALUATING')`,
+      [task.verifiedSignId, task.id],
+    );
 
     await this.notifySubmitters(task.id, evidenceRows, winningDecision, rewards.rewardPerSubmitter);
 
@@ -822,47 +962,58 @@ export class RevalidationService {
     };
   }
 
-  private async escalateToModeration(task: RevalidationTask, note: string) {
-    try {
-      await this.dataSource.query(
-        `INSERT INTO moderation_cases (id, case_type, target_entity_type, target_entity_id, status, resolution_note, created_at)
-         VALUES (gen_random_uuid(), 'REVIEW_CONFLICT', 'revalidation_task', $1, 'PENDING', $2, now())`,
-        [task.id, note],
-      );
-    } catch (e: any) {
-      this.logger.warn('moderation case insert failed for task ' + task.id + ': ' + e?.message);
-    }
+  private async escalateToModeration(task: RevalidationTask, note: string, manager: EntityManager) {
+    await manager.query(
+      `INSERT INTO moderation_cases (id, case_type, target_entity_type, target_entity_id, status, resolution_note, created_at)
+       VALUES (gen_random_uuid(), 'REVIEW_CONFLICT', 'revalidation_task', $1, 'PENDING', $2, now())`,
+      [task.id, note],
+    );
     task.status = TaskStatus.ESCALATED_MODERATION;
-    await this.tasks.save(task);
+    await manager.query(
+      `UPDATE revalidation_tasks SET status = 'ESCALATED_MODERATION' WHERE id = $1`,
+      [task.id],
+    );
   }
 
   private async applySignOutcome(
     task: RevalidationTask,
     winningDecision: RevalDecision,
     suggestedSignTypeId: number | null,
-    latestEvidenceMediaUrl?: string | null,
+    latestEvidence?: EvidenceRow,
     aiEarlyClassification?: EarlyClassificationResult | null,
+    manager?: EntityManager,
   ): Promise<string> {
     const signId = task.verifiedSignId;
+    const query = manager ? manager.query.bind(manager) : this.dataSource.query.bind(this.dataSource);
+    const latestEvidenceMediaUrl = latestEvidence?.media_url ?? null;
     try {
       if (winningDecision === RevalDecision.UNCHANGED || winningDecision === RevalDecision.STILL_ACTIVE) {
         if (latestEvidenceMediaUrl) {
-          await this.dataSource.query(
-            "UPDATE verified_traffic_signs SET status='ACTIVE', freshness_score=1, sign_crop_url=$2, last_verified_at=now(), updated_at=now() WHERE id=$1",
-            [signId, latestEvidenceMediaUrl],
+          await query(
+            `UPDATE verified_traffic_signs
+             SET status = 'ACTIVE', freshness_score = 1, sign_crop_url = $2,
+                 location = COALESCE(
+                   CASE WHEN $3::float8 IS NOT NULL AND $4::float8 IS NOT NULL
+                     THEN ST_SetSRID(ST_MakePoint($3, $4), 4326)
+                   END,
+                   location
+                 ),
+                 last_verified_at = now(), updated_at = now()
+             WHERE id = $1`,
+            [signId, latestEvidenceMediaUrl, latestEvidence?.longitude ?? null, latestEvidence?.latitude ?? null],
           );
         } else {
-          await this.dataSource.query(
+          await query(
             "UPDATE verified_traffic_signs SET status='ACTIVE', freshness_score=1, last_verified_at=now(), updated_at=now() WHERE id=$1",
             [signId],
           );
         }
-        await this.dataSource.query("INSERT INTO verified_sign_history (verified_sign_id, change_reason) VALUES ($1, 'REVALIDATION_UPDATE')", [signId]);
-        await this.dataSource.query("INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, note) VALUES ($1,'REVALIDATED','STILL_ACTIVE: freshness refreshed')", [signId]);
+        await query("INSERT INTO verified_sign_history (verified_sign_id, change_reason) VALUES ($1, 'REVALIDATION_UPDATE')", [signId]);
+        await query("INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, note) VALUES ($1,'REVALIDATED','STILL_ACTIVE: freshness refreshed')", [signId]);
         return 'REFRESHED';
       } else if (winningDecision === RevalDecision.MISSING || winningDecision === RevalDecision.REMOVED) {
-        await this.dataSource.query("UPDATE verified_traffic_signs SET status='DECOMMISSIONED', freshness_score=0, updated_at=now() WHERE id=$1", [signId]);
-        await this.dataSource.query("INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, note) VALUES ($1,'DECOMMISSIONED','Revalidation: REMOVED / DECOMMISSIONED')", [signId]);
+        await query("UPDATE verified_traffic_signs SET status='DECOMMISSIONED', freshness_score=0, updated_at=now() WHERE id=$1", [signId]);
+        await query("INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, note) VALUES ($1,'DECOMMISSIONED','Revalidation: REMOVED / DECOMMISSIONED')", [signId]);
         return 'DECOMMISSIONED';
       } else if (winningDecision === RevalDecision.CHANGED && suggestedSignTypeId != null) {
         // Fallback early classification if not already obtained
@@ -877,33 +1028,45 @@ export class RevalidationService {
             this.logger.warn(`AI classification fallback failed in applySignOutcome: ${e?.message}`);
           }
         }
-        const prevRows: any[] = await this.dataSource.query('SELECT sign_type_id FROM verified_traffic_signs WHERE id=$1', [signId]);
+        const prevRows: any[] = await query('SELECT sign_type_id FROM verified_traffic_signs WHERE id=$1', [signId]);
         const previousType = prevRows.length ? prevRows[0].sign_type_id : null;
         if (latestEvidenceMediaUrl) {
-          await this.dataSource.query(
-            "UPDATE verified_traffic_signs SET sign_type_id=$1, status='ACTIVE', freshness_score=1, sign_crop_url=$3, last_verified_at=now(), updated_at=now() WHERE id=$2",
-            [suggestedSignTypeId, signId, latestEvidenceMediaUrl],
+          await query(
+            `UPDATE verified_traffic_signs
+             SET sign_type_id = $1, status = 'ACTIVE', freshness_score = 1, sign_crop_url = $3,
+                 location = COALESCE(
+                   CASE WHEN $4::float8 IS NOT NULL AND $5::float8 IS NOT NULL
+                     THEN ST_SetSRID(ST_MakePoint($4, $5), 4326)
+                   END,
+                   location
+                 ),
+                 last_verified_at = now(), updated_at = now()
+             WHERE id = $2`,
+            [suggestedSignTypeId, signId, latestEvidenceMediaUrl, latestEvidence?.longitude ?? null, latestEvidence?.latitude ?? null],
           );
         } else {
-          await this.dataSource.query(
+          await query(
             "UPDATE verified_traffic_signs SET sign_type_id=$1, status='ACTIVE', freshness_score=1, last_verified_at=now(), updated_at=now() WHERE id=$2",
             [suggestedSignTypeId, signId],
           );
         }
-        await this.dataSource.query(
+        await query(
           "INSERT INTO verified_sign_history (verified_sign_id, previous_sign_type_id, change_reason) VALUES ($1, $2, 'REVALIDATION_UPDATE')",
           [signId, previousType],
         );
         const lifecycleNote = aiEarlyClassification?.standardCode
           ? `CHANGED: sign type updated to #${suggestedSignTypeId} (AI early classification: ${aiEarlyClassification.standardCode}, conf: ${aiEarlyClassification.confidence?.toFixed(2) ?? 'N/A'})`
           : `CHANGED: sign type updated to #${suggestedSignTypeId}`;
-        await this.dataSource.query(
+        await query(
           "INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, note) VALUES ($1, 'REVALIDATION_CHANGED', $2)",
           [signId, lifecycleNote],
         );
         return 'UPDATED_TYPE';
       }
-    } catch (e: any) { this.logger.warn('sign update failed for task ' + task.id + ': ' + e?.message); }
+    } catch (e: any) {
+      this.logger.error('Sign outcome persistence failed for task ' + task.id + ': ' + e?.message);
+      throw e;
+    }
     return 'NO_CHANGE';
   }
 
@@ -930,16 +1093,38 @@ export class RevalidationService {
     let creditedSubmitters = 0; let creditedReviewers = 0;
     for (const uid of uniqueSubmitters) {
       try {
-        await this.walletService.creditUser(uid, rewardAmount, txType, 'revalidation_task', task.id, 'Revalidation reward (' + winningDecision + ')');
+        await this.walletService.creditUser(
+          uid,
+          rewardAmount,
+          txType,
+          'revalidation_task',
+          task.id,
+          'Revalidation reward (' + winningDecision + ')',
+          { idempotencyKey: `revalidation:${task.id}:${txType}:${uid}` },
+        );
         creditedSubmitters++;
-      } catch (e: any) { this.logger.warn('revalidation credit failed ' + uid + ': ' + e?.message); }
+      } catch (e: any) {
+        this.logger.error('revalidation credit failed for task ' + task.id + ', user ' + uid + ': ' + e?.message);
+        throw e;
+      }
     }
     for (const rid of alignedReviewers) {
       if (uniqueSubmitters.includes(rid)) continue; // already credited as submitter
       try {
-        await this.walletService.creditUser(rid, rewardAmount, txType, 'revalidation_task', task.id, 'Revalidation reviewer reward (' + winningDecision + ')');
+        await this.walletService.creditUser(
+          rid,
+          rewardAmount,
+          txType,
+          'revalidation_task',
+          task.id,
+          'Revalidation reviewer reward (' + winningDecision + ')',
+          { idempotencyKey: `revalidation:${task.id}:${txType}:${rid}` },
+        );
         creditedReviewers++;
-      } catch (e: any) { this.logger.warn('revalidation reviewer credit failed ' + rid + ': ' + e?.message); }
+      } catch (e: any) {
+        this.logger.error('revalidation reviewer credit failed for task ' + task.id + ', user ' + rid + ': ' + e?.message);
+        throw e;
+      }
     }
     return { creditedSubmitters, creditedReviewers, rewardPerSubmitter: rewardAmount };
   }
