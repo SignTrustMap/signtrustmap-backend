@@ -33,7 +33,10 @@ export class ModerationController {
   updateMissing(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: any, @Body() dto: UpdateMissingTypeReportDto) { return this.svc.updateMissingReport(id, user.id, dto); }
 
   @Roles('ADMIN')
-  @ApiOperation({ summary: 'Apply an admin decision to an escalated new-sign report' })
+  @ApiOperation({
+    summary: 'Apply an admin decision to an escalated new-sign report',
+    description: 'Reject the report, request a recapture, or ban an involved non-admin user.',
+  })
   @Patch('moderation/missing-type-reports/:id/admin-action')
   adminMissingAction(
     @Param('id', ParseUUIDPipe) id: string,
