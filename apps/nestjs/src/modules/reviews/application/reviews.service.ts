@@ -1205,10 +1205,8 @@ export class ReviewsService implements OnModuleInit {
 
     const candidate = await this.candidateRepo.findOne({
       where: { id: candidateId },
-      relations: ['submission'],
     });
     if (!candidate) throw new NotFoundException('Candidate ' + candidateId + ' not found');
-    if (candidate.submission?.surveyorId !== surveyorId) throw new ForbiddenException('Candidate does not belong to the authenticated surveyor');
     if (candidate.status !== CandidateStatus.RECAPTURE_REQUESTED) {
       throw new BadRequestException(`Candidate ${candidateId} is not awaiting recapture (status=${candidate.status})`);
     }
@@ -1310,11 +1308,21 @@ export class ReviewsService implements OnModuleInit {
         );
         if (getAffectedRowCount(updated) !== 1) throw new BadRequestException('Candidate recapture state changed before persistence');
         const report = await tx.query(
-          `UPDATE missing_sign_type_reports SET status = 'PENDING'
-           WHERE id = $1 AND candidate_id = $2 AND status = 'INCOMPLETE'`,
-          [request.missing_type_report_id, candidateId],
+          `UPDATE missing_sign_type_reports
+           SET reporter_id = $1, status = 'PENDING', updated_at = NOW()
+           WHERE id = $2 AND candidate_id = $3 AND status = 'INCOMPLETE'`,
+          [surveyorId, request.missing_type_report_id, candidateId],
         );
         if (getAffectedRowCount(report) !== 1) throw new BadRequestException('Associated Missing Type Report is no longer incomplete');
+        const location = await tx.query(
+          `UPDATE candidate_geo_estimations
+           SET sign_location = ST_SetSRID(ST_MakePoint($1, $2), 4326)
+           WHERE candidate_id = $3 AND sign_location IS NOT NULL`,
+          [longitude, latitude, candidateId],
+        );
+        if (getAffectedRowCount(location) !== 1) {
+          throw new BadRequestException('Candidate sign location changed before recapture persistence');
+        }
         const consumed = await tx.query(
           `UPDATE candidate_recapture_requests
            SET completed_at = NOW(), submission_idempotency_key = $2

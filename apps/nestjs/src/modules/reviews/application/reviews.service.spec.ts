@@ -780,17 +780,18 @@ describe('ReviewsService test helpers', () => {
         .mockResolvedValueOnce([{ status: CandidateStatus.RECAPTURE_REQUESTED, request_id: 'req-1', missing_type_report_id: 'report-1', report_status: 'INCOMPLETE' }])
         .mockResolvedValueOnce({ rowCount: 1 })
         .mockResolvedValueOnce({ rowCount: 1 })
+        .mockResolvedValueOnce({ rowCount: 1 })
         .mockResolvedValueOnce({ rowCount: 1 });
       const managerQuery = jest.fn()
         .mockResolvedValueOnce([
-          { id: 'req-1', missing_type_report_id: 'report-1', completed_at: null },
+          { id: 'req-1', missing_type_report_id: 'report-1', completed_at: null, surveyor_id: 'surveyor-2' },
         ])
         .mockResolvedValue([{ distance_meters: 10 }]);
       const candidates = {
         findOne: jest.fn().mockResolvedValue({
           id: 'cand-1',
           status: CandidateStatus.RECAPTURE_REQUESTED,
-          submission: { surveyorId: 'surveyor-1' },
+          submission: { surveyorId: 'original-surveyor' },
         }),
         manager: { query: managerQuery },
       } as any;
@@ -806,9 +807,9 @@ describe('ReviewsService test helpers', () => {
       return { service, candidates, storage, dataSource, txQuery, managerQuery, ...overrides };
     }
 
-    it('uploads replacement evidence and reopens only the associated report', async () => {
+    it('assigns recapture to a new surveyor and updates the report, evidence, and location', async () => {
       const { service, storage, txQuery } = buildSubmitService();
-      const result = await service.submitRecapture('surveyor-1', 'cand-1', {
+      const result = await service.submitRecapture('surveyor-2', 'cand-1', {
         latitude: 10.77,
         longitude: 106.7,
       }, {
@@ -818,15 +819,31 @@ describe('ReviewsService test helpers', () => {
       expect(result.status).toBe(CandidateStatus.MISSING_TYPE_HOLD);
       expect(result.missingTypeReportId).toBe('report-1');
       expect(storage.putObject).toHaveBeenCalledTimes(2);
-      expect(txQuery).toHaveBeenCalledWith(expect.stringContaining("status = 'PENDING'"), ['report-1', 'cand-1']);
+      expect(txQuery).toHaveBeenCalledWith(
+        expect.stringContaining('SET sign_crop_url = $1, best_frame_url = $2'),
+        [
+          expect.stringContaining('recaptures/cand-1/req-1/sign-crop-'),
+          expect.stringContaining('recaptures/cand-1/req-1/best-frame-'),
+          'cand-1',
+        ],
+      );
+      expect(txQuery).toHaveBeenCalledWith(
+        expect.stringContaining('SET reporter_id = $1, status = \'PENDING\''),
+        ['surveyor-2', 'report-1', 'cand-1'],
+      );
+      expect(txQuery).toHaveBeenCalledWith(
+        expect.stringContaining('SET sign_location = ST_SetSRID(ST_MakePoint($1, $2), 4326)'),
+        [106.7, 10.77, 'cand-1'],
+      );
       expect(txQuery).toHaveBeenCalledWith(expect.stringContaining('completed_at = NOW()'), ['req-1', null]);
     });
 
-    it('rejects a non-owner before storage', async () => {
-      const { service, storage } = buildSubmitService();
+    it('rejects a surveyor who is not assigned to the recapture before storage', async () => {
+      const { service, storage, managerQuery } = buildSubmitService();
+      managerQuery.mockReset().mockResolvedValueOnce([]);
       await expect(service.submitRecapture('other-surveyor', 'cand-1', { latitude: 10.77, longitude: 106.7 }, {
         signCrop: [image('sign-crop')], bestFrame: [image('best-frame')],
-      })).rejects.toThrow('does not belong');
+      })).rejects.toThrow('does not have exactly one active recapture request assigned');
       expect(storage.putObject).not.toHaveBeenCalled();
     });
 
@@ -1159,5 +1176,3 @@ describe('ReviewsService test helpers', () => {
     });
   });
 });
-
-
