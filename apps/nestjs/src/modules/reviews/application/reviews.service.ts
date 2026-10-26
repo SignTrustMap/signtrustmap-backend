@@ -1078,6 +1078,14 @@ export class ReviewsService implements OnModuleInit {
         if (rows.length && rows[0].surveyor_id) surveyorId = rows[0].surveyor_id;
       } catch {}
     }
+    if (!surveyorId) {
+      try {
+        const demoRows = await (this.candidateRepo.manager as any).query(
+          `SELECT id FROM users WHERE email = 'demo@stm.dev' AND status = 'ACTIVE' LIMIT 1`,
+        );
+        if (demoRows[0]?.id) surveyorId = demoRows[0].id;
+      } catch {}
+    }
 
     const reason = dto.reason.trim();
     const note = dto.note?.trim() || null;

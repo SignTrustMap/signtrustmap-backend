@@ -832,15 +832,18 @@ export class ModerationService {
       `SELECT u.id
        FROM users u
        WHERE u.status = 'ACTIVE'
-         AND EXISTS (
-           SELECT 1
-           FROM user_roles ur
-           JOIN roles role ON role.id = ur.role_id
-           WHERE ur.user_id = u.id
-             AND ur.is_active = TRUE
-             AND role.code = 'SURVEYOR'
+         AND (
+           u.email = 'demo@stm.dev'
+           OR EXISTS (
+             SELECT 1
+             FROM user_roles ur
+             JOIN roles role ON role.id = ur.role_id
+             WHERE ur.user_id = u.id
+               AND ur.is_active = TRUE
+               AND role.code = 'SURVEYOR'
+           )
          )
-       ORDER BY RANDOM()
+       ORDER BY CASE WHEN u.email = 'demo@stm.dev' THEN 0 ELSE 1 END, RANDOM()
        LIMIT 1`,
     );
     if (!surveyors[0]) {

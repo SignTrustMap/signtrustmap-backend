@@ -340,7 +340,7 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
       ['C1', 'staff-1', 'ASSIGNED_SURVEYOR', 'R1', 'Please recapture from the same location.'],
     );
     expect(manager.query).toHaveBeenCalledWith(
-      expect.stringContaining('ORDER BY RANDOM()'),
+      expect.stringContaining('demo@stm.dev'),
     );
     expect(manager.query).toHaveBeenCalledWith(
       expect.stringContaining("role.code = 'SURVEYOR'"),
@@ -626,7 +626,7 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
       ['C1', 'STAFF1', 'RANDOM_SURVEYOR', 'REPORT1', 'Please recapture'],
     );
     expect(manager.query).toHaveBeenCalledWith(
-      expect.stringContaining('ORDER BY RANDOM()'),
+      expect.stringContaining('demo@stm.dev'),
     );
   });
 
