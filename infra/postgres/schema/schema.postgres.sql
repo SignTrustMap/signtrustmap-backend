@@ -502,6 +502,8 @@ CREATE TABLE "candidate_recapture_requests" (
   "missing_type_report_id" uuid,
   "reason" varchar(100) NOT NULL,
   "note" text,
+  "idempotency_key" varchar(128),
+  "submission_idempotency_key" varchar(128),
   "created_at" timestamptz NOT NULL DEFAULT (now()),
   "completed_at" timestamptz
 );
@@ -512,6 +514,12 @@ CREATE INDEX ON "candidate_recapture_requests" ("missing_type_report_id");
 CREATE UNIQUE INDEX "uq_candidate_recapture_requests_one_active"
   ON "candidate_recapture_requests" ("candidate_id")
   WHERE "completed_at" IS NULL;
+CREATE UNIQUE INDEX "uq_candidate_recapture_request_idempotency"
+  ON "candidate_recapture_requests" ("reviewer_id", "idempotency_key")
+  WHERE "idempotency_key" IS NOT NULL;
+CREATE UNIQUE INDEX "uq_candidate_recapture_submission_idempotency"
+  ON "candidate_recapture_requests" ("candidate_id", "submission_idempotency_key")
+  WHERE "submission_idempotency_key" IS NOT NULL;
 
 CREATE TABLE "candidate_detection_metadata" (
   "candidate_id" uuid PRIMARY KEY,
