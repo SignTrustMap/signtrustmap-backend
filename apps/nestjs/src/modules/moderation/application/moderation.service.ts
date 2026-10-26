@@ -1205,24 +1205,33 @@ export class ModerationService {
   }
 
   private async validateAndNormalizeSignCode(input: string): Promise<string> {
-    const match = input.trim().match(/^([A-Za-z]+)\.\s*(\d+)([A-Za-z0-9]*)$/);
+    const trimmed = input.trim();
+    const testMatch = trimmed.match(/^T\.([A-Za-z0-9._-]+)$/i);
+    if (testMatch) {
+      const suffix = testMatch[1].toLowerCase() === 'xxx' ? 'xxx' : testMatch[1];
+      return `T.${suffix}`;
+    }
+
+    const match = trimmed.match(/^([A-Za-z]+)\.\s*(\d+)([A-Za-z0-9]*)$/);
     if (!match) {
-      throw new BadRequestException('signCode must match PREFIX.number with an optional alphanumeric suffix');
+      throw new BadRequestException('signCode must match PREFIX.number with an optional alphanumeric suffix, or T.xxx for testing');
     }
     const [, rawPrefix, number, rawSuffix] = match;
     const prefix = rawPrefix.toUpperCase();
     const suffix = rawSuffix.toLowerCase();
-    const existingPrefixes: Array<{ prefix: string }> = await this.dataSource.query(
-      `SELECT DISTINCT split_part(upper(sign_code), '.', 1) AS prefix
-       FROM traffic_sign_types
-       WHERE upper(sign_code) ~ '^[A-Z]+\\.[0-9]+[A-Z0-9]*$'
-       ORDER BY prefix`,
-    );
-    const validPrefixes = existingPrefixes.map((row) => row.prefix);
-    if (!validPrefixes.includes(prefix)) {
-      throw new BadRequestException(
-        'signCode prefix must match an existing catalog prefix: ' + (validPrefixes.join(', ') || '(none)'),
+    if (prefix !== 'T') {
+      const existingPrefixes: Array<{ prefix: string }> = await this.dataSource.query(
+        `SELECT DISTINCT split_part(upper(sign_code), '.', 1) AS prefix
+         FROM traffic_sign_types
+         WHERE upper(sign_code) ~ '^[A-Z]+\\.[0-9]+[A-Z0-9]*$'
+         ORDER BY prefix`,
       );
+      const validPrefixes = existingPrefixes.map((row) => row.prefix);
+      if (!validPrefixes.includes(prefix)) {
+        throw new BadRequestException(
+          'signCode prefix must match an existing catalog prefix: ' + (validPrefixes.join(', ') || '(none)'),
+        );
+      }
     }
     return `${prefix}.${number}${suffix}`;
   }

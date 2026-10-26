@@ -1,3 +1,4 @@
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import { ArrayMinSize, IsArray, IsString, IsOptional, IsUUID, IsInt, IsIn, Matches, MaxLength, MinLength } from 'class-validator';
 import { VEHICLE_TYPES, VehicleType } from '../../../../common/vehicle-types';
@@ -29,14 +30,45 @@ export class UpdateMissingTypeReportDto {
 }
 
 export class ApproveAndCreateTypeDto {
+  @ApiPropertyOptional({ description: 'Category ID', example: 1 })
   @IsOptional() @IsInt() proposedCategoryId?: number;
-  @IsString() @Matches(/^[A-Za-z]+\.\s*\d+[A-Za-z0-9]*$/) @MaxLength(50) signCode: string;
+
+  @ApiProperty({
+    description: 'Traffic sign code (e.g. P.102, W.201a, or T.xxx for testing)',
+    pattern: '^(?:[A-Za-z]+\\.\\s*\\d+[A-Za-z0-9]*|T\\.[A-Za-z0-9._-]+)$',
+    example: 'T.xxx',
+  })
+  @IsString()
+  @Matches(/^(?:[A-Za-z]+\.\s*\d+[A-Za-z0-9]*|T\.[A-Za-z0-9._-]+)$/i, {
+    message: 'signCode must match PREFIX.number (e.g. P.102) or T.xxx for testing',
+  })
+  @MaxLength(50)
+  signCode: string;
+
+  @ApiPropertyOptional({ description: 'Vietnamese name', example: 'Biển thử nghiệm' })
   @IsOptional() @IsString() @MinLength(1) @MaxLength(255) nameVi?: string;
+
+  @ApiPropertyOptional({ description: 'English name', example: 'Testing Sign' })
   @IsOptional() @IsString() @MinLength(1) @MaxLength(255) nameEn?: string;
+
+  @ApiPropertyOptional({ description: 'Sign description' })
   @IsOptional() @IsString() @MaxLength(2000) description?: string;
+
+  @ApiPropertyOptional({ description: 'Suggested shape', example: 'CIRCLE' })
   @IsOptional() @IsString() @MaxLength(30) suggestedShape?: string;
+
+  @ApiPropertyOptional({ description: 'Suggested color scheme', example: 'RED_WHITE' })
   @IsOptional() @IsString() @MaxLength(30) suggestedColorScheme?: string;
+
+  @ApiPropertyOptional({ description: 'AI prompt for labeling' })
   @IsOptional() @IsString() @MaxLength(1000) aiLabelPrompt?: string;
+
+  @ApiProperty({
+    description: 'Allowed vehicle types',
+    example: ['CAR', 'MOTORCYCLE'],
+    enum: VEHICLE_TYPES,
+    isArray: true,
+  })
   @Transform(({ value }) => {
     if (typeof value !== 'string') return value;
     try {
@@ -49,6 +81,8 @@ export class ApproveAndCreateTypeDto {
     return value.split(',').map((vehicle) => vehicle.trim()).filter(Boolean);
   })
   @IsArray() @ArrayMinSize(1) @IsIn(VEHICLE_TYPES, { each: true }) allowedVehicles: VehicleType[];
+
+  @ApiPropertyOptional({ description: 'Staff moderation notes' })
   @IsOptional() @IsString() staffNotes?: string;
 }
 

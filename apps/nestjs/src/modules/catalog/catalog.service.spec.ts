@@ -180,6 +180,51 @@ describe('CatalogService', () => {
     );
   });
 
+  it('allows creating special test sign code T.xxx', async () => {
+    const typeRepository = repository<TrafficSignType>();
+    const categoryRepository = repository<SignCategory>();
+    const promptRepository = repository<SignTypeAiPrompt>();
+    const mappingRepository = repository<SignTypeOsmMapping>();
+    const imageRepository = repository<SignTypeImage>();
+    const manager = {
+      getRepository: jest.fn((target) => {
+        if (target === SignCategory) return categoryRepository;
+        if (target === TrafficSignType) return typeRepository;
+        if (target === SignTypeAiPrompt) return promptRepository;
+        if (target === SignTypeOsmMapping) return mappingRepository;
+        if (target === SignTypeImage) return imageRepository;
+        return repository<any>();
+      }),
+    } as unknown as EntityManager;
+    categoryRepository.findOne.mockResolvedValue(entity<SignCategory>({ id: 2 }));
+    typeRepository.findOne.mockResolvedValue(null);
+    typeRepository.create.mockImplementation((value) => value as TrafficSignType);
+    typeRepository.save.mockImplementation(async (value) => ({
+      ...(value as TrafficSignType),
+      id: 99,
+    }));
+    typeRepository.find.mockResolvedValue([]);
+    promptRepository.find.mockResolvedValue([]);
+    mappingRepository.find.mockResolvedValue([]);
+    imageRepository.find.mockResolvedValue([]);
+    (dataSource.transaction as jest.Mock).mockImplementation(
+      (callback: (transactionManager: EntityManager) => unknown) => callback(manager),
+    );
+
+    const created = await service.createSignType({
+      categoryId: 2,
+      signCode: ' t.xxx ',
+      nameVi: 'Biển test T.xxx',
+      nameEn: 'Test Sign T.xxx',
+      representativeImageKey: 'catalog/test.png',
+    });
+
+    expect(typeRepository.create).toHaveBeenCalledWith(
+      expect.objectContaining({ signCode: 'T.xxx', nameVi: 'Biển test T.xxx' }),
+    );
+    expect(created).toEqual(expect.objectContaining({ id: 99 }));
+  });
+
   it('rejects a sign code that is not abbreviation.number with an optional alphanumeric suffix', async () => {
     const typeRepository = repository<TrafficSignType>();
     const categoryRepository = repository<SignCategory>();
