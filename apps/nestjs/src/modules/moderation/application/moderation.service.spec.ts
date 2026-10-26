@@ -301,6 +301,7 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
         .mockResolvedValueOnce([{ id: 'R1' }])
         .mockResolvedValueOnce([{ id: 'C1' }])
         .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ id: 'CASE1' }])
         .mockResolvedValueOnce([]),
     };
@@ -335,6 +336,179 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
       'Please recapture from the same location.',
       'candidate',
       'C1',
+    );
+  });
+
+  it('rejects an escalated report through the admin decision path and records the action', async () => {
+    const { service, missing, dataSource, notifications } = buildService();
+    missing.findOne.mockResolvedValue({
+      id: 'R1',
+      status: MissingTypeStatus.REJECTED,
+      candidateId: null,
+      reporterId: 'REVIEWER1',
+      proposedName: null,
+    });
+    const manager = {
+      query: jest.fn()
+        .mockResolvedValueOnce([{
+          id: 'R1',
+          candidate_id: null,
+          reporter_id: 'REVIEWER1',
+          proposed_name: null,
+          status: MissingTypeStatus.ESCALATED_ADMIN,
+        }])
+        .mockResolvedValueOnce([{ id: 'R1' }])
+        .mockResolvedValueOnce([{ id: 'CASE1' }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([]),
+    };
+    dataSource.transaction.mockImplementation((fn: (m: any) => any) => fn(manager));
+
+    const result = await service.applyAdminMissingReportAction('R1', 'ADMIN1', {
+      actionType: 'REJECT',
+      reason: 'Evidence does not support the report.',
+    });
+
+    if (!('status' in result)) throw new Error('Expected admin report rejection response');
+    expect(result.status).toBe(MissingTypeStatus.REJECTED);
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO moderation_actions'),
+      ['CASE1', 'REJECT', 'ADMIN1', 'Evidence does not support the report.'],
+    );
+    expect(notifications.create).toHaveBeenCalledWith(
+      'REVIEWER1', 'MISSING_TYPE_REJECTED', expect.any(String), expect.any(String),
+      'missing_sign_type_report', 'R1',
+    );
+  });
+
+  it('requires a ban target and reason for admin ban decisions', async () => {
+    const { service, dataSource } = buildService();
+
+    await expect(service.applyAdminMissingReportAction('R1', 'ADMIN1', {
+      actionType: 'BAN_USER',
+      reason: 'Policy violation',
+    })).rejects.toThrow('banTarget is required for BAN_USER');
+    await expect(service.applyAdminMissingReportAction('R1', 'ADMIN1', {
+      actionType: 'REJECT',
+      reason: '   ',
+    })).rejects.toThrow('reason is required for an admin decision');
+    expect(dataSource.transaction).not.toHaveBeenCalled();
+  });
+
+  it('bans only the selected report reporter and atomically records status history and moderation audit', async () => {
+    const { service, missing, dataSource, notifications } = buildService();
+    missing.findOne.mockResolvedValue({
+      id: 'R1',
+      status: MissingTypeStatus.REJECTED,
+      candidateId: null,
+      reporterId: 'REVIEWER1',
+      proposedName: 'Unknown sign',
+    });
+    const manager = {
+      query: jest.fn()
+        .mockResolvedValueOnce([{
+          id: 'R1',
+          candidate_id: null,
+          reporter_id: 'REVIEWER1',
+          proposed_name: 'Unknown sign',
+          status: MissingTypeStatus.ESCALATED_ADMIN,
+          reviewed_by: 'STAFF1',
+        }])
+        .mockResolvedValueOnce([{ id: 'REVIEWER1', status: 'ACTIVE' }])
+        .mockResolvedValueOnce([{ id: 'R1' }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'CASE1' }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([]),
+    };
+    dataSource.transaction.mockImplementation((fn: (m: any) => any) => fn(manager));
+
+    const result = await service.applyAdminMissingReportAction('R1', 'ADMIN1', {
+      actionType: 'BAN_USER',
+      banTarget: 'REVIEWER',
+      reason: 'Confirmed abuse of reporting.',
+    });
+
+    if (!('bannedUser' in result)) throw new Error('Expected admin ban response');
+    expect(result.bannedUser).toEqual({ id: 'REVIEWER1', oldStatus: 'ACTIVE', newStatus: 'BANNED' });
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining('FROM users u'),
+      ['REVIEWER1', 'REVIEWER'],
+    );
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO user_status_history'),
+      ['REVIEWER1', 'ACTIVE', 'Confirmed abuse of reporting.', 'ADMIN1'],
+    );
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining('ADMIN_NEW_SIGN_USER_BAN'),
+      [
+        'ADMIN1',
+        'REVIEWER1',
+        JSON.stringify({ status: 'ACTIVE' }),
+        JSON.stringify({
+          status: 'BANNED',
+          reason: 'Confirmed abuse of reporting.',
+          reportId: 'R1',
+          targetRole: 'REVIEWER',
+        }),
+      ],
+    );
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO moderation_actions'),
+      ['CASE1', 'BAN_USER', 'ADMIN1', 'REVIEWER user REVIEWER1 banned: Confirmed abuse of reporting.'],
+    );
+    expect(notifications.create).toHaveBeenCalled();
+  });
+
+  it('lets Admin request recapture from an escalated report and resolves the escalation case', async () => {
+    const { service, missing, dataSource } = buildService();
+    missing.findOne.mockResolvedValue({
+      id: 'R1',
+      status: MissingTypeStatus.INCOMPLETE,
+      candidateId: 'C1',
+      reporterId: 'REVIEWER1',
+      proposedName: 'Unknown sign',
+    });
+    const manager = {
+      query: jest.fn()
+        .mockResolvedValueOnce([{
+          id: 'R1',
+          candidate_id: 'C1',
+          reporter_id: 'REVIEWER1',
+          proposed_name: 'Unknown sign',
+          status: MissingTypeStatus.ESCALATED_ADMIN,
+        }])
+        .mockResolvedValueOnce([{
+          id: 'C1',
+          status: CandidateStatus.MISSING_TYPE_HOLD,
+          surveyor_id: 'SURVEYOR1',
+        }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'R1' }])
+        .mockResolvedValueOnce([{ id: 'C1' }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'ESCALATION_CASE' }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([]),
+    };
+    dataSource.transaction.mockImplementation((fn: (m: any) => any) => fn(manager));
+
+    const result = await service.applyAdminMissingReportAction('R1', 'ADMIN1', {
+      actionType: 'REQUEST_RECAPTURE',
+      reason: 'Image evidence is insufficient.',
+    });
+
+    if (!('status' in result)) throw new Error('Expected admin recapture response');
+    expect(result.status).toBe(MissingTypeStatus.INCOMPLETE);
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining('WHERE id = $1 AND status = $5'),
+      ['R1', MissingTypeStatus.INCOMPLETE, 'Image evidence is insufficient.', 'ADMIN1', MissingTypeStatus.ESCALATED_ADMIN],
+    );
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining('UPDATE moderation_cases'),
+      ['ESCALATION_CASE', 'RESOLVED', 'Image evidence is insufficient.'],
     );
   });
 

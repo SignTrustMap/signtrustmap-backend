@@ -8,7 +8,7 @@ import { ModerationCase, ModerationStatus, ModerationType } from '../infrastruct
 import { SignCategory } from '../../catalog/sign-category.entity';
 import { TrafficSignType } from '../../catalog/traffic-sign-type.entity';
 import { UnverifiedSignCandidate, CandidateStatus } from '../../survey/infrastructure/persistence/unverified-sign-candidate.entity';
-import { CreateMissingTypeReportDto, ResolveCaseDto, UpdateMissingTypeReportDto, ApproveAndCreateTypeDto } from '../presentation/dto/moderation.dto';
+import { CreateMissingTypeReportDto, ResolveCaseDto, UpdateMissingTypeReportDto, ApproveAndCreateTypeDto, AdminMissingTypeActionDto } from '../presentation/dto/moderation.dto';
 import { NotificationsService } from '../../notifications/notifications.service';
 import { CatalogService } from '../../catalog/catalog.service';
 import { CatalogSyncService } from '../../../integrations/catalog-sync/catalog-sync.service';
@@ -382,7 +382,307 @@ export class ModerationService {
     return escalated;
   }
 
-  private async requestMissingReportRecapture(reportId: string, staffId: string, note: string | null) {
+  async applyAdminMissingReportAction(reportId: string, adminId: string, dto: AdminMissingTypeActionDto) {
+    const reason = dto.reason?.trim();
+    if (!reason) throw new BadRequestException('reason is required for an admin decision');
+    if (dto.actionType === 'REQUEST_RECAPTURE') {
+      return this.requestMissingReportRecapture(
+        reportId,
+        adminId,
+        reason,
+        MissingTypeStatus.ESCALATED_ADMIN,
+      );
+    }
+    if (dto.actionType === 'REJECT') {
+      return this.rejectEscalatedReport(reportId, adminId, reason);
+    }
+    if (dto.actionType === 'BAN_USER') {
+      if (!dto.banTarget) throw new BadRequestException('banTarget is required for BAN_USER');
+      return this.banInvolvedReportUser(reportId, adminId, dto.banTarget, reason);
+    }
+    throw new BadRequestException('Unsupported admin action');
+  }
+
+  private async rejectEscalatedReport(reportId: string, adminId: string, reason: string) {
+    const result = await this.dataSource.transaction(async (manager) => {
+      const reportRows: any[] = await manager.query(
+        `SELECT id, candidate_id, reporter_id, proposed_name, status
+         FROM missing_sign_type_reports
+         WHERE id = $1
+         FOR UPDATE`,
+        [reportId],
+      );
+      const report = reportRows[0];
+      if (!report) throw new NotFoundException('MissingSignTypeReport ' + reportId + ' not found');
+      if (report.status !== MissingTypeStatus.ESCALATED_ADMIN) {
+        throw new BadRequestException('Only ESCALATED_ADMIN reports can receive admin decisions');
+      }
+
+      if (report.candidate_id) {
+        const candidates: any[] = await manager.query(
+          `SELECT id, status FROM unverified_sign_candidates WHERE id = $1 FOR UPDATE`,
+          [report.candidate_id],
+        );
+        const candidate = candidates[0];
+        if (!candidate) throw new NotFoundException('Candidate ' + report.candidate_id + ' not found');
+        if (![CandidateStatus.MISSING_TYPE_HOLD, CandidateStatus.RECAPTURE_REQUESTED].includes(candidate.status)) {
+          throw new ConflictException('Candidate is not in a state that can be rejected with this report');
+        }
+        const updatedCandidates: any[] = await manager.query(
+          `UPDATE unverified_sign_candidates SET status = $2
+           WHERE id = $1 AND status = $3
+           RETURNING id`,
+          [candidate.id, CandidateStatus.REJECTED, candidate.status],
+        );
+        if (updatedCandidates.length !== 1) throw new ConflictException('Candidate state changed while rejecting report');
+        await manager.query(
+          `UPDATE candidate_recapture_requests
+           SET completed_at = NOW()
+           WHERE candidate_id = $1 AND completed_at IS NULL`,
+          [candidate.id],
+        );
+      }
+
+      const updatedReports: any[] = await manager.query(
+        `UPDATE missing_sign_type_reports
+         SET status = $2, staff_notes = $3, reviewed_by = $4, updated_at = NOW()
+         WHERE id = $1 AND status = $5
+         RETURNING id`,
+        [reportId, MissingTypeStatus.REJECTED, reason, adminId, MissingTypeStatus.ESCALATED_ADMIN],
+      );
+      if (updatedReports.length !== 1) throw new ConflictException('Report state changed while applying admin rejection');
+      await this.resolveAdminReportCase(manager, reportId, adminId, 'REJECT', reason);
+      return { reporterId: report.reporter_id, proposedName: report.proposed_name };
+    });
+
+    await this.notifyReporter(
+      { id: reportId, reporterId: result.reporterId, proposedName: result.proposedName },
+      'REJECTED',
+      'Báo cáo biển báo mới bị từ chối',
+      'Báo cáo "' + (result.proposedName || 'biển báo mới') + '" đã bị quản trị viên từ chối.',
+    );
+    return this.getMissingReport(reportId);
+  }
+
+  private async banInvolvedReportUser(
+    reportId: string,
+    adminId: string,
+    targetRole: string,
+    reason: string,
+  ) {
+    if (!['SURVEYOR', 'REVIEWER', 'STAFF'].includes(targetRole)) {
+      throw new BadRequestException('banTarget must be SURVEYOR, REVIEWER, or STAFF');
+    }
+    const result = await this.dataSource.transaction(async (manager) => {
+      const reportRows: any[] = await manager.query(
+        `SELECT id, candidate_id, reporter_id, proposed_name, status, reviewed_by
+         FROM missing_sign_type_reports
+         WHERE id = $1
+         FOR UPDATE`,
+        [reportId],
+      );
+      const report = reportRows[0];
+      if (!report) throw new NotFoundException('MissingSignTypeReport ' + reportId + ' not found');
+      if (report.status !== MissingTypeStatus.ESCALATED_ADMIN) {
+        throw new BadRequestException('Only ESCALATED_ADMIN reports can receive admin decisions');
+      }
+
+      let targetRows: any[];
+      if (targetRole === 'REVIEWER') {
+        targetRows = report.reporter_id ? [{ id: report.reporter_id }] : [];
+      } else if (targetRole === 'SURVEYOR') {
+        targetRows = report.candidate_id
+          ? await manager.query(
+            `SELECT COALESCE(
+               (SELECT r.surveyor_id
+                FROM candidate_recapture_requests r
+                WHERE r.candidate_id = $1 AND r.surveyor_id IS NOT NULL
+                ORDER BY r.created_at DESC
+                LIMIT 1),
+               (SELECT s.surveyor_id
+                FROM unverified_sign_candidates c
+                JOIN survey_submissions s ON s.id = c.submission_id
+                WHERE c.id = $1)
+             ) AS id`,
+            [report.candidate_id],
+          )
+          : [];
+      } else {
+        targetRows = await manager.query(
+          `SELECT COALESCE(
+             (SELECT a.performed_by
+              FROM moderation_actions a
+              JOIN moderation_cases c ON c.id = a.case_id
+              WHERE c.target_entity_type = 'missing_sign_type_report'
+                AND c.target_entity_id = $1
+                AND a.action_type IN ('ESCALATE_ADMIN', 'REQUEST_RECAPTURE', 'REJECT', 'MERGE')
+                AND EXISTS (
+                  SELECT 1 FROM user_roles ur
+                  JOIN roles role ON role.id = ur.role_id
+                  WHERE ur.user_id = a.performed_by AND ur.is_active = TRUE AND role.code = 'STAFF'
+                )
+              ORDER BY a.performed_at DESC
+              LIMIT 1),
+             (SELECT $2::uuid WHERE EXISTS (
+               SELECT 1 FROM user_roles ur
+               JOIN roles role ON role.id = ur.role_id
+               WHERE ur.user_id = $2 AND ur.is_active = TRUE AND role.code = 'STAFF'
+             ))
+           ) AS id`,
+          [reportId, report.reviewed_by],
+        );
+      }
+
+      const targetId = targetRows[0]?.id;
+      if (!targetId) throw new BadRequestException('No involved ' + targetRole.toLowerCase() + ' is associated with this report');
+      const eligibleUsers: any[] = await manager.query(
+        `SELECT u.id, u.status
+         FROM users u
+         WHERE u.id = $1
+           AND EXISTS (
+             SELECT 1 FROM user_roles ur
+             JOIN roles role ON role.id = ur.role_id
+             WHERE ur.user_id = u.id AND ur.is_active = TRUE AND role.code = $2
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM user_roles ur
+             JOIN roles role ON role.id = ur.role_id
+             WHERE ur.user_id = u.id AND ur.is_active = TRUE AND role.code = 'ADMIN'
+           )
+         FOR UPDATE OF u`,
+        [targetId, targetRole],
+      );
+      const target = eligibleUsers[0];
+      if (!target) throw new BadRequestException('Selected involved user is not eligible for this ban action');
+      if (target.status === 'BANNED') throw new BadRequestException('Selected user is already BANNED');
+
+      if (report.candidate_id) {
+        const candidates: any[] = await manager.query(
+          `SELECT id, status FROM unverified_sign_candidates WHERE id = $1 FOR UPDATE`,
+          [report.candidate_id],
+        );
+        const candidate = candidates[0];
+        if (!candidate) throw new NotFoundException('Candidate ' + report.candidate_id + ' not found');
+        if (![CandidateStatus.MISSING_TYPE_HOLD, CandidateStatus.RECAPTURE_REQUESTED].includes(candidate.status)) {
+          throw new ConflictException('Candidate is not in a state that can be rejected with this report');
+        }
+        const updatedCandidates: any[] = await manager.query(
+          `UPDATE unverified_sign_candidates SET status = $2
+           WHERE id = $1 AND status = $3
+           RETURNING id`,
+          [candidate.id, CandidateStatus.REJECTED, candidate.status],
+        );
+        if (updatedCandidates.length !== 1) throw new ConflictException('Candidate state changed while banning involved user');
+        await manager.query(
+          `UPDATE candidate_recapture_requests
+           SET completed_at = NOW()
+           WHERE candidate_id = $1 AND completed_at IS NULL`,
+          [candidate.id],
+        );
+      }
+
+      const updatedReports: any[] = await manager.query(
+        `UPDATE missing_sign_type_reports
+         SET status = $2, staff_notes = $3, reviewed_by = $4, updated_at = NOW()
+         WHERE id = $1 AND status = $5
+         RETURNING id`,
+        [reportId, MissingTypeStatus.REJECTED, reason, adminId, MissingTypeStatus.ESCALATED_ADMIN],
+      );
+      if (updatedReports.length !== 1) throw new ConflictException('Report state changed while banning involved user');
+
+      await manager.query(
+        `UPDATE users SET status = 'BANNED', updated_at = NOW() WHERE id = $1`,
+        [target.id],
+      );
+      await manager.query(
+        `INSERT INTO user_status_history (user_id, old_status, new_status, reason, changed_by)
+         VALUES ($1, $2::user_status, 'BANNED'::user_status, $3, $4)`,
+        [target.id, target.status, reason, adminId],
+      );
+      await manager.query(
+        `INSERT INTO audit_logs
+           (user_id, action, resource_name, resource_id, old_values, new_values)
+         VALUES ($1, 'ADMIN_NEW_SIGN_USER_BAN', 'users', $2, $3::jsonb, $4::jsonb)`,
+        [
+          adminId,
+          target.id,
+          JSON.stringify({ status: target.status }),
+          JSON.stringify({ status: 'BANNED', reason, reportId, targetRole }),
+        ],
+      );
+      await this.resolveAdminReportCase(
+        manager,
+        reportId,
+        adminId,
+        'BAN_USER',
+        `${targetRole} user ${target.id} banned: ${reason}`,
+      );
+      return {
+        reporterId: report.reporter_id,
+        proposedName: report.proposed_name,
+        targetUserId: target.id,
+        previousStatus: target.status,
+      };
+    });
+
+    await this.notifyReporter(
+      { id: reportId, reporterId: result.reporterId, proposedName: result.proposedName },
+      'REJECTED',
+      'Báo cáo biển báo mới đã được xử lý',
+      'Báo cáo "' + (result.proposedName || 'biển báo mới') + '" đã được quản trị viên xử lý.',
+    );
+    return {
+      report: await this.getMissingReport(reportId),
+      bannedUser: { id: result.targetUserId, oldStatus: result.previousStatus, newStatus: 'BANNED' },
+    };
+  }
+
+  private async resolveAdminReportCase(
+    manager: any,
+    reportId: string,
+    adminId: string,
+    actionType: string,
+    reason: string,
+  ): Promise<string> {
+    const caseRows: any[] = await manager.query(
+      `SELECT id FROM moderation_cases
+       WHERE target_entity_type = 'missing_sign_type_report' AND target_entity_id = $1
+       ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
+      [reportId],
+    );
+    let caseId: string | undefined = caseRows[0]?.id;
+    if (caseId) {
+      await manager.query(
+        `UPDATE moderation_cases
+         SET status = $2, resolution_note = $3, resolved_at = NOW()
+         WHERE id = $1`,
+        [caseId, ModerationStatus.RESOLVED, reason],
+      );
+    } else {
+      const insertedCases: any[] = await manager.query(
+        `INSERT INTO moderation_cases
+           (case_type, target_entity_type, target_entity_id, assigned_staff_id, status, resolution_note, resolved_at)
+         VALUES ($1, 'missing_sign_type_report', $2, $3, $4, $5, NOW())
+         RETURNING id`,
+        [ModerationType.CATALOG_PROPOSAL, reportId, adminId, ModerationStatus.RESOLVED, reason],
+      );
+      caseId = insertedCases[0]?.id;
+    }
+    if (!caseId) throw new Error('Failed to resolve admin report moderation case');
+    await manager.query(
+      `INSERT INTO moderation_actions (case_id, action_type, performed_by, note)
+       VALUES ($1, $2, $3, $4)`,
+      [caseId, actionType, adminId, reason],
+    );
+    return caseId;
+  }
+
+  private async requestMissingReportRecapture(
+    reportId: string,
+    staffId: string,
+    note: string | null,
+    expectedStatus = MissingTypeStatus.PENDING,
+  ) {
     let surveyorId: string | null = null;
     const result = await this.dataSource.transaction(async (manager) => {
       const reportRows: any[] = await manager.query(
@@ -394,8 +694,8 @@ export class ModerationService {
       );
       const report = reportRows[0];
       if (!report) throw new NotFoundException('MissingSignTypeReport ' + reportId + ' not found');
-      if (report.status !== MissingTypeStatus.PENDING) {
-        throw new BadRequestException('Only PENDING reports can request recapture');
+      if (report.status !== expectedStatus) {
+        throw new BadRequestException('Report status must be ' + expectedStatus + ' to request recapture');
       }
       if (!report.candidate_id) {
         throw new BadRequestException('A candidate-linked report is required to request recapture');
@@ -430,7 +730,7 @@ export class ModerationService {
          SET status = $2, staff_notes = COALESCE($3, staff_notes), reviewed_by = $4, updated_at = NOW()
          WHERE id = $1 AND status = $5
          RETURNING id`,
-        [reportId, MissingTypeStatus.INCOMPLETE, note, staffId, MissingTypeStatus.PENDING],
+        [reportId, MissingTypeStatus.INCOMPLETE, note, staffId, expectedStatus],
       );
       if (updatedReports.length !== 1) throw new ConflictException('Report state changed before recapture request creation');
 
@@ -460,14 +760,30 @@ export class ModerationService {
         throw error;
       }
 
-      const caseRows: any[] = await manager.query(
-        `INSERT INTO moderation_cases
-           (case_type, target_entity_type, target_entity_id, assigned_staff_id, status, resolution_note, resolved_at)
-         VALUES ($1, 'candidate', $2, $3, $4, $5, NOW())
-         RETURNING id`,
-        [ModerationType.CATALOG_PROPOSAL, candidate.id, staffId, ModerationStatus.RESOLVED, note],
+      const reportCaseRows: any[] = await manager.query(
+        `SELECT id FROM moderation_cases
+         WHERE target_entity_type = 'missing_sign_type_report' AND target_entity_id = $1
+         ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
+        [reportId],
       );
-      const moderationCaseId = caseRows[0]?.id;
+      let moderationCaseId: string | undefined = reportCaseRows[0]?.id;
+      if (moderationCaseId) {
+        await manager.query(
+          `UPDATE moderation_cases
+           SET status = $2, resolution_note = $3, resolved_at = NOW()
+           WHERE id = $1`,
+          [moderationCaseId, ModerationStatus.RESOLVED, note],
+        );
+      } else {
+        const caseRows: any[] = await manager.query(
+          `INSERT INTO moderation_cases
+             (case_type, target_entity_type, target_entity_id, assigned_staff_id, status, resolution_note, resolved_at)
+           VALUES ($1, 'candidate', $2, $3, $4, $5, NOW())
+           RETURNING id`,
+          [ModerationType.CATALOG_PROPOSAL, candidate.id, staffId, ModerationStatus.RESOLVED, note],
+        );
+        moderationCaseId = caseRows[0]?.id;
+      }
       if (!moderationCaseId) throw new Error('Failed to create recapture moderation case');
       await manager.query(
         `INSERT INTO moderation_actions (case_id, action_type, performed_by, note)

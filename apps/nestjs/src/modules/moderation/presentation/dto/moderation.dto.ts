@@ -38,3 +38,14 @@ export class ApproveAndCreateTypeDto {
   @IsOptional() @IsString() @MaxLength(500) representativeImageKey?: string;
   @IsOptional() @IsString() staffNotes?: string;
 }
+
+export class AdminMissingTypeActionDto {
+  @IsIn(['REJECT', 'REQUEST_RECAPTURE', 'BAN_USER'])
+  actionType: string;
+
+  @IsString() @MinLength(1) @MaxLength(500)
+  reason: string;
+
+  @IsOptional() @IsIn(['SURVEYOR', 'REVIEWER', 'STAFF'])
+  banTarget?: string;
+}
