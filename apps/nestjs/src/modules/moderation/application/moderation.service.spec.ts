@@ -18,10 +18,22 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     const catRepo = { findOne: jest.fn(), create: jest.fn((v: any) => v), save: jest.fn((v: any) => v) };
     const signTypeRepo = { findOne: jest.fn(), create: jest.fn((v: any) => v), save: jest.fn((v: any) => v) };
     const candRepo = { findOne: jest.fn(), update: jest.fn().mockResolvedValue(undefined), create: jest.fn((v: any) => v), save: jest.fn((v: any) => v) };
-    const dataSource = { query: jest.fn().mockResolvedValue([]), transaction: jest.fn() };
+    const dataSource = {
+      query: jest.fn().mockImplementation((sql: string) =>
+        sql.includes('SELECT DISTINCT split_part')
+          ? [{ prefix: 'P' }, { prefix: 'W' }, { prefix: 'I' }]
+          : [],
+      ),
+      transaction: jest.fn(),
+    };
     const notifications = { create: jest.fn().mockResolvedValue(undefined), createBulk: jest.fn().mockResolvedValue(undefined) };
     const catalogService = { createSignType: jest.fn() };
     const catalogSyncService = { syncLabels: jest.fn().mockResolvedValue(undefined) };
+    const minioStorageService = {
+      putObject: jest.fn().mockResolvedValue(undefined),
+      getPublicUrl: jest.fn().mockImplementation((_bucket: string, objectName: string) => 'https://s3.test/' + objectName),
+      removeObject: jest.fn().mockResolvedValue(undefined),
+    };
     const service = new ModerationService(
       cases as unknown as Repository<ModerationCase>,
       actions as unknown as Repository<ModerationAction>,
@@ -33,8 +45,18 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
       notifications as unknown as NotificationsService,
       catalogService as unknown as CatalogService,
       catalogSyncService as unknown as CatalogSyncService,
+      minioStorageService as any,
     );
-    return { service, cases, actions, missing, catRepo, signTypeRepo, candRepo, dataSource, notifications, catalogService, catalogSyncService };
+    return { service, cases, actions, missing, catRepo, signTypeRepo, candRepo, dataSource, notifications, catalogService, catalogSyncService, minioStorageService };
+  }
+
+  function representativeImage(): Express.Multer.File {
+    return {
+      originalname: 'sign.jpg',
+      mimetype: 'image/jpeg',
+      buffer: Buffer.from([0xff, 0xd8, 0xff, 0x00]),
+      size: 4,
+    } as Express.Multer.File;
   }
 
   it('parks the candidate on MISSING_TYPE_HOLD when a reviewer reports a missing type', async () => {
@@ -578,29 +600,47 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
   });
 
   it('approve-and-create-type provisions the sign type, bumps catalog version, releases the held candidate and triggers AI label sync', async () => {
-    const { service, missing, catRepo, signTypeRepo, dataSource, notifications, catalogService, catalogSyncService } = buildService();
+    const { service, missing, catRepo, signTypeRepo, dataSource, notifications, catalogService, catalogSyncService, minioStorageService } = buildService();
     const report = { id: 'R1', status: MissingTypeStatus.PENDING, candidateId: 'C1', proposedName: 'No Horn', proposedCategoryId: 1, reporterId: 'U1', suggestedShape: 'CIRCLE', suggestedColorScheme: null };
     missing.findOne.mockResolvedValue(report);
     catRepo.findOne.mockResolvedValue({ id: 1, code: 'PROHIBITORY' });
     signTypeRepo.findOne.mockResolvedValue(null);
-    catalogService.createSignType.mockResolvedValue({ id: 42, signCode: 'P.128' });
-    dataSource.query.mockResolvedValue([]);
+    catalogService.createSignType.mockResolvedValue({ id: 42, signCode: 'P.128a' });
+    dataSource.query.mockImplementation((sql: string) =>
+      sql.includes('SELECT DISTINCT split_part')
+        ? [{ prefix: 'P' }, { prefix: 'W' }, { prefix: 'I' }]
+        : [],
+    );
 
     const result = await service.approveAndCreateType('R1', 'staff-1', {
-      signCode: 'P.128',
+      signCode: 'P. 128A',
       nameVi: 'Cấm bấm còi',
       nameEn: 'No Horn',
       proposedCategoryId: 1,
       aiLabelPrompt: 'a circular white sign with red border showing a crossed-out horn',
-    });
+      allowedVehicles: ['CAR', 'MOTORCYCLE'],
+    }, representativeImage());
 
-    expect(catalogService.createSignType).toHaveBeenCalledWith(expect.objectContaining({ signCode: 'P.128', categoryId: 1, nameVi: 'Cấm bấm còi' }));
+    expect(catalogService.createSignType).toHaveBeenCalledWith(expect.objectContaining({
+      signCode: 'P.128a',
+      categoryId: 1,
+      nameVi: 'Cấm bấm còi',
+      allowedVehicles: ['CAR', 'MOTORCYCLE'],
+      representativeImageKey: expect.stringContaining('catalog/representative/P.128a-'),
+    }));
+    expect(minioStorageService.putObject).toHaveBeenCalledWith(
+      'stm-sign-crops',
+      expect.stringContaining('catalog/representative/P.128a-'),
+      representativeImage().buffer,
+      'image/jpeg',
+    );
+    expect(dataSource.query).toHaveBeenCalledWith(expect.stringContaining('SELECT DISTINCT split_part'));
     expect(dataSource.query).toHaveBeenCalledWith(expect.stringContaining('catalog_versions'), ['staff-1', expect.any(String), 42]);
     expect(dataSource.query).toHaveBeenCalledWith(expect.stringContaining('UPDATE unverified_sign_candidates'), [42, 'C1']);
     expect(missing.save).toHaveBeenCalledWith(expect.objectContaining({ status: MissingTypeStatus.APPROVED, mergedIntoSignTypeId: 42 }));
     expect(notifications.create).toHaveBeenCalledWith('U1', expect.stringContaining('MISSING_TYPE_APPROVED'), expect.any(String), expect.any(String), 'missing_sign_type_report', 'R1');
     expect(catalogSyncService.syncLabels).toHaveBeenCalledTimes(1);
-    expect(result.createdSignType).toMatchObject({ id: 42, signCode: 'P.128' });
+    expect(result.createdSignType).toMatchObject({ id: 42, signCode: 'P.128a' });
     expect(result.report).toMatchObject({ status: MissingTypeStatus.APPROVED });
   });
 
@@ -612,6 +652,7 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     signTypeRepo.findOne.mockResolvedValue(null);
     catalogService.createSignType.mockResolvedValue({ id: 42, signCode: 'P.128' });
     dataSource.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('SELECT DISTINCT split_part')) return [{ prefix: 'P' }];
       if (sql.includes('catalog_versions') || sql.includes('UPDATE unverified_sign_candidates')) {
         throw new Error('PostgreSQL error');
       }
@@ -623,32 +664,87 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
       nameVi: 'Cấm bấm còi',
       nameEn: 'No Horn',
       proposedCategoryId: 1,
-    });
+      allowedVehicles: ['CAR'],
+    }, representativeImage());
 
     expect(missing.save).toHaveBeenCalledWith(expect.objectContaining({ status: MissingTypeStatus.APPROVED, mergedIntoSignTypeId: 42 }));
     expect(result.createdSignType).toMatchObject({ id: 42, signCode: 'P.128' });
     expect(result.report).toMatchObject({ status: MissingTypeStatus.APPROVED });
   });
 
-  it('approve-and-create-type reuses existing sign type if signCode already exists (idempotent retry)', async () => {
+  it('rejects an existing sign code instead of silently approving a different report into it', async () => {
     const { service, missing, catRepo, signTypeRepo, dataSource, catalogService } = buildService();
     const report = { id: 'R1', status: MissingTypeStatus.PENDING, candidateId: 'C1', proposedName: 'No Horn', proposedCategoryId: 1, reporterId: 'U1' };
     missing.findOne.mockResolvedValue(report);
     catRepo.findOne.mockResolvedValue({ id: 1, code: 'PROHIBITORY' });
-    signTypeRepo.findOne.mockResolvedValue({ id: 751, signCode: 'T.404' });
-    dataSource.query.mockResolvedValue([]);
+    signTypeRepo.findOne.mockResolvedValue({ id: 751, signCode: 'P.128a' });
+    dataSource.query.mockImplementation((sql: string) =>
+      sql.includes('SELECT DISTINCT split_part') ? [{ prefix: 'P' }] : [],
+    );
 
-    const result = await service.approveAndCreateType('R1', 'staff-1', {
-      signCode: 'T.404',
-      nameVi: 'Biển T.404',
-      nameEn: 'Sign T.404',
+    await expect(service.approveAndCreateType('R1', 'staff-1', {
+      signCode: 'P.128a',
+      nameVi: 'Biển P.128',
+      nameEn: 'Sign P.128',
       proposedCategoryId: 1,
-    });
+      allowedVehicles: ['CAR'],
+    }, representativeImage())).rejects.toThrow('sign_code "P.128a" exists');
 
     expect(catalogService.createSignType).not.toHaveBeenCalled();
-    expect(missing.save).toHaveBeenCalledWith(expect.objectContaining({ status: MissingTypeStatus.APPROVED, mergedIntoSignTypeId: 751 }));
-    expect(result.createdSignType).toMatchObject({ id: 751, signCode: 'T.404' });
-    expect(result.report).toMatchObject({ status: MissingTypeStatus.APPROVED });
+    expect(missing.save).not.toHaveBeenCalled();
+    expect(dataSource.query).toHaveBeenCalledWith(expect.stringContaining('SELECT DISTINCT split_part'));
+  });
+
+  it('requires a valid image upload, sign-code prefix, and numbered sign-code format before creating a type', async () => {
+    const { service, missing, catRepo, signTypeRepo, dataSource } = buildService();
+    missing.findOne.mockResolvedValue({
+      id: 'R1',
+      status: MissingTypeStatus.PENDING,
+      proposedName: 'Unknown sign',
+    });
+    catRepo.findOne.mockResolvedValue({ id: 1 });
+    signTypeRepo.findOne.mockResolvedValue(null);
+
+    await expect(service.approveAndCreateType('R1', 'ADMIN1', {
+      signCode: 'P.128',
+      allowedVehicles: ['CAR'],
+    })).rejects.toThrow('Representative image upload is required');
+
+    await expect(service.approveAndCreateType('R1', 'ADMIN1', {
+      signCode: 'CUSTOM',
+      allowedVehicles: ['CAR'],
+    }, representativeImage())).rejects.toThrow('signCode must match PREFIX.number');
+
+    await expect(service.approveAndCreateType('R1', 'ADMIN1', {
+      signCode: 'X.128',
+      allowedVehicles: ['CAR'],
+    }, representativeImage())).rejects.toThrow('signCode prefix must match an existing catalog prefix');
+
+    expect(dataSource.query).toHaveBeenCalledWith(expect.stringContaining('SELECT DISTINCT split_part'));
+  });
+
+  it('does not approve a report when catalog creation fails and removes the uploaded image', async () => {
+    const { service, missing, catRepo, signTypeRepo, catalogService, minioStorageService } = buildService();
+    missing.findOne.mockResolvedValue({
+      id: 'R1',
+      status: MissingTypeStatus.PENDING,
+      proposedName: 'Unknown sign',
+    });
+    catRepo.findOne.mockResolvedValue({ id: 1 });
+    signTypeRepo.findOne.mockResolvedValue(null);
+    catalogService.createSignType.mockRejectedValue(new Error('catalog insert failed'));
+
+    await expect(service.approveAndCreateType('R1', 'ADMIN1', {
+      signCode: 'P.128a',
+      allowedVehicles: ['CAR'],
+    }, representativeImage())).rejects.toThrow('catalog insert failed');
+
+    expect(missing.save).not.toHaveBeenCalled();
+    expect(minioStorageService.putObject).toHaveBeenCalledTimes(1);
+    expect(minioStorageService.removeObject).toHaveBeenCalledWith({
+      bucket: 'stm-sign-crops',
+      objectName: expect.stringContaining('catalog/representative/P.128a-'),
+    });
   });
 
   it('syncs ModerationCase when a missing-type report is escalated to Admin and handles filter aliases', async () => {

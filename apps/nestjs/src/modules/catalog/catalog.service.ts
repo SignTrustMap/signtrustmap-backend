@@ -218,8 +218,7 @@ export class CatalogService {
         throw new BadRequestException(`SignCategory #${dto.categoryId} not found`);
       }
 
-      const signCode = dto.signCode.trim().toUpperCase();
-      this.validateSignCode(signCode);
+      const signCode = this.normalizeSignCode(dto.signCode);
       if (await signTypes.findOne({ where: { signCode: ILike(signCode) } })) {
         throw new ConflictException(`sign_code "${signCode}" exists`);
       }
@@ -288,8 +287,7 @@ export class CatalogService {
         signType.category = category;
       }
       if (dto.signCode !== undefined) {
-        const signCode = dto.signCode.trim().toUpperCase();
-        this.validateSignCode(signCode);
+        const signCode = this.normalizeSignCode(dto.signCode);
         const duplicate = await signTypes.findOne({
           where: { signCode: ILike(signCode) },
         });
@@ -537,12 +535,14 @@ export class CatalogService {
     return value.trim() || null;
   }
 
-  private validateSignCode(signCode: string): void {
-    if (!/^[A-Z]+\.[0-9]+[A-Z0-9]*$/.test(signCode)) {
+  private normalizeSignCode(signCode: string): string {
+    const match = signCode.trim().match(/^([A-Za-z]+)\.\s*(\d+)([A-Za-z0-9]*)$/);
+    if (!match) {
       throw new BadRequestException(
         'sign_code must match abbreviation.number with an optional alphanumeric suffix',
       );
     }
+    return `${match[1].toUpperCase()}.${match[2]}${match[3].toLowerCase()}`;
   }
 
   private uniqueViolationField(error: any): 'sign_code' | 'other' {
@@ -715,4 +715,3 @@ export class CatalogService {
     };
   }
 }
-

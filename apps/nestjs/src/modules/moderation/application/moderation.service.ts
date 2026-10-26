@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException, ConflictException, Logger, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource, In } from 'typeorm';
+import { Repository, DataSource, In, ILike } from 'typeorm';
 import { randomUUID } from 'crypto';
 import { MissingSignTypeReport, MissingTypeStatus } from '../infrastructure/persistence/missing-sign-type-report.entity';
 import { ModerationAction } from '../infrastructure/persistence/moderation-action.entity';
@@ -12,7 +12,10 @@ import { CreateMissingTypeReportDto, ResolveCaseDto, UpdateMissingTypeReportDto,
 import { NotificationsService } from '../../notifications/notifications.service';
 import { CatalogService } from '../../catalog/catalog.service';
 import { CatalogSyncService } from '../../../integrations/catalog-sync/catalog-sync.service';
-import { MinioStorageService } from '../../../integrations/minio/minio-storage.service';
+import { MinioStorageService, STM_BUCKETS } from '../../../integrations/minio/minio-storage.service';
+import { VEHICLE_TYPES } from '../../../common/vehicle-types';
+import { validateFileSignature } from '../../survey/domain/media-validator';
+import { MediaFileType } from '../../survey/domain/submission-contract';
 
 export interface CandidateEnriched {
   id: string;
@@ -843,8 +846,18 @@ export class ModerationService {
   ) {
     const report = await this.missing.findOne({ where: { id: reportId } as any });
     if (!report) throw new NotFoundException('MissingSignTypeReport ' + reportId + ' not found');
-    if (report.status === MissingTypeStatus.APPROVED || report.status === MissingTypeStatus.MERGED) throw new BadRequestException('Report already ' + report.status);
-    if (report.status === MissingTypeStatus.REJECTED) throw new BadRequestException('Report was rejected; re-open it before approving');
+    if (![MissingTypeStatus.PENDING, MissingTypeStatus.ESCALATED_ADMIN].includes(report.status)) {
+      throw new BadRequestException('Only PENDING or ESCALATED_ADMIN reports can be approved');
+    }
+    if (!dto.signCode?.trim()) throw new BadRequestException('signCode is required');
+    if (!file?.buffer?.length) throw new BadRequestException('Representative image upload is required');
+    if (!this.minioStorageService) throw new BadRequestException('Catalog image storage is not configured');
+    if (!dto.allowedVehicles?.length) {
+      throw new BadRequestException('At least one allowed vehicle type is required');
+    }
+    if (dto.allowedVehicles?.some((vehicle) => !(VEHICLE_TYPES as readonly string[]).includes(vehicle))) {
+      throw new BadRequestException('allowedVehicles contains an unsupported vehicle type');
+    }
 
     const categoryId = dto.proposedCategoryId ?? report.proposedCategoryId;
     const category = categoryId != null ? await this.catRepo.findOne({ where: { id: categoryId } }) : null;
@@ -854,51 +867,18 @@ export class ModerationService {
     const nameVi = dto.nameVi?.trim() || reportName;
     const nameEn = dto.nameEn?.trim() || reportName;
 
+    const signCode = await this.validateAndNormalizeSignCode(dto.signCode);
+    const duplicate = await this.signTypeRepo.findOne({ where: { signCode: ILike(signCode) } });
+    if (duplicate) throw new ConflictException(`sign_code "${signCode}" exists`);
+    const uploadedImage = await this.uploadNewSignRepresentativeImage(file, signCode);
+    const representativeImageKey = uploadedImage.imageUrl;
+    const description = dto.description?.trim() || report.description || undefined;
+    const aiLabelPrompt =
+      dto.aiLabelPrompt?.trim() ||
+      `Sign "${nameEn}" - road traffic sign (${nameVi || nameEn}). shape=${report.suggestedShape || 'unknown'}, color_scheme=${report.suggestedColorScheme || 'unknown'}`;
+
     let created: any;
-    const requestedCode = dto.signCode?.trim()?.toUpperCase();
-    const existingType = requestedCode
-      ? await this.signTypeRepo.findOne({ where: { signCode: requestedCode } })
-      : null;
-
-    let signCode: string;
-    if (existingType) {
-      created = existingType;
-      signCode = existingType.signCode;
-      this.logger.log(`Found existing TrafficSignType #${created.id} (${signCode}), reusing for report ${reportId}`);
-    } else {
-      signCode = await this.buildSignCode(dto.signCode?.trim() || nameEn, nameEn);
-      const description = dto.description?.trim() || report.description || undefined;
-      const aiLabelPrompt =
-        dto.aiLabelPrompt?.trim() ||
-        `Sign "${nameEn}" - road traffic sign (${nameVi || nameEn}). shape=${report.suggestedShape || 'unknown'}, color_scheme=${report.suggestedColorScheme || 'unknown'}`;
-
-      let representativeImageKey = dto.representativeImageKey?.trim();
-      if (file && this.minioStorageService) {
-        const cleanCode = signCode.toUpperCase().replace(/[^A-Z0-9._-]/g, '');
-        const key = `catalog/representative/${cleanCode}-${randomUUID()}-${(file.originalname || 'image.png').replace(/[^a-zA-Z0-9._-]/g, '')}`;
-        await this.minioStorageService.putObject('stm-sign-crops', key, file.buffer, file.mimetype);
-        representativeImageKey = this.minioStorageService.getPublicUrl('stm-sign-crops', key);
-      }
-      if (!representativeImageKey && report.candidateId) {
-        try {
-          const candRows: any[] = await this.dataSource.query(
-            'SELECT sign_crop_url, best_frame_url FROM unverified_sign_candidates WHERE id = $1',
-            [report.candidateId],
-          );
-          if (candRows.length > 0) {
-            representativeImageKey = candRows[0].sign_crop_url || candRows[0].best_frame_url || undefined;
-          }
-        } catch (err: any) {
-          this.logger.warn('Failed to fetch candidate image: ' + (err as any)?.message);
-        }
-        if (!representativeImageKey) {
-          representativeImageKey = `https://s3.signmap.site/stm-sign-crops/candidates/${report.candidateId}/crop.jpg`;
-        }
-      }
-      if (!representativeImageKey) {
-        representativeImageKey = `https://s3.signmap.site/stm-sign-crops/representative/${signCode}.png`;
-      }
-
+    try {
       created = await this.catalogService.createSignType({
         categoryId: resolvedCategoryId,
         signCode,
@@ -912,8 +892,19 @@ export class ModerationService {
         shape: report.suggestedShape ?? dto.suggestedShape ?? undefined,
         colorScheme: report.suggestedColorScheme ?? dto.suggestedColorScheme ?? undefined,
         representativeImageKey,
+        allowedVehicles: dto.allowedVehicles,
         isActive: true,
       });
+    } catch (error) {
+      try {
+        await this.minioStorageService.removeObject({
+          bucket: uploadedImage.bucket,
+          objectName: uploadedImage.objectName,
+        });
+      } catch (cleanupError: any) {
+        this.logger.warn('Failed to remove orphaned representative image: ' + cleanupError?.message);
+      }
+      throw error;
     }
 
     try {
@@ -1190,16 +1181,56 @@ export class ModerationService {
     return fallback.id;
   }
 
-  private async buildSignCode(preferred: string, nameEn: string): Promise<string> {
-    const base = (preferred || nameEn || 'NEW')
-      .toUpperCase()
-      .replace(/\s+/g, '_')
-      .replace(/[^A-Z0-9._-]+/g, '')
-      .slice(0, 50) || 'NEW_SIGN';
-    let candidate = base;
-    let suffix = 0;
-    while (await this.signTypeRepo.findOne({ where: { signCode: candidate } })) { suffix++; candidate = base + '_' + suffix; }
-    return candidate;
+  private async validateAndNormalizeSignCode(input: string): Promise<string> {
+    const match = input.trim().match(/^([A-Za-z]+)\.\s*(\d+)([A-Za-z0-9]*)$/);
+    if (!match) {
+      throw new BadRequestException('signCode must match PREFIX.number with an optional alphanumeric suffix');
+    }
+    const [, rawPrefix, number, rawSuffix] = match;
+    const prefix = rawPrefix.toUpperCase();
+    const suffix = rawSuffix.toLowerCase();
+    const existingPrefixes: Array<{ prefix: string }> = await this.dataSource.query(
+      `SELECT DISTINCT split_part(upper(sign_code), '.', 1) AS prefix
+       FROM traffic_sign_types
+       WHERE upper(sign_code) ~ '^[A-Z]+\\.[0-9]+[A-Z0-9]*$'
+       ORDER BY prefix`,
+    );
+    const validPrefixes = existingPrefixes.map((row) => row.prefix);
+    if (!validPrefixes.includes(prefix)) {
+      throw new BadRequestException(
+        'signCode prefix must match an existing catalog prefix: ' + (validPrefixes.join(', ') || '(none)'),
+      );
+    }
+    return `${prefix}.${number}${suffix}`;
+  }
+
+  private async uploadNewSignRepresentativeImage(file: Express.Multer.File, signCode: string) {
+    const supportedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
+    if (!supportedTypes.includes(file.mimetype)) {
+      throw new BadRequestException('Representative image must be JPEG, PNG, WebP, or HEIF');
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      throw new BadRequestException('Representative image exceeds 20 MB');
+    }
+    const signature = validateFileSignature(MediaFileType.IMAGE, file.buffer);
+    if (!signature.valid) throw new BadRequestException(signature.error);
+
+    const cleanCode = signCode.replace(/[^A-Za-z0-9._-]/g, '');
+    const filename = (file.originalname || 'image.png').replace(/[^a-zA-Z0-9._-]/g, '');
+    const reference = {
+      bucket: STM_BUCKETS.IMAGE,
+      objectName: `catalog/representative/${cleanCode}-${randomUUID()}-${filename}`,
+    };
+    await this.minioStorageService!.putObject(
+      reference.bucket,
+      reference.objectName,
+      file.buffer,
+      file.mimetype,
+    );
+    return {
+      ...reference,
+      imageUrl: this.minioStorageService!.getPublicUrl(reference.bucket, reference.objectName),
+    };
   }
 
   private async bumpCatalogVersion(staffId: string, signCode: string, signTypeId: number): Promise<void> {

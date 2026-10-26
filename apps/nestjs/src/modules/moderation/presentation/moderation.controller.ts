@@ -44,8 +44,8 @@ export class ModerationController {
   }
 
   @Roles('ADMIN')
-  @ApiOperation({ summary: 'Approve and create new sign type', description: 'Creates the TrafficSignType from a missing-type report, publishes a catalog version, releases held candidates, and triggers AI label sync' })
-  @ApiConsumes('multipart/form-data', 'application/json')
+  @ApiOperation({ summary: 'Approve and create new sign type', description: 'Creates the TrafficSignType from a missing-type report with a validated representative image upload, publishes a catalog version, releases held candidates, and triggers AI label sync' })
+  @ApiConsumes('multipart/form-data')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 20 * 1024 * 1024 } }))
   @Post('moderation/missing-type-reports/:id/approve-and-create-type')
   approveAndCreateType(

@@ -150,7 +150,7 @@ describe('CatalogService', () => {
 
     const created = await service.createSignType({
       categoryId: 2,
-      signCode: ' p.101 ',
+      signCode: ' p. 101A ',
       nameVi: ' Dung lai ',
       nameEn: ' Stop ',
       aiLabelPrompt: ' stop prompt ',
@@ -159,7 +159,7 @@ describe('CatalogService', () => {
     });
 
     expect(typeRepository.create).toHaveBeenCalledWith(
-      expect.objectContaining({ signCode: 'P.101', nameVi: 'Dung lai', nameEn: 'Stop' }),
+      expect.objectContaining({ signCode: 'P.101a', nameVi: 'Dung lai', nameEn: 'Stop' }),
     );
     expect(promptRepository.save).toHaveBeenCalledWith(
       expect.objectContaining({ promptText: 'stop prompt', version: 1, isActive: true }),

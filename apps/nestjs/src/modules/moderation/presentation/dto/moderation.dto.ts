@@ -1,4 +1,6 @@
-import { IsString, IsOptional, IsUUID, IsInt, IsIn, MaxLength, MinLength } from 'class-validator';
+import { Transform } from 'class-transformer';
+import { ArrayMinSize, IsArray, IsString, IsOptional, IsUUID, IsInt, IsIn, Matches, MaxLength, MinLength } from 'class-validator';
+import { VEHICLE_TYPES, VehicleType } from '../../../../common/vehicle-types';
 export class CreateMissingTypeReportDto {
   @IsOptional() @IsUUID() candidateId?: string;
   @IsOptional() @IsInt() proposedCategoryId?: number;
@@ -28,14 +30,25 @@ export class UpdateMissingTypeReportDto {
 
 export class ApproveAndCreateTypeDto {
   @IsOptional() @IsInt() proposedCategoryId?: number;
-  @IsOptional() @IsString() @MinLength(1) @MaxLength(50) signCode?: string;
+  @IsString() @Matches(/^[A-Za-z]+\.\s*\d+[A-Za-z0-9]*$/) @MaxLength(50) signCode: string;
   @IsOptional() @IsString() @MinLength(1) @MaxLength(255) nameVi?: string;
   @IsOptional() @IsString() @MinLength(1) @MaxLength(255) nameEn?: string;
   @IsOptional() @IsString() @MaxLength(2000) description?: string;
   @IsOptional() @IsString() @MaxLength(30) suggestedShape?: string;
   @IsOptional() @IsString() @MaxLength(30) suggestedColorScheme?: string;
   @IsOptional() @IsString() @MaxLength(1000) aiLabelPrompt?: string;
-  @IsOptional() @IsString() @MaxLength(500) representativeImageKey?: string;
+  @Transform(({ value }) => {
+    if (typeof value !== 'string') return value;
+    try {
+      const parsed: unknown = JSON.parse(value);
+      if (Array.isArray(parsed)) return parsed;
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      return value;
+    }
+    return value.split(',').map((vehicle) => vehicle.trim()).filter(Boolean);
+  })
+  @IsArray() @ArrayMinSize(1) @IsIn(VEHICLE_TYPES, { each: true }) allowedVehicles: VehicleType[];
   @IsOptional() @IsString() staffNotes?: string;
 }
 
