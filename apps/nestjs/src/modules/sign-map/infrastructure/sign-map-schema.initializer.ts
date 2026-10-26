@@ -426,6 +426,10 @@ export class SignMapSchemaInitializer implements OnModuleInit {
           "completed_at" TIMESTAMPTZ,
           "created_at" TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
+
+        ALTER TABLE "candidate_recapture_requests"
+          ADD COLUMN IF NOT EXISTS "idempotency_key" VARCHAR(128),
+          ADD COLUMN IF NOT EXISTS "submission_idempotency_key" VARCHAR(128);
        `);
       this.logger.log('SignMap schema preflight verified (admin_boundaries, osm_roads, verified_traffic_signs columns, phases 1-7 gamification & governance tables).');
 
