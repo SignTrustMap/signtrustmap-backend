@@ -1,4 +1,4 @@
-import { BadGatewayException } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { RouteDirectionsRequestDto } from '../presentation/dto/routing.dto';
 import { OsrmRoutingClient } from './osrm-routing.client';
@@ -144,6 +144,34 @@ describe('OsrmRoutingClient', () => {
 
     await expect(client().findDirections(request, 25, 3)).rejects.toEqual(
       new BadGatewayException('OSRM routing service returned HTTP 503'),
+    );
+  });
+
+  it('maps OSRM HTTP 400 responses to BadRequestException instead of 502 Bad Gateway', async () => {
+    jest.spyOn(global, 'fetch').mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: async () => ({ message: 'Could not find a matching segment for coordinate' }),
+      text: async () => '{"message":"Could not find a matching segment for coordinate"}',
+    } as Response);
+
+    await expect(client().findDirections(request, 25, 3)).rejects.toEqual(
+      new BadRequestException(
+        'OSRM routing service returned HTTP 400: Could not find a matching segment for coordinate',
+      ),
+    );
+  });
+
+  it('maps OSRM HTTP 404 responses to NotFoundException', async () => {
+    jest.spyOn(global, 'fetch').mockResolvedValue({
+      ok: false,
+      status: 404,
+      json: async () => ({ message: 'No route' }),
+      text: async () => '{"message":"No route"}',
+    } as Response);
+
+    await expect(client().findDirections(request, 25, 3)).rejects.toEqual(
+      new NotFoundException('No route found between the specified coordinates'),
     );
   });
 

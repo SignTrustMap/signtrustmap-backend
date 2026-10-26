@@ -11,7 +11,7 @@ import { UseInterceptors, UploadedFile } from '@nestjs/common';
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { CreateSubmissionDto } from './dto/create-submission.dto';
 import { UpdateSubmissionDto } from './dto/update-submission.dto';
-import { UpdateSubmissionStatusDto } from './dto/update-submission-status.dto';
+import { UpdateSubmissionStatusDto, MarkSubmissionCompletedDto } from './dto/update-submission-status.dto';
 import { CreateFrameBatchSessionDto } from './dto/create-frame-batch.dto';
 import { CompleteBatchSurveyDto, CreateBatchSurveyDto } from './dto/create-batch-survey.dto';
 import { CreatePresignedUrlDto } from './dto/create-presigned-url.dto';
@@ -146,7 +146,7 @@ export class SurveyController {
   @UseGuards(InternalTokenGuard)
   @ApiOperation({ summary: 'Internal mark submission completed', description: 'AI worker callback to mark pipeline processing as complete' })
   @Post('internal/:submissionId/complete')
-  async markCompleted(@Param('submissionId', ParseUUIDPipe) submissionId: string, @Body() body?: { note?: string }) { return this.surveyService.markCompleted(submissionId, body?.note); }
+  async markCompleted(@Param('submissionId', ParseUUIDPipe) submissionId: string, @Body() body?: MarkSubmissionCompletedDto) { return this.surveyService.markCompleted(submissionId, body?.note); }
 
   @Public()
   @UseGuards(InternalTokenGuard)

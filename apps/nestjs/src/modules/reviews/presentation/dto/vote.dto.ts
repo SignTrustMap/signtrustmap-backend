@@ -1,4 +1,4 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
   IsArray,
@@ -167,5 +167,17 @@ export class ReviewQueueQueryDto {
   @ApiProperty({ required: false, default: false, description: 'Whether to include own submitted candidates' })
   @IsOptional()
   includeOwnSubmissions?: string | boolean;
+}
+
+export class CanNotIdentifyDto {
+  @ApiPropertyOptional({
+    description: 'Optional explanation of why the sign is unidentifiable',
+    example: 'Image is heavily obscured by tree branch',
+    maxLength: 500,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
 }
 
