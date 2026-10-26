@@ -71,8 +71,18 @@ export class WalletService {
       .orderBy('t.createdAt', 'DESC')
       .skip((p - 1) * ps).take(ps);
     if (q.type) qb.andWhere('t.transactionType = :type', { type: q.type });
-    if (q.from) qb.andWhere('t.createdAt >= :from', { from: new Date(q.from) });
-    if (q.to) qb.andWhere('t.createdAt <= :to', { to: new Date(q.to) });
+    if (q.from) {
+      const fromDate = new Date(q.from);
+      if (!isNaN(fromDate.getTime())) {
+        qb.andWhere('t.createdAt >= :from', { from: fromDate });
+      }
+    }
+    if (q.to) {
+      const toDate = new Date(q.to);
+      if (!isNaN(toDate.getTime())) {
+        qb.andWhere('t.createdAt <= :to', { to: toDate });
+      }
+    }
     const [items, total] = await qb.getManyAndCount();
     return {
       items: items.map((t) => ({
