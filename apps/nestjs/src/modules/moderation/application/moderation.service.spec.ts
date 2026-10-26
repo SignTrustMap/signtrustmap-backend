@@ -132,6 +132,212 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     expect(notifications.create).toHaveBeenCalledWith('U1', 'MISSING_TYPE_REJECTED', expect.any(String), expect.any(String), 'missing_sign_type_report', 'R1');
   });
 
+  it('rejects a staff action when the report is no longer actionable', async () => {
+    const { service, missing } = buildService();
+    missing.findOne.mockResolvedValue({ id: 'R1', status: MissingTypeStatus.MERGED });
+
+    await expect(service.updateMissingReport('R1', 'staff-1', { actionType: 'REJECT' }))
+      .rejects.toThrow('Report must be PENDING or INCOMPLETE');
+    expect(missing.save).not.toHaveBeenCalled();
+  });
+
+  it('escalates a report with preliminary notes and records an audit action', async () => {
+    const { service, missing, dataSource } = buildService();
+    const report = {
+      id: 'R1',
+      status: MissingTypeStatus.PENDING,
+      candidateId: null,
+      reporterId: 'U1',
+      proposedName: 'Unknown sign',
+      staffNotes: null,
+    };
+    missing.findOne
+      .mockResolvedValueOnce(report)
+      .mockResolvedValueOnce({ ...report, status: MissingTypeStatus.ESCALATED_ADMIN });
+    const manager = {
+      query: jest.fn()
+        .mockResolvedValueOnce([{ id: 'R1', status: MissingTypeStatus.PENDING }])
+        .mockResolvedValueOnce([{ id: 'R1' }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'CASE1' }])
+        .mockResolvedValueOnce([]),
+    };
+    dataSource.transaction.mockImplementation((fn: (m: any) => any) => fn(manager));
+
+    await service.updateMissingReport('R1', 'staff-1', {
+      actionType: 'ESCALATE_ADMIN',
+      staffNotes: 'Possible regulatory sign; needs admin review.',
+    });
+
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining('SET status = $2, staff_notes = $3'),
+      ['R1', MissingTypeStatus.ESCALATED_ADMIN, 'Possible regulatory sign; needs admin review.', 'staff-1', MissingTypeStatus.PENDING],
+    );
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining("'ESCALATE_ADMIN'"),
+      ['CASE1', 'staff-1', 'Possible regulatory sign; needs admin review.'],
+    );
+  });
+
+  it('requires preliminary notes before escalating a report', async () => {
+    const { service, missing, cases } = buildService();
+    missing.findOne.mockResolvedValue({ id: 'R1', status: MissingTypeStatus.PENDING });
+
+    await expect(service.updateMissingReport('R1', 'staff-1', { actionType: 'ESCALATE_ADMIN' }))
+      .rejects.toThrow('staffNotes is required for ESCALATE_ADMIN');
+    expect(cases.save).not.toHaveBeenCalled();
+  });
+
+  it('rejects a report and its held candidate atomically with an audit action', async () => {
+    const { service, missing, dataSource, notifications } = buildService();
+    const report = {
+      id: 'R1',
+      status: MissingTypeStatus.PENDING,
+      candidateId: 'C1',
+      reporterId: 'U1',
+      proposedName: 'Unknown sign',
+    };
+    missing.findOne
+      .mockResolvedValueOnce(report)
+      .mockResolvedValueOnce({ ...report, status: MissingTypeStatus.REJECTED });
+    const manager = {
+      query: jest.fn()
+        .mockResolvedValueOnce([{
+          id: 'R1',
+          candidate_id: 'C1',
+          reporter_id: 'U1',
+          proposed_name: 'Unknown sign',
+          status: MissingTypeStatus.PENDING,
+        }])
+        .mockResolvedValueOnce([{ id: 'C1', status: CandidateStatus.MISSING_TYPE_HOLD }])
+        .mockResolvedValueOnce([{ id: 'R1' }])
+        .mockResolvedValueOnce([{ id: 'C1' }])
+        .mockResolvedValueOnce([{ id: 'CASE1' }])
+        .mockResolvedValueOnce([]),
+    };
+    dataSource.transaction.mockImplementation((fn: (m: any) => any) => fn(manager));
+
+    await service.updateMissingReport('R1', 'staff-1', { actionType: 'REJECT' });
+
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining('UPDATE unverified_sign_candidates'),
+      ['C1', CandidateStatus.REJECTED, null, CandidateStatus.MISSING_TYPE_HOLD],
+    );
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining("VALUES ($1, $2, $3, $4)"),
+      ['CASE1', 'REJECT', 'staff-1', null],
+    );
+    expect(notifications.create).toHaveBeenCalledWith(
+      'U1', 'MISSING_TYPE_REJECTED', expect.any(String), expect.any(String),
+      'missing_sign_type_report', 'R1',
+    );
+  });
+
+  it('preserves catalog merge semantics while applying the staff merge transactionally', async () => {
+    const { service, missing, signTypeRepo, dataSource } = buildService();
+    const report = {
+      id: 'R1',
+      status: MissingTypeStatus.PENDING,
+      candidateId: 'C1',
+      reporterId: 'U1',
+      proposedName: 'Unknown sign',
+    };
+    missing.findOne
+      .mockResolvedValueOnce(report)
+      .mockResolvedValueOnce({ ...report, status: MissingTypeStatus.MERGED, mergedIntoSignTypeId: 42 });
+    signTypeRepo.findOne.mockResolvedValue({ id: 42 });
+    const manager = {
+      query: jest.fn()
+        .mockResolvedValueOnce([{ id: 'R1', candidate_id: 'C1', reporter_id: 'U1', proposed_name: 'Unknown sign', status: MissingTypeStatus.PENDING }])
+        .mockResolvedValueOnce([{ id: 'C1', status: CandidateStatus.MISSING_TYPE_HOLD }])
+        .mockResolvedValueOnce([{ id: 'R1' }])
+        .mockResolvedValueOnce([{ id: 'C1' }])
+        .mockResolvedValueOnce([{ id: 'CASE1' }])
+        .mockResolvedValueOnce([]),
+    };
+    dataSource.transaction.mockImplementation((fn: (m: any) => any) => fn(manager));
+
+    await service.updateMissingReport('R1', 'staff-1', {
+      actionType: 'MERGE',
+      mergedSignTypeId: 42,
+    });
+
+    expect(signTypeRepo.findOne).toHaveBeenCalledWith({ where: { id: 42 } });
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining('SET status = $2, predicted_sign_type_id'),
+      ['C1', CandidateStatus.PENDING_REVIEW, 42, CandidateStatus.MISSING_TYPE_HOLD],
+    );
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining("VALUES ($1, $2, $3, $4)"),
+      ['CASE1', 'MERGE', 'staff-1', null],
+    );
+  });
+
+  it('requests a report-linked recapture and updates report, candidate, case, and audit atomically', async () => {
+    const { service, missing, dataSource, notifications } = buildService();
+    const report = {
+      id: 'R1',
+      status: MissingTypeStatus.INCOMPLETE,
+      candidateId: 'C1',
+      reporterId: 'U1',
+      proposedName: null,
+    };
+    missing.findOne.mockResolvedValue(report);
+    const manager = {
+      query: jest.fn()
+        .mockResolvedValueOnce([{
+          id: 'R1',
+          candidate_id: 'C1',
+          reporter_id: 'U1',
+          proposed_name: null,
+          status: MissingTypeStatus.PENDING,
+        }])
+        .mockResolvedValueOnce([{
+          id: 'C1',
+          status: CandidateStatus.MISSING_TYPE_HOLD,
+          surveyor_id: 'SURVEYOR1',
+        }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'R1' }])
+        .mockResolvedValueOnce([{ id: 'C1' }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'CASE1' }])
+        .mockResolvedValueOnce([]),
+    };
+    dataSource.transaction.mockImplementation((fn: (m: any) => any) => fn(manager));
+
+    const result = await service.updateMissingReport('R1', 'staff-1', {
+      actionType: 'REQUEST_RECAPTURE',
+      actionNote: 'Please recapture from the same location.',
+    });
+
+    expect(result).toMatchObject({ id: 'R1', status: MissingTypeStatus.INCOMPLETE });
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining('missing_type_report_id'),
+      ['C1', 'staff-1', 'SURVEYOR1', 'R1', 'Please recapture from the same location.'],
+    );
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining("SET status = $2"),
+      ['C1', CandidateStatus.RECAPTURE_REQUESTED, CandidateStatus.MISSING_TYPE_HOLD],
+    );
+    expect(notifications.create).toHaveBeenCalledWith(
+      'U1',
+      'MISSING_TYPE_INCOMPLETE',
+      expect.any(String),
+      expect.any(String),
+      'missing_sign_type_report',
+      'R1',
+    );
+    expect(notifications.create).toHaveBeenCalledWith(
+      'SURVEYOR1',
+      'IMAGE_RECAPTURE_REQUESTED',
+      expect.any(String),
+      'Please recapture from the same location.',
+      'candidate',
+      'C1',
+    );
+  });
+
   it('returns reopened PENDING reports with replacement candidate evidence in the Staff queue', async () => {
     const { service, missing, dataSource } = buildService();
     missing.findAndCount.mockResolvedValue([[{ id: 'R1', status: MissingTypeStatus.PENDING, candidateId: 'C1' }], 1]);

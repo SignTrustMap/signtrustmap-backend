@@ -8,7 +8,7 @@ import { ModerationCase, ModerationStatus, ModerationType } from '../infrastruct
 import { SignCategory } from '../../catalog/sign-category.entity';
 import { TrafficSignType } from '../../catalog/traffic-sign-type.entity';
 import { UnverifiedSignCandidate, CandidateStatus } from '../../survey/infrastructure/persistence/unverified-sign-candidate.entity';
-import { CreateMissingTypeReportDto, ResolveCaseDto, ApproveAndCreateTypeDto } from '../presentation/dto/moderation.dto';
+import { CreateMissingTypeReportDto, ResolveCaseDto, UpdateMissingTypeReportDto, ApproveAndCreateTypeDto } from '../presentation/dto/moderation.dto';
 import { NotificationsService } from '../../notifications/notifications.service';
 import { CatalogService } from '../../catalog/catalog.service';
 import { CatalogSyncService } from '../../../integrations/catalog-sync/catalog-sync.service';
@@ -138,14 +138,56 @@ export class ModerationService {
     return { items: enriched, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
   }
 
-  async updateMissingReport(reportId: string, reviewerId: string, dto: any) {
+  async updateMissingReport(reportId: string, reviewerId: string, dto: UpdateMissingTypeReportDto) {
+    if (dto.actionType) {
+      const report = await this.missing.findOne({ where: { id: reportId } as any });
+      if (!report) throw new NotFoundException('MissingSignTypeReport ' + reportId + ' not found');
+      if (![MissingTypeStatus.PENDING, MissingTypeStatus.INCOMPLETE].includes(report.status)) {
+        throw new BadRequestException('Report must be PENDING or INCOMPLETE to perform a staff action');
+      }
+
+      const notes = dto.staffNotes ?? dto.actionNote;
+      switch (dto.actionType) {
+        case 'MERGE': {
+          const signTypeId = dto.mergedSignTypeId ?? dto.mergedIntoSignTypeId;
+          if (signTypeId == null) throw new BadRequestException('mergedSignTypeId is required for MERGE');
+          if (dto.status && dto.status !== MissingTypeStatus.MERGED) {
+            throw new BadRequestException('status conflicts with MERGE action');
+          }
+          return this.applyStaffReportDecision(reportId, reviewerId, 'MERGE', Number(signTypeId), notes ?? null);
+        }
+        case 'REJECT':
+          if (dto.status && dto.status !== MissingTypeStatus.REJECTED) {
+            throw new BadRequestException('status conflicts with REJECT action');
+          }
+          return this.applyStaffReportDecision(reportId, reviewerId, 'REJECT', null, notes ?? null);
+        case 'ESCALATE_ADMIN': {
+          if (!notes?.trim()) throw new BadRequestException('staffNotes is required for ESCALATE_ADMIN');
+          if (report.status !== MissingTypeStatus.PENDING) {
+            throw new BadRequestException('Only PENDING reports can be escalated to Admin');
+          }
+          if (dto.status && !['IN_REVIEW', 'ESCALATED', MissingTypeStatus.ESCALATED_ADMIN].includes(dto.status)) {
+            throw new BadRequestException('status conflicts with ESCALATE_ADMIN action');
+          }
+          return this.escalateMissingReportToAdmin(reportId, reviewerId, notes.trim());
+        }
+        case 'REQUEST_RECAPTURE':
+          if (dto.status && dto.status !== MissingTypeStatus.INCOMPLETE) {
+            throw new BadRequestException('status conflicts with REQUEST_RECAPTURE action');
+          }
+          return this.requestMissingReportRecapture(reportId, reviewerId, notes?.trim() || null);
+        default:
+          throw new BadRequestException('Unsupported staff action');
+      }
+    }
+
     const report: any = await this.missing.findOne({ where: { id: reportId } as any });
     if (!report) throw new NotFoundException('MissingSignTypeReport ' + reportId + ' not found');
     let requestedStatus = dto.status;
     if (requestedStatus === 'IN_REVIEW' || requestedStatus === 'ESCALATED') requestedStatus = MissingTypeStatus.ESCALATED_ADMIN;
     else if (requestedStatus === 'OPEN') requestedStatus = MissingTypeStatus.PENDING;
     const allowed = Object.values(MissingTypeStatus);
-    if (requestedStatus && !allowed.includes(requestedStatus)) throw new BadRequestException('status must be one of ' + allowed.join(', '));
+    if (requestedStatus && !allowed.some((status) => status === requestedStatus)) throw new BadRequestException('status must be one of ' + allowed.join(', '));
     const mergedId = dto.mergedSignTypeId ?? dto.mergedIntoSignTypeId;
     if (mergedId != null) {
       const t = await this.signTypeRepo.findOne({ where: { id: Number(mergedId) } });
@@ -184,6 +226,286 @@ export class ModerationService {
 
     await this.applyCandidateSideEffect(report as MissingSignTypeReport, previousStatus);
     return (await this.enrichWithCandidates([report as MissingSignTypeReport]))[0];
+  }
+
+  private async applyStaffReportDecision(
+    reportId: string,
+    staffId: string,
+    decision: 'MERGE' | 'REJECT',
+    signTypeId: number | null,
+    note: string | null,
+  ) {
+    if (decision === 'MERGE') {
+      const signType = await this.signTypeRepo.findOne({ where: { id: signTypeId as number } });
+      if (!signType) throw new BadRequestException('TrafficSignType #' + signTypeId + ' not found');
+    }
+
+    const result = await this.dataSource.transaction(async (manager) => {
+      const reportRows: any[] = await manager.query(
+        `SELECT id, candidate_id, reporter_id, proposed_name, status
+         FROM missing_sign_type_reports
+         WHERE id = $1
+         FOR UPDATE`,
+        [reportId],
+      );
+      const report = reportRows[0];
+      if (!report) throw new NotFoundException('MissingSignTypeReport ' + reportId + ' not found');
+      if (![MissingTypeStatus.PENDING, MissingTypeStatus.INCOMPLETE].includes(report.status)) {
+        throw new BadRequestException('Report must be PENDING or INCOMPLETE to perform a staff action');
+      }
+
+      if (report.candidate_id) {
+        const candidates: any[] = await manager.query(
+          `SELECT id, status FROM unverified_sign_candidates WHERE id = $1 FOR UPDATE`,
+          [report.candidate_id],
+        );
+        if (!candidates[0]) throw new NotFoundException('Candidate ' + report.candidate_id + ' not found');
+        if (candidates[0].status !== CandidateStatus.MISSING_TYPE_HOLD) {
+          throw new ConflictException('Candidate must be on MISSING_TYPE_HOLD to resolve this report');
+        }
+      }
+
+      const nextStatus = decision === 'MERGE' ? MissingTypeStatus.MERGED : MissingTypeStatus.REJECTED;
+      const updatedReports: any[] = await manager.query(
+        `UPDATE missing_sign_type_reports
+         SET status = $2, merged_into_sign_type_id = $3,
+             staff_notes = COALESCE($4, staff_notes), reviewed_by = $5, updated_at = NOW()
+         WHERE id = $1 AND status IN ($6, $7)
+         RETURNING id`,
+        [reportId, nextStatus, signTypeId, note, staffId, MissingTypeStatus.PENDING, MissingTypeStatus.INCOMPLETE],
+      );
+      if (updatedReports.length !== 1) throw new ConflictException('Report state changed before applying staff decision');
+
+      if (report.candidate_id) {
+        const candidateStatus = decision === 'MERGE' ? CandidateStatus.PENDING_REVIEW : CandidateStatus.REJECTED;
+        const candidateUpdate: any[] = await manager.query(
+          `UPDATE unverified_sign_candidates
+           SET status = $2, predicted_sign_type_id = COALESCE($3, predicted_sign_type_id)
+           WHERE id = $1 AND status = $4
+           RETURNING id`,
+          [report.candidate_id, candidateStatus, signTypeId, CandidateStatus.MISSING_TYPE_HOLD],
+        );
+        if (candidateUpdate.length !== 1) throw new ConflictException('Candidate state changed before applying staff decision');
+      }
+
+      const caseRows: any[] = await manager.query(
+        `INSERT INTO moderation_cases
+           (case_type, target_entity_type, target_entity_id, assigned_staff_id, status, resolution_note, resolved_at)
+         VALUES ($1, 'missing_sign_type_report', $2, $3, $4, $5, NOW())
+         RETURNING id`,
+        [ModerationType.CATALOG_PROPOSAL, reportId, staffId, ModerationStatus.RESOLVED, note],
+      );
+      const caseId = caseRows[0]?.id;
+      if (!caseId) throw new Error('Failed to create report decision moderation case');
+      await manager.query(
+        `INSERT INTO moderation_actions (case_id, action_type, performed_by, note)
+         VALUES ($1, $2, $3, $4)`,
+        [caseId, decision, staffId, note],
+      );
+      return { reporterId: report.reporter_id, proposedName: report.proposed_name };
+    });
+
+    if (result.reporterId) {
+      const isMerge = decision === 'MERGE';
+      await this.notifyReporter(
+        { id: reportId, reporterId: result.reporterId, proposedName: result.proposedName },
+        decision === 'MERGE' ? 'MERGED' : 'REJECTED',
+        isMerge ? 'Báo cáo biển báo mới đã được gộp' : 'Báo cáo biển báo mới bị từ chối',
+        isMerge
+          ? 'Báo cáo "' + (result.proposedName || 'biển báo mới') + '" của bạn đã được gộp vào loại biển báo hiện có #' + signTypeId + '.'
+          : 'Báo cáo "' + (result.proposedName || 'biển báo mới') + '" của bạn đã bị nhân viên từ chối.',
+      );
+    }
+    return this.getMissingReport(reportId);
+  }
+
+  private async escalateMissingReportToAdmin(reportId: string, staffId: string, note: string) {
+    await this.dataSource.transaction(async (manager) => {
+      const reportRows: any[] = await manager.query(
+        `SELECT id, status FROM missing_sign_type_reports WHERE id = $1 FOR UPDATE`,
+        [reportId],
+      );
+      const report = reportRows[0];
+      if (!report) throw new NotFoundException('MissingSignTypeReport ' + reportId + ' not found');
+      if (report.status !== MissingTypeStatus.PENDING) {
+        throw new BadRequestException('Only PENDING reports can be escalated to Admin');
+      }
+
+      const updatedReports: any[] = await manager.query(
+        `UPDATE missing_sign_type_reports
+         SET status = $2, staff_notes = $3, reviewed_by = $4, updated_at = NOW()
+         WHERE id = $1 AND status = $5
+         RETURNING id`,
+        [reportId, MissingTypeStatus.ESCALATED_ADMIN, note, staffId, MissingTypeStatus.PENDING],
+      );
+      if (updatedReports.length !== 1) throw new ConflictException('Report state changed before escalation');
+
+      const existingCases: any[] = await manager.query(
+        `SELECT id, status FROM moderation_cases
+         WHERE target_entity_type = 'missing_sign_type_report' AND target_entity_id = $1
+         ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
+        [reportId],
+      );
+      let caseId = existingCases[0]?.id;
+      if (caseId) {
+        await manager.query(
+          `UPDATE moderation_cases
+           SET status = $2, assigned_staff_id = $3, resolution_note = $4, resolved_at = NULL
+           WHERE id = $1`,
+          [caseId, ModerationStatus.PENDING, staffId, note],
+        );
+      } else {
+        const caseRows: any[] = await manager.query(
+          `INSERT INTO moderation_cases
+             (case_type, target_entity_type, target_entity_id, assigned_staff_id, status, resolution_note)
+           VALUES ($1, 'missing_sign_type_report', $2, $3, $4, $5)
+           RETURNING id`,
+          [ModerationType.CATALOG_PROPOSAL, reportId, staffId, ModerationStatus.PENDING, note],
+        );
+        caseId = caseRows[0]?.id;
+      }
+      if (!caseId) throw new Error('Failed to create admin escalation moderation case');
+      await manager.query(
+        `INSERT INTO moderation_actions (case_id, action_type, performed_by, note)
+         VALUES ($1, 'ESCALATE_ADMIN', $2, $3)`,
+        [caseId, staffId, note],
+      );
+    });
+
+    const escalated = await this.getMissingReport(reportId);
+    await this.notifyReporter(
+      escalated,
+      'ESCALATED_ADMIN',
+      'Báo cáo biển báo mới được chuyển lên quản trị viên',
+      'Báo cáo "' + (escalated.proposedName || 'biển báo mới') + '" đã được chuyển lên quản trị viên để xem xét.',
+    );
+    return escalated;
+  }
+
+  private async requestMissingReportRecapture(reportId: string, staffId: string, note: string | null) {
+    let surveyorId: string | null = null;
+    const result = await this.dataSource.transaction(async (manager) => {
+      const reportRows: any[] = await manager.query(
+        `SELECT id, candidate_id, reporter_id, proposed_name, status
+         FROM missing_sign_type_reports
+         WHERE id = $1
+         FOR UPDATE`,
+        [reportId],
+      );
+      const report = reportRows[0];
+      if (!report) throw new NotFoundException('MissingSignTypeReport ' + reportId + ' not found');
+      if (report.status !== MissingTypeStatus.PENDING) {
+        throw new BadRequestException('Only PENDING reports can request recapture');
+      }
+      if (!report.candidate_id) {
+        throw new BadRequestException('A candidate-linked report is required to request recapture');
+      }
+
+      const candidateRows: any[] = await manager.query(
+        `SELECT c.id, c.status, s.surveyor_id
+         FROM unverified_sign_candidates c
+         LEFT JOIN survey_submissions s ON s.id = c.submission_id
+         WHERE c.id = $1
+         FOR UPDATE OF c`,
+        [report.candidate_id],
+      );
+      const candidate = candidateRows[0];
+      if (!candidate) throw new NotFoundException('Candidate ' + report.candidate_id + ' not found');
+      if (candidate.status !== CandidateStatus.MISSING_TYPE_HOLD) {
+        throw new BadRequestException('Candidate must be on MISSING_TYPE_HOLD to request recapture');
+      }
+
+      const activeRequests: any[] = await manager.query(
+        `SELECT id FROM candidate_recapture_requests
+         WHERE candidate_id = $1 AND completed_at IS NULL
+         FOR UPDATE`,
+        [candidate.id],
+      );
+      if (activeRequests.length > 0) {
+        throw new ConflictException('An active recapture request already exists for candidate ' + candidate.id);
+      }
+
+      const updatedReports: any[] = await manager.query(
+        `UPDATE missing_sign_type_reports
+         SET status = $2, staff_notes = COALESCE($3, staff_notes), reviewed_by = $4, updated_at = NOW()
+         WHERE id = $1 AND status = $5
+         RETURNING id`,
+        [reportId, MissingTypeStatus.INCOMPLETE, note, staffId, MissingTypeStatus.PENDING],
+      );
+      if (updatedReports.length !== 1) throw new ConflictException('Report state changed before recapture request creation');
+
+      const updatedCandidates: any[] = await manager.query(
+        `UPDATE unverified_sign_candidates
+         SET status = $2
+         WHERE id = $1 AND status = $3
+         RETURNING id`,
+        [candidate.id, CandidateStatus.RECAPTURE_REQUESTED, CandidateStatus.MISSING_TYPE_HOLD],
+      );
+      if (updatedCandidates.length !== 1) {
+        throw new ConflictException('Candidate state changed before recapture request creation');
+      }
+
+      surveyorId = candidate.surveyor_id ?? null;
+      try {
+        await manager.query(
+          `INSERT INTO candidate_recapture_requests
+             (candidate_id, reviewer_id, surveyor_id, missing_type_report_id, reason, note)
+           VALUES ($1, $2, $3, $4, 'MISSING_TYPE_RECAPTURE_REQUESTED', $5)`,
+          [candidate.id, staffId, surveyorId, reportId, note],
+        );
+      } catch (error: any) {
+        if (error?.code === '23505' || String(error?.detail ?? '').includes('uq_candidate_recapture_requests_one_active')) {
+          throw new ConflictException('An active recapture request already exists for candidate ' + candidate.id);
+        }
+        throw error;
+      }
+
+      const caseRows: any[] = await manager.query(
+        `INSERT INTO moderation_cases
+           (case_type, target_entity_type, target_entity_id, assigned_staff_id, status, resolution_note, resolved_at)
+         VALUES ($1, 'candidate', $2, $3, $4, $5, NOW())
+         RETURNING id`,
+        [ModerationType.CATALOG_PROPOSAL, candidate.id, staffId, ModerationStatus.RESOLVED, note],
+      );
+      const moderationCaseId = caseRows[0]?.id;
+      if (!moderationCaseId) throw new Error('Failed to create recapture moderation case');
+      await manager.query(
+        `INSERT INTO moderation_actions (case_id, action_type, performed_by, note)
+         VALUES ($1, 'REQUEST_RECAPTURE', $2, $3)`,
+        [moderationCaseId, staffId, note],
+      );
+      return { reporterId: report.reporter_id, proposedName: report.proposed_name, candidateId: candidate.id };
+    });
+
+    if (result.reporterId) {
+      try {
+        await this.notificationsService.create(
+          result.reporterId,
+          'MISSING_TYPE_INCOMPLETE',
+          'Báo cáo biển báo cần được chụp lại',
+          'Báo cáo "' + (result.proposedName || 'biển báo mới') + '" cần được Surveyor chụp lại ảnh tại vị trí đã gửi.',
+          'missing_sign_type_report',
+          reportId,
+        );
+      } catch (error: any) {
+        this.logger.warn('Report recapture notification failed: ' + error?.message);
+      }
+    }
+    if (surveyorId) {
+      try {
+        await this.notificationsService.create(
+          surveyorId,
+          'IMAGE_RECAPTURE_REQUESTED',
+          'Yêu cầu chụp lại ảnh biển báo',
+          note || 'Nhân viên yêu cầu chụp lại ảnh biển báo tại vị trí đã gửi.',
+          'candidate',
+          result.candidateId,
+        );
+      } catch (error: any) {
+        this.logger.warn('Surveyor recapture notification failed: ' + error?.message);
+      }
+    }
+    return this.getMissingReport(reportId);
   }
   async getMissingReport(id: string) {
     const r = await this.missing.findOne({ where: { id } });
@@ -661,7 +983,12 @@ export class ModerationService {
     catch (e) { this.logger.warn('catalog sync failed for sign type #' + signTypeId + ': ' + (e as any)?.message); }
   }
 
-  private async notifyReporter(report: MissingSignTypeReport, type: string, title: string, message: string): Promise<void> {
+  private async notifyReporter(
+    report: Pick<MissingSignTypeReport, 'id' | 'reporterId' | 'proposedName'>,
+    type: string,
+    title: string,
+    message: string,
+  ): Promise<void> {
     try {
       if (report.reporterId) await this.notificationsService.create(report.reporterId, 'MISSING_TYPE_' + type, title, message, 'missing_sign_type_report', report.id);
     } catch (e) { this.logger.warn('reporter notification failed: ' + (e as any)?.message); }
