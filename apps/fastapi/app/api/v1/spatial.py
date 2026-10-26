@@ -119,8 +119,8 @@ async def get_signs_in_viewport(
     min_lon: float = Query(..., ge=-180.0, le=180.0, description="West boundary"),
     max_lat: float = Query(..., ge=-90.0, le=90.0, description="North boundary"),
     max_lon: float = Query(..., ge=-180.0, le=180.0, description="East boundary"),
-    sign_type_id: int | None = Query(default=None, description="Filter by traffic_sign_types.id"),
-    category_id: int | None = Query(default=None, description="Filter by sign_categories.id"),
+    sign_type_id: int | None = Query(default=None, ge=1, le=2147483647, description="Filter by traffic_sign_types.id"),
+    category_id: int | None = Query(default=None, ge=1, le=2147483647, description="Filter by sign_categories.id"),
     db: AsyncSession = Depends(get_db),
 ) -> GeoJSONFeatureCollection:
     if min_lat > max_lat:

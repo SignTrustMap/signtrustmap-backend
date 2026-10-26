@@ -1,5 +1,18 @@
+import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsIn, IsInt, IsNumber, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import {
+  IsArray,
+  IsIn,
+  IsInt,
+  IsNumber,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Max,
+  MaxLength,
+  Min,
+  ValidateNested,
+} from 'class-validator';
 
 export class VoteDto {
   @IsIn([1, -1], { message: 'vote must be 1 (approve) or -1 (reject)' })
@@ -108,3 +121,30 @@ export class TestAssignDto {
   @IsOptional()
   candidateIds?: string[];
 }
+
+export class SetActiveLearningPriorityDto {
+  @ApiProperty({ description: 'Active learning priority score (0.0 to 1.0)', example: 0.85 })
+  @Type(() => Number)
+  @IsNumber()
+  priority: number;
+}
+
+export class BulkPriorityItemDto {
+  @ApiProperty({ description: 'Candidate UUID', example: '123e4567-e89b-12d3-a456-426614174000' })
+  @IsUUID()
+  candidateId: string;
+
+  @ApiProperty({ description: 'Active learning priority score (0.0 to 1.0)', example: 0.85 })
+  @Type(() => Number)
+  @IsNumber()
+  priority: number;
+}
+
+export class SetBulkActiveLearningPrioritiesDto {
+  @ApiProperty({ type: [BulkPriorityItemDto], description: 'List of candidate priorities to update' })
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => BulkPriorityItemDto)
+  items: BulkPriorityItemDto[];
+}
+

@@ -1,5 +1,6 @@
 # Documentation
 
+- [Coding Conventions & Rules](coding-conventions/README.md) *(Mandatory for Developers & AI Models)*
 - [Architecture](architecture.md)
 - [API reference](api-reference.md)
 - [Phase 4 notes](phase-4.md)

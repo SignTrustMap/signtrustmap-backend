@@ -1,4 +1,19 @@
-import { IsInt, IsPositive, IsString, IsOptional, MaxLength, IsNotEmpty, MinLength, NotEquals, IsBoolean } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
+import {
+  IsInt,
+  IsPositive,
+  IsString,
+  IsOptional,
+  MaxLength,
+  IsNotEmpty,
+  MinLength,
+  NotEquals,
+  IsBoolean,
+  IsUUID,
+  IsNumber,
+  Min,
+} from 'class-validator';
 
 export class TopUpDto {
   @IsInt()
@@ -99,4 +114,83 @@ export class FreezeWalletDto {
   @MaxLength(500)
   reason?: string;
 }
+
+export class InternalDeductDto {
+  @ApiProperty({ description: 'Target user UUID' })
+  @IsUUID()
+  userId: string;
+
+  @ApiProperty({ description: 'Credit amount to deduct', minimum: 1, example: 10 })
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  amount: number;
+
+  @ApiPropertyOptional({ description: 'Reference type', example: 'navigation_session' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  referenceType?: string;
+
+  @ApiPropertyOptional({ description: 'Reference ID' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  referenceId?: string;
+
+  @ApiPropertyOptional({ description: 'Transaction description' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  description?: string;
+
+  @ApiPropertyOptional({ description: 'Idempotency key' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  idempotencyKey?: string;
+}
+
+export class InternalCreditDto {
+  @ApiProperty({ description: 'Target user UUID' })
+  @IsUUID()
+  userId: string;
+
+  @ApiProperty({ description: 'Credit amount to reward/credit', minimum: 1, example: 50 })
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  amount: number;
+
+  @ApiPropertyOptional({ description: 'Transaction type code' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  type?: string;
+
+  @ApiPropertyOptional({ description: 'Reference type', example: 'survey_batch' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  referenceType?: string;
+
+  @ApiPropertyOptional({ description: 'Reference ID' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  referenceId?: string;
+
+  @ApiPropertyOptional({ description: 'Transaction description' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  description?: string;
+
+  @ApiPropertyOptional({ description: 'Idempotency key' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  idempotencyKey?: string;
+}
+
 

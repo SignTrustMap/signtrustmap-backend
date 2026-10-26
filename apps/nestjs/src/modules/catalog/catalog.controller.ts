@@ -22,6 +22,7 @@ import {
   CreateSignTypeDto,
   CreateSupportShotDto,
   ListSignTypesQueryDto,
+  ReprocessCandidatesDto,
   SetSupportShotPinDto,
   UpdateSignCategoryDto,
   UpdateSignTypeDto,
@@ -190,7 +191,7 @@ export class CatalogController {
   @Post('catalog/sign-types/:id/reprocess-candidates')
   reprocessCandidates(
     @Param('id', ParseIntPipe) id: number,
-    @Body() body?: { similarityThreshold?: number },
+    @Body() body?: ReprocessCandidatesDto,
   ) {
     return this.svc.reprocessUnknownCandidates(id, body?.similarityThreshold);
   }

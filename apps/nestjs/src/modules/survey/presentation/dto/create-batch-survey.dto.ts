@@ -83,3 +83,23 @@ export class CreateBatchSurveyDto {
   @Type(() => BatchImageItemDto)
   images: BatchImageItemDto[];
 }
+
+export class CompleteBatchSurveyDto {
+  @ApiProperty({ description: 'Number of candidate signs extracted by AI pipeline', minimum: 0, example: 5 })
+  @Type(() => Number)
+  @Min(0)
+  extractedCandidates: number;
+
+  @ApiPropertyOptional({ description: 'Total frames or images processed', minimum: 0, example: 25 })
+  @IsOptional()
+  @Type(() => Number)
+  @Min(0)
+  totalProcessed?: number;
+
+  @ApiPropertyOptional({ description: 'Optional processing completion note or error log' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  note?: string;
+}
+

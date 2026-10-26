@@ -1,7 +1,7 @@
 import { Controller, Get, Post, Delete, Body, Param, Query, ParseUUIDPipe, BadRequestException, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { WalletService } from '../application/wallet.service';
-import { TopUpDto, CustomTopUpDto, CreatePaymentMethodDto } from './dto/wallet.dto';
+import { TopUpDto, CustomTopUpDto, CreatePaymentMethodDto, InternalCreditDto, InternalDeductDto } from './dto/wallet.dto';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { Public } from '../../../common/decorators/public.decorator';
 import { InternalTokenGuard } from '../../../common/guards/internal-token.guard';
@@ -75,7 +75,7 @@ export class WalletController {
   @UseGuards(InternalTokenGuard)
   @ApiOperation({ summary: 'Internal deduct credits', description: 'Service-to-service endpoint to deduct credits (e.g. navigation fee)' })
   @Post('internal/deduct')
-  async internalDeduct(@Body() body: { userId: string; amount: number; referenceType?: string; referenceId?: string; description?: string; idempotencyKey?: string }) {
+  async internalDeduct(@Body() body: InternalDeductDto) {
     if (!body.userId || !body.amount) throw new BadRequestException('userId and amount are required');
     return this.walletService.deductUser(
       body.userId,
@@ -92,12 +92,12 @@ export class WalletController {
   @UseGuards(InternalTokenGuard)
   @ApiOperation({ summary: 'Internal credit rewards', description: 'Service-to-service endpoint to credit user rewards' })
   @Post('internal/credit')
-  async internalCredit(@Body() body: { userId: string; amount: number; type?: TransactionType; referenceType?: string; referenceId?: string; description?: string; idempotencyKey?: string }) {
+  async internalCredit(@Body() body: InternalCreditDto) {
     if (!body.userId || !body.amount) throw new BadRequestException('userId and amount are required');
     return this.walletService.creditUser(
       body.userId,
       Math.abs(Number(body.amount)),
-      body.type ?? TransactionType.SURVEY_REWARD,
+      (body.type as TransactionType) ?? TransactionType.SURVEY_REWARD,
       body.referenceType ?? null,
       body.referenceId ?? null,
       body.description ?? 'Reward credit',

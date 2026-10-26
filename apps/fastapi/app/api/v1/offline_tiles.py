@@ -14,7 +14,7 @@ import re
 from datetime import datetime, timezone
 from typing import Generator
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Path, Request, status
 from fastapi.responses import StreamingResponse
 
 from app.config import settings
@@ -245,7 +245,10 @@ def _get_resolved_pack_path(pack_id: str) -> tuple[str, str]:
     summary="Download or stream an offline PMTiles map pack archive",
     tags=["Offline Maps"],
 )
-async def download_offline_map_pack(pack_id: str, request: Request) -> StreamingResponse:
+async def download_offline_map_pack(
+    pack_id: str = Path(..., description="Map pack identifier", examples=["vietnam-osm"]),
+    request: Request = ...,
+) -> StreamingResponse:
     file_path, file_name = _get_resolved_pack_path(pack_id)
     return serve_ranged_file(file_path, request, download_filename=file_name)
 
@@ -255,6 +258,9 @@ async def download_offline_map_pack(pack_id: str, request: Request) -> Streaming
     summary="Stream PMTiles file directly with .pmtiles extension",
     tags=["Offline Maps"],
 )
-async def get_offline_pmtiles_file(pack_id: str, request: Request) -> StreamingResponse:
+async def get_offline_pmtiles_file(
+    pack_id: str = Path(..., description="Map pack identifier", examples=["vietnam-osm"]),
+    request: Request = ...,
+) -> StreamingResponse:
     file_path, file_name = _get_resolved_pack_path(pack_id)
     return serve_ranged_file(file_path, request, download_filename=file_name)

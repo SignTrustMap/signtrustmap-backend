@@ -5,7 +5,17 @@ import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { Public } from '../../../common/decorators/public.decorator';
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { ReviewsService } from '../application/reviews.service';
-import { VoteDto, ReportDto, TestReviewDto, TestAssignDto, RequestRecaptureDto, SubmitRecaptureDto, SelectSignRemedyDto } from './dto/vote.dto';
+import {
+  VoteDto,
+  ReportDto,
+  TestReviewDto,
+  TestAssignDto,
+  RequestRecaptureDto,
+  SubmitRecaptureDto,
+  SelectSignRemedyDto,
+  SetActiveLearningPriorityDto,
+  SetBulkActiveLearningPrioritiesDto,
+} from './dto/vote.dto';
 import { InternalTokenGuard } from '../../../common/guards/internal-token.guard';
 
 @ApiTags('Reviews')
@@ -223,7 +233,7 @@ export class ReviewsController {
   @UseGuards(InternalTokenGuard)
   @ApiOperation({ summary: 'Internal set active learning priority', description: 'Update review queue priority based on AI model uncertainty score' })
   @Patch('internal/:candidateId/active-learning-priority')
-  async setPriority(@Param('candidateId', ParseUUIDPipe) candidateId: string, @Body() body: { priority: number }) {
+  async setPriority(@Param('candidateId', ParseUUIDPipe) candidateId: string, @Body() body: SetActiveLearningPriorityDto) {
     return this.reviewsService.setActiveLearningPriority(candidateId, body.priority);
   }
 
@@ -231,7 +241,7 @@ export class ReviewsController {
   @UseGuards(InternalTokenGuard)
   @ApiOperation({ summary: 'Internal set bulk active learning priorities', description: 'Batch update review queue priorities from AI service' })
   @Post('internal/active-learning-priorities')
-  async setBulkPriorities(@Body() body: { items: Array<{ candidateId: string; priority: number }> }) {
+  async setBulkPriorities(@Body() body: SetBulkActiveLearningPrioritiesDto) {
     return this.reviewsService.setBulkActiveLearningPriorities(body.items);
   }
 

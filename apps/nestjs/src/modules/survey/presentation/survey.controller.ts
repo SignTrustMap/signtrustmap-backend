@@ -13,7 +13,7 @@ import { CreateSubmissionDto } from './dto/create-submission.dto';
 import { UpdateSubmissionDto } from './dto/update-submission.dto';
 import { UpdateSubmissionStatusDto } from './dto/update-submission-status.dto';
 import { CreateFrameBatchSessionDto } from './dto/create-frame-batch.dto';
-import { CreateBatchSurveyDto } from './dto/create-batch-survey.dto';
+import { CompleteBatchSurveyDto, CreateBatchSurveyDto } from './dto/create-batch-survey.dto';
 import { CreatePresignedUrlDto } from './dto/create-presigned-url.dto';
 import { BatchSurveyService } from '../application/batch-survey.service';
 
@@ -46,7 +46,7 @@ export class SurveyController {
   @Post('internal/batch/:batchId/complete')
   async completeBatch(
     @Param('batchId', ParseUUIDPipe) batchId: string,
-    @Body() body: { extractedCandidates: number; totalProcessed?: number; note?: string },
+    @Body() body: CompleteBatchSurveyDto,
   ) {
     return this.batchService.completeBatch(batchId, body);
   }
