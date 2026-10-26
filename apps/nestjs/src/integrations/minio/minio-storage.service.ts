@@ -99,8 +99,40 @@ export class MinioStorageService {
     buffer: Buffer,
     contentType?: string,
   ): Promise<void> {
+    let resolvedContentType = contentType;
+    if (
+      !resolvedContentType ||
+      resolvedContentType === 'text/plain' ||
+      resolvedContentType === 'application/octet-stream'
+    ) {
+      if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xd8) {
+        resolvedContentType = 'image/jpeg';
+      } else if (
+        buffer.length >= 8 &&
+        buffer[0] === 0x89 &&
+        buffer[1] === 0x50 &&
+        buffer[2] === 0x4e &&
+        buffer[3] === 0x47
+      ) {
+        resolvedContentType = 'image/png';
+      } else if (
+        buffer.length >= 12 &&
+        buffer.toString('ascii', 0, 4) === 'RIFF' &&
+        buffer.toString('ascii', 8, 12) === 'WEBP'
+      ) {
+        resolvedContentType = 'image/webp';
+      } else {
+        const ext = objectName.split('.').pop()?.toLowerCase();
+        if (ext === 'jpg' || ext === 'jpeg') resolvedContentType = 'image/jpeg';
+        else if (ext === 'png') resolvedContentType = 'image/png';
+        else if (ext === 'webp') resolvedContentType = 'image/webp';
+        else if (ext === 'mp4') resolvedContentType = 'video/mp4';
+        else if (ext === 'gpx') resolvedContentType = 'application/gpx+xml';
+      }
+    }
+
     const meta: Record<string, string> = {};
-    if (contentType) meta['Content-Type'] = contentType;
+    if (resolvedContentType) meta['Content-Type'] = resolvedContentType;
 
     try {
       await this.client.putObject(bucket, objectName, buffer, buffer.length, meta);
