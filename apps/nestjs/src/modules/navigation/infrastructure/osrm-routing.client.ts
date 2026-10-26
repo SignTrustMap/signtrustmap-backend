@@ -1,4 +1,4 @@
-import { BadGatewayException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { VehicleType } from '../../../common/vehicle-types';
 import {
@@ -177,11 +177,28 @@ export class OsrmRoutingClient {
     try {
       const response = await fetch(url, { signal: controller.signal });
       if (!response.ok) {
+        if (response.status === 400) {
+          let detail = '';
+          try {
+            const errorPayload: any = await response.json();
+            if (errorPayload?.message) detail = `: ${errorPayload.message}`;
+          } catch {}
+          throw new BadRequestException(`OSRM routing service returned HTTP 400${detail}`);
+        }
+        if (response.status === 404) {
+          throw new NotFoundException('No route found between the specified coordinates');
+        }
         throw new BadGatewayException(`OSRM routing service returned HTTP ${response.status}`);
       }
       return await response.text();
     } catch (error) {
-      if (error instanceof BadGatewayException) throw error;
+      if (
+        error instanceof BadRequestException ||
+        error instanceof NotFoundException ||
+        error instanceof BadGatewayException
+      ) {
+        throw error;
+      }
       if (controller.signal.aborted) {
         throw new BadGatewayException('OSRM routing request was interrupted');
       }

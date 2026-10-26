@@ -16,6 +16,7 @@ import {
   SetActiveLearningPriorityDto,
   SetBulkActiveLearningPrioritiesDto,
   ReviewQueueQueryDto,
+  CanNotIdentifyDto,
 } from './dto/vote.dto';
 import { InternalTokenGuard } from '../../../common/guards/internal-token.guard';
 
@@ -100,7 +101,7 @@ export class ReviewsController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Mark sign as unidentifiable', description: 'Skip candidate and mark as cannot identify when sign is obscured or ambiguous' })
   @Post('candidates/:candidateId/can-not-identify')
-  async canNotIdentify(@CurrentUser() user: any, @Param('candidateId', ParseUUIDPipe) candidateId: string, @Body() body?: { note?: string }) {
+  async canNotIdentify(@CurrentUser() user: any, @Param('candidateId', ParseUUIDPipe) candidateId: string, @Body() body?: CanNotIdentifyDto) {
     return this.reviewsService.canNotIdentify(user.id, candidateId, body?.note);
   }
 

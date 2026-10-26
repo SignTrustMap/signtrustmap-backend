@@ -13,6 +13,7 @@ import { DailyTasksService } from './daily-tasks.service';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Public } from '../../common/decorators/public.decorator';
 import { InternalTokenGuard } from '../../common/guards/internal-token.guard';
+import { DailyTasksRolloverDto } from './dto/daily-tasks.dto';
 
 @ApiTags('Daily Tasks')
 @Controller('daily-tasks')
@@ -73,7 +74,7 @@ export class DailyTasksController {
     description: 'Worker trigger to archive or log unclaimed tasks from the previous UTC day',
   })
   @Post('internal/rollover')
-  async rollover(@Body() body?: { date?: string }) {
+  async rollover(@Body() body?: DailyTasksRolloverDto) {
     return this.dailyTasksService.rolloverUnclaimedTasks(body?.date);
   }
 }
