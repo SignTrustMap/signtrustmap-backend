@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException, ConflictException, Logger, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource, In, ILike } from 'typeorm';
+import { Repository, DataSource, EntityManager, In, ILike } from 'typeorm';
 import { randomUUID } from 'crypto';
 import { MissingSignTypeReport, MissingTypeStatus } from '../infrastructure/persistence/missing-sign-type-report.entity';
 import { ModerationAction } from '../infrastructure/persistence/moderation-action.entity';
@@ -705,11 +705,10 @@ export class ModerationService {
       }
 
       const candidateRows: any[] = await manager.query(
-        `SELECT c.id, c.status, s.surveyor_id
-         FROM unverified_sign_candidates c
-         LEFT JOIN survey_submissions s ON s.id = c.submission_id
-         WHERE c.id = $1
-         FOR UPDATE OF c`,
+        `SELECT id, status
+         FROM unverified_sign_candidates
+         WHERE id = $1
+         FOR UPDATE`,
         [report.candidate_id],
       );
       const candidate = candidateRows[0];
@@ -727,6 +726,7 @@ export class ModerationService {
       if (activeRequests.length > 0) {
         throw new ConflictException('An active recapture request already exists for candidate ' + candidate.id);
       }
+      surveyorId = await this.selectRandomActiveSurveyor(manager);
 
       const updatedReports: any[] = await manager.query(
         `UPDATE missing_sign_type_reports
@@ -748,7 +748,6 @@ export class ModerationService {
         throw new ConflictException('Candidate state changed before recapture request creation');
       }
 
-      surveyorId = candidate.surveyor_id ?? null;
       try {
         await manager.query(
           `INSERT INTO candidate_recapture_requests
@@ -825,6 +824,28 @@ export class ModerationService {
       }
     }
     return this.getMissingReport(reportId);
+  }
+
+  private async selectRandomActiveSurveyor(manager: EntityManager): Promise<string> {
+    const surveyors: Array<{ id: string }> = await manager.query(
+      `SELECT u.id
+       FROM users u
+       WHERE u.status = 'ACTIVE'
+         AND EXISTS (
+           SELECT 1
+           FROM user_roles ur
+           JOIN roles role ON role.id = ur.role_id
+           WHERE ur.user_id = u.id
+             AND ur.is_active = TRUE
+             AND role.code = 'SURVEYOR'
+         )
+       ORDER BY RANDOM()
+       LIMIT 1`,
+    );
+    if (!surveyors[0]) {
+      throw new BadRequestException('No active surveyor is available for recapture assignment');
+    }
+    return surveyors[0].id;
   }
   async getMissingReport(id: string) {
     const r = await this.missing.findOne({ where: { id } });
@@ -1026,9 +1047,8 @@ export class ModerationService {
       if (moderationCase.status === ModerationStatus.RESOLVED) throw new BadRequestException('Case is already resolved');
 
       const candidateRows: any[] = await manager.query(
-        `SELECT c.id, c.status, s.surveyor_id
+        `SELECT c.id, c.status
          FROM unverified_sign_candidates c
-         JOIN survey_submissions s ON s.id = c.submission_id
          WHERE c.id = $1
          FOR UPDATE OF c`,
         [moderationCase.target_entity_id],
@@ -1038,8 +1058,6 @@ export class ModerationService {
       if ([CandidateStatus.VERIFIED, CandidateStatus.REJECTED, CandidateStatus.RECAPTURE_REQUESTED].includes(candidate.status)) {
         throw new BadRequestException(`Cannot request recapture for candidate ${candidate.id} with status ${candidate.status}`);
       }
-      surveyorId = candidate.surveyor_id ?? null;
-
       const activeRows: any[] = await manager.query(
         `SELECT id FROM candidate_recapture_requests
          WHERE candidate_id = $1 AND completed_at IS NULL
@@ -1059,6 +1077,7 @@ export class ModerationService {
           `Cannot request recapture for candidate ${candidate.id}: expected exactly one INCOMPLETE Missing Type Report, found ${reportRows.length}`,
         );
       }
+      surveyorId = await this.selectRandomActiveSurveyor(manager);
 
       const candidateUpdate = await manager.query(
         `UPDATE unverified_sign_candidates
