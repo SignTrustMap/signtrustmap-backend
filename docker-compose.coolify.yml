@@ -171,15 +171,15 @@ services:
   # AUTOMATED ENDPOINT FAILURE SENTINEL (Schemathesis)
   # ---------------------------------------------------------------------------
   schemathesis:
-    image: schemathesis/schemathesis:latest
+    build:
+      context: ./infra/schemathesis
+      dockerfile: Dockerfile
     container_name: stm-schemathesis
     restart: unless-stopped
     depends_on:
       api-nestjs: { condition: service_healthy }
       api-fastapi: { condition: service_healthy }
     volumes:
-      - ./infra/schemathesis/run-tests.sh:/app/run-tests.sh:ro
-      - ./infra/schemathesis/notify-discord.py:/app/notify-discord.py:ro
       - schemathesis_reports:/reports
     environment:
       NESTJS_HOST: http://api-nestjs:3000
@@ -190,14 +190,6 @@ services:
       NOTIFY_ON_SUCCESS: ${SCHEMATHESIS_NOTIFY_SUCCESS:-false}
       TEST_USER_EMAIL: ${SCHEMATHESIS_TEST_EMAIL:-}
       TEST_USER_PASSWORD: ${SCHEMATHESIS_TEST_PASSWORD:-}
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        while true; do
-          /bin/sh /app/run-tests.sh
-          echo "Sleeping for $${SCAN_INTERVAL_SECONDS:-3600} seconds before next hourly test..."
-          sleep $${SCAN_INTERVAL_SECONDS:-3600}
-        done
     networks:
       stm-network:
         aliases:
