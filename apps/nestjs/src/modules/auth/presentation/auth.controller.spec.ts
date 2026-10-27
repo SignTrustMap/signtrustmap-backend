@@ -14,6 +14,7 @@ describe('AuthController', () => {
     googleLogin: jest.Mock;
     getProfile: jest.Mock;
     updateProfile: jest.Mock;
+    toggleRole: jest.Mock;
   };
 
   const mockUser = { id: 'u-123', email: 'test@example.com' };
@@ -30,6 +31,7 @@ describe('AuthController', () => {
       googleLogin: jest.fn().mockResolvedValue({ token: 'jwt-token' }),
       getProfile: jest.fn().mockResolvedValue({ id: 'u-123', email: 'test@example.com' }),
       updateProfile: jest.fn().mockResolvedValue({ id: 'u-123', fullName: 'Updated' }),
+      toggleRole: jest.fn().mockResolvedValue({ user: { id: 'u-123', roles: ['DRIVER', 'SURVEYOR'] }, accessToken: 'new-token' }),
     };
 
     controller = new AuthController(service as unknown as AuthService);
@@ -97,5 +99,19 @@ describe('AuthController', () => {
     const res = await controller.updateMe(mockUser, dto);
     expect(res).toEqual({ id: 'u-123', fullName: 'Updated' });
     expect(service.updateProfile).toHaveBeenCalledWith(mockUser.id, dto);
+  });
+
+  it('toggleRole delegates to authService.toggleRole', async () => {
+    const dto = { role: 'SURVEYOR', enabled: true };
+    const res = await controller.toggleRole(mockUser, dto);
+    expect(res).toEqual({ user: { id: 'u-123', roles: ['DRIVER', 'SURVEYOR'] }, accessToken: 'new-token' });
+    expect(service.toggleRole).toHaveBeenCalledWith(mockUser.id, 'SURVEYOR', true);
+  });
+
+  it('enrollRole delegates to authService.toggleRole with enabled=true by default', async () => {
+    const dto = { role: 'REVIEWER' };
+    const res = await controller.enrollRole(mockUser, dto);
+    expect(res).toEqual({ user: { id: 'u-123', roles: ['DRIVER', 'SURVEYOR'] }, accessToken: 'new-token' });
+    expect(service.toggleRole).toHaveBeenCalledWith(mockUser.id, 'REVIEWER', true);
   });
 });
