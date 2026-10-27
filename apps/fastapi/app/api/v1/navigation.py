@@ -4,7 +4,7 @@ import json
 import logging
 from typing import Any
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, WebSocket, WebSocketDisconnect
 from sqlalchemy import text as sa_text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +16,7 @@ from app.schemas.spatial import (
     NavigationErrorMessage,
     NavigationPointPayload,
     NavigationSignAlertItem,
+    PaginatedSessionsResponse,
     SessionResponse,
     UpdateSessionRequest,
 )
@@ -78,7 +79,6 @@ def _row_to_session_response(row: Any) -> SessionResponse:
     status_code=201,
     summary="Start a navigation session",
     description="Creates navigation_sessions row with PostGIS Points (SRID 4326). Returned id is used as sessionId in WS ticks.",
-    tags=["Spatial Navigation"],
 )
 async def create_navigation_session(
     body: CreateSessionRequest,
@@ -165,48 +165,87 @@ _GET_SESSION = sa_text(
 )
 @router.get(
     "/navigation/sessions/me",
+    response_model=PaginatedSessionsResponse,
     summary="List my navigation sessions (paginated)",
-    tags=["Spatial Navigation"],
 )
-async def list_my_sessions(driver_id: __import__("uuid").UUID, page: int = 1, pageSize: int = 20, db: AsyncSession = Depends(get_db)) -> dict:
-    p2 = max(1, page); ps2 = min(max(1, pageSize), 100)
-    tr = await db.execute(_COUNT_SESSIONS, {"driver_id": str(driver_id)})
-    tot = tr.mappings().first()
-    total = tot["cnt"] if tot else 0
-    res = await db.execute(_LIST_SESSIONS, {"driver_id": str(driver_id), "limit": ps2, "offset": (p2-1)*ps2})
-    rows = res.mappings().all()
-    items = [_row_to_session_response(r).model_dump() for r in rows]
-    return {"items": items, "total": total, "page": p2, "pageSize": ps2, "totalPages": (total+ps2-1)//ps2 if ps2 else 0}
+async def list_my_sessions(
+    driver_id: UUID = Query(..., description="UUID of the Driver user (users.id)"),
+    page: int = Query(default=1, ge=1, le=2147483647, description="Page number (1-based)"),
+    pageSize: int = Query(default=20, ge=1, le=100, description="Page size (1 to 100)"),
+    db: AsyncSession = Depends(get_db),
+) -> PaginatedSessionsResponse:
+    p2 = max(1, page)
+    ps2 = min(max(1, pageSize), 100)
+    try:
+        tr = await db.execute(_COUNT_SESSIONS, {"driver_id": str(driver_id)})
+        tot = tr.mappings().first()
+        total = tot["cnt"] if tot else 0
+        offset = (p2 - 1) * ps2
+        if total == 0 or offset >= total:
+            rows = []
+        else:
+            res = await db.execute(_LIST_SESSIONS, {"driver_id": str(driver_id), "limit": ps2, "offset": offset})
+            rows = res.mappings().all()
+        items = [_row_to_session_response(r) for r in rows]
+        total_pages = (total + ps2 - 1) // ps2 if ps2 else 0
+        return PaginatedSessionsResponse(
+            items=items,
+            total=total,
+            page=p2,
+            pageSize=ps2,
+            totalPages=total_pages,
+        )
+    except Exception as exc:
+        logger.exception("Failed to list navigation sessions for driver %s", driver_id)
+        raise HTTPException(status_code=400, detail=f"Could not list navigation sessions: {exc}")
+
+
 @router.get(
     "/navigation/sessions/{session_id}",
     response_model=SessionResponse,
     summary="Get a single navigation session by id",
-    tags=["Spatial Navigation"],
 )
-async def get_navigation_session(session_id: __import__("uuid").UUID, db: AsyncSession = Depends(get_db)) -> SessionResponse:
-    res = await db.execute(_GET_SESSION, {"id": str(session_id)})
-    row = res.mappings().first()
-    if row is None:
-        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
-    return _row_to_session_response(row)
+async def get_navigation_session(
+    session_id: UUID = Path(..., description="Navigation session UUID"),
+    db: AsyncSession = Depends(get_db),
+) -> SessionResponse:
+    try:
+        res = await db.execute(_GET_SESSION, {"id": str(session_id)})
+        row = res.mappings().first()
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+        return _row_to_session_response(row)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to get session %s", session_id)
+        raise HTTPException(status_code=400, detail=f"Could not get session: {exc}")
+
+
 @router.patch(
     "/navigation/sessions/{session_id}",
     response_model=SessionResponse,
     summary="End a navigation session (COMPLETED or CANCELED)",
     description="Transitions ACTIVE session to terminal state and sets ended_at=NOW(). 404 if not found or already terminal.",
-    tags=["Spatial Navigation"],
 )
 async def update_navigation_session(
-    session_id: UUID,
-    body: UpdateSessionRequest,
+    session_id: UUID = Path(..., description="Navigation session UUID"),
+    body: UpdateSessionRequest = ...,
     db: AsyncSession = Depends(get_db),
 ) -> SessionResponse:
-    result = await db.execute(_UPDATE_SESSION, {"id": str(session_id), "status": body.status})
-    await db.commit()
-    row = result.mappings().first()
-    if row is None:
-        raise HTTPException(status_code=404, detail=f"Session {session_id} not found or already terminal.")
-    return _row_to_session_response(row)
+    try:
+        result = await db.execute(_UPDATE_SESSION, {"id": str(session_id), "status": body.status})
+        await db.commit()
+        row = result.mappings().first()
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Session {session_id} not found or already terminal.")
+        return _row_to_session_response(row)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        await db.rollback()
+        logger.exception("Failed to update session %s", session_id)
+        raise HTTPException(status_code=400, detail=f"Could not update session: {exc}")
 @router.websocket("/navigation/stream")
 
 async def navigation_stream(websocket: WebSocket) -> None:

@@ -141,6 +141,14 @@ class SessionResponse(BaseModel):
     destination_longitude: float
 
 
+class PaginatedSessionsResponse(BaseModel):
+    items: list[SessionResponse] = Field(default_factory=list, description="List of navigation sessions")
+    total: int = Field(ge=0, description="Total count of sessions for this driver")
+    page: int = Field(ge=1, description="Current page number")
+    pageSize: int = Field(ge=1, le=100, description="Page size")
+    totalPages: int = Field(ge=0, description="Total number of pages")
+
+
 class UpdateSessionRequest(BaseModel):
     """Body for PATCH /navigation/sessions/{id}."""
 
