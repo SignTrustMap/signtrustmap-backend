@@ -1,10 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { User } from './persistence/user.entity';
+import { User, UserStatus } from './persistence/user.entity';
 import { UserRole } from './persistence/user-role.entity';
 import { JwtPayload } from '../domain/auth.types';
 
@@ -26,6 +26,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     // Optionally re-fetch to ensure user still active; lightweight check
     const user = await this.userRepo.findOne({ where: { id: payload.sub } });
     if (!user) return null;
+    if (user.status !== UserStatus.ACTIVE) {
+      throw new UnauthorizedException(`Account is ${user.status}`);
+    }
 
     // Attach roles from token (already decoded) – re-query if you want live roles
     return {
