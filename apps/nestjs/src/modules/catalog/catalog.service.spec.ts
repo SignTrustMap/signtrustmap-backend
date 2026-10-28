@@ -14,7 +14,7 @@ describe('CatalogService', () => {
   const aiPrompts = repository<SignTypeAiPrompt>();
   const osmMappings = repository<SignTypeOsmMapping>();
   const images = repository<SignTypeImage>();
-  const dataSource = { transaction: jest.fn() } as unknown as DataSource;
+  const dataSource = { transaction: jest.fn(), query: jest.fn() } as unknown as DataSource;
   const service = new CatalogService(
     categories,
     signTypes,
@@ -25,7 +25,38 @@ describe('CatalogService', () => {
     dataSource,
   );
 
-  beforeEach(() => jest.resetAllMocks());
+  beforeEach(() => {
+    jest.resetAllMocks();
+    dataSource.query = jest.fn().mockResolvedValue([{ prefix: 'P' }]) as any;
+  });
+
+  it('normalizes and checks a sign code against known prefixes and duplicates', async () => {
+    dataSource.query = jest.fn().mockResolvedValue([{ prefix: 'P' }]) as any;
+    signTypes.findOne.mockResolvedValue(null);
+
+    await expect(service.checkSignCodeAvailability(' p. 110 ')).resolves.toEqual({
+      signCode: 'P.110',
+      available: true,
+    });
+    expect(signTypes.findOne).toHaveBeenCalledWith({
+      where: { signCode: expect.anything() },
+    });
+
+    signTypes.findOne.mockResolvedValue(trafficSignType());
+    await expect(service.checkSignCodeAvailability('P.110')).resolves.toEqual({
+      signCode: 'P.110',
+      available: false,
+    });
+  });
+
+  it('rejects sign codes with prefixes outside the catalog', async () => {
+    dataSource.query = jest.fn().mockResolvedValue([{ prefix: 'P' }]) as any;
+
+    await expect(service.checkSignCodeAvailability('Z.110')).rejects.toThrow(
+      'sign_code prefix must match an existing catalog prefix',
+    );
+    expect(signTypes.findOne).not.toHaveBeenCalled();
+  });
 
   it('returns a zero-based page enriched with the Spring catalog fields', async () => {
     const type = trafficSignType();

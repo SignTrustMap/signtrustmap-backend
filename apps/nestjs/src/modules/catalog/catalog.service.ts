@@ -82,6 +82,18 @@ export class CatalogService {
     return this.categories.find({ order: { sortOrder: 'ASC', id: 'ASC' } });
   }
 
+  async checkSignCodeAvailability(input: string) {
+    if (typeof input !== 'string' || !input.trim()) {
+      throw new BadRequestException('code query parameter is required');
+    }
+    const signCode = this.normalizeSignCode(input);
+    await this.validateSignCodePrefix(signCode);
+    const existing = await this.signTypes.findOne({
+      where: { signCode: ILike(signCode) },
+    });
+    return { signCode, available: !existing };
+  }
+
   async getCategory(id: number) {
     const category = await this.categories.findOne({ where: { id } });
     if (!category) throw new NotFoundException(`SignCategory #${id} not found`);
@@ -227,6 +239,7 @@ export class CatalogService {
       }
 
       const signCode = this.normalizeSignCode(dto.signCode);
+      await this.validateSignCodePrefix(signCode);
       if (await signTypes.findOne({ where: { signCode: ILike(signCode) } })) {
         throw new ConflictException(`sign_code "${signCode}" exists`);
       }
@@ -296,6 +309,7 @@ export class CatalogService {
       }
       if (dto.signCode !== undefined) {
         const signCode = this.normalizeSignCode(dto.signCode);
+        await this.validateSignCodePrefix(signCode);
         const duplicate = await signTypes.findOne({
           where: { signCode: ILike(signCode) },
         });
@@ -557,6 +571,22 @@ export class CatalogService {
       );
     }
     return `${match[1].toUpperCase()}.${match[2]}${match[3].toLowerCase()}`;
+  }
+
+  private async validateSignCodePrefix(signCode: string): Promise<void> {
+    const prefixes: Array<{ prefix: string }> = await this.dataSource.query(
+      `SELECT DISTINCT split_part(upper(sign_code), '.', 1) AS prefix
+       FROM traffic_sign_types
+       WHERE upper(sign_code) ~ '^[A-Z]+\\.[0-9]+[A-Z0-9]*$'
+       ORDER BY prefix`,
+    );
+    const prefix = signCode.split('.')[0];
+    if (!prefixes.some((row) => row.prefix === prefix)) {
+      throw new BadRequestException(
+        'sign_code prefix must match an existing catalog prefix: ' +
+          (prefixes.map((row) => row.prefix).join(', ') || '(none)'),
+      );
+    }
   }
 
   private uniqueViolationField(error: any): 'sign_code' | 'other' {

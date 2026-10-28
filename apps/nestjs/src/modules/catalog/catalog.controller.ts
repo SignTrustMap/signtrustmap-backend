@@ -60,6 +60,12 @@ export class CatalogController {
   deleteCategory(@Param('id', ParseIntPipe) id: number) { return this.svc.deleteCategory(id); }
 
   // Traffic sign types: authenticated read, ADMIN write.
+  @ApiOperation({ summary: 'Check sign code availability', description: 'Validate a catalog sign code and check whether it is already in use' })
+  @Get('catalog/signs/check-code')
+  checkSignCode(@Query('code') code: string) {
+    return this.svc.checkSignCodeAvailability(code);
+  }
+
   @ApiOperation({ summary: 'List sign types', description: 'Search and filter catalog traffic signs by category, status, and code' })
   @Get('catalog/sign-types')
   listSignTypes(@Query() query: ListSignTypesQueryDto) {
@@ -196,4 +202,3 @@ export class CatalogController {
     return this.svc.reprocessUnknownCandidates(id, body?.similarityThreshold);
   }
 }
-
