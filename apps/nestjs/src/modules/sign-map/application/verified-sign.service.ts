@@ -182,8 +182,6 @@ export class VerifiedSignService {
       throw new Error('DataSource is not configured in VerifiedSignService');
     }
 
-    await this.ensureTables();
-
     if (request.isPresent) {
       // 7-day user cooldown for same sign confirmation
       const cooldownCutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
@@ -301,26 +299,6 @@ export class VerifiedSignService {
         revalidationTaskId,
         message: 'Sign reported as missing. High-priority revalidation task created.',
       };
-    }
-  }
-
-  private async ensureTables() {
-    if (!this.dataSource) return;
-    try {
-      await this.dataSource.query(`
-        ALTER TABLE verified_traffic_signs ADD COLUMN IF NOT EXISTS confirmation_count integer NOT NULL DEFAULT 0;
-        CREATE TABLE IF NOT EXISTS sign_confirmations (
-          id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-          sign_id uuid NOT NULL,
-          user_id uuid NOT NULL,
-          is_present boolean NOT NULL,
-          credits_awarded integer NOT NULL DEFAULT 0,
-          created_at timestamptz NOT NULL DEFAULT now()
-        );
-        CREATE INDEX IF NOT EXISTS idx_sign_confirmations_sign_user ON sign_confirmations (sign_id, user_id, created_at DESC);
-      `);
-    } catch (e: any) {
-      this.logger.warn(`Failed to ensure sign_confirmations table: ${e?.message}`);
     }
   }
 

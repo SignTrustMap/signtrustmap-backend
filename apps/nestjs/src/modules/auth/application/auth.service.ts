@@ -202,16 +202,6 @@ export class AuthService {
     };
   }
 
-  private async ensureOtpTable() {
-    try {
-      await this.dataSource.query(`CREATE TABLE IF NOT EXISTS auth_otp_tokens (
-        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-        email varchar(255) NOT NULL, otp varchar(10) NOT NULL,
-        expires_at timestamptz NOT NULL, used boolean DEFAULT false, created_at timestamptz DEFAULT now())`);
-      await this.dataSource.query(`CREATE INDEX IF NOT EXISTS idx_auth_otp_email ON auth_otp_tokens (email, used, expires_at)`);
-    } catch {}
-  }
-
   async updateProfile(userId: string, dto: { fullName?: string; phone?: string; avatarUrl?: string }) {
     const user = await this.userRepo.findOne({ where: { id: userId } });
     if (!user) throw new UnauthorizedException('User not found');
@@ -254,7 +244,6 @@ export class AuthService {
   async forgotPassword(email: string) {
     const user = await this.userRepo.findOne({ where: { email } });
     if (!user) return { sent: true, message: 'If the email exists, an OTP has been sent' };
-    await this.ensureOtpTable();
     const otp = String(randomInt(100000, 1000000));
     await this.dataSource.query(`UPDATE auth_otp_tokens SET used = true WHERE email = $1 AND used = false`, [email]);
     await this.dataSource.query(`INSERT INTO auth_otp_tokens (email, otp, expires_at) VALUES ($1,$2,$3)`, [email, otp, new Date(Date.now()+10*60*1000)]);
@@ -263,7 +252,6 @@ export class AuthService {
   }
 
   async verifyOtp(email: string, otp: string) {
-    await this.ensureOtpTable();
     const rows: any[] = await this.dataSource.query(`SELECT id, expires_at FROM auth_otp_tokens WHERE email=$1 AND otp=$2 AND used=false ORDER BY created_at DESC LIMIT 1`, [email, otp]);
     if (rows.length === 0) throw new BadRequestException('Invalid OTP');
     if (new Date(rows[0].expires_at) < new Date()) throw new BadRequestException('OTP expired');
@@ -273,7 +261,6 @@ export class AuthService {
   async resendOtp(email: string) {
     const user = await this.userRepo.findOne({ where: { email } });
     if (!user) return { sent: true, message: 'If the email exists, a new OTP has been sent' };
-    await this.ensureOtpTable();
     const otp = String(randomInt(100000, 1000000));
     await this.dataSource.query(`UPDATE auth_otp_tokens SET used = true WHERE email = $1 AND used = false`, [email]);
     await this.dataSource.query(`INSERT INTO auth_otp_tokens (email, otp, expires_at) VALUES ($1,$2,$3)`, [email, otp, new Date(Date.now() + 10 * 60 * 1000)]);
@@ -282,7 +269,6 @@ export class AuthService {
   }
 
   async resetPassword(email: string, otp: string, newPassword: string) {
-    await this.ensureOtpTable();
     const rows: any[] = await this.dataSource.query(`SELECT id, expires_at FROM auth_otp_tokens WHERE email=$1 AND otp=$2 AND used=false ORDER BY created_at DESC LIMIT 1`, [email, otp]);
     if (rows.length === 0) throw new BadRequestException('Invalid OTP');
     if (new Date(rows[0].expires_at) < new Date()) throw new BadRequestException('OTP expired');
