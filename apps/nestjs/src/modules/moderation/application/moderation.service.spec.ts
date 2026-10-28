@@ -648,7 +648,7 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
   });
 
   it('approve-and-create-type provisions the sign type, bumps catalog version, releases the held candidate and triggers AI label sync', async () => {
-    const { service, missing, catRepo, signTypeRepo, dataSource, notifications, catalogService, catalogSyncService, minioStorageService } = buildService();
+    const { service, missing, catRepo, signTypeRepo, candRepo, dataSource, notifications, catalogService, catalogSyncService, minioStorageService } = buildService();
     const report = { id: 'R1', status: MissingTypeStatus.PENDING, candidateId: 'C1', proposedName: 'No Horn', proposedCategoryId: 1, reporterId: 'U1', suggestedShape: 'CIRCLE', suggestedColorScheme: null };
     missing.findOne.mockResolvedValue(report);
     catRepo.findOne.mockResolvedValue({ id: 1, code: 'PROHIBITORY' });
@@ -684,7 +684,7 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     );
     expect(dataSource.query).toHaveBeenCalledWith(expect.stringContaining('SELECT DISTINCT split_part'));
     expect(dataSource.query).toHaveBeenCalledWith(expect.stringContaining('catalog_versions'), ['staff-1', expect.any(String), 42]);
-    expect(dataSource.query).toHaveBeenCalledWith(expect.stringContaining('UPDATE unverified_sign_candidates'), [42, 'C1']);
+    expect(candRepo.update).toHaveBeenCalledWith({ id: 'C1', status: CandidateStatus.MISSING_TYPE_HOLD }, { predictedSignTypeId: 42, status: CandidateStatus.PENDING_REVIEW });
     expect(missing.save).toHaveBeenCalledWith(expect.objectContaining({ status: MissingTypeStatus.APPROVED, mergedIntoSignTypeId: 42 }));
     expect(notifications.create).toHaveBeenCalledWith('U1', expect.stringContaining('MISSING_TYPE_APPROVED'), expect.any(String), expect.any(String), 'missing_sign_type_report', 'R1');
     expect(catalogSyncService.syncLabels).toHaveBeenCalledTimes(1);
@@ -693,12 +693,13 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
   });
 
   it('approve-and-create-type completes approval even if bumpCatalogVersion or candidate release throws', async () => {
-    const { service, missing, catRepo, signTypeRepo, dataSource, catalogService } = buildService();
+    const { service, missing, catRepo, signTypeRepo, dataSource, catalogService, candRepo } = buildService();
     const report = { id: 'R1', status: MissingTypeStatus.PENDING, candidateId: 'C1', proposedName: 'No Horn', proposedCategoryId: 1, reporterId: 'U1' };
     missing.findOne.mockResolvedValue(report);
     catRepo.findOne.mockResolvedValue({ id: 1, code: 'PROHIBITORY' });
     signTypeRepo.findOne.mockResolvedValue(null);
     catalogService.createSignType.mockResolvedValue({ id: 42, signCode: 'P.128' });
+    candRepo.update.mockRejectedValueOnce(new Error('PostgreSQL error'));
     dataSource.query.mockImplementation(async (sql: string) => {
       if (sql.includes('SELECT DISTINCT split_part')) return [{ prefix: 'P' }];
       if (sql.includes('catalog_versions') || sql.includes('UPDATE unverified_sign_candidates')) {
