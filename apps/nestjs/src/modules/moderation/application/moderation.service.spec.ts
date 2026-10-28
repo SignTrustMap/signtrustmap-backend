@@ -84,6 +84,7 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     );
     expect(manager.create).toHaveBeenCalledWith(MissingSignTypeReport, expect.objectContaining({
       candidateId: 'C1',
+      originalReporterId: 'U1',
       proposedName: null,
       proposedCategoryId: 1,
     }));
@@ -319,7 +320,6 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
           status: CandidateStatus.MISSING_TYPE_HOLD,
         }])
         .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([{ id: 'ASSIGNED_SURVEYOR' }])
         .mockResolvedValueOnce([{ id: 'R1' }])
         .mockResolvedValueOnce([{ id: 'C1' }])
         .mockResolvedValueOnce([])
@@ -357,21 +357,14 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
       'missing_sign_type_report',
       'R1',
     );
-    expect(notifications.create).toHaveBeenCalledWith(
-      'ASSIGNED_SURVEYOR',
-      'IMAGE_RECAPTURE_REQUESTED',
-      expect.any(String),
-      'Please recapture from the same location.',
-      'candidate',
-      'C1',
-    );
+    expect(notifications.create).toHaveBeenCalledTimes(1);
   });
 
-  it('does not create a recapture request when no active surveyor is available', async () => {
+  it('creates an open recapture quest without requiring a preselected active surveyor', async () => {
     const { service, dataSource, missing } = buildService();
     missing.findOne.mockResolvedValue({
       id: 'R1',
-      status: MissingTypeStatus.PENDING,
+      status: MissingTypeStatus.INCOMPLETE,
       candidateId: 'C1',
     });
     const manager = {
@@ -385,19 +378,24 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
         }])
         .mockResolvedValueOnce([{ id: 'C1', status: CandidateStatus.MISSING_TYPE_HOLD }])
         .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'R1' }])
+        .mockResolvedValueOnce([{ id: 'C1' }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'CASE1' }])
         .mockResolvedValueOnce([]),
     };
     dataSource.transaction.mockImplementation((fn: (m: any) => any) => fn(manager));
 
-    await expect(service.updateMissingReport('R1', 'staff-1', {
+    const result = await service.updateMissingReport('R1', 'staff-1', {
       actionType: 'REQUEST_RECAPTURE',
       actionNote: 'Please recapture from the same location.',
-    })).rejects.toThrow('No active surveyor is available for recapture assignment');
+    });
 
-    expect(manager.query).toHaveBeenCalledTimes(4);
-    expect(manager.query).not.toHaveBeenCalledWith(
-      expect.stringContaining('UPDATE missing_sign_type_reports'),
-      expect.anything(),
+    expect(result).toMatchObject({ id: 'R1', status: MissingTypeStatus.INCOMPLETE });
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO candidate_recapture_requests'),
+      ['C1', 'staff-1', 'R1', 'Please recapture from the same location.'],
     );
   });
 
@@ -457,7 +455,7 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     expect(dataSource.transaction).not.toHaveBeenCalled();
   });
 
-  it('bans only the selected report reporter and atomically records status history and moderation audit', async () => {
+  it('bans the original reviewer selected for a new-sign report', async () => {
     const { service, missing, dataSource, notifications } = buildService();
     missing.findOne.mockResolvedValue({
       id: 'R1',
@@ -472,11 +470,12 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
           id: 'R1',
           candidate_id: null,
           reporter_id: 'REVIEWER1',
+          original_reporter_id: 'ORIGINAL_REVIEWER',
           proposed_name: 'Unknown sign',
           status: MissingTypeStatus.ESCALATED_ADMIN,
           reviewed_by: 'STAFF1',
         }])
-        .mockResolvedValueOnce([{ id: 'REVIEWER1', status: 'ACTIVE' }])
+        .mockResolvedValueOnce([{ id: 'ORIGINAL_REVIEWER', status: 'ACTIVE' }])
         .mockResolvedValueOnce([{ id: 'R1' }])
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([])
@@ -494,20 +493,20 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     });
 
     if (!('bannedUser' in result)) throw new Error('Expected admin ban response');
-    expect(result.bannedUser).toEqual({ id: 'REVIEWER1', oldStatus: 'ACTIVE', newStatus: 'BANNED' });
+    expect(result.bannedUser).toEqual({ id: 'ORIGINAL_REVIEWER', oldStatus: 'ACTIVE', newStatus: 'BANNED' });
     expect(manager.query).toHaveBeenCalledWith(
       expect.stringContaining('FROM users u'),
-      ['REVIEWER1', 'REVIEWER'],
+      ['ORIGINAL_REVIEWER', 'REVIEWER'],
     );
     expect(manager.query).toHaveBeenCalledWith(
       expect.stringContaining('INSERT INTO user_status_history'),
-      ['REVIEWER1', 'ACTIVE', 'Confirmed abuse of reporting.', 'ADMIN1'],
+      ['ORIGINAL_REVIEWER', 'ACTIVE', 'Confirmed abuse of reporting.', 'ADMIN1'],
     );
     expect(manager.query).toHaveBeenCalledWith(
       expect.stringContaining('ADMIN_NEW_SIGN_USER_BAN'),
       [
         'ADMIN1',
-        'REVIEWER1',
+        'ORIGINAL_REVIEWER',
         JSON.stringify({ status: 'ACTIVE' }),
         JSON.stringify({
           status: 'BANNED',
@@ -519,7 +518,7 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     );
     expect(manager.query).toHaveBeenCalledWith(
       expect.stringContaining('INSERT INTO moderation_actions'),
-      ['CASE1', 'BAN_USER', 'ADMIN1', 'REVIEWER user REVIEWER1 banned: Confirmed abuse of reporting.'],
+      ['CASE1', 'BAN_USER', 'ADMIN1', 'REVIEWER user ORIGINAL_REVIEWER banned: Confirmed abuse of reporting.'],
     );
     expect(notifications.create).toHaveBeenCalled();
   });
@@ -547,7 +546,6 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
           status: CandidateStatus.MISSING_TYPE_HOLD,
         }])
         .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([{ id: 'ADMIN_ASSIGNED_SURVEYOR' }])
         .mockResolvedValueOnce([{ id: 'R1' }])
         .mockResolvedValueOnce([{ id: 'C1' }])
         .mockResolvedValueOnce([])
@@ -574,7 +572,7 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     );
     expect(manager.query).toHaveBeenCalledWith(
       expect.stringContaining('INSERT INTO candidate_recapture_requests'),
-      ['C1', 'ADMIN1', 'ADMIN_ASSIGNED_SURVEYOR', 'R1', 'Image evidence is insufficient.'],
+      ['C1', 'ADMIN1', 'R1', 'Image evidence is insufficient.'],
     );
   });
 
@@ -607,7 +605,6 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
         .mockResolvedValueOnce([{ id: 'C1', status: CandidateStatus.MISSING_TYPE_HOLD }])
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ id: 'REPORT1' }])
-        .mockResolvedValueOnce([{ id: 'RANDOM_SURVEYOR' }])
         .mockResolvedValueOnce({ rowCount: 1 })
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ id: 'CASE1', status: 'RESOLVED', target_entity_id: 'C1' }])
@@ -662,7 +659,7 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
 
     const result = await service.approveAndCreateType('R1', 'staff-1', {
       signCode: 'P. 128A',
-      nameVi: 'Cấm bấm còi',
+      nameVi: 'Cáº¥m báº¥m cÃ²i',
       nameEn: 'No Horn',
       proposedCategoryId: 1,
       aiLabelPrompt: 'a circular white sign with red border showing a crossed-out horn',
@@ -672,7 +669,7 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     expect(catalogService.createSignType).toHaveBeenCalledWith(expect.objectContaining({
       signCode: 'P.128a',
       categoryId: 1,
-      nameVi: 'Cấm bấm còi',
+      nameVi: 'Cáº¥m báº¥m cÃ²i',
       allowedVehicles: ['CAR', 'MOTORCYCLE'],
       representativeImageKey: expect.stringContaining('catalog/representative/P.128a-'),
     }));
@@ -705,7 +702,7 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
 
     const result = await service.approveAndCreateType('R1', 'staff-1', {
       signCode: ' t.xxx ',
-      nameVi: 'Biển kiểm thử',
+      nameVi: 'Biá»ƒn kiá»ƒm thá»­',
       nameEn: 'Testing Sign',
       proposedCategoryId: 1,
       allowedVehicles: ['CAR'],
@@ -714,7 +711,7 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     expect(catalogService.createSignType).toHaveBeenCalledWith(expect.objectContaining({
       signCode: 'T.xxx',
       categoryId: 1,
-      nameVi: 'Biển kiểm thử',
+      nameVi: 'Biá»ƒn kiá»ƒm thá»­',
       representativeImageKey: expect.stringContaining('catalog/representative/T.xxx-'),
     }));
     expect(result.createdSignType).toMatchObject({ id: 99, signCode: 'T.xxx' });
@@ -738,7 +735,7 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
 
     const result = await service.approveAndCreateType('R1', 'staff-1', {
       signCode: 'P.128',
-      nameVi: 'Cấm bấm còi',
+      nameVi: 'Cáº¥m báº¥m cÃ²i',
       nameEn: 'No Horn',
       proposedCategoryId: 1,
       allowedVehicles: ['CAR'],
@@ -761,7 +758,7 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
 
     await expect(service.approveAndCreateType('R1', 'staff-1', {
       signCode: 'P.128a',
-      nameVi: 'Biển P.128',
+      nameVi: 'Biá»ƒn P.128',
       nameEn: 'Sign P.128',
       proposedCategoryId: 1,
       allowedVehicles: ['CAR'],

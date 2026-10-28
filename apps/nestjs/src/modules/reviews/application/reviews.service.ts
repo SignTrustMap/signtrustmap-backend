@@ -26,6 +26,7 @@ import { AiInferenceService, TopCandidateResult } from '../../../integrations/ai
 import { SignRemedySuggestion } from './sign-remedies.constants';
 
 const RECAPTURE_GEOFENCE_METERS = 100;
+const RECAPTURE_QUEST_RADIUS_KM = 5;
 
 export interface PossibleSignDto {
   id: number;
@@ -1296,7 +1297,9 @@ export class ReviewsService {
     const requestRows: any[] = await (this.candidateRepo.manager as any).query(
       `SELECT id, missing_type_report_id, completed_at
        FROM candidate_recapture_requests
-       WHERE candidate_id = $1 AND surveyor_id = $2 AND completed_at IS NULL`,
+       WHERE candidate_id = $1
+         AND (surveyor_id = $2 OR surveyor_id IS NULL)
+         AND completed_at IS NULL`,
       [candidateId, surveyorId],
     );
     if (requestRows.length !== 1) {
@@ -1324,7 +1327,7 @@ export class ReviewsService {
           };
         }
       }
-      throw new BadRequestException(`Candidate ${candidateId} does not have exactly one active recapture request assigned to this surveyor`);
+      throw new BadRequestException(`Candidate ${candidateId} does not have exactly one active recapture request assigned to or open for this surveyor`);
     }
     const request = requestRows[0];
     if (!request.missing_type_report_id) {
@@ -1376,7 +1379,9 @@ export class ReviewsService {
            FROM unverified_sign_candidates c
            JOIN candidate_recapture_requests crr ON crr.candidate_id = c.id
            JOIN missing_sign_type_reports r ON r.id = crr.missing_type_report_id
-           WHERE c.id = $1 AND crr.id = $2 AND crr.surveyor_id = $3 AND crr.completed_at IS NULL
+           WHERE c.id = $1 AND crr.id = $2
+             AND (crr.surveyor_id = $3 OR crr.surveyor_id IS NULL)
+             AND crr.completed_at IS NULL
            FOR UPDATE OF c, crr, r`,
           [candidateId, requestId, surveyorId],
         );
@@ -1407,9 +1412,10 @@ export class ReviewsService {
         }
         const consumed = await tx.query(
           `UPDATE candidate_recapture_requests
-           SET completed_at = NOW(), submission_idempotency_key = $2
-           WHERE id = $1 AND completed_at IS NULL`,
-          [requestId, dto.idempotencyKey?.trim() || null],
+           SET surveyor_id = $3, completed_at = NOW(), submission_idempotency_key = $2
+           WHERE id = $1 AND completed_at IS NULL
+             AND (surveyor_id = $3 OR surveyor_id IS NULL)`,
+          [requestId, dto.idempotencyKey?.trim() || null, surveyorId],
         );
         if (getAffectedRowCount(consumed) !== 1) throw new BadRequestException('Recapture request was already consumed');
       };
@@ -1445,9 +1451,35 @@ export class ReviewsService {
     );
   }
 
-  async getMyRecaptures(surveyorId: string, page = 1, pageSize = 20) {
+  async getMyRecaptures(
+    surveyorId: string,
+    page = 1,
+    pageSize = 20,
+    latitude?: number,
+    longitude?: number,
+  ) {
     const p = Math.max(1, page);
     const ps = Math.min(Math.max(1, pageSize), 100);
+    if ((latitude === undefined) !== (longitude === undefined)) {
+      throw new BadRequestException('latitude and longitude must be provided together');
+    }
+    if (
+      latitude !== undefined
+      && longitude !== undefined
+      && (
+        !Number.isFinite(latitude)
+        || !Number.isFinite(longitude)
+        || latitude < -90
+        || latitude > 90
+        || longitude < -180
+        || longitude > 180
+      )
+    ) {
+      throw new BadRequestException('Invalid latitude/longitude');
+    }
+    const longitudeValue = longitude ?? null;
+    const latitudeValue = latitude ?? null;
+    const radiusMeters = RECAPTURE_QUEST_RADIUS_KM * 1000;
 
     let total = 0;
     let items: any[] = [];
@@ -1495,8 +1527,28 @@ export class ReviewsService {
     const countRows = await (this.candidateRepo.manager as any).query(
       `SELECT COUNT(*)::int AS cnt
        FROM candidate_recapture_requests crr
-       WHERE crr.surveyor_id = $1 AND crr.completed_at IS NULL`,
-      [surveyorId],
+       WHERE crr.completed_at IS NULL
+         AND (
+           crr.surveyor_id = $1
+           OR (
+             crr.surveyor_id IS NULL
+             AND $2::double precision IS NOT NULL
+             AND $3::double precision IS NOT NULL
+             AND EXISTS (
+               SELECT 1
+               FROM candidate_geo_estimations cge
+               JOIN unverified_sign_candidates candidate ON candidate.id = cge.candidate_id
+               WHERE cge.candidate_id = crr.candidate_id
+                 AND cge.sign_location IS NOT NULL
+                 AND candidate.status = 'RECAPTURE_REQUESTED'
+                 AND ST_DistanceSphere(
+                   cge.sign_location::geometry,
+                   ST_SetSRID(ST_MakePoint($2, $3), 4326)
+                 ) <= $4
+             )
+           )
+         )`,
+      [surveyorId, longitudeValue, latitudeValue, radiusMeters],
     );
     total = countRows[0]?.cnt ?? 0;
 
@@ -1521,10 +1573,26 @@ export class ReviewsService {
        JOIN unverified_sign_candidates c ON c.id = crr.candidate_id
        LEFT JOIN traffic_sign_types tst ON tst.id = c.predicted_sign_type_id
        LEFT JOIN candidate_geo_estimations cge ON cge.candidate_id = c.id
-       WHERE crr.surveyor_id = $1 AND crr.completed_at IS NULL
-       ORDER BY crr.created_at DESC
-       LIMIT $2 OFFSET $3`,
-      [surveyorId, ps, (p - 1) * ps],
+       WHERE crr.completed_at IS NULL
+         AND (
+           crr.surveyor_id = $1
+           OR (
+             crr.surveyor_id IS NULL
+             AND $2::double precision IS NOT NULL
+             AND $3::double precision IS NOT NULL
+             AND cge.sign_location IS NOT NULL
+             AND c.status = 'RECAPTURE_REQUESTED'
+             AND ST_DistanceSphere(
+               cge.sign_location::geometry,
+               ST_SetSRID(ST_MakePoint($2, $3), 4326)
+             ) <= $4
+           )
+         )
+       ORDER BY CASE WHEN crr.surveyor_id = $1 THEN 0 ELSE 1 END,
+         CASE WHEN crr.surveyor_id IS NULL THEN RANDOM() END,
+         crr.created_at DESC
+       LIMIT $5 OFFSET $6`,
+      [surveyorId, longitudeValue, latitudeValue, radiusMeters, ps, (p - 1) * ps],
     );
 
     return {

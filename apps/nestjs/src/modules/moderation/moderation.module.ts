@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ModerationService } from './application/moderation.service';
-import { MissingSignTypeReport } from './infrastructure/persistence/missing-sign-type-report.entity';
+import { NewSignTypeReport } from './infrastructure/persistence/missing-sign-type-report.entity';
 import { ModerationAction } from './infrastructure/persistence/moderation-action.entity';
 import { ModerationCase } from './infrastructure/persistence/moderation-case.entity';
 import { ModerationController } from './presentation/moderation.controller';
@@ -22,7 +22,7 @@ import { MinioModule } from '../../integrations/minio/minio.module';
     TypeOrmModule.forFeature([
       ModerationCase,
       ModerationAction,
-      MissingSignTypeReport,
+      NewSignTypeReport,
       SignCategory,
       TrafficSignType,
       UnverifiedSignCandidate,

@@ -377,6 +377,7 @@ CREATE TABLE "catalog_version_sign_types" (
 CREATE TABLE "missing_sign_type_reports" (
   "id" uuid PRIMARY KEY DEFAULT (gen_random_uuid()),
   "reporter_id" uuid NOT NULL,
+  "original_reporter_id" uuid NOT NULL,
   "candidate_id" uuid,
   "proposed_category_id" int,
   "proposed_name" varchar(255),
@@ -1188,6 +1189,7 @@ ALTER TABLE "catalog_version_sign_types" ADD FOREIGN KEY ("catalog_version_id") 
 ALTER TABLE "catalog_version_sign_types" ADD FOREIGN KEY ("sign_type_id") REFERENCES "traffic_sign_types" ("id") DEFERRABLE INITIALLY IMMEDIATE;
 
 ALTER TABLE "missing_sign_type_reports" ADD FOREIGN KEY ("reporter_id") REFERENCES "users" ("id") DEFERRABLE INITIALLY IMMEDIATE;
+ALTER TABLE "missing_sign_type_reports" ADD FOREIGN KEY ("original_reporter_id") REFERENCES "users" ("id") DEFERRABLE INITIALLY IMMEDIATE;
 
 ALTER TABLE "missing_sign_type_reports" ADD FOREIGN KEY ("candidate_id") REFERENCES "unverified_sign_candidates" ("id") DEFERRABLE INITIALLY IMMEDIATE;
 

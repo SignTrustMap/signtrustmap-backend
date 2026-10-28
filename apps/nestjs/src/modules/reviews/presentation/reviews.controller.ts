@@ -154,17 +154,27 @@ export class ReviewsController {
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Get my pending recapture requests as surveyor',
-    description: 'List sign candidates where reviewers or admins have requested the current user to recapture clearer images',
+    description: 'List assigned recapture requests and open quests within 5 km of the supplied GPS coordinates',
   })
   @Get('me/recaptures')
   async getMyRecaptures(
     @CurrentUser() user: any,
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
+    @Query('latitude') latitude?: string,
+    @Query('longitude') longitude?: string,
   ) {
     const p = page ? parseInt(page, 10) : 1;
     const ps = pageSize ? parseInt(pageSize, 10) : 20;
-    return this.reviewsService.getMyRecaptures(user.id, Number.isNaN(p) ? 1 : p, Number.isNaN(ps) ? 20 : ps);
+    const lat = latitude === undefined ? undefined : Number.parseFloat(latitude);
+    const lon = longitude === undefined ? undefined : Number.parseFloat(longitude);
+    return this.reviewsService.getMyRecaptures(
+      user.id,
+      Number.isNaN(p) ? 1 : p,
+      Number.isNaN(ps) ? 20 : ps,
+      lat,
+      lon,
+    );
   }
 
   @ApiBearerAuth()

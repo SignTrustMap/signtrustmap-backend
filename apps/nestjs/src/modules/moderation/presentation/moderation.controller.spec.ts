@@ -4,10 +4,15 @@ import { ModerationService } from '../application/moderation.service';
 describe('ModerationController', () => {
   let controller: ModerationController;
   let service: {
+    reportNewSign: jest.Mock;
     reportMissingType: jest.Mock;
+    listNewSignReports: jest.Mock;
     listMissingReports: jest.Mock;
+    getNewSignReport: jest.Mock;
     getMissingReport: jest.Mock;
+    updateNewSignReport: jest.Mock;
     updateMissingReport: jest.Mock;
+    applyAdminNewSignReportAction: jest.Mock;
     applyAdminMissingReportAction: jest.Mock;
     approveAndCreateType: jest.Mock;
     listCases: jest.Mock;
@@ -19,10 +24,15 @@ describe('ModerationController', () => {
 
   beforeEach(() => {
     service = {
+      reportNewSign: jest.fn().mockResolvedValue({ id: 'rep-1' }),
       reportMissingType: jest.fn().mockResolvedValue({ id: 'rep-1' }),
+      listNewSignReports: jest.fn().mockResolvedValue({ items: [], total: 0 }),
       listMissingReports: jest.fn().mockResolvedValue({ items: [], total: 0 }),
+      getNewSignReport: jest.fn().mockResolvedValue({ id: 'rep-1' }),
       getMissingReport: jest.fn().mockResolvedValue({ id: 'rep-1' }),
+      updateNewSignReport: jest.fn().mockResolvedValue({ id: 'rep-1', status: 'IN_REVIEW' }),
       updateMissingReport: jest.fn().mockResolvedValue({ id: 'rep-1', status: 'IN_REVIEW' }),
+      applyAdminNewSignReportAction: jest.fn().mockResolvedValue({ id: 'rep-1', status: 'REJECTED' }),
       applyAdminMissingReportAction: jest.fn().mockResolvedValue({ id: 'rep-1', status: 'REJECTED' }),
       approveAndCreateType: jest.fn().mockResolvedValue({ signType: { id: 101 }, releasedCandidates: 1 }),
       listCases: jest.fn().mockResolvedValue({ items: [], total: 0 }),
@@ -31,6 +41,12 @@ describe('ModerationController', () => {
     };
 
     controller = new ModerationController(service as unknown as ModerationService);
+  });
+
+  it('reportNewSign calls service.reportNewSign', async () => {
+    const dto = { candidateId: 'c-1' } as any;
+    await controller.reportNewSign(mockUser, dto);
+    expect(service.reportNewSign).toHaveBeenCalledWith(mockUser.id, dto);
   });
 
   it('reportMissing calls service.reportMissingType', async () => {
@@ -48,10 +64,20 @@ describe('ModerationController', () => {
     expect(service.listMissingReports).toHaveBeenCalledWith(undefined, 1, 20);
   });
 
+  it('listNewSigns parses pagination and calls the new-sign service method', async () => {
+    await controller.listNewSigns('PENDING', '2', '10');
+    expect(service.listNewSignReports).toHaveBeenCalledWith('PENDING', 2, 10);
+  });
+
   it('getMissing calls service.getMissingReport', async () => {
     const res = await controller.getMissing('rep-1');
     expect(res).toEqual({ id: 'rep-1' });
     expect(service.getMissingReport).toHaveBeenCalledWith('rep-1');
+  });
+
+  it('getNewSign calls service.getNewSignReport', async () => {
+    await controller.getNewSign('rep-1');
+    expect(service.getNewSignReport).toHaveBeenCalledWith('rep-1');
   });
 
   it('updateMissing calls service.updateMissingReport', async () => {
@@ -61,11 +87,23 @@ describe('ModerationController', () => {
     expect(service.updateMissingReport).toHaveBeenCalledWith('rep-1', mockUser.id, dto);
   });
 
+  it('updateNewSign calls service.updateNewSignReport', async () => {
+    const dto = { status: 'IN_REVIEW' } as any;
+    await controller.updateNewSign('rep-1', mockUser, dto);
+    expect(service.updateNewSignReport).toHaveBeenCalledWith('rep-1', mockUser.id, dto);
+  });
+
   it('adminMissingAction calls service.applyAdminMissingReportAction', async () => {
     const dto = { actionType: 'REJECT', reason: 'Invalid report' } as any;
     const res = await controller.adminMissingAction('rep-1', mockUser, dto);
     expect(res).toEqual({ id: 'rep-1', status: 'REJECTED' });
     expect(service.applyAdminMissingReportAction).toHaveBeenCalledWith('rep-1', mockUser.id, dto);
+  });
+
+  it('adminNewSignAction calls service.applyAdminNewSignReportAction', async () => {
+    const dto = { actionType: 'REJECT', reason: 'Invalid report' } as any;
+    await controller.adminNewSignAction('rep-1', mockUser, dto);
+    expect(service.applyAdminNewSignReportAction).toHaveBeenCalledWith('rep-1', mockUser.id, dto);
   });
 
   it('approveAndCreateType calls service.approveAndCreateType without file', async () => {

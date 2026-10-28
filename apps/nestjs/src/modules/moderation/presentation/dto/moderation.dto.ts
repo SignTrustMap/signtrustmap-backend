@@ -2,7 +2,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import { ArrayMinSize, IsArray, IsString, IsOptional, IsUUID, IsInt, IsIn, Matches, MaxLength, MinLength } from 'class-validator';
 import { VEHICLE_TYPES, VehicleType } from '../../../../common/vehicle-types';
-export class CreateMissingTypeReportDto {
+export class CreateNewSignTypeReportDto {
   @IsOptional() @IsUUID() candidateId?: string;
   @IsOptional() @IsInt() proposedCategoryId?: number;
   @IsOptional() @IsString() @MaxLength(255) proposedName?: string;
@@ -18,7 +18,7 @@ export class ResolveCaseDto {
   @IsOptional() @IsInt() targetSignTypeId?: number;
   @IsOptional() @IsInt() mergedIntoSignTypeId?: number;
 }
-export class UpdateMissingTypeReportDto {
+export class UpdateNewSignTypeReportDto {
   @IsOptional() @IsIn(['MERGE', 'REJECT', 'REQUEST_RECAPTURE', 'ESCALATE_ADMIN']) actionType?: string;
   @IsOptional() @IsString() status?: string;
   @IsOptional() @IsInt() mergedSignTypeId?: number;
@@ -86,13 +86,19 @@ export class ApproveAndCreateTypeDto {
   @IsOptional() @IsString() staffNotes?: string;
 }
 
-export class AdminMissingTypeActionDto {
-  @IsIn(['REJECT', 'REQUEST_RECAPTURE', 'BAN_USER'])
+export class AdminNewSignTypeActionDto {
+  @IsIn(['REJECT', 'DISMISS', 'REQUEST_RECAPTURE', 'BAN_USER'])
   actionType: string;
 
   @IsString() @MinLength(1) @MaxLength(500)
   reason: string;
 
-  @IsOptional() @IsIn(['SURVEYOR', 'REVIEWER', 'STAFF'])
+  @IsOptional() @IsIn(['LATEST_SURVEYOR', 'SURVEYOR', 'REVIEWER', 'STAFF'])
   banTarget?: string;
 }
+
+export {
+  CreateNewSignTypeReportDto as CreateMissingTypeReportDto,
+  UpdateNewSignTypeReportDto as UpdateMissingTypeReportDto,
+  AdminNewSignTypeActionDto as AdminMissingTypeActionDto,
+};

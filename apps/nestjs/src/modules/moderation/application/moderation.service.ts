@@ -1,8 +1,8 @@
 import { Injectable, NotFoundException, BadRequestException, ConflictException, Logger, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource, EntityManager, In, ILike } from 'typeorm';
+import { Repository, DataSource, In, ILike } from 'typeorm';
 import { randomUUID } from 'crypto';
-import { MissingSignTypeReport, MissingTypeStatus } from '../infrastructure/persistence/missing-sign-type-report.entity';
+import { NewSignTypeReport, MissingSignTypeReport, MissingTypeStatus } from '../infrastructure/persistence/missing-sign-type-report.entity';
 import { ModerationAction } from '../infrastructure/persistence/moderation-action.entity';
 import { ModerationCase, ModerationStatus, ModerationType } from '../infrastructure/persistence/moderation-case.entity';
 import { SignCategory } from '../../catalog/sign-category.entity';
@@ -16,7 +16,7 @@ import { SignTypeImage } from '../../catalog/sign-type-image.entity';
 import { UserStatusHistory } from '../../admin/user-status-history.entity';
 import { AuditLog } from '../../admin/audit-log.entity';
 import { CandidateGeoEstimation } from '../../survey/infrastructure/persistence/candidate-geo-estimation.entity';
-import { CreateMissingTypeReportDto, ResolveCaseDto, UpdateMissingTypeReportDto, ApproveAndCreateTypeDto, AdminMissingTypeActionDto } from '../presentation/dto/moderation.dto';
+import { CreateNewSignTypeReportDto, ResolveCaseDto, UpdateNewSignTypeReportDto, ApproveAndCreateTypeDto, AdminNewSignTypeActionDto } from '../presentation/dto/moderation.dto';
 import { NotificationsService } from '../../notifications/notifications.service';
 import { CatalogService } from '../../catalog/catalog.service';
 import { CatalogSyncService } from '../../../integrations/catalog-sync/catalog-sync.service';
@@ -49,7 +49,7 @@ export class ModerationService {
   constructor(
     @InjectRepository(ModerationCase) private cases: Repository<ModerationCase>,
     @InjectRepository(ModerationAction) private actions: Repository<ModerationAction>,
-    @InjectRepository(MissingSignTypeReport) private missing: Repository<MissingSignTypeReport>,
+    @InjectRepository(NewSignTypeReport) private missing: Repository<NewSignTypeReport>,
     @InjectRepository(SignCategory) private catRepo: Repository<SignCategory>,
     @InjectRepository(TrafficSignType) private signTypeRepo: Repository<TrafficSignType>,
     @InjectRepository(UnverifiedSignCandidate) private candRepo: Repository<UnverifiedSignCandidate>,
@@ -70,7 +70,7 @@ export class ModerationService {
    * The linked candidate is atomically parked in MISSING_TYPE_HOLD so the
    * review/consensus queue stops offering it until staff resolve the report.
    */
-  async reportMissingType(reporterId: string, dto: CreateMissingTypeReportDto) {
+  async reportNewSign(reporterId: string, dto: CreateNewSignTypeReportDto) {
     const proposedName = dto.proposedName?.trim() || null;
     if (!dto.candidateId && !proposedName) {
       throw new BadRequestException('candidateId is required when no proposedName is provided');
@@ -129,6 +129,7 @@ export class ModerationService {
       }
       const reportPayload = {
         reporterId,
+        originalReporterId: reporterId,
         candidateId: dto.candidateId ?? null,
         proposedCategoryId: dto.proposedCategoryId ?? null,
         proposedName,
@@ -174,7 +175,11 @@ export class ModerationService {
     });
   }
 
-  async listMissingReports(status?: string, page = 1, pageSize = 20) {
+  reportMissingType(reporterId: string, dto: CreateNewSignTypeReportDto) {
+    return this.reportNewSign(reporterId, dto);
+  }
+
+  async listNewSignReports(status?: string, page = 1, pageSize = 20) {
     const p = Math.max(1, page), ps = Math.min(Math.max(1, pageSize), 100);
     const where: any = {};
     if (status) {
@@ -196,10 +201,14 @@ export class ModerationService {
     return { items: enriched, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
   }
 
-  async updateMissingReport(reportId: string, reviewerId: string, dto: UpdateMissingTypeReportDto) {
+  listMissingReports(status?: string, page = 1, pageSize = 20) {
+    return this.listNewSignReports(status, page, pageSize);
+  }
+
+  async updateNewSignReport(reportId: string, reviewerId: string, dto: UpdateNewSignTypeReportDto) {
     if (dto.actionType) {
       const report = await this.missing.findOne({ where: { id: reportId } as any });
-      if (!report) throw new NotFoundException('MissingSignTypeReport ' + reportId + ' not found');
+      if (!report) throw new NotFoundException('NewSignTypeReport ' + reportId + ' not found');
       if (![MissingTypeStatus.PENDING, MissingTypeStatus.INCOMPLETE].includes(report.status)) {
         throw new BadRequestException('Report must be PENDING or INCOMPLETE to perform a staff action');
       }
@@ -240,7 +249,7 @@ export class ModerationService {
     }
 
     const report: any = await this.missing.findOne({ where: { id: reportId } as any });
-    if (!report) throw new NotFoundException('MissingSignTypeReport ' + reportId + ' not found');
+    if (!report) throw new NotFoundException('NewSignTypeReport ' + reportId + ' not found');
     let requestedStatus = dto.status;
     if (requestedStatus === 'IN_REVIEW' || requestedStatus === 'ESCALATED') requestedStatus = MissingTypeStatus.ESCALATED_ADMIN;
     else if (requestedStatus === 'OPEN') requestedStatus = MissingTypeStatus.PENDING;
@@ -282,8 +291,12 @@ export class ModerationService {
       }
     }
 
-    await this.applyCandidateSideEffect(report as MissingSignTypeReport, previousStatus);
-    return (await this.enrichWithCandidates([report as MissingSignTypeReport]))[0];
+    await this.applyCandidateSideEffect(report as NewSignTypeReport, previousStatus);
+    return (await this.enrichWithCandidates([report as NewSignTypeReport]))[0];
+  }
+
+  updateMissingReport(reportId: string, reviewerId: string, dto: UpdateNewSignTypeReportDto) {
+    return this.updateNewSignReport(reportId, reviewerId, dto);
   }
 
   private async applyStaffReportDecision(
@@ -465,10 +478,10 @@ export class ModerationService {
       await this.notifyReporter(
         { id: reportId, reporterId: result.reporterId, proposedName: result.proposedName },
         decision === 'MERGE' ? 'MERGED' : 'REJECTED',
-        isMerge ? 'Báo cáo biển báo mới đã được gộp' : 'Báo cáo biển báo mới bị từ chối',
+        isMerge ? 'BÃ¡o cÃ¡o biá»ƒn bÃ¡o má»›i Ä‘Ã£ Ä‘Æ°á»£c gá»™p' : 'BÃ¡o cÃ¡o biá»ƒn bÃ¡o má»›i bá»‹ tá»« chá»‘i',
         isMerge
-          ? 'Báo cáo "' + (result.proposedName || 'biển báo mới') + '" của bạn đã được gộp vào loại biển báo hiện có #' + signTypeId + '.'
-          : 'Báo cáo "' + (result.proposedName || 'biển báo mới') + '" của bạn đã bị nhân viên từ chối.',
+          ? 'BÃ¡o cÃ¡o "' + (result.proposedName || 'biá»ƒn bÃ¡o má»›i') + '" cá»§a báº¡n Ä‘Ã£ Ä‘Æ°á»£c gá»™p vÃ o loáº¡i biá»ƒn bÃ¡o hiá»‡n cÃ³ #' + signTypeId + '.'
+          : 'BÃ¡o cÃ¡o "' + (result.proposedName || 'biá»ƒn bÃ¡o má»›i') + '" cá»§a báº¡n Ä‘Ã£ bá»‹ nhÃ¢n viÃªn tá»« chá»‘i.',
       );
     }
     return this.getMissingReport(reportId);
@@ -600,13 +613,13 @@ export class ModerationService {
     await this.notifyReporter(
       escalated,
       'ESCALATED_ADMIN',
-      'Báo cáo biển báo mới được chuyển lên quản trị viên',
-      'Báo cáo "' + (escalated.proposedName || 'biển báo mới') + '" đã được chuyển lên quản trị viên để xem xét.',
+      'BÃ¡o cÃ¡o biá»ƒn bÃ¡o má»›i Ä‘Æ°á»£c chuyá»ƒn lÃªn quáº£n trá»‹ viÃªn',
+      'BÃ¡o cÃ¡o "' + (escalated.proposedName || 'biá»ƒn bÃ¡o má»›i') + '" Ä‘Ã£ Ä‘Æ°á»£c chuyá»ƒn lÃªn quáº£n trá»‹ viÃªn Ä‘á»ƒ xem xÃ©t.',
     );
     return escalated;
   }
 
-  async applyAdminMissingReportAction(reportId: string, adminId: string, dto: AdminMissingTypeActionDto) {
+  async applyAdminNewSignReportAction(reportId: string, adminId: string, dto: AdminNewSignTypeActionDto) {
     const reason = dto.reason?.trim();
     if (!reason) throw new BadRequestException('reason is required for an admin decision');
     if (dto.actionType === 'REQUEST_RECAPTURE') {
@@ -617,14 +630,19 @@ export class ModerationService {
         MissingTypeStatus.ESCALATED_ADMIN,
       );
     }
-    if (dto.actionType === 'REJECT') {
+    if (dto.actionType === 'REJECT' || dto.actionType === 'DISMISS') {
       return this.rejectEscalatedReport(reportId, adminId, reason);
     }
     if (dto.actionType === 'BAN_USER') {
       if (!dto.banTarget) throw new BadRequestException('banTarget is required for BAN_USER');
-      return this.banInvolvedReportUser(reportId, adminId, dto.banTarget, reason);
+      const targetRole = dto.banTarget === 'LATEST_SURVEYOR' ? 'SURVEYOR' : dto.banTarget;
+      return this.banInvolvedReportUser(reportId, adminId, targetRole, reason);
     }
     throw new BadRequestException('Unsupported admin action');
+  }
+
+  applyAdminMissingReportAction(reportId: string, adminId: string, dto: AdminNewSignTypeActionDto) {
+    return this.applyAdminNewSignReportAction(reportId, adminId, dto);
   }
 
   private async rejectEscalatedReport(reportId: string, adminId: string, reason: string) {
@@ -753,8 +771,8 @@ export class ModerationService {
     await this.notifyReporter(
       { id: reportId, reporterId: result.reporterId, proposedName: result.proposedName },
       'REJECTED',
-      'Báo cáo biển báo mới bị từ chối',
-      'Báo cáo "' + (result.proposedName || 'biển báo mới') + '" đã bị quản trị viên từ chối.',
+      'BÃ¡o cÃ¡o biá»ƒn bÃ¡o má»›i bá»‹ tá»« chá»‘i',
+      'BÃ¡o cÃ¡o "' + (result.proposedName || 'biá»ƒn bÃ¡o má»›i') + '" Ä‘Ã£ bá»‹ quáº£n trá»‹ viÃªn tá»« chá»‘i.',
     );
     return this.getMissingReport(reportId);
   }
@@ -769,7 +787,7 @@ export class ModerationService {
       throw new BadRequestException('banTarget must be SURVEYOR, REVIEWER, or STAFF');
     }
     const result = await this.dataSource.transaction(async (manager) => {
-      let report: { id: string; candidateId?: string | null; reporterId?: string | null; proposedName?: string | null; status: MissingTypeStatus; reviewedBy?: string | null } | null = null;
+      let report: { id: string; candidateId?: string | null; reporterId?: string | null; originalReporterId?: string | null; proposedName?: string | null; status: MissingTypeStatus; reviewedBy?: string | null } | null = null;
       if (typeof manager.getRepository === 'function') {
         const found = await manager.getRepository(MissingSignTypeReport)
           .createQueryBuilder('r')
@@ -781,6 +799,7 @@ export class ModerationService {
             id: found.id,
             candidateId: found.candidateId,
             reporterId: found.reporterId,
+            originalReporterId: found.originalReporterId,
             proposedName: found.proposedName,
             status: found.status,
             reviewedBy: found.reviewedBy,
@@ -788,7 +807,7 @@ export class ModerationService {
         }
       } else if (typeof manager.query === 'function') {
         const reportRows: any[] = await manager.query(
-          `SELECT id, candidate_id, reporter_id, proposed_name, status, reviewed_by
+          `SELECT id, candidate_id, reporter_id, original_reporter_id, proposed_name, status, reviewed_by
            FROM missing_sign_type_reports
            WHERE id = $1
            FOR UPDATE`,
@@ -799,6 +818,7 @@ export class ModerationService {
             id: reportRows[0].id,
             candidateId: reportRows[0].candidate_id,
             reporterId: reportRows[0].reporter_id,
+            originalReporterId: reportRows[0].original_reporter_id,
             proposedName: reportRows[0].proposed_name,
             status: reportRows[0].status,
             reviewedBy: reportRows[0].reviewed_by,
@@ -812,7 +832,8 @@ export class ModerationService {
 
       let targetRows: any[];
       if (targetRole === 'REVIEWER') {
-        targetRows = report.reporterId ? [{ id: report.reporterId }] : [];
+        const reviewerId = report.originalReporterId ?? report.reporterId;
+        targetRows = reviewerId ? [{ id: reviewerId }] : [];
       } else if (targetRole === 'SURVEYOR') {
         if (!report.candidateId) {
           targetRows = [];
@@ -1090,8 +1111,8 @@ export class ModerationService {
     await this.notifyReporter(
       { id: reportId, reporterId: result.reporterId, proposedName: result.proposedName },
       'REJECTED',
-      'Báo cáo biển báo mới đã được xử lý',
-      'Báo cáo "' + (result.proposedName || 'biển báo mới') + '" đã được quản trị viên xử lý.',
+      'BÃ¡o cÃ¡o biá»ƒn bÃ¡o má»›i Ä‘Ã£ Ä‘Æ°á»£c xá»­ lÃ½',
+      'BÃ¡o cÃ¡o "' + (result.proposedName || 'biá»ƒn bÃ¡o má»›i') + '" Ä‘Ã£ Ä‘Æ°á»£c quáº£n trá»‹ viÃªn xá»­ lÃ½.',
     );
     return {
       report: await this.getMissingReport(reportId),
@@ -1187,7 +1208,6 @@ export class ModerationService {
     note: string | null,
     expectedStatus = MissingTypeStatus.PENDING,
   ) {
-    let surveyorId: string | null = null;
     const result = await this.dataSource.transaction(async (manager) => {
       let report: { id: string; candidateId?: string | null; reporterId?: string | null; proposedName?: string | null; status: MissingTypeStatus } | null = null;
       if (typeof manager.getRepository === 'function') {
@@ -1429,27 +1449,13 @@ export class ModerationService {
         await this.notificationsService.create(
           result.reporterId,
           'MISSING_TYPE_INCOMPLETE',
-          'Báo cáo biển báo cần được chụp lại',
-          'Báo cáo "' + (result.proposedName || 'biển báo mới') + '" cần được Surveyor chụp lại ảnh tại vị trí đã gửi.',
+          'BÃ¡o cÃ¡o biá»ƒn bÃ¡o cáº§n Ä‘Æ°á»£c chá»¥p láº¡i',
+          'BÃ¡o cÃ¡o "' + (result.proposedName || 'biá»ƒn bÃ¡o má»›i') + '" cáº§n Ä‘Æ°á»£c Surveyor chá»¥p láº¡i áº£nh táº¡i vá»‹ trÃ­ Ä‘Ã£ gá»­i.',
           'missing_sign_type_report',
           reportId,
         );
       } catch (error: any) {
         this.logger.warn('Report recapture notification failed: ' + error?.message);
-      }
-    }
-    if (surveyorId) {
-      try {
-        await this.notificationsService.create(
-          surveyorId,
-          'IMAGE_RECAPTURE_REQUESTED',
-          'Yêu cầu chụp lại ảnh biển báo',
-          note || 'Nhân viên yêu cầu chụp lại ảnh biển báo tại vị trí đã gửi.',
-          'candidate',
-          result.candidateId,
-        );
-      } catch (error: any) {
-        this.logger.warn('Surveyor recapture notification failed: ' + error?.message);
       }
     }
     return this.getMissingReport(reportId);
@@ -1494,15 +1500,19 @@ export class ModerationService {
     }
     return surveyors[0].id;
   }
-  async getMissingReport(id: string) {
+  async getNewSignReport(id: string) {
     const r = await this.missing.findOne({ where: { id } });
-    if (!r) throw new NotFoundException('MissingSignTypeReport ' + id + ' not found');
+    if (!r) throw new NotFoundException('NewSignTypeReport ' + id + ' not found');
     const [enriched] = await this.enrichWithCandidates([r]);
     return enriched;
   }
 
+  getMissingReport(id: string) {
+    return this.getNewSignReport(id);
+  }
+
   /**
-   * Scenario #4 — admin approves the report, creates the TrafficSignType via
+   * Scenario #4 â€” admin approves the report, creates the TrafficSignType via
    * the catalog service, publishes a new catalog version, releases held
    * candidates back into the review queue, and triggers the AI label sync.
    */
@@ -1531,7 +1541,7 @@ export class ModerationService {
     const category = categoryId != null ? await this.catRepo.findOne({ where: { id: categoryId } }) : null;
     const resolvedCategoryId = category?.id ?? (await this.requireFallbackCategory());
 
-    const reportName = report.proposedName?.trim() || 'Biển báo mới';
+    const reportName = report.proposedName?.trim() || 'Biá»ƒn bÃ¡o má»›i';
     const nameVi = dto.nameVi?.trim() || reportName;
     const nameEn = dto.nameEn?.trim() || reportName;
 
@@ -1596,7 +1606,7 @@ export class ModerationService {
     await this.missing.save(report);
 
     await this.reportSyncedBackend(created.id);
-    await this.notifyReporter(report, 'APPROVED', 'Báo cáo biển báo mới đã được chấp thuận', 'Báo cáo "' + (report.proposedName || 'biển báo mới') + '" đã được thêm vào danh mục với mã "' + signCode + '".');
+    await this.notifyReporter(report, 'APPROVED', 'BÃ¡o cÃ¡o biá»ƒn bÃ¡o má»›i Ä‘Ã£ Ä‘Æ°á»£c cháº¥p thuáº­n', 'BÃ¡o cÃ¡o "' + (report.proposedName || 'biá»ƒn bÃ¡o má»›i') + '" Ä‘Ã£ Ä‘Æ°á»£c thÃªm vÃ o danh má»¥c vá»›i mÃ£ "' + signCode + '".');
 
     const [enriched] = await this.enrichWithCandidates([report]);
     return { report: enriched, createdSignType: created };
@@ -1624,6 +1634,14 @@ export class ModerationService {
     const targetTypeId: number | null = (dto as any).targetSignTypeId ?? (dto as any).mergedIntoSignTypeId ?? null;
     if (actionType === 'REQUEST_RECAPTURE' && mc.targetEntityType === 'candidate' && mc.targetEntityId) {
       return this.resolveRecaptureCase(id, staffId, dto);
+    }
+    if (actionType === 'REQUEST_RECAPTURE' && mc.targetEntityType === 'missing_sign_type_report' && mc.targetEntityId) {
+      return this.requestMissingReportRecapture(
+        mc.targetEntityId,
+        staffId,
+        dto.actionNote?.trim() || dto.resolutionNote,
+        MissingTypeStatus.ESCALATED_ADMIN,
+      );
     }
     // Catalog side-effects for missing-type workflow
     if (actionType === 'APPROVED' && reportId) {
@@ -1674,8 +1692,8 @@ export class ModerationService {
           await this.notificationsService.create(
             surveyorId,
             'IMAGE_RECAPTURE_REQUESTED',
-            'Yêu cầu chụp lại ảnh biển báo',
-            `Quản trị viên yêu cầu chụp lại ảnh biển báo: ${dto.resolutionNote}`,
+            'YÃªu cáº§u chá»¥p láº¡i áº£nh biá»ƒn bÃ¡o',
+            `Quáº£n trá»‹ viÃªn yÃªu cáº§u chá»¥p láº¡i áº£nh biá»ƒn bÃ¡o: ${dto.resolutionNote}`,
             'candidate',
             mc.targetEntityId,
           );
@@ -1696,14 +1714,13 @@ export class ModerationService {
       const relatedReportId = reportId || (mc.caseType === 'CATALOG_PROPOSAL' as any ? mc.targetEntityId : null);
       if (relatedReportId) {
         const rep: any = await this.missing.findOne({ where: { id: relatedReportId } as any });
-        const actionText: Record<string, string> = { APPROVED: 'đã được chấp thuận', MERGED: 'đã được gộp vào loại biển báo hiện có', REJECTED: 'đã bị từ chối' };
-        if (rep?.reporterId) await this.notificationsService.create(rep.reporterId, 'MODERATION_RESOLVED', 'Cập nhật báo cáo biển báo mới', 'Báo cáo "' + (rep.proposedName || 'biển báo mới') + '" của bạn ' + (actionText[actionType] ?? 'đã được xử lý') + '.', 'moderation_case', mc.id);
+        const actionText: Record<string, string> = { APPROVED: 'Ä‘Ã£ Ä‘Æ°á»£c cháº¥p thuáº­n', MERGED: 'Ä‘Ã£ Ä‘Æ°á»£c gá»™p vÃ o loáº¡i biá»ƒn bÃ¡o hiá»‡n cÃ³', REJECTED: 'Ä‘Ã£ bá»‹ tá»« chá»‘i' };
+        if (rep?.reporterId) await this.notificationsService.create(rep.reporterId, 'MODERATION_RESOLVED', 'Cáº­p nháº­t bÃ¡o cÃ¡o biá»ƒn bÃ¡o má»›i', 'BÃ¡o cÃ¡o "' + (rep.proposedName || 'biá»ƒn bÃ¡o má»›i') + '" cá»§a báº¡n ' + (actionText[actionType] ?? 'Ä‘Ã£ Ä‘Æ°á»£c xá»­ lÃ½') + '.', 'moderation_case', mc.id);
       }
     } catch {}
     return mc;
   }
   private async resolveRecaptureCase(caseId: string, staffId: string, dto: ResolveCaseDto) {
-    let surveyorId: string | null = null;
     const resolved = await this.dataSource.transaction(async (manager) => {
       let moderationCase: { id: string; targetEntityId: string; status: ModerationStatus; target_entity_id?: string } | null = null;
       if (typeof manager.getRepository === 'function') {
@@ -1872,20 +1889,6 @@ export class ModerationService {
       return updatedCaseResult;
     });
 
-    if (surveyorId && this.notificationsService) {
-      try {
-        await this.notificationsService.create(
-          surveyorId,
-          'IMAGE_RECAPTURE_REQUESTED',
-          'Yêu cầu chụp lại ảnh biển báo',
-          `Quản trị viên yêu cầu chụp lại ảnh biển báo: ${dto.resolutionNote ?? ''}`,
-          'candidate',
-          resolved.target_entity_id,
-        );
-      } catch (error: any) {
-        this.logger.warn(`Recapture notification failed: ${error?.message}`);
-      }
-    }
     return resolved;
   }
 
@@ -1899,7 +1902,7 @@ export class ModerationService {
       if (!fallback) throw new BadRequestException('No sign category exists to assign the new sign type');
       categoryId = fallback.id;
     }
-    const reportName = report.proposedName?.trim() || 'Biển báo mới';
+    const reportName = report.proposedName?.trim() || 'Biá»ƒn bÃ¡o má»›i';
     const baseCode = (report.proposedName || 'NEW').toUpperCase().replace(/[^A-Z0-9]+/g, '_').slice(0, 20) || 'NEW_SIGN';
     let signCode = baseCode;
     let suffix = 0;
@@ -2076,26 +2079,26 @@ export class ModerationService {
   }
 
   /** MERGED/REJECTED/INCOMPLETE triage side-effects on the linked candidate. */
-  private async applyCandidateSideEffect(report: MissingSignTypeReport, previousStatus: MissingTypeStatus) {
+  private async applyCandidateSideEffect(report: NewSignTypeReport, previousStatus: MissingTypeStatus) {
     if (!report.candidateId) return;
     const candidate = await this.candRepo.findOne({ where: { id: report.candidateId } });
     if (!candidate) return;
     if (report.status === MissingTypeStatus.REJECTED) {
       await this.candRepo.update({ id: report.candidateId }, { status: CandidateStatus.REJECTED });
-      await this.notifyReporter(report, 'REJECTED', 'Báo cáo biển báo mới bị từ chối', 'Báo cáo "' + (report.proposedName || 'biển báo mới') + '" của bạn đã bị nhân viên từ chối.');
+      await this.notifyReporter(report, 'REJECTED', 'BÃ¡o cÃ¡o biá»ƒn bÃ¡o má»›i bá»‹ tá»« chá»‘i', 'BÃ¡o cÃ¡o "' + (report.proposedName || 'biá»ƒn bÃ¡o má»›i') + '" cá»§a báº¡n Ä‘Ã£ bá»‹ nhÃ¢n viÃªn tá»« chá»‘i.');
     } else if (report.status === MissingTypeStatus.MERGED && report.mergedIntoSignTypeId != null) {
       await this.releaseCandidate(report.candidateId, report.mergedIntoSignTypeId);
-      await this.notifyReporter(report, 'MERGED', 'Báo cáo biển báo mới đã được gộp', 'Báo cáo "' + (report.proposedName || 'biển báo mới') + '" của bạn đã được gộp vào loại biển báo hiện có #' + report.mergedIntoSignTypeId + '.');
+      await this.notifyReporter(report, 'MERGED', 'BÃ¡o cÃ¡o biá»ƒn bÃ¡o má»›i Ä‘Ã£ Ä‘Æ°á»£c gá»™p', 'BÃ¡o cÃ¡o "' + (report.proposedName || 'biá»ƒn bÃ¡o má»›i') + '" cá»§a báº¡n Ä‘Ã£ Ä‘Æ°á»£c gá»™p vÃ o loáº¡i biá»ƒn bÃ¡o hiá»‡n cÃ³ #' + report.mergedIntoSignTypeId + '.');
     } else if (report.status === MissingTypeStatus.APPROVED && previousStatus !== MissingTypeStatus.APPROVED && report.mergedIntoSignTypeId != null) {
       await this.releaseCandidate(report.candidateId, report.mergedIntoSignTypeId);
     } else if (report.status === MissingTypeStatus.INCOMPLETE || report.status === MissingTypeStatus.ESCALATED_ADMIN) {
       // candidate stays on hold; staff asked for more info
-      const statusText = report.status === MissingTypeStatus.INCOMPLETE ? 'chưa đầy đủ' : 'được chuyển đến quản trị viên';
-      await this.notifyReporter(report, report.status, 'Báo cáo biển báo mới cần được bổ sung', 'Báo cáo "' + (report.proposedName || 'biển báo mới') + '" của bạn đang ở trạng thái ' + statusText + '.');
+      const statusText = report.status === MissingTypeStatus.INCOMPLETE ? 'chÆ°a Ä‘áº§y Ä‘á»§' : 'Ä‘Æ°á»£c chuyá»ƒn Ä‘áº¿n quáº£n trá»‹ viÃªn';
+      await this.notifyReporter(report, report.status, 'BÃ¡o cÃ¡o biá»ƒn bÃ¡o má»›i cáº§n Ä‘Æ°á»£c bá»• sung', 'BÃ¡o cÃ¡o "' + (report.proposedName || 'biá»ƒn bÃ¡o má»›i') + '" cá»§a báº¡n Ä‘ang á»Ÿ tráº¡ng thÃ¡i ' + statusText + '.');
     }
   }
 
-  private async enrichWithCandidates(reports: MissingSignTypeReport[]): Promise<(MissingSignTypeReport & { candidate?: CandidateEnriched | null })[]> {
+  private async enrichWithCandidates(reports: NewSignTypeReport[]): Promise<(NewSignTypeReport & { candidate?: CandidateEnriched | null })[]> {
     if (reports.length === 0) return reports as any;
     const ids = reports.filter(r => r.candidateId).map(r => r.candidateId as string);
     const byId = new Map<string, CandidateEnriched>();
@@ -2156,7 +2159,7 @@ export class ModerationService {
   }
 
   private async notifyReporter(
-    report: Pick<MissingSignTypeReport, 'id' | 'reporterId' | 'proposedName'>,
+    report: Pick<NewSignTypeReport, 'id' | 'reporterId' | 'proposedName'>,
     type: string,
     title: string,
     message: string,

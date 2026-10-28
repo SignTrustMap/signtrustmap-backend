@@ -215,6 +215,20 @@ describe('ReviewsController', () => {
     service.getMyRecaptures.mockResolvedValue({ items: [], total: 0 });
     const res = await controller.getMyRecaptures(mockUser, '2', '10');
     expect(res).toEqual({ items: [], total: 0 });
-    expect(service.getMyRecaptures).toHaveBeenCalledWith(mockUser.id, 2, 10);
+    expect(service.getMyRecaptures).toHaveBeenCalledWith(mockUser.id, 2, 10, undefined, undefined);
+  });
+
+  it('passes surveyor GPS coordinates for nearby open recapture quests', async () => {
+    service.getMyRecaptures.mockResolvedValue({ items: [], total: 0 });
+
+    await controller.getMyRecaptures(mockUser, undefined, undefined, '10.7', '106.6');
+
+    expect(service.getMyRecaptures).toHaveBeenCalledWith(
+      mockUser.id,
+      1,
+      20,
+      10.7,
+      106.6,
+    );
   });
 });

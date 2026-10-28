@@ -755,9 +755,47 @@ describe('ReviewsService test helpers', () => {
       expect(res.items).toHaveLength(1);
       expect(res.items[0].reason).toBe('POOR_LIGHTING');
       expect(rawQuery).toHaveBeenCalledWith(
-        expect.stringContaining('WHERE crr.surveyor_id = $1'),
-        ['surv-1'],
+        expect.stringContaining('crr.surveyor_id = $1'),
+        ['surv-1', null, null, 5000, 10, 0],
       );
+    });
+
+    it('lists nearby open recapture quests using the surveyor GPS', async () => {
+      const rawQuery = jest.fn()
+        .mockResolvedValueOnce([{ cnt: 1 }])
+        .mockResolvedValueOnce([{ request_id: 'open-1', candidate_id: 'cand-1' }]);
+      const service = new ReviewsService(
+        { manager: { query: rawQuery } } as unknown as Repository<UnverifiedSignCandidate>,
+        {} as any,
+        {} as any,
+        {} as any,
+      );
+
+      await service.getMyRecaptures('surv-1', 1, 10, 10.7, 106.6);
+
+      expect(rawQuery).toHaveBeenCalledWith(
+        expect.stringContaining('ST_DistanceSphere'),
+        ['surv-1', 106.6, 10.7, 5000, 10, 0],
+      );
+      expect(rawQuery.mock.calls[1][0]).toContain('crr.surveyor_id IS NULL');
+    });
+
+    it('requires both valid coordinates before listing open quests', async () => {
+      const rawQuery = jest.fn();
+      const service = new ReviewsService(
+        { manager: { query: rawQuery } } as unknown as Repository<UnverifiedSignCandidate>,
+        {} as any,
+        {} as any,
+        {} as any,
+      );
+
+      await expect(service.getMyRecaptures('surv-1', 1, 10, 10.7)).rejects.toThrow(
+        'latitude and longitude must be provided together',
+      );
+      await expect(service.getMyRecaptures('surv-1', 1, 10, 91, 106.6)).rejects.toThrow(
+        'Invalid latitude/longitude',
+      );
+      expect(rawQuery).not.toHaveBeenCalled();
     });
   });
 
@@ -835,7 +873,40 @@ describe('ReviewsService test helpers', () => {
         expect.stringContaining('SET sign_location = ST_SetSRID(ST_MakePoint($1, $2), 4326)'),
         [106.7, 10.77, 'cand-1'],
       );
-      expect(txQuery).toHaveBeenCalledWith(expect.stringContaining('completed_at = NOW()'), ['req-1', null]);
+      expect(txQuery).toHaveBeenCalledWith(
+        expect.stringContaining('completed_at = NOW()'),
+        ['req-1', null, 'surveyor-2'],
+      );
+    });
+
+    it('lets a surveyor complete an open nearby quest and assigns it atomically', async () => {
+      const { service, managerQuery, txQuery } = buildSubmitService();
+      managerQuery.mockReset()
+        .mockResolvedValueOnce([{
+          id: 'req-1',
+          missing_type_report_id: 'report-1',
+          completed_at: null,
+          surveyor_id: null,
+        }])
+        .mockResolvedValueOnce([{ distance_meters: 10 }]);
+
+      const result = await service.submitRecapture('surveyor-3', 'cand-1', {
+        latitude: 10.77,
+        longitude: 106.7,
+      }, {
+        signCrop: [image('sign-crop')],
+        bestFrame: [image('best-frame')],
+      });
+
+      expect(result.success).toBe(true);
+      expect(txQuery).toHaveBeenCalledWith(
+        expect.stringContaining('crr.surveyor_id IS NULL'),
+        ['cand-1', 'req-1', 'surveyor-3'],
+      );
+      expect(txQuery).toHaveBeenCalledWith(
+        expect.stringContaining('SET surveyor_id = $3, completed_at = NOW()'),
+        ['req-1', null, 'surveyor-3'],
+      );
     });
 
     it('rejects a surveyor who is not assigned to the recapture before storage', async () => {
@@ -843,7 +914,7 @@ describe('ReviewsService test helpers', () => {
       managerQuery.mockReset().mockResolvedValueOnce([]);
       await expect(service.submitRecapture('other-surveyor', 'cand-1', { latitude: 10.77, longitude: 106.7 }, {
         signCrop: [image('sign-crop')], bestFrame: [image('best-frame')],
-      })).rejects.toThrow('does not have exactly one active recapture request assigned');
+      })).rejects.toThrow('does not have exactly one active recapture request assigned to or open for this surveyor');
       expect(storage.putObject).not.toHaveBeenCalled();
     });
 
