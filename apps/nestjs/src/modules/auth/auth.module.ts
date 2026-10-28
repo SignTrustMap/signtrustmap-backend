@@ -9,6 +9,10 @@ import { JwtStrategy } from './infrastructure/jwt.strategy';
 import { Role } from './infrastructure/persistence/role.entity';
 import { UserRole } from './infrastructure/persistence/user-role.entity';
 import { User } from './infrastructure/persistence/user.entity';
+import { DriverProfile } from './infrastructure/persistence/driver-profile.entity';
+import { OAuthAccount } from './infrastructure/persistence/oauth-account.entity';
+import { AuthOtpToken } from './infrastructure/persistence/auth-otp-token.entity';
+import { SurveyorProfile } from '../survey/infrastructure/persistence/surveyor-profile.entity';
 import { AuthController } from './presentation/auth.controller';
 import { Wallet } from '../wallet/infrastructure/persistence/wallet.entity';
 
@@ -24,7 +28,16 @@ import { Wallet } from '../wallet/infrastructure/persistence/wallet.entity';
         },
       }),
     }),
-    TypeOrmModule.forFeature([User, UserRole, Role, Wallet]),
+    TypeOrmModule.forFeature([
+      User,
+      UserRole,
+      Role,
+      Wallet,
+      DriverProfile,
+      OAuthAccount,
+      AuthOtpToken,
+      SurveyorProfile,
+    ]),
   ],
   controllers: [AuthController],
   providers: [AuthService, JwtStrategy, GoogleStrategy],

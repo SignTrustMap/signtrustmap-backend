@@ -9,8 +9,12 @@ import { SubmissionMediaFile } from './infrastructure/persistence/submission-med
 import { SurveySubmission } from './infrastructure/persistence/survey-submission.entity';
 import { BatchSubmission } from './infrastructure/persistence/batch-submission.entity';
 import { UnverifiedSignCandidate } from './infrastructure/persistence/unverified-sign-candidate.entity';
+import { SurveyorProfile } from './infrastructure/persistence/surveyor-profile.entity';
+import { SubmissionStatusHistory } from './infrastructure/persistence/submission-status-history.entity';
+import { CandidateGeoEstimation } from './infrastructure/persistence/candidate-geo-estimation.entity';
 import { UploadChunk } from './infrastructure/persistence/upload-chunk.entity';
 import { UploadSession } from './infrastructure/persistence/upload-session.entity';
+import { AuditLog } from '../admin/audit-log.entity';
 import { SurveyController } from './presentation/survey.controller';
 import { WalletModule } from '../wallet/wallet.module';
 import { NotificationsModule } from '../notifications/notifications.module';
@@ -27,6 +31,10 @@ import { DailyTasksModule } from '../daily-tasks/daily-tasks.module';
       SubmissionMediaFile,
       UnverifiedSignCandidate,
       CameraCalibrationProfile,
+      SurveyorProfile,
+      SubmissionStatusHistory,
+      CandidateGeoEstimation,
+      AuditLog,
     ]),
     WalletModule,
     NotificationsModule,

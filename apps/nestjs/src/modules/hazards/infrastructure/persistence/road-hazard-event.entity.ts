@@ -32,6 +32,9 @@ export class RoadHazardEvent {
   @Column({ type: 'text', nullable: true })
   description: string | null;
 
+  @Column({ type: 'geometry', spatialFeatureType: 'Point', srid: 4326, nullable: true })
+  location?: any;
+
   @Column({
     type: 'varchar',
     length: 32,

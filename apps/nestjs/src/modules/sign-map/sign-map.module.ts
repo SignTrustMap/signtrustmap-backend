@@ -10,13 +10,20 @@ import { VERIFIED_SIGN_REPOSITORY } from './domain/verified-sign.repository';
 import { TypeOrmVerifiedSignRepository } from './infrastructure/persistence/typeorm-verified-sign.repository';
 import { VerifiedSignOrmEntity } from './infrastructure/persistence/verified-sign.orm-entity';
 import { SignConfirmationEntity } from './infrastructure/persistence/sign-confirmation.entity';
+import { SignLifecycleEvent } from './infrastructure/persistence/sign-lifecycle-event.entity';
+import { VerifiedSignHistory } from './infrastructure/persistence/verified-sign-history.entity';
 import { VerifiedSignController } from './presentation/verified-sign.controller';
 
 import { SignMapSchemaInitializer } from './infrastructure/sign-map-schema.initializer';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([VerifiedSignOrmEntity, SignConfirmationEntity]),
+    TypeOrmModule.forFeature([
+      VerifiedSignOrmEntity,
+      SignConfirmationEntity,
+      SignLifecycleEvent,
+      VerifiedSignHistory,
+    ]),
     CatalogModule,
     WalletModule,
     RevalidationModule,

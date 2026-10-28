@@ -15,36 +15,38 @@ import json
 import logging
 
 from celery import shared_task
-from sqlalchemy import text
+from sqlalchemy import func, select
 
 from app.config import settings
 from app.db_sync import get_sync_db
+from app.models.pipeline import CatalogVersion, SignTypeAiPrompt, TrafficSignType
 
 logger = logging.getLogger(__name__)
 
-_LABELS_SQL = text(
-    """
-    SELECT
-        tst.id            AS sign_type_id,
-        tst.sign_code     AS sign_code,
-        tst.slug          AS slug,
-        tst.name_vi       AS name_vi,
-        tst.name_en       AS name_en,
-        tst.shape         AS shape,
-        tst.color_scheme  AS color_scheme,
-        ap.prompt_text    AS prompt
-    FROM traffic_sign_types tst
-    LEFT JOIN sign_type_ai_prompts ap
-           ON ap.sign_type_id = tst.id
-          AND ap.is_active = TRUE
-          AND ap.target_model = 'CLIP'
-    WHERE tst.is_active = TRUE
-    ORDER BY tst.id
-    """
+_LABELS_QUERY = (
+    select(
+        TrafficSignType.id.label("sign_type_id"),
+        TrafficSignType.sign_code.label("sign_code"),
+        TrafficSignType.slug.label("slug"),
+        TrafficSignType.name_vi.label("name_vi"),
+        TrafficSignType.name_en.label("name_en"),
+        TrafficSignType.shape.label("shape"),
+        TrafficSignType.color_scheme.label("color_scheme"),
+        SignTypeAiPrompt.prompt_text.label("prompt"),
+    )
+    .select_from(TrafficSignType)
+    .outerjoin(
+        SignTypeAiPrompt,
+        (SignTypeAiPrompt.sign_type_id == TrafficSignType.id)
+        & (SignTypeAiPrompt.is_active.is_(True))
+        & (SignTypeAiPrompt.target_model == "CLIP"),
+    )
+    .where(TrafficSignType.is_active.is_(True))
+    .order_by(TrafficSignType.id)
 )
 
-_VERSION_SQL = text(
-    "SELECT COALESCE(MAX(version_number), 0) AS version_number FROM catalog_versions"
+_VERSION_QUERY = select(
+    func.coalesce(func.max(CatalogVersion.version_number), 0).label("version_number")
 )
 
 
@@ -60,8 +62,8 @@ def _redis_client():
 def load_catalog_labels() -> dict:
     """Query traffic_sign_types + active CLIP prompts and structure the payload."""
     with get_sync_db() as db:
-        version_row = db.execute(_VERSION_SQL).mappings().first()
-        rows = db.execute(_LABELS_SQL).mappings().all()
+        version_row = db.execute(_VERSION_QUERY).mappings().first()
+        rows = db.execute(_LABELS_QUERY).mappings().all()
     version_number = int(version_row["version_number"]) if version_row else 0
     labels = [
         {

@@ -8,6 +8,14 @@ import { ModerationCase, ModerationStatus, ModerationType } from '../infrastruct
 import { SignCategory } from '../../catalog/sign-category.entity';
 import { TrafficSignType } from '../../catalog/traffic-sign-type.entity';
 import { UnverifiedSignCandidate, CandidateStatus } from '../../survey/infrastructure/persistence/unverified-sign-candidate.entity';
+import { CandidateRecaptureRequest } from '../../reviews/infrastructure/persistence/candidate-recapture-request.entity';
+import { User, UserStatus } from '../../auth/infrastructure/persistence/user.entity';
+import { UserRole } from '../../auth/infrastructure/persistence/user-role.entity';
+import { Role } from '../../auth/infrastructure/persistence/role.entity';
+import { SignTypeImage } from '../../catalog/sign-type-image.entity';
+import { UserStatusHistory } from '../../admin/user-status-history.entity';
+import { AuditLog } from '../../admin/audit-log.entity';
+import { CandidateGeoEstimation } from '../../survey/infrastructure/persistence/candidate-geo-estimation.entity';
 import { CreateMissingTypeReportDto, ResolveCaseDto, UpdateMissingTypeReportDto, ApproveAndCreateTypeDto, AdminMissingTypeActionDto } from '../presentation/dto/moderation.dto';
 import { NotificationsService } from '../../notifications/notifications.service';
 import { CatalogService } from '../../catalog/catalog.service';
@@ -50,6 +58,11 @@ export class ModerationService {
     private readonly catalogService: CatalogService,
     private readonly catalogSyncService: CatalogSyncService,
     @Optional() private readonly minioStorageService?: MinioStorageService,
+    @Optional() @InjectRepository(CandidateRecaptureRequest) private readonly recaptureRepo?: Repository<CandidateRecaptureRequest>,
+    @Optional() @InjectRepository(User) private readonly userRepo?: Repository<User>,
+    @Optional() @InjectRepository(SignTypeImage) private readonly signTypeImageRepo?: Repository<SignTypeImage>,
+    @Optional() @InjectRepository(UserStatusHistory) private readonly userStatusHistoryRepo?: Repository<UserStatusHistory>,
+    @Optional() @InjectRepository(AuditLog) private readonly auditLogRepo?: Repository<AuditLog>,
   ) {}
 
   /**
@@ -65,27 +78,48 @@ export class ModerationService {
 
     return this.dataSource.transaction(async (manager) => {
       if (dto.candidateId) {
-        const candidates: Array<{ id: string; status: CandidateStatus }> = await manager.query(
-          `SELECT id, status
-           FROM unverified_sign_candidates
-           WHERE id = $1
-           FOR UPDATE`,
-          [dto.candidateId],
-        );
-        const candidate = candidates[0];
+        let candidate: { id: string; status: CandidateStatus } | null = null;
+        if (typeof manager.getRepository === 'function') {
+          candidate = await manager.getRepository(UnverifiedSignCandidate)
+            .createQueryBuilder('c')
+            .setLock('pessimistic_write')
+            .where('c.id = :id', { id: dto.candidateId })
+            .getOne();
+        } else if (typeof manager.query === 'function') {
+          const candidates: Array<{ id: string; status: CandidateStatus }> = await manager.query(
+            `SELECT id, status
+             FROM unverified_sign_candidates
+             WHERE id = $1
+             FOR UPDATE`,
+            [dto.candidateId],
+          );
+          candidate = candidates[0] ?? null;
+        }
         if (!candidate) throw new NotFoundException('Candidate ' + dto.candidateId + ' not found');
         if (![CandidateStatus.PENDING_REVIEW, CandidateStatus.IN_CONSENSUS].includes(candidate.status)) {
           throw new BadRequestException('Candidate ' + dto.candidateId + ' is not available for a new-sign report');
         }
 
-        const activeReports: Array<{ id: string }> = await manager.query(
-          `SELECT id
-           FROM missing_sign_type_reports
-           WHERE candidate_id = $1 AND status NOT IN ('MERGED', 'APPROVED', 'REJECTED')
-           LIMIT 1`,
-          [dto.candidateId],
-        );
-        if (activeReports.length > 0) {
+        let activeReportsCount = 0;
+        if (typeof manager.getRepository === 'function') {
+          activeReportsCount = await manager.getRepository(MissingSignTypeReport)
+            .createQueryBuilder('r')
+            .where('r.candidateId = :candidateId', { candidateId: dto.candidateId })
+            .andWhere('r.status NOT IN (:...terminalStatuses)', {
+              terminalStatuses: [MissingTypeStatus.MERGED, MissingTypeStatus.APPROVED, MissingTypeStatus.REJECTED],
+            })
+            .getCount();
+        } else if (typeof manager.query === 'function') {
+          const activeReports: Array<{ id: string }> = await manager.query(
+            `SELECT id
+             FROM missing_sign_type_reports
+             WHERE candidate_id = $1 AND status NOT IN ('MERGED', 'APPROVED', 'REJECTED')
+             LIMIT 1`,
+            [dto.candidateId],
+          );
+          activeReportsCount = activeReports.length;
+        }
+        if (activeReportsCount > 0) {
           throw new ConflictException('An active new-sign report already exists for candidate ' + dto.candidateId);
         }
       }
@@ -93,7 +127,7 @@ export class ModerationService {
         const cat = await this.catRepo.findOne({ where: { id: dto.proposedCategoryId } });
         if (!cat) throw new BadRequestException('SignCategory #' + dto.proposedCategoryId + ' not found');
       }
-      const r = manager.create(MissingSignTypeReport, {
+      const reportPayload = {
         reporterId,
         candidateId: dto.candidateId ?? null,
         proposedCategoryId: dto.proposedCategoryId ?? null,
@@ -101,17 +135,37 @@ export class ModerationService {
         description: dto.description ?? null,
         suggestedShape: dto.suggestedShape ?? null,
         suggestedColorScheme: dto.suggestedColorScheme ?? null,
-      } as any);
-      const saved = (await manager.save(r)) as unknown as MissingSignTypeReport;
+      };
+      const r = typeof manager.getRepository === 'function'
+        ? manager.getRepository(MissingSignTypeReport).create(reportPayload as any)
+        : manager.create(MissingSignTypeReport, reportPayload as any);
+      const saved = (typeof manager.getRepository === 'function'
+        ? await manager.getRepository(MissingSignTypeReport).save(r as MissingSignTypeReport)
+        : await manager.save(r)) as unknown as MissingSignTypeReport;
       if (dto.candidateId) {
-        const updatedCandidates: Array<{ id: string }> = await manager.query(
-          `UPDATE unverified_sign_candidates
-           SET status = $2
-           WHERE id = $1 AND status IN ('PENDING_REVIEW', 'IN_CONSENSUS')
-           RETURNING id`,
-          [dto.candidateId, CandidateStatus.MISSING_TYPE_HOLD],
-        );
-        if (getAffectedRowCount(updatedCandidates) !== 1) {
+        let affected = 0;
+        if (typeof manager.getRepository === 'function') {
+          const updateRes = await manager.getRepository(UnverifiedSignCandidate)
+            .createQueryBuilder()
+            .update(UnverifiedSignCandidate)
+            .set({ status: CandidateStatus.MISSING_TYPE_HOLD })
+            .where('id = :id AND status IN (:...statuses)', {
+              id: dto.candidateId,
+              statuses: [CandidateStatus.PENDING_REVIEW, CandidateStatus.IN_CONSENSUS],
+            })
+            .execute();
+          affected = updateRes.affected ?? 0;
+        } else if (typeof manager.query === 'function') {
+          const updatedCandidates: Array<{ id: string }> = await manager.query(
+            `UPDATE unverified_sign_candidates
+             SET status = $2
+             WHERE id = $1 AND status IN ('PENDING_REVIEW', 'IN_CONSENSUS')
+             RETURNING id`,
+            [dto.candidateId, CandidateStatus.MISSING_TYPE_HOLD],
+          );
+          affected = getAffectedRowCount(updatedCandidates);
+        }
+        if (affected !== 1) {
           throw new ConflictException('Candidate ' + dto.candidateId + ' changed state while reporting a new sign');
         }
         this.logger.log('Parked candidate ' + dto.candidateId + ' on MISSING_TYPE_HOLD (report ' + saved.id + ')');
@@ -245,68 +299,165 @@ export class ModerationService {
     }
 
     const result = await this.dataSource.transaction(async (manager) => {
-      const reportRows: any[] = await manager.query(
-        `SELECT id, candidate_id, reporter_id, proposed_name, status
-         FROM missing_sign_type_reports
-         WHERE id = $1
-         FOR UPDATE`,
-        [reportId],
-      );
-      const report = reportRows[0];
+      let report: { id: string; candidateId?: string | null; reporterId?: string | null; proposedName?: string | null; status: MissingTypeStatus } | null = null;
+      if (typeof manager.getRepository === 'function') {
+        const found = await manager.getRepository(MissingSignTypeReport)
+          .createQueryBuilder('r')
+          .setLock('pessimistic_write')
+          .where('r.id = :id', { id: reportId })
+          .getOne();
+        if (found) {
+          report = {
+            id: found.id,
+            candidateId: found.candidateId,
+            reporterId: found.reporterId,
+            proposedName: found.proposedName,
+            status: found.status,
+          };
+        }
+      } else if (typeof manager.query === 'function') {
+        const reportRows: any[] = await manager.query(
+          `SELECT id, candidate_id, reporter_id, proposed_name, status
+           FROM missing_sign_type_reports
+           WHERE id = $1
+           FOR UPDATE`,
+          [reportId],
+        );
+        if (reportRows[0]) {
+          report = {
+            id: reportRows[0].id,
+            candidateId: reportRows[0].candidate_id,
+            reporterId: reportRows[0].reporter_id,
+            proposedName: reportRows[0].proposed_name,
+            status: reportRows[0].status,
+          };
+        }
+      }
       if (!report) throw new NotFoundException('MissingSignTypeReport ' + reportId + ' not found');
       if (![MissingTypeStatus.PENDING, MissingTypeStatus.INCOMPLETE].includes(report.status)) {
         throw new BadRequestException('Report must be PENDING or INCOMPLETE to perform a staff action');
       }
 
-      if (report.candidate_id) {
-        const candidates: any[] = await manager.query(
-          `SELECT id, status FROM unverified_sign_candidates WHERE id = $1 FOR UPDATE`,
-          [report.candidate_id],
-        );
-        if (!candidates[0]) throw new NotFoundException('Candidate ' + report.candidate_id + ' not found');
-        if (candidates[0].status !== CandidateStatus.MISSING_TYPE_HOLD) {
+      if (report.candidateId) {
+        let candidate: { id: string; status: CandidateStatus } | null = null;
+        if (typeof manager.getRepository === 'function') {
+          candidate = await manager.getRepository(UnverifiedSignCandidate)
+            .createQueryBuilder('c')
+            .setLock('pessimistic_write')
+            .where('c.id = :id', { id: report.candidateId })
+            .getOne();
+        } else if (typeof manager.query === 'function') {
+          const candidates: any[] = await manager.query(
+            `SELECT id, status FROM unverified_sign_candidates WHERE id = $1 FOR UPDATE`,
+            [report.candidateId],
+          );
+          candidate = candidates[0] ?? null;
+        }
+        if (!candidate) throw new NotFoundException('Candidate ' + report.candidateId + ' not found');
+        if (candidate.status !== CandidateStatus.MISSING_TYPE_HOLD) {
           throw new ConflictException('Candidate must be on MISSING_TYPE_HOLD to resolve this report');
         }
       }
 
       const nextStatus = decision === 'MERGE' ? MissingTypeStatus.MERGED : MissingTypeStatus.REJECTED;
-      const updatedReports: any[] = await manager.query(
-        `UPDATE missing_sign_type_reports
-         SET status = $2, merged_into_sign_type_id = $3,
-             staff_notes = COALESCE($4, staff_notes), reviewed_by = $5, updated_at = NOW()
-         WHERE id = $1 AND status IN ($6, $7)
-         RETURNING id`,
-        [reportId, nextStatus, signTypeId, note, staffId, MissingTypeStatus.PENDING, MissingTypeStatus.INCOMPLETE],
-      );
-      if (getAffectedRowCount(updatedReports) !== 1) throw new ConflictException('Report state changed before applying staff decision');
-
-      if (report.candidate_id) {
-        const candidateStatus = decision === 'MERGE' ? CandidateStatus.PENDING_REVIEW : CandidateStatus.REJECTED;
-        const candidateUpdate: any[] = await manager.query(
-          `UPDATE unverified_sign_candidates
-           SET status = $2, predicted_sign_type_id = COALESCE($3, predicted_sign_type_id)
-           WHERE id = $1 AND status = $4
+      let updateReportAffected = 0;
+      if (typeof manager.getRepository === 'function') {
+        const res = await manager.getRepository(MissingSignTypeReport)
+          .createQueryBuilder()
+          .update(MissingSignTypeReport)
+          .set({
+            status: nextStatus,
+            mergedIntoSignTypeId: signTypeId ?? undefined,
+            ...(note != null ? { staffNotes: note } : {}),
+            reviewedBy: staffId,
+            updatedAt: new Date(),
+          })
+          .where('id = :id AND status IN (:...statuses)', {
+            id: reportId,
+            statuses: [MissingTypeStatus.PENDING, MissingTypeStatus.INCOMPLETE],
+          })
+          .execute();
+        updateReportAffected = res.affected ?? 0;
+      } else if (typeof manager.query === 'function') {
+        const updatedReports: any[] = await manager.query(
+          `UPDATE missing_sign_type_reports
+           SET status = $2, merged_into_sign_type_id = $3,
+               staff_notes = COALESCE($4, staff_notes), reviewed_by = $5, updated_at = NOW()
+           WHERE id = $1 AND status IN ($6, $7)
            RETURNING id`,
-          [report.candidate_id, candidateStatus, signTypeId, CandidateStatus.MISSING_TYPE_HOLD],
+          [reportId, nextStatus, signTypeId, note, staffId, MissingTypeStatus.PENDING, MissingTypeStatus.INCOMPLETE],
         );
-        if (getAffectedRowCount(candidateUpdate) !== 1) throw new ConflictException('Candidate state changed before applying staff decision');
+        updateReportAffected = getAffectedRowCount(updatedReports);
+      }
+      if (updateReportAffected !== 1) throw new ConflictException('Report state changed before applying staff decision');
+
+      if (report.candidateId) {
+        const candidateStatus = decision === 'MERGE' ? CandidateStatus.PENDING_REVIEW : CandidateStatus.REJECTED;
+        let updateCandAffected = 0;
+        if (typeof manager.getRepository === 'function') {
+          const res = await manager.getRepository(UnverifiedSignCandidate)
+            .createQueryBuilder()
+            .update(UnverifiedSignCandidate)
+            .set({
+              status: candidateStatus,
+              ...(signTypeId != null ? { predictedSignTypeId: signTypeId } : {}),
+            })
+            .where('id = :id AND status = :status', {
+              id: report.candidateId,
+              status: CandidateStatus.MISSING_TYPE_HOLD,
+            })
+            .execute();
+          updateCandAffected = res.affected ?? 0;
+        } else if (typeof manager.query === 'function') {
+          const candidateUpdate: any[] = await manager.query(
+            `UPDATE unverified_sign_candidates
+             SET status = $2, predicted_sign_type_id = COALESCE($3, predicted_sign_type_id)
+             WHERE id = $1 AND status = $4
+             RETURNING id`,
+            [report.candidateId, candidateStatus, signTypeId, CandidateStatus.MISSING_TYPE_HOLD],
+          );
+          updateCandAffected = getAffectedRowCount(candidateUpdate);
+        }
+        if (updateCandAffected !== 1) throw new ConflictException('Candidate state changed before applying staff decision');
       }
 
-      const caseRows: any[] = await manager.query(
-        `INSERT INTO moderation_cases
-           (case_type, target_entity_type, target_entity_id, assigned_staff_id, status, resolution_note, resolved_at)
-         VALUES ($1, 'missing_sign_type_report', $2, $3, $4, $5, NOW())
-         RETURNING id`,
-        [ModerationType.CATALOG_PROPOSAL, reportId, staffId, ModerationStatus.RESOLVED, note],
-      );
-      const caseId = caseRows[0]?.id;
-      if (!caseId) throw new Error('Failed to create report decision moderation case');
-      await manager.query(
-        `INSERT INTO moderation_actions (case_id, action_type, performed_by, note)
-         VALUES ($1, $2, $3, $4)`,
-        [caseId, decision, staffId, note],
-      );
-      return { reporterId: report.reporter_id, proposedName: report.proposed_name };
+      let caseId: string | undefined;
+      if (typeof manager.getRepository === 'function') {
+        const caseRepo = manager.getRepository(ModerationCase);
+        const actionRepo = manager.getRepository(ModerationAction);
+        const savedCase = await caseRepo.save(caseRepo.create({
+          caseType: ModerationType.CATALOG_PROPOSAL,
+          targetEntityType: 'missing_sign_type_report',
+          targetEntityId: reportId,
+          assignedStaffId: staffId,
+          status: ModerationStatus.RESOLVED,
+          resolutionNote: note,
+          resolvedAt: new Date(),
+        }));
+        caseId = savedCase.id;
+        await actionRepo.save(actionRepo.create({
+          caseId,
+          actionType: decision,
+          performedBy: staffId,
+          note,
+        }));
+      } else if (typeof manager.query === 'function') {
+        const caseRows: any[] = await manager.query(
+          `INSERT INTO moderation_cases
+             (case_type, target_entity_type, target_entity_id, assigned_staff_id, status, resolution_note, resolved_at)
+           VALUES ($1, 'missing_sign_type_report', $2, $3, $4, $5, NOW())
+           RETURNING id`,
+          [ModerationType.CATALOG_PROPOSAL, reportId, staffId, ModerationStatus.RESOLVED, note],
+        );
+        caseId = caseRows[0]?.id;
+        if (!caseId) throw new Error('Failed to create report decision moderation case');
+        await manager.query(
+          `INSERT INTO moderation_actions (case_id, action_type, performed_by, note)
+           VALUES ($1, $2, $3, $4)`,
+          [caseId, decision, staffId, note],
+        );
+      }
+      return { reporterId: report.reporterId, proposedName: report.proposedName };
     });
 
     if (result.reporterId) {
@@ -325,55 +476,124 @@ export class ModerationService {
 
   private async escalateMissingReportToAdmin(reportId: string, staffId: string, note: string) {
     await this.dataSource.transaction(async (manager) => {
-      const reportRows: any[] = await manager.query(
-        `SELECT id, status FROM missing_sign_type_reports WHERE id = $1 FOR UPDATE`,
-        [reportId],
-      );
-      const report = reportRows[0];
+      let report: { id: string; status: MissingTypeStatus } | null = null;
+      if (typeof manager.getRepository === 'function') {
+        const found = await manager.getRepository(MissingSignTypeReport)
+          .createQueryBuilder('r')
+          .setLock('pessimistic_write')
+          .where('r.id = :id', { id: reportId })
+          .getOne();
+        if (found) report = { id: found.id, status: found.status };
+      } else if (typeof manager.query === 'function') {
+        const reportRows: any[] = await manager.query(
+          `SELECT id, status FROM missing_sign_type_reports WHERE id = $1 FOR UPDATE`,
+          [reportId],
+        );
+        if (reportRows[0]) report = { id: reportRows[0].id, status: reportRows[0].status };
+      }
       if (!report) throw new NotFoundException('MissingSignTypeReport ' + reportId + ' not found');
       if (report.status !== MissingTypeStatus.PENDING) {
         throw new BadRequestException('Only PENDING reports can be escalated to Admin');
       }
 
-      const updatedReports: any[] = await manager.query(
-        `UPDATE missing_sign_type_reports
-         SET status = $2, staff_notes = $3, reviewed_by = $4, updated_at = NOW()
-         WHERE id = $1 AND status = $5
-         RETURNING id`,
-        [reportId, MissingTypeStatus.ESCALATED_ADMIN, note, staffId, MissingTypeStatus.PENDING],
-      );
-      if (getAffectedRowCount(updatedReports) !== 1) throw new ConflictException('Report state changed before escalation');
-
-      const existingCases: any[] = await manager.query(
-        `SELECT id, status FROM moderation_cases
-         WHERE target_entity_type = 'missing_sign_type_report' AND target_entity_id = $1
-         ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
-        [reportId],
-      );
-      let caseId = existingCases[0]?.id;
-      if (caseId) {
-        await manager.query(
-          `UPDATE moderation_cases
-           SET status = $2, assigned_staff_id = $3, resolution_note = $4, resolved_at = NULL
-           WHERE id = $1`,
-          [caseId, ModerationStatus.PENDING, staffId, note],
-        );
-      } else {
-        const caseRows: any[] = await manager.query(
-          `INSERT INTO moderation_cases
-             (case_type, target_entity_type, target_entity_id, assigned_staff_id, status, resolution_note)
-           VALUES ($1, 'missing_sign_type_report', $2, $3, $4, $5)
+      let updateReportAffected = 0;
+      if (typeof manager.getRepository === 'function') {
+        const res = await manager.getRepository(MissingSignTypeReport)
+          .createQueryBuilder()
+          .update(MissingSignTypeReport)
+          .set({
+            status: MissingTypeStatus.ESCALATED_ADMIN,
+            staffNotes: note,
+            reviewedBy: staffId,
+            updatedAt: new Date(),
+          })
+          .where('id = :id AND status = :status', { id: reportId, status: MissingTypeStatus.PENDING })
+          .execute();
+        updateReportAffected = res.affected ?? 0;
+      } else if (typeof manager.query === 'function') {
+        const updatedReports: any[] = await manager.query(
+          `UPDATE missing_sign_type_reports
+           SET status = $2, staff_notes = $3, reviewed_by = $4, updated_at = NOW()
+           WHERE id = $1 AND status = $5
            RETURNING id`,
-          [ModerationType.CATALOG_PROPOSAL, reportId, staffId, ModerationStatus.PENDING, note],
+          [reportId, MissingTypeStatus.ESCALATED_ADMIN, note, staffId, MissingTypeStatus.PENDING],
         );
-        caseId = caseRows[0]?.id;
+        updateReportAffected = getAffectedRowCount(updatedReports);
       }
-      if (!caseId) throw new Error('Failed to create admin escalation moderation case');
-      await manager.query(
-        `INSERT INTO moderation_actions (case_id, action_type, performed_by, note)
-         VALUES ($1, 'ESCALATE_ADMIN', $2, $3)`,
-        [caseId, staffId, note],
-      );
+      if (updateReportAffected !== 1) throw new ConflictException('Report state changed before escalation');
+
+      let caseId: string | undefined;
+      if (typeof manager.getRepository === 'function') {
+        const caseRepo = manager.getRepository(ModerationCase);
+        const actionRepo = manager.getRepository(ModerationAction);
+        const existingCase = await caseRepo
+          .createQueryBuilder('c')
+          .setLock('pessimistic_write')
+          .where('c.targetEntityType = :targetEntityType AND c.targetEntityId = :targetEntityId', {
+            targetEntityType: 'missing_sign_type_report',
+            targetEntityId: reportId,
+          })
+          .orderBy('c.createdAt', 'DESC')
+          .getOne();
+        if (existingCase) {
+          caseId = existingCase.id;
+          await caseRepo.update(caseId, {
+            status: ModerationStatus.PENDING,
+            assignedStaffId: staffId,
+            resolutionNote: note,
+            resolvedAt: null as any,
+          });
+        } else {
+          const newCase = caseRepo.create({
+            caseType: ModerationType.CATALOG_PROPOSAL,
+            targetEntityType: 'missing_sign_type_report',
+            targetEntityId: reportId,
+            assignedStaffId: staffId,
+            status: ModerationStatus.PENDING,
+            resolutionNote: note,
+          });
+          const savedCase = await caseRepo.save(newCase);
+          caseId = savedCase.id;
+        }
+        if (!caseId) throw new Error('Failed to create admin escalation moderation case');
+        await actionRepo.save(actionRepo.create({
+          caseId,
+          actionType: 'ESCALATE_ADMIN',
+          performedBy: staffId,
+          note,
+        }));
+      } else if (typeof manager.query === 'function') {
+        const existingCases: any[] = await manager.query(
+          `SELECT id, status FROM moderation_cases
+           WHERE target_entity_type = 'missing_sign_type_report' AND target_entity_id = $1
+           ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
+          [reportId],
+        );
+        caseId = existingCases[0]?.id;
+        if (caseId) {
+          await manager.query(
+            `UPDATE moderation_cases
+             SET status = $2, assigned_staff_id = $3, resolution_note = $4, resolved_at = NULL
+             WHERE id = $1`,
+            [caseId, ModerationStatus.PENDING, staffId, note],
+          );
+        } else {
+          const caseRows: any[] = await manager.query(
+            `INSERT INTO moderation_cases
+               (case_type, target_entity_type, target_entity_id, assigned_staff_id, status, resolution_note)
+             VALUES ($1, 'missing_sign_type_report', $2, $3, $4, $5)
+             RETURNING id`,
+            [ModerationType.CATALOG_PROPOSAL, reportId, staffId, ModerationStatus.PENDING, note],
+          );
+          caseId = caseRows[0]?.id;
+        }
+        if (!caseId) throw new Error('Failed to create admin escalation moderation case');
+        await manager.query(
+          `INSERT INTO moderation_actions (case_id, action_type, performed_by, note)
+           VALUES ($1, 'ESCALATE_ADMIN', $2, $3)`,
+          [caseId, staffId, note],
+        );
+      }
     });
 
     const escalated = await this.getMissingReport(reportId);
@@ -409,54 +629,125 @@ export class ModerationService {
 
   private async rejectEscalatedReport(reportId: string, adminId: string, reason: string) {
     const result = await this.dataSource.transaction(async (manager) => {
-      const reportRows: any[] = await manager.query(
-        `SELECT id, candidate_id, reporter_id, proposed_name, status
-         FROM missing_sign_type_reports
-         WHERE id = $1
-         FOR UPDATE`,
-        [reportId],
-      );
-      const report = reportRows[0];
+      let report: { id: string; candidateId?: string | null; reporterId?: string | null; proposedName?: string | null; status: MissingTypeStatus } | null = null;
+      if (typeof manager.getRepository === 'function') {
+        const found = await manager.getRepository(MissingSignTypeReport)
+          .createQueryBuilder('r')
+          .setLock('pessimistic_write')
+          .where('r.id = :id', { id: reportId })
+          .getOne();
+        if (found) {
+          report = {
+            id: found.id,
+            candidateId: found.candidateId,
+            reporterId: found.reporterId,
+            proposedName: found.proposedName,
+            status: found.status,
+          };
+        }
+      } else if (typeof manager.query === 'function') {
+        const reportRows: any[] = await manager.query(
+          `SELECT id, candidate_id, reporter_id, proposed_name, status
+           FROM missing_sign_type_reports
+           WHERE id = $1
+           FOR UPDATE`,
+          [reportId],
+        );
+        if (reportRows[0]) {
+          report = {
+            id: reportRows[0].id,
+            candidateId: reportRows[0].candidate_id,
+            reporterId: reportRows[0].reporter_id,
+            proposedName: reportRows[0].proposed_name,
+            status: reportRows[0].status,
+          };
+        }
+      }
       if (!report) throw new NotFoundException('MissingSignTypeReport ' + reportId + ' not found');
       if (report.status !== MissingTypeStatus.ESCALATED_ADMIN) {
         throw new BadRequestException('Only ESCALATED_ADMIN reports can receive admin decisions');
       }
 
-      if (report.candidate_id) {
-        const candidates: any[] = await manager.query(
-          `SELECT id, status FROM unverified_sign_candidates WHERE id = $1 FOR UPDATE`,
-          [report.candidate_id],
-        );
-        const candidate = candidates[0];
-        if (!candidate) throw new NotFoundException('Candidate ' + report.candidate_id + ' not found');
+      if (report.candidateId) {
+        let candidate: { id: string; status: CandidateStatus } | null = null;
+        if (typeof manager.getRepository === 'function') {
+          candidate = await manager.getRepository(UnverifiedSignCandidate)
+            .createQueryBuilder('c')
+            .setLock('pessimistic_write')
+            .where('c.id = :id', { id: report.candidateId })
+            .getOne();
+        } else if (typeof manager.query === 'function') {
+          const candidates: any[] = await manager.query(
+            `SELECT id, status FROM unverified_sign_candidates WHERE id = $1 FOR UPDATE`,
+            [report.candidateId],
+          );
+          candidate = candidates[0] ?? null;
+        }
+        if (!candidate) throw new NotFoundException('Candidate ' + report.candidateId + ' not found');
         if (![CandidateStatus.MISSING_TYPE_HOLD, CandidateStatus.RECAPTURE_REQUESTED].includes(candidate.status)) {
           throw new ConflictException('Candidate is not in a state that can be rejected with this report');
         }
-        const updatedCandidates: any[] = await manager.query(
-          `UPDATE unverified_sign_candidates SET status = $2
-           WHERE id = $1 AND status = $3
-           RETURNING id`,
-          [candidate.id, CandidateStatus.REJECTED, candidate.status],
-        );
-        if (getAffectedRowCount(updatedCandidates) !== 1) throw new ConflictException('Candidate state changed while rejecting report');
-        await manager.query(
-          `UPDATE candidate_recapture_requests
-           SET completed_at = NOW()
-           WHERE candidate_id = $1 AND completed_at IS NULL`,
-          [candidate.id],
-        );
+
+        let updateCandAffected = 0;
+        if (typeof manager.getRepository === 'function') {
+          const res = await manager.getRepository(UnverifiedSignCandidate)
+            .createQueryBuilder()
+            .update(UnverifiedSignCandidate)
+            .set({ status: CandidateStatus.REJECTED })
+            .where('id = :id AND status = :status', { id: candidate.id, status: candidate.status })
+            .execute();
+          updateCandAffected = res.affected ?? 0;
+          await manager.getRepository(CandidateRecaptureRequest)
+            .createQueryBuilder()
+            .update(CandidateRecaptureRequest)
+            .set({ completedAt: new Date() })
+            .where('candidateId = :candidateId AND completedAt IS NULL', { candidateId: candidate.id })
+            .execute();
+        } else if (typeof manager.query === 'function') {
+          const updatedCandidates: any[] = await manager.query(
+            `UPDATE unverified_sign_candidates SET status = $2
+             WHERE id = $1 AND status = $3
+             RETURNING id`,
+            [candidate.id, CandidateStatus.REJECTED, candidate.status],
+          );
+          updateCandAffected = getAffectedRowCount(updatedCandidates);
+          await manager.query(
+            `UPDATE candidate_recapture_requests
+             SET completed_at = NOW()
+             WHERE candidate_id = $1 AND completed_at IS NULL`,
+            [candidate.id],
+          );
+        }
+        if (updateCandAffected !== 1) throw new ConflictException('Candidate state changed while rejecting report');
       }
 
-      const updatedReports: any[] = await manager.query(
-        `UPDATE missing_sign_type_reports
-         SET status = $2, staff_notes = $3, reviewed_by = $4, updated_at = NOW()
-         WHERE id = $1 AND status = $5
-         RETURNING id`,
-        [reportId, MissingTypeStatus.REJECTED, reason, adminId, MissingTypeStatus.ESCALATED_ADMIN],
-      );
-      if (getAffectedRowCount(updatedReports) !== 1) throw new ConflictException('Report state changed while applying admin rejection');
+      let updateReportAffected = 0;
+      if (typeof manager.getRepository === 'function') {
+        const res = await manager.getRepository(MissingSignTypeReport)
+          .createQueryBuilder()
+          .update(MissingSignTypeReport)
+          .set({
+            status: MissingTypeStatus.REJECTED,
+            staffNotes: reason,
+            reviewedBy: adminId,
+            updatedAt: new Date(),
+          })
+          .where('id = :id AND status = :status', { id: reportId, status: MissingTypeStatus.ESCALATED_ADMIN })
+          .execute();
+        updateReportAffected = res.affected ?? 0;
+      } else if (typeof manager.query === 'function') {
+        const updatedReports: any[] = await manager.query(
+          `UPDATE missing_sign_type_reports
+           SET status = $2, staff_notes = $3, reviewed_by = $4, updated_at = NOW()
+           WHERE id = $1 AND status = $5
+           RETURNING id`,
+          [reportId, MissingTypeStatus.REJECTED, reason, adminId, MissingTypeStatus.ESCALATED_ADMIN],
+        );
+        updateReportAffected = getAffectedRowCount(updatedReports);
+      }
+      if (updateReportAffected !== 1) throw new ConflictException('Report state changed while applying admin rejection');
       await this.resolveAdminReportCase(manager, reportId, adminId, 'REJECT', reason);
-      return { reporterId: report.reporter_id, proposedName: report.proposed_name };
+      return { reporterId: report.reporterId, proposedName: report.proposedName };
     });
 
     await this.notifyReporter(
@@ -478,14 +769,42 @@ export class ModerationService {
       throw new BadRequestException('banTarget must be SURVEYOR, REVIEWER, or STAFF');
     }
     const result = await this.dataSource.transaction(async (manager) => {
-      const reportRows: any[] = await manager.query(
-        `SELECT id, candidate_id, reporter_id, proposed_name, status, reviewed_by
-         FROM missing_sign_type_reports
-         WHERE id = $1
-         FOR UPDATE`,
-        [reportId],
-      );
-      const report = reportRows[0];
+      let report: { id: string; candidateId?: string | null; reporterId?: string | null; proposedName?: string | null; status: MissingTypeStatus; reviewedBy?: string | null } | null = null;
+      if (typeof manager.getRepository === 'function') {
+        const found = await manager.getRepository(MissingSignTypeReport)
+          .createQueryBuilder('r')
+          .setLock('pessimistic_write')
+          .where('r.id = :id', { id: reportId })
+          .getOne();
+        if (found) {
+          report = {
+            id: found.id,
+            candidateId: found.candidateId,
+            reporterId: found.reporterId,
+            proposedName: found.proposedName,
+            status: found.status,
+            reviewedBy: found.reviewedBy,
+          };
+        }
+      } else if (typeof manager.query === 'function') {
+        const reportRows: any[] = await manager.query(
+          `SELECT id, candidate_id, reporter_id, proposed_name, status, reviewed_by
+           FROM missing_sign_type_reports
+           WHERE id = $1
+           FOR UPDATE`,
+          [reportId],
+        );
+        if (reportRows[0]) {
+          report = {
+            id: reportRows[0].id,
+            candidateId: reportRows[0].candidate_id,
+            reporterId: reportRows[0].reporter_id,
+            proposedName: reportRows[0].proposed_name,
+            status: reportRows[0].status,
+            reviewedBy: reportRows[0].reviewed_by,
+          };
+        }
+      }
       if (!report) throw new NotFoundException('MissingSignTypeReport ' + reportId + ' not found');
       if (report.status !== MissingTypeStatus.ESCALATED_ADMIN) {
         throw new BadRequestException('Only ESCALATED_ADMIN reports can receive admin decisions');
@@ -493,10 +812,28 @@ export class ModerationService {
 
       let targetRows: any[];
       if (targetRole === 'REVIEWER') {
-        targetRows = report.reporter_id ? [{ id: report.reporter_id }] : [];
+        targetRows = report.reporterId ? [{ id: report.reporterId }] : [];
       } else if (targetRole === 'SURVEYOR') {
-        targetRows = report.candidate_id
-          ? await manager.query(
+        if (!report.candidateId) {
+          targetRows = [];
+        } else if (typeof manager.getRepository === 'function') {
+          const rec = await manager.getRepository(CandidateRecaptureRequest)
+            .createQueryBuilder('r')
+            .where('r.candidateId = :candidateId AND r.surveyorId IS NOT NULL', { candidateId: report.candidateId })
+            .orderBy('r.createdAt', 'DESC')
+            .getOne();
+          if (rec?.surveyorId) {
+            targetRows = [{ id: rec.surveyorId }];
+          } else {
+            const cand = await manager.getRepository(UnverifiedSignCandidate)
+              .createQueryBuilder('c')
+              .leftJoinAndSelect('c.submission', 's')
+              .where('c.id = :id', { id: report.candidateId })
+              .getOne();
+            targetRows = cand?.submission?.surveyorId ? [{ id: cand.submission.surveyorId }] : [];
+          }
+        } else {
+          targetRows = await manager.query(
             `SELECT COALESCE(
                (SELECT r.surveyor_id
                 FROM candidate_recapture_requests r
@@ -508,112 +845,233 @@ export class ModerationService {
                 JOIN survey_submissions s ON s.id = c.submission_id
                 WHERE c.id = $1)
              ) AS id`,
-            [report.candidate_id],
-          )
-          : [];
+            [report.candidateId],
+          );
+        }
       } else {
-        targetRows = await manager.query(
-          `SELECT COALESCE(
-             (SELECT a.performed_by
-              FROM moderation_actions a
-              JOIN moderation_cases c ON c.id = a.case_id
-              WHERE c.target_entity_type = 'missing_sign_type_report'
-                AND c.target_entity_id = $1
-                AND a.action_type IN ('ESCALATE_ADMIN', 'REQUEST_RECAPTURE', 'REJECT', 'MERGE')
-                AND EXISTS (
-                  SELECT 1 FROM user_roles ur
-                  JOIN roles role ON role.id = ur.role_id
-                  WHERE ur.user_id = a.performed_by AND ur.is_active = TRUE AND role.code = 'STAFF'
-                )
-              ORDER BY a.performed_at DESC
-              LIMIT 1),
-             (SELECT $2::uuid WHERE EXISTS (
-               SELECT 1 FROM user_roles ur
-               JOIN roles role ON role.id = ur.role_id
-               WHERE ur.user_id = $2 AND ur.is_active = TRUE AND role.code = 'STAFF'
-             ))
-           ) AS id`,
-          [reportId, report.reviewed_by],
-        );
+        if (typeof manager.getRepository === 'function') {
+          const staffAction = await manager.getRepository(ModerationAction)
+            .createQueryBuilder('a')
+            .innerJoin('a.case', 'c')
+            .innerJoin(UserRole, 'ur', 'ur.userId = a.performedBy AND ur.isActive = true')
+            .innerJoin(Role, 'role', 'role.id = ur.roleId AND role.code = :code', { code: 'STAFF' })
+            .where('c.targetEntityType = :entityType AND c.targetEntityId = :entityId', {
+              entityType: 'missing_sign_type_report',
+              entityId: reportId,
+            })
+            .andWhere('a.actionType IN (:...types)', {
+              types: ['ESCALATE_ADMIN', 'REQUEST_RECAPTURE', 'REJECT', 'MERGE'],
+            })
+            .orderBy('a.performedAt', 'DESC')
+            .getOne();
+          let staffUserId = staffAction?.performedBy;
+          if (!staffUserId && report.reviewedBy) {
+            const hasRole = await manager.getRepository(UserRole)
+              .createQueryBuilder('ur')
+              .innerJoin('ur.role', 'role')
+              .where('ur.userId = :userId AND ur.isActive = true AND role.code = :code', {
+                userId: report.reviewedBy,
+                code: 'STAFF',
+              })
+              .getCount();
+            if (hasRole > 0) staffUserId = report.reviewedBy;
+          }
+          targetRows = staffUserId ? [{ id: staffUserId }] : [];
+        } else {
+          targetRows = await manager.query(
+            `SELECT COALESCE(
+               (SELECT a.performed_by
+                FROM moderation_actions a
+                JOIN moderation_cases c ON c.id = a.case_id
+                WHERE c.target_entity_type = 'missing_sign_type_report'
+                  AND c.target_entity_id = $1
+                  AND a.action_type IN ('ESCALATE_ADMIN', 'REQUEST_RECAPTURE', 'REJECT', 'MERGE')
+                  AND EXISTS (
+                    SELECT 1 FROM user_roles ur
+                    JOIN roles role ON role.id = ur.role_id
+                    WHERE ur.user_id = a.performed_by AND ur.is_active = TRUE AND role.code = 'STAFF'
+                  )
+                ORDER BY a.performed_at DESC
+                LIMIT 1),
+               (SELECT $2::uuid WHERE EXISTS (
+                 SELECT 1 FROM user_roles ur
+                 JOIN roles role ON role.id = ur.role_id
+                 WHERE ur.user_id = $2 AND ur.is_active = TRUE AND role.code = 'STAFF'
+               ))
+             ) AS id`,
+            [reportId, report.reviewedBy],
+          );
+        }
       }
 
       const targetId = targetRows[0]?.id;
       if (!targetId) throw new BadRequestException('No involved ' + targetRole.toLowerCase() + ' is associated with this report');
-      const eligibleUsers: any[] = await manager.query(
-        `SELECT u.id, u.status
-         FROM users u
-         WHERE u.id = $1
-           AND EXISTS (
-             SELECT 1 FROM user_roles ur
-             JOIN roles role ON role.id = ur.role_id
-             WHERE ur.user_id = u.id AND ur.is_active = TRUE AND role.code = $2
-           )
-           AND NOT EXISTS (
-             SELECT 1 FROM user_roles ur
-             JOIN roles role ON role.id = ur.role_id
-             WHERE ur.user_id = u.id AND ur.is_active = TRUE AND role.code = 'ADMIN'
-           )
-         FOR UPDATE OF u`,
-        [targetId, targetRole],
-      );
-      const target = eligibleUsers[0];
+      let target: { id: string; status: string } | null = null;
+      if (typeof manager.getRepository === 'function') {
+        const u = await manager.getRepository(User)
+          .createQueryBuilder('u')
+          .setLock('pessimistic_write')
+          .innerJoin('u.userRoles', 'ur')
+          .innerJoin('ur.role', 'role')
+          .where('u.id = :id AND ur.isActive = true AND role.code = :targetRole', { id: targetId, targetRole })
+          .andWhere((qb) => {
+            const subQuery = qb.subQuery()
+              .select('1')
+              .from(UserRole, 'adminUr')
+              .innerJoin('adminUr.role', 'adminRole')
+              .where('adminUr.userId = u.id AND adminUr.isActive = true AND adminRole.code = :adminCode')
+              .getQuery();
+            return 'NOT EXISTS ' + subQuery;
+          })
+          .setParameter('adminCode', 'ADMIN')
+          .getOne();
+        if (u) target = { id: u.id, status: u.status };
+      } else if (typeof manager.query === 'function') {
+        const eligibleUsers: any[] = await manager.query(
+          `SELECT u.id, u.status
+           FROM users u
+           WHERE u.id = $1
+             AND EXISTS (
+               SELECT 1 FROM user_roles ur
+               JOIN roles role ON role.id = ur.role_id
+               WHERE ur.user_id = u.id AND ur.is_active = TRUE AND role.code = $2
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM user_roles ur
+               JOIN roles role ON role.id = ur.role_id
+               WHERE ur.user_id = u.id AND ur.is_active = TRUE AND role.code = 'ADMIN'
+             )
+           FOR UPDATE OF u`,
+          [targetId, targetRole],
+        );
+        target = eligibleUsers[0] ?? null;
+      }
       if (!target) throw new BadRequestException('Selected involved user is not eligible for this ban action');
       if (target.status === 'BANNED') throw new BadRequestException('Selected user is already BANNED');
 
-      if (report.candidate_id) {
-        const candidates: any[] = await manager.query(
-          `SELECT id, status FROM unverified_sign_candidates WHERE id = $1 FOR UPDATE`,
-          [report.candidate_id],
-        );
-        const candidate = candidates[0];
-        if (!candidate) throw new NotFoundException('Candidate ' + report.candidate_id + ' not found');
+      if (report.candidateId) {
+        let candidate: { id: string; status: CandidateStatus } | null = null;
+        if (typeof manager.getRepository === 'function') {
+          candidate = await manager.getRepository(UnverifiedSignCandidate)
+            .createQueryBuilder('c')
+            .setLock('pessimistic_write')
+            .where('c.id = :id', { id: report.candidateId })
+            .getOne();
+        } else if (typeof manager.query === 'function') {
+          const candidates: any[] = await manager.query(
+            `SELECT id, status FROM unverified_sign_candidates WHERE id = $1 FOR UPDATE`,
+            [report.candidateId],
+          );
+          candidate = candidates[0] ?? null;
+        }
+        if (!candidate) throw new NotFoundException('Candidate ' + report.candidateId + ' not found');
         if (![CandidateStatus.MISSING_TYPE_HOLD, CandidateStatus.RECAPTURE_REQUESTED].includes(candidate.status)) {
           throw new ConflictException('Candidate is not in a state that can be rejected with this report');
         }
-        const updatedCandidates: any[] = await manager.query(
-          `UPDATE unverified_sign_candidates SET status = $2
-           WHERE id = $1 AND status = $3
-           RETURNING id`,
-          [candidate.id, CandidateStatus.REJECTED, candidate.status],
-        );
-        if (getAffectedRowCount(updatedCandidates) !== 1) throw new ConflictException('Candidate state changed while banning involved user');
-        await manager.query(
-          `UPDATE candidate_recapture_requests
-           SET completed_at = NOW()
-           WHERE candidate_id = $1 AND completed_at IS NULL`,
-          [candidate.id],
-        );
+
+        let updateCandAffected = 0;
+        if (typeof manager.getRepository === 'function') {
+          const res = await manager.getRepository(UnverifiedSignCandidate)
+            .createQueryBuilder()
+            .update(UnverifiedSignCandidate)
+            .set({ status: CandidateStatus.REJECTED })
+            .where('id = :id AND status = :status', { id: candidate.id, status: candidate.status })
+            .execute();
+          updateCandAffected = res.affected ?? 0;
+          await manager.getRepository(CandidateRecaptureRequest)
+            .createQueryBuilder()
+            .update(CandidateRecaptureRequest)
+            .set({ completedAt: new Date() })
+            .where('candidateId = :candidateId AND completedAt IS NULL', { candidateId: candidate.id })
+            .execute();
+        } else if (typeof manager.query === 'function') {
+          const updatedCandidates: any[] = await manager.query(
+            `UPDATE unverified_sign_candidates SET status = $2
+             WHERE id = $1 AND status = $3
+             RETURNING id`,
+            [candidate.id, CandidateStatus.REJECTED, candidate.status],
+          );
+          updateCandAffected = getAffectedRowCount(updatedCandidates);
+          await manager.query(
+            `UPDATE candidate_recapture_requests
+             SET completed_at = NOW()
+             WHERE candidate_id = $1 AND completed_at IS NULL`,
+            [candidate.id],
+          );
+        }
+        if (updateCandAffected !== 1) throw new ConflictException('Candidate state changed while banning involved user');
       }
 
-      const updatedReports: any[] = await manager.query(
-        `UPDATE missing_sign_type_reports
-         SET status = $2, staff_notes = $3, reviewed_by = $4, updated_at = NOW()
-         WHERE id = $1 AND status = $5
-         RETURNING id`,
-        [reportId, MissingTypeStatus.REJECTED, reason, adminId, MissingTypeStatus.ESCALATED_ADMIN],
-      );
-      if (getAffectedRowCount(updatedReports) !== 1) throw new ConflictException('Report state changed while banning involved user');
+      let updateReportAffected = 0;
+      if (typeof manager.getRepository === 'function') {
+        const res = await manager.getRepository(MissingSignTypeReport)
+          .createQueryBuilder()
+          .update(MissingSignTypeReport)
+          .set({
+            status: MissingTypeStatus.REJECTED,
+            staffNotes: reason,
+            reviewedBy: adminId,
+            updatedAt: new Date(),
+          })
+          .where('id = :id AND status = :status', { id: reportId, status: MissingTypeStatus.ESCALATED_ADMIN })
+          .execute();
+        updateReportAffected = res.affected ?? 0;
+      } else if (typeof manager.query === 'function') {
+        const updatedReports: any[] = await manager.query(
+          `UPDATE missing_sign_type_reports
+           SET status = $2, staff_notes = $3, reviewed_by = $4, updated_at = NOW()
+           WHERE id = $1 AND status = $5
+           RETURNING id`,
+          [reportId, MissingTypeStatus.REJECTED, reason, adminId, MissingTypeStatus.ESCALATED_ADMIN],
+        );
+        updateReportAffected = getAffectedRowCount(updatedReports);
+      }
+      if (updateReportAffected !== 1) throw new ConflictException('Report state changed while banning involved user');
 
-      await manager.query(
-        `UPDATE users SET status = 'BANNED', updated_at = NOW() WHERE id = $1`,
-        [target.id],
-      );
-      await manager.query(
-        `INSERT INTO user_status_history (user_id, old_status, new_status, reason, changed_by)
-         VALUES ($1, $2::user_status, 'BANNED'::user_status, $3, $4)`,
-        [target.id, target.status, reason, adminId],
-      );
-      await manager.query(
-        `INSERT INTO audit_logs
-           (user_id, action, resource_name, resource_id, old_values, new_values)
-         VALUES ($1, 'ADMIN_NEW_SIGN_USER_BAN', 'users', $2, $3::jsonb, $4::jsonb)`,
-        [
-          adminId,
-          target.id,
-          JSON.stringify({ status: target.status }),
-          JSON.stringify({ status: 'BANNED', reason, reportId, targetRole }),
-        ],
-      );
+      if (typeof manager.getRepository === 'function') {
+        await manager.getRepository(User).update(target.id, {
+          status: UserStatus.BANNED,
+          updatedAt: new Date(),
+        });
+        const statRepo = manager.getRepository(UserStatusHistory);
+        await statRepo.save(statRepo.create({
+          userId: target.id,
+          oldStatus: target.status,
+          newStatus: 'BANNED',
+          reason,
+          changedBy: adminId,
+        }));
+        const audRepo = manager.getRepository(AuditLog);
+        await audRepo.save(audRepo.create({
+          userId: adminId,
+          action: 'ADMIN_NEW_SIGN_USER_BAN',
+          resourceName: 'users',
+          resourceId: target.id,
+          oldValues: { status: target.status },
+          newValues: { status: 'BANNED', reason, reportId, targetRole },
+        }));
+      } else if (typeof manager.query === 'function') {
+        await manager.query(
+          `UPDATE users SET status = 'BANNED', updated_at = NOW() WHERE id = $1`,
+          [target.id],
+        );
+        await manager.query(
+          `INSERT INTO user_status_history (user_id, old_status, new_status, reason, changed_by)
+           VALUES ($1, $2::user_status, 'BANNED'::user_status, $3, $4)`,
+          [target.id, target.status, reason, adminId],
+        );
+        await manager.query(
+          `INSERT INTO audit_logs
+             (user_id, action, resource_name, resource_id, old_values, new_values)
+           VALUES ($1, 'ADMIN_NEW_SIGN_USER_BAN', 'users', $2, $3::jsonb, $4::jsonb)`,
+          [
+            adminId,
+            target.id,
+            JSON.stringify({ status: target.status }),
+            JSON.stringify({ status: 'BANNED', reason, reportId, targetRole }),
+          ],
+        );
+      }
       await this.resolveAdminReportCase(
         manager,
         reportId,
@@ -622,8 +1080,8 @@ export class ModerationService {
         `${targetRole} user ${target.id} banned: ${reason}`,
       );
       return {
-        reporterId: report.reporter_id,
-        proposedName: report.proposed_name,
+        reporterId: report.reporterId,
+        proposedName: report.proposedName,
         targetUserId: target.id,
         previousStatus: target.status,
       };
@@ -648,13 +1106,55 @@ export class ModerationService {
     actionType: string,
     reason: string,
   ): Promise<string> {
+    let caseId: string | undefined;
+    if (typeof manager.getRepository === 'function') {
+      const caseRepo = manager.getRepository(ModerationCase);
+      const actionRepo = manager.getRepository(ModerationAction);
+      const existingCase = await caseRepo
+        .createQueryBuilder('c')
+        .setLock('pessimistic_write')
+        .where('c.targetEntityType = :targetEntityType AND c.targetEntityId = :targetEntityId', {
+          targetEntityType: 'missing_sign_type_report',
+          targetEntityId: reportId,
+        })
+        .orderBy('c.createdAt', 'DESC')
+        .getOne();
+      if (existingCase) {
+        caseId = existingCase.id;
+        await caseRepo.update(caseId, {
+          status: ModerationStatus.RESOLVED,
+          resolutionNote: reason,
+          resolvedAt: new Date(),
+        });
+      } else {
+        const newCase = caseRepo.create({
+          caseType: ModerationType.CATALOG_PROPOSAL,
+          targetEntityType: 'missing_sign_type_report',
+          targetEntityId: reportId,
+          assignedStaffId: adminId,
+          status: ModerationStatus.RESOLVED,
+          resolutionNote: reason,
+          resolvedAt: new Date(),
+        });
+        const savedCase = await caseRepo.save(newCase);
+        caseId = savedCase.id;
+      }
+      if (!caseId) throw new Error('Failed to resolve admin report moderation case');
+      await actionRepo.save(actionRepo.create({
+        caseId,
+        actionType,
+        performedBy: adminId,
+        note: reason,
+      }));
+      return caseId;
+    }
     const caseRows: any[] = await manager.query(
       `SELECT id FROM moderation_cases
        WHERE target_entity_type = 'missing_sign_type_report' AND target_entity_id = $1
        ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
       [reportId],
     );
-    let caseId: string | undefined = caseRows[0]?.id;
+    caseId = caseRows[0]?.id;
     if (caseId) {
       await manager.query(
         `UPDATE moderation_cases
@@ -689,73 +1189,159 @@ export class ModerationService {
   ) {
     let surveyorId: string | null = null;
     const result = await this.dataSource.transaction(async (manager) => {
-      const reportRows: any[] = await manager.query(
-        `SELECT id, candidate_id, reporter_id, proposed_name, status
-         FROM missing_sign_type_reports
-         WHERE id = $1
-         FOR UPDATE`,
-        [reportId],
-      );
-      const report = reportRows[0];
+      let report: { id: string; candidateId?: string | null; reporterId?: string | null; proposedName?: string | null; status: MissingTypeStatus } | null = null;
+      if (typeof manager.getRepository === 'function') {
+        const found = await manager.getRepository(MissingSignTypeReport)
+          .createQueryBuilder('r')
+          .setLock('pessimistic_write')
+          .where('r.id = :id', { id: reportId })
+          .getOne();
+        if (found) {
+          report = {
+            id: found.id,
+            candidateId: found.candidateId,
+            reporterId: found.reporterId,
+            proposedName: found.proposedName,
+            status: found.status,
+          };
+        }
+      } else if (typeof manager.query === 'function') {
+        const reportRows: any[] = await manager.query(
+          `SELECT id, candidate_id, reporter_id, proposed_name, status
+           FROM missing_sign_type_reports
+           WHERE id = $1
+           FOR UPDATE`,
+          [reportId],
+        );
+        if (reportRows[0]) {
+          report = {
+            id: reportRows[0].id,
+            candidateId: reportRows[0].candidate_id,
+            reporterId: reportRows[0].reporter_id,
+            proposedName: reportRows[0].proposed_name,
+            status: reportRows[0].status,
+          };
+        }
+      }
       if (!report) throw new NotFoundException('MissingSignTypeReport ' + reportId + ' not found');
       if (report.status !== expectedStatus) {
         throw new BadRequestException('Report status must be ' + expectedStatus + ' to request recapture');
       }
-      if (!report.candidate_id) {
+      if (!report.candidateId) {
         throw new BadRequestException('A candidate-linked report is required to request recapture');
       }
 
-      const candidateRows: any[] = await manager.query(
-        `SELECT id, status
-         FROM unverified_sign_candidates
-         WHERE id = $1
-         FOR UPDATE`,
-        [report.candidate_id],
-      );
-      const candidate = candidateRows[0];
-      if (!candidate) throw new NotFoundException('Candidate ' + report.candidate_id + ' not found');
+      let candidate: { id: string; status: CandidateStatus } | null = null;
+      if (typeof manager.getRepository === 'function') {
+        candidate = await manager.getRepository(UnverifiedSignCandidate)
+          .createQueryBuilder('c')
+          .setLock('pessimistic_write')
+          .where('c.id = :id', { id: report.candidateId })
+          .getOne();
+      } else if (typeof manager.query === 'function') {
+        const candidateRows: any[] = await manager.query(
+          `SELECT id, status
+           FROM unverified_sign_candidates
+           WHERE id = $1
+           FOR UPDATE`,
+          [report.candidateId],
+        );
+        candidate = candidateRows[0] ?? null;
+      }
+      if (!candidate) throw new NotFoundException('Candidate ' + report.candidateId + ' not found');
       if (candidate.status !== CandidateStatus.MISSING_TYPE_HOLD) {
         throw new BadRequestException('Candidate must be on MISSING_TYPE_HOLD to request recapture');
       }
 
-      const activeRequests: any[] = await manager.query(
-        `SELECT id FROM candidate_recapture_requests
-         WHERE candidate_id = $1 AND completed_at IS NULL
-         FOR UPDATE`,
-        [candidate.id],
-      );
-      if (activeRequests.length > 0) {
+      let activeRequestsCount = 0;
+      if (typeof manager.getRepository === 'function') {
+        activeRequestsCount = await manager.getRepository(CandidateRecaptureRequest)
+          .createQueryBuilder('r')
+          .setLock('pessimistic_write')
+          .where('r.candidateId = :candidateId AND r.completedAt IS NULL', { candidateId: candidate.id })
+          .getCount();
+      } else if (typeof manager.query === 'function') {
+        const activeRequests: any[] = await manager.query(
+          `SELECT id FROM candidate_recapture_requests
+           WHERE candidate_id = $1 AND completed_at IS NULL
+           FOR UPDATE`,
+          [candidate.id],
+        );
+        activeRequestsCount = activeRequests.length;
+      }
+      if (activeRequestsCount > 0) {
         throw new ConflictException('An active recapture request already exists for candidate ' + candidate.id);
       }
       surveyorId = await this.selectRandomActiveSurveyor(manager);
 
-      const updatedReports: any[] = await manager.query(
-        `UPDATE missing_sign_type_reports
-         SET status = $2, staff_notes = COALESCE($3, staff_notes), reviewed_by = $4, updated_at = NOW()
-         WHERE id = $1 AND status = $5
-         RETURNING id`,
-        [reportId, MissingTypeStatus.INCOMPLETE, note, staffId, expectedStatus],
-      );
-      if (getAffectedRowCount(updatedReports) !== 1) throw new ConflictException('Report state changed before recapture request creation');
+      let updateReportAffected = 0;
+      if (typeof manager.getRepository === 'function') {
+        const res = await manager.getRepository(MissingSignTypeReport)
+          .createQueryBuilder()
+          .update(MissingSignTypeReport)
+          .set({
+            status: MissingTypeStatus.INCOMPLETE,
+            ...(note != null ? { staffNotes: note } : {}),
+            reviewedBy: staffId,
+            updatedAt: new Date(),
+          })
+          .where('id = :id AND status = :status', { id: reportId, status: expectedStatus })
+          .execute();
+        updateReportAffected = res.affected ?? 0;
+      } else if (typeof manager.query === 'function') {
+        const updatedReports: any[] = await manager.query(
+          `UPDATE missing_sign_type_reports
+           SET status = $2, staff_notes = COALESCE($3, staff_notes), reviewed_by = $4, updated_at = NOW()
+           WHERE id = $1 AND status = $5
+           RETURNING id`,
+          [reportId, MissingTypeStatus.INCOMPLETE, note, staffId, expectedStatus],
+        );
+        updateReportAffected = getAffectedRowCount(updatedReports);
+      }
+      if (updateReportAffected !== 1) throw new ConflictException('Report state changed before recapture request creation');
 
-      const updatedCandidates: any[] = await manager.query(
-        `UPDATE unverified_sign_candidates
-         SET status = $2
-         WHERE id = $1 AND status = $3
-         RETURNING id`,
-        [candidate.id, CandidateStatus.RECAPTURE_REQUESTED, CandidateStatus.MISSING_TYPE_HOLD],
-      );
-      if (getAffectedRowCount(updatedCandidates) !== 1) {
+      let updateCandAffected = 0;
+      if (typeof manager.getRepository === 'function') {
+        const res = await manager.getRepository(UnverifiedSignCandidate)
+          .createQueryBuilder()
+          .update(UnverifiedSignCandidate)
+          .set({ status: CandidateStatus.RECAPTURE_REQUESTED })
+          .where('id = :id AND status = :status', { id: candidate.id, status: CandidateStatus.MISSING_TYPE_HOLD })
+          .execute();
+        updateCandAffected = res.affected ?? 0;
+      } else if (typeof manager.query === 'function') {
+        const updatedCandidates: any[] = await manager.query(
+          `UPDATE unverified_sign_candidates
+           SET status = $2
+           WHERE id = $1 AND status = $3
+           RETURNING id`,
+          [candidate.id, CandidateStatus.RECAPTURE_REQUESTED, CandidateStatus.MISSING_TYPE_HOLD],
+        );
+        updateCandAffected = getAffectedRowCount(updatedCandidates);
+      }
+      if (updateCandAffected !== 1) {
         throw new ConflictException('Candidate state changed before recapture request creation');
       }
 
       try {
-        await manager.query(
-          `INSERT INTO candidate_recapture_requests
-             (candidate_id, reviewer_id, surveyor_id, missing_type_report_id, reason, note)
-           VALUES ($1, $2, $3, $4, 'MISSING_TYPE_RECAPTURE_REQUESTED', $5)`,
-          [candidate.id, staffId, surveyorId, reportId, note],
-        );
+        if (typeof manager.getRepository === 'function') {
+          const recRepo = manager.getRepository(CandidateRecaptureRequest);
+          await recRepo.save(recRepo.create({
+            candidateId: candidate.id,
+            reviewerId: staffId,
+            surveyorId,
+            missingTypeReportId: reportId,
+            reason: 'MISSING_TYPE_RECAPTURE_REQUESTED',
+            note,
+          }));
+        } else if (typeof manager.query === 'function') {
+          await manager.query(
+            `INSERT INTO candidate_recapture_requests
+               (candidate_id, reviewer_id, surveyor_id, missing_type_report_id, reason, note)
+             VALUES ($1, $2, $3, $4, 'MISSING_TYPE_RECAPTURE_REQUESTED', $5)`,
+            [candidate.id, staffId, surveyorId, reportId, note],
+          );
+        }
       } catch (error: any) {
         if (error?.code === '23505' || String(error?.detail ?? '').includes('uq_candidate_recapture_requests_one_active')) {
           throw new ConflictException('An active recapture request already exists for candidate ' + candidate.id);
@@ -763,37 +1349,79 @@ export class ModerationService {
         throw error;
       }
 
-      const reportCaseRows: any[] = await manager.query(
-        `SELECT id FROM moderation_cases
-         WHERE target_entity_type = 'missing_sign_type_report' AND target_entity_id = $1
-         ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
-        [reportId],
-      );
-      let moderationCaseId: string | undefined = reportCaseRows[0]?.id;
-      if (moderationCaseId) {
+      let moderationCaseId: string | undefined;
+      if (typeof manager.getRepository === 'function') {
+        const caseRepo = manager.getRepository(ModerationCase);
+        const actionRepo = manager.getRepository(ModerationAction);
+        const reportCase = await caseRepo
+          .createQueryBuilder('c')
+          .setLock('pessimistic_write')
+          .where('c.targetEntityType = :targetEntityType AND c.targetEntityId = :targetEntityId', {
+            targetEntityType: 'missing_sign_type_report',
+            targetEntityId: reportId,
+          })
+          .orderBy('c.createdAt', 'DESC')
+          .getOne();
+        if (reportCase) {
+          moderationCaseId = reportCase.id;
+          await caseRepo.update(moderationCaseId, {
+            status: ModerationStatus.RESOLVED,
+            resolutionNote: note,
+            resolvedAt: new Date(),
+          });
+        } else {
+          const newCase = caseRepo.create({
+            caseType: ModerationType.CATALOG_PROPOSAL,
+            targetEntityType: 'candidate',
+            targetEntityId: candidate.id,
+            assignedStaffId: staffId,
+            status: ModerationStatus.RESOLVED,
+            resolutionNote: note,
+            resolvedAt: new Date(),
+          });
+          const savedCase = await caseRepo.save(newCase);
+          moderationCaseId = savedCase.id;
+        }
+        if (!moderationCaseId) throw new Error('Failed to create recapture moderation case');
+        await actionRepo.save(actionRepo.create({
+          caseId: moderationCaseId,
+          actionType: 'REQUEST_RECAPTURE',
+          performedBy: staffId,
+          note,
+        }));
+      } else if (typeof manager.query === 'function') {
+        const reportCaseRows: any[] = await manager.query(
+          `SELECT id FROM moderation_cases
+           WHERE target_entity_type = 'missing_sign_type_report' AND target_entity_id = $1
+           ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
+          [reportId],
+        );
+        moderationCaseId = reportCaseRows[0]?.id;
+        if (moderationCaseId) {
+          await manager.query(
+            `UPDATE moderation_cases
+             SET status = $2, resolution_note = $3, resolved_at = NOW()
+             WHERE id = $1`,
+            [moderationCaseId, ModerationStatus.RESOLVED, note],
+          );
+        } else {
+          const caseRows: any[] = await manager.query(
+            `INSERT INTO moderation_cases
+               (case_type, target_entity_type, target_entity_id, assigned_staff_id, status, resolution_note, resolved_at)
+             VALUES ($1, 'candidate', $2, $3, $4, $5, NOW())
+             RETURNING id`,
+            [ModerationType.CATALOG_PROPOSAL, candidate.id, staffId, ModerationStatus.RESOLVED, note],
+          );
+          moderationCaseId = caseRows[0]?.id;
+        }
+        if (!moderationCaseId) throw new Error('Failed to create recapture moderation case');
         await manager.query(
-          `UPDATE moderation_cases
-           SET status = $2, resolution_note = $3, resolved_at = NOW()
-           WHERE id = $1`,
-          [moderationCaseId, ModerationStatus.RESOLVED, note],
+          `INSERT INTO moderation_actions (case_id, action_type, performed_by, note)
+           VALUES ($1, 'REQUEST_RECAPTURE', $2, $3)`,
+          [moderationCaseId, staffId, note],
         );
-      } else {
-        const caseRows: any[] = await manager.query(
-          `INSERT INTO moderation_cases
-             (case_type, target_entity_type, target_entity_id, assigned_staff_id, status, resolution_note, resolved_at)
-           VALUES ($1, 'candidate', $2, $3, $4, $5, NOW())
-           RETURNING id`,
-          [ModerationType.CATALOG_PROPOSAL, candidate.id, staffId, ModerationStatus.RESOLVED, note],
-        );
-        moderationCaseId = caseRows[0]?.id;
       }
-      if (!moderationCaseId) throw new Error('Failed to create recapture moderation case');
-      await manager.query(
-        `INSERT INTO moderation_actions (case_id, action_type, performed_by, note)
-         VALUES ($1, 'REQUEST_RECAPTURE', $2, $3)`,
-        [moderationCaseId, staffId, note],
-      );
-      return { reporterId: report.reporter_id, proposedName: report.proposed_name, candidateId: candidate.id };
+      return { reporterId: report.reporterId, proposedName: report.proposedName, candidateId: candidate.id };
     });
 
     if (result.reporterId) {
@@ -828,6 +1456,21 @@ export class ModerationService {
   }
 
   private async selectRandomActiveSurveyor(manager: EntityManager): Promise<string> {
+    if (typeof manager.getRepository === 'function') {
+      const surveyor = await manager.getRepository(User)
+        .createQueryBuilder('u')
+        .innerJoin('u.userRoles', 'ur')
+        .innerJoin('ur.role', 'role')
+        .where('u.status = :status', { status: UserStatus.ACTIVE })
+        .andWhere('ur.isActive = true')
+        .andWhere('role.code = :roleCode', { roleCode: 'SURVEYOR' })
+        .orderBy('RANDOM()')
+        .getOne();
+      if (!surveyor) {
+        throw new BadRequestException('No active surveyor is available for recapture assignment');
+      }
+      return surveyor.id;
+    }
     const surveyors: Array<{ id: string }> = await manager.query(
       `SELECT u.id
        FROM users u
@@ -995,18 +1638,38 @@ export class ModerationService {
     } else if (actionType === 'REQUEST_RECAPTURE' && mc.targetEntityType === 'candidate' && mc.targetEntityId) {
       try {
         await this.candRepo.update(mc.targetEntityId, { status: CandidateStatus.RECAPTURE_REQUESTED });
-        const subRows: any[] = await this.dataSource.query(
-          `SELECT s.surveyor_id FROM survey_submissions s
-           JOIN unverified_sign_candidates c ON c.submission_id = s.id
-           WHERE c.id = $1`,
-          [mc.targetEntityId],
-        );
-        const surveyorId = subRows[0]?.surveyor_id ?? null;
-        await this.dataSource.query(
-          `INSERT INTO candidate_recapture_requests (candidate_id, reviewer_id, surveyor_id, reason, note)
-           VALUES ($1, $2, $3, 'MODERATION_RECAPTURE_REQUESTED', $4)`,
-          [mc.targetEntityId, staffId, surveyorId, dto.resolutionNote],
-        );
+        let surveyorId: string | null = null;
+        if (this.candRepo && typeof this.candRepo.createQueryBuilder === 'function') {
+          const candWithSub = await this.candRepo.createQueryBuilder('c')
+            .leftJoinAndSelect('c.submission', 's')
+            .where('c.id = :id', { id: mc.targetEntityId })
+            .getOne();
+          surveyorId = candWithSub?.submission?.surveyorId ?? null;
+        }
+        if (!surveyorId && typeof this.dataSource?.query === 'function') {
+          const subRows: any[] = await this.dataSource.query(
+            `SELECT s.surveyor_id FROM survey_submissions s
+             JOIN unverified_sign_candidates c ON c.submission_id = s.id
+             WHERE c.id = $1`,
+            [mc.targetEntityId],
+          );
+          surveyorId = subRows[0]?.surveyor_id ?? null;
+        }
+        if (this.recaptureRepo && typeof this.recaptureRepo.save === 'function') {
+          await this.recaptureRepo.save(this.recaptureRepo.create({
+            candidateId: mc.targetEntityId,
+            reviewerId: staffId,
+            surveyorId,
+            reason: 'MODERATION_RECAPTURE_REQUESTED',
+            note: dto.resolutionNote,
+          }));
+        } else if (typeof this.dataSource?.query === 'function') {
+          await this.dataSource.query(
+            `INSERT INTO candidate_recapture_requests (candidate_id, reviewer_id, surveyor_id, reason, note)
+             VALUES ($1, $2, $3, 'MODERATION_RECAPTURE_REQUESTED', $4)`,
+            [mc.targetEntityId, staffId, surveyorId, dto.resolutionNote],
+          );
+        }
         if (surveyorId && this.notificationsService) {
           await this.notificationsService.create(
             surveyorId,
@@ -1042,40 +1705,82 @@ export class ModerationService {
   private async resolveRecaptureCase(caseId: string, staffId: string, dto: ResolveCaseDto) {
     let surveyorId: string | null = null;
     const resolved = await this.dataSource.transaction(async (manager) => {
-      const caseRows: any[] = await manager.query(
-        `SELECT * FROM moderation_cases WHERE id = $1 FOR UPDATE`,
-        [caseId],
-      );
-      const moderationCase = caseRows[0];
+      let moderationCase: { id: string; targetEntityId: string; status: ModerationStatus; target_entity_id?: string } | null = null;
+      if (typeof manager.getRepository === 'function') {
+        const found = await manager.getRepository(ModerationCase)
+          .createQueryBuilder('c')
+          .setLock('pessimistic_write')
+          .where('c.id = :id', { id: caseId })
+          .getOne();
+        if (found) moderationCase = { id: found.id, targetEntityId: found.targetEntityId, status: found.status };
+      } else if (typeof manager.query === 'function') {
+        const caseRows: any[] = await manager.query(
+          `SELECT * FROM moderation_cases WHERE id = $1 FOR UPDATE`,
+          [caseId],
+        );
+        if (caseRows[0]) moderationCase = { id: caseRows[0].id, targetEntityId: caseRows[0].target_entity_id, status: caseRows[0].status, target_entity_id: caseRows[0].target_entity_id };
+      }
       if (!moderationCase) throw new NotFoundException('ModerationCase ' + caseId + ' not found');
       if (moderationCase.status === ModerationStatus.RESOLVED) throw new BadRequestException('Case is already resolved');
 
-      const candidateRows: any[] = await manager.query(
-        `SELECT c.id, c.status
-         FROM unverified_sign_candidates c
-         WHERE c.id = $1
-         FOR UPDATE OF c`,
-        [moderationCase.target_entity_id],
-      );
-      const candidate = candidateRows[0];
-      if (!candidate) throw new NotFoundException('Candidate ' + moderationCase.target_entity_id + ' not found');
+      const targetEntityId = moderationCase.targetEntityId || moderationCase.target_entity_id!;
+      let candidate: { id: string; status: CandidateStatus } | null = null;
+      if (typeof manager.getRepository === 'function') {
+        const found = await manager.getRepository(UnverifiedSignCandidate)
+          .createQueryBuilder('c')
+          .setLock('pessimistic_write')
+          .where('c.id = :id', { id: targetEntityId })
+          .getOne();
+        if (found) candidate = { id: found.id, status: found.status };
+      } else if (typeof manager.query === 'function') {
+        const candidateRows: any[] = await manager.query(
+          `SELECT c.id, c.status
+           FROM unverified_sign_candidates c
+           WHERE c.id = $1
+           FOR UPDATE OF c`,
+          [targetEntityId],
+        );
+        candidate = candidateRows[0] ?? null;
+      }
+      if (!candidate) throw new NotFoundException('Candidate ' + targetEntityId + ' not found');
       if ([CandidateStatus.VERIFIED, CandidateStatus.REJECTED, CandidateStatus.RECAPTURE_REQUESTED].includes(candidate.status)) {
         throw new BadRequestException(`Cannot request recapture for candidate ${candidate.id} with status ${candidate.status}`);
       }
-      const activeRows: any[] = await manager.query(
-        `SELECT id FROM candidate_recapture_requests
-         WHERE candidate_id = $1 AND completed_at IS NULL
-         FOR UPDATE`,
-        [candidate.id],
-      );
-      if (activeRows.length > 0) throw new ConflictException(`An active recapture request already exists for candidate ${candidate.id}`);
 
-      const reportRows: any[] = await manager.query(
-        `SELECT id FROM missing_sign_type_reports
-         WHERE candidate_id = $1 AND status = 'INCOMPLETE'
-         FOR UPDATE`,
-        [candidate.id],
-      );
+      let activeRequestsCount = 0;
+      if (typeof manager.getRepository === 'function') {
+        activeRequestsCount = await manager.getRepository(CandidateRecaptureRequest)
+          .createQueryBuilder('r')
+          .setLock('pessimistic_write')
+          .where('r.candidateId = :candidateId AND r.completedAt IS NULL', { candidateId: candidate.id })
+          .getCount();
+      } else if (typeof manager.query === 'function') {
+        const activeRows: any[] = await manager.query(
+          `SELECT id FROM candidate_recapture_requests
+           WHERE candidate_id = $1 AND completed_at IS NULL
+           FOR UPDATE`,
+          [candidate.id],
+        );
+        activeRequestsCount = activeRows.length;
+      }
+      if (activeRequestsCount > 0) throw new ConflictException(`An active recapture request already exists for candidate ${candidate.id}`);
+
+      let reportRows: Array<{ id: string }> = [];
+      if (typeof manager.getRepository === 'function') {
+        const reports = await manager.getRepository(MissingSignTypeReport)
+          .createQueryBuilder('r')
+          .setLock('pessimistic_write')
+          .where('r.candidateId = :candidateId AND r.status = :status', { candidateId: candidate.id, status: MissingTypeStatus.INCOMPLETE })
+          .getMany();
+        reportRows = reports.map((r) => ({ id: r.id }));
+      } else if (typeof manager.query === 'function') {
+        reportRows = await manager.query(
+          `SELECT id FROM missing_sign_type_reports
+           WHERE candidate_id = $1 AND status = 'INCOMPLETE'
+           FOR UPDATE`,
+          [candidate.id],
+        );
+      }
       if (reportRows.length !== 1) {
         throw new BadRequestException(
           `Cannot request recapture for candidate ${candidate.id}: expected exactly one INCOMPLETE Missing Type Report, found ${reportRows.length}`,
@@ -1083,21 +1788,48 @@ export class ModerationService {
       }
       surveyorId = await this.selectRandomActiveSurveyor(manager);
 
-      const candidateUpdate = await manager.query(
-        `UPDATE unverified_sign_candidates
-         SET status = 'RECAPTURE_REQUESTED'
-         WHERE id = $1 AND status NOT IN ('VERIFIED', 'REJECTED', 'RECAPTURE_REQUESTED')`,
-        [candidate.id],
-      );
-      if (getAffectedRowCount(candidateUpdate) !== 1) throw new BadRequestException('Candidate state changed before recapture request creation');
+      let updateCandAffected = 0;
+      if (typeof manager.getRepository === 'function') {
+        const res = await manager.getRepository(UnverifiedSignCandidate)
+          .createQueryBuilder()
+          .update(UnverifiedSignCandidate)
+          .set({ status: CandidateStatus.RECAPTURE_REQUESTED })
+          .where('id = :id AND status NOT IN (:...excludeStatuses)', {
+            id: candidate.id,
+            excludeStatuses: [CandidateStatus.VERIFIED, CandidateStatus.REJECTED, CandidateStatus.RECAPTURE_REQUESTED],
+          })
+          .execute();
+        updateCandAffected = res.affected ?? 0;
+      } else if (typeof manager.query === 'function') {
+        const candidateUpdate = await manager.query(
+          `UPDATE unverified_sign_candidates
+           SET status = 'RECAPTURE_REQUESTED'
+           WHERE id = $1 AND status NOT IN ('VERIFIED', 'REJECTED', 'RECAPTURE_REQUESTED')`,
+          [candidate.id],
+        );
+        updateCandAffected = getAffectedRowCount(candidateUpdate);
+      }
+      if (updateCandAffected !== 1) throw new BadRequestException('Candidate state changed before recapture request creation');
 
       try {
-        await manager.query(
-          `INSERT INTO candidate_recapture_requests
-             (candidate_id, reviewer_id, surveyor_id, missing_type_report_id, reason, note)
-           VALUES ($1, $2, $3, $4, 'MODERATION_RECAPTURE_REQUESTED', $5)`,
-          [candidate.id, staffId, surveyorId, reportRows[0].id, dto.resolutionNote ?? null],
-        );
+        if (typeof manager.getRepository === 'function') {
+          const recRepo = manager.getRepository(CandidateRecaptureRequest);
+          await recRepo.save(recRepo.create({
+            candidateId: candidate.id,
+            reviewerId: staffId,
+            surveyorId,
+            missingTypeReportId: reportRows[0].id,
+            reason: 'MODERATION_RECAPTURE_REQUESTED',
+            note: dto.resolutionNote ?? null,
+          }));
+        } else if (typeof manager.query === 'function') {
+          await manager.query(
+            `INSERT INTO candidate_recapture_requests
+               (candidate_id, reviewer_id, surveyor_id, missing_type_report_id, reason, note)
+             VALUES ($1, $2, $3, $4, 'MODERATION_RECAPTURE_REQUESTED', $5)`,
+            [candidate.id, staffId, surveyorId, reportRows[0].id, dto.resolutionNote ?? null],
+          );
+        }
       } catch (error: any) {
         if (error?.code === '23505' || String(error?.detail ?? '').includes('uq_candidate_recapture_requests_one_active')) {
           throw new ConflictException(`An active recapture request already exists for candidate ${candidate.id}`);
@@ -1105,19 +1837,39 @@ export class ModerationService {
         throw error;
       }
 
-      const updatedCases: any[] = await manager.query(
-        `UPDATE moderation_cases
-         SET status = 'RESOLVED', resolution_note = $2, resolved_at = NOW(), assigned_staff_id = COALESCE(assigned_staff_id, $3)
-         WHERE id = $1
-         RETURNING *`,
-        [caseId, dto.resolutionNote ?? null, staffId],
-      );
-      await manager.query(
-        `INSERT INTO moderation_actions (case_id, action_type, performed_by, note)
-         VALUES ($1, $2, $3, $4)`,
-        [caseId, 'REQUEST_RECAPTURE', staffId, dto.actionNote ?? dto.resolutionNote ?? null],
-      );
-      return updatedCases[0];
+      let updatedCaseResult: any;
+      if (typeof manager.getRepository === 'function') {
+        const caseRepo = manager.getRepository(ModerationCase);
+        const actionRepo = manager.getRepository(ModerationAction);
+        await caseRepo.update(caseId, {
+          status: ModerationStatus.RESOLVED,
+          resolutionNote: dto.resolutionNote ?? null as any,
+          resolvedAt: new Date(),
+          assignedStaffId: staffId,
+        });
+        updatedCaseResult = await caseRepo.findOne({ where: { id: caseId } });
+        await actionRepo.save(actionRepo.create({
+          caseId,
+          actionType: 'REQUEST_RECAPTURE',
+          performedBy: staffId,
+          note: dto.actionNote ?? dto.resolutionNote ?? null,
+        }));
+      } else if (typeof manager.query === 'function') {
+        const updatedCases: any[] = await manager.query(
+          `UPDATE moderation_cases
+           SET status = 'RESOLVED', resolution_note = $2, resolved_at = NOW(), assigned_staff_id = COALESCE(assigned_staff_id, $3)
+           WHERE id = $1
+           RETURNING *`,
+          [caseId, dto.resolutionNote ?? null, staffId],
+        );
+        await manager.query(
+          `INSERT INTO moderation_actions (case_id, action_type, performed_by, note)
+           VALUES ($1, $2, $3, $4)`,
+          [caseId, 'REQUEST_RECAPTURE', staffId, dto.actionNote ?? dto.resolutionNote ?? null],
+        );
+        updatedCaseResult = updatedCases[0];
+      }
+      return updatedCaseResult;
     });
 
     if (surveyorId && this.notificationsService) {
@@ -1157,20 +1909,35 @@ export class ModerationService {
 
     let repUrl: string | null = null;
     if (report.candidateId) {
-      const candRows: any[] = await this.dataSource.query(
-        'SELECT sign_crop_url, best_frame_url FROM unverified_sign_candidates WHERE id = $1',
-        [report.candidateId],
-      );
-      repUrl = candRows[0]?.sign_crop_url || candRows[0]?.best_frame_url || null;
+      if (this.candRepo && typeof this.candRepo.findOne === 'function') {
+        const cand = await this.candRepo.findOne({ where: { id: report.candidateId } });
+        repUrl = cand?.signCropUrl || cand?.bestFrameUrl || null;
+      }
+      if (!repUrl && typeof this.dataSource?.query === 'function') {
+        const candRows: any[] = await this.dataSource.query(
+          'SELECT sign_crop_url, best_frame_url FROM unverified_sign_candidates WHERE id = $1',
+          [report.candidateId],
+        );
+        repUrl = candRows[0]?.sign_crop_url || candRows[0]?.best_frame_url || null;
+      }
     }
     if (!repUrl) {
       repUrl = `https://s3.signmap.site/stm-sign-crops/representative/${signCode}.png`;
     }
-    await this.dataSource.query(
-      `INSERT INTO sign_type_images (sign_type_id, image_url, image_type, is_primary, uploaded_at)
-       VALUES ($1, $2, 'REPRESENTATIVE', true, now())`,
-      [saved.id, repUrl],
-    );
+    if (this.signTypeImageRepo && typeof this.signTypeImageRepo.save === 'function') {
+      await this.signTypeImageRepo.save(this.signTypeImageRepo.create({
+        signTypeId: saved.id,
+        imageUrl: repUrl,
+        imageType: 'REPRESENTATIVE',
+        isPrimary: true,
+      }));
+    } else if (typeof this.dataSource?.query === 'function') {
+      await this.dataSource.query(
+        `INSERT INTO sign_type_images (sign_type_id, image_url, image_type, is_primary, uploaded_at)
+         VALUES ($1, $2, 'REPRESENTATIVE', true, now())`,
+        [saved.id, repUrl],
+      );
+    }
 
     report.status = MissingTypeStatus.APPROVED;
     report.mergedIntoSignTypeId = saved.id;
@@ -1219,12 +1986,21 @@ export class ModerationService {
     const [, rawPrefix, number, rawSuffix] = match;
     const prefix = rawPrefix.toUpperCase();
     const suffix = rawSuffix.toLowerCase();
-    if (prefix !== 'T') {
+const prefix = signCode.split('.')[0];
+if (prefix !== 'T' && !validPrefixes.includes(prefix)) {
+  throw new BadRequestException(/* thông báo hiện có */);
+}
       const existingPrefixes: Array<{ prefix: string }> = await this.dataSource.query(
         `SELECT DISTINCT split_part(upper(sign_code), '.', 1) AS prefix
          FROM traffic_sign_types
          WHERE upper(sign_code) ~ '^[A-Z]+\\.[0-9]+[A-Z0-9]*$'
          ORDER BY prefix`,
+if (prefix !== 'T' && !validPrefixes.includes(prefix)) {
+  throw new BadRequestException(
+    'signCode prefix must match an existing catalog prefix: ' +
+      (validPrefixes.join(', ') || '(none)'),
+  );
+}
       );
       const validPrefixes = existingPrefixes.map((row) => row.prefix);
       if (!validPrefixes.includes(prefix)) {
@@ -1290,12 +2066,19 @@ export class ModerationService {
 
   private async releaseCandidate(candidateId: string, signTypeId: number): Promise<void> {
     try {
-      await this.dataSource.query(
-        `UPDATE unverified_sign_candidates
-         SET predicted_sign_type_id = $1, status = 'PENDING_REVIEW'
-         WHERE id = $2::uuid AND status = 'MISSING_TYPE_HOLD'`,
-        [signTypeId, candidateId],
-      );
+      if (this.candRepo && typeof this.candRepo.update === 'function') {
+        await this.candRepo.update(
+          { id: candidateId, status: CandidateStatus.MISSING_TYPE_HOLD },
+          { predictedSignTypeId: signTypeId, status: CandidateStatus.PENDING_REVIEW },
+        );
+      } else {
+        await this.dataSource.query(
+          `UPDATE unverified_sign_candidates
+           SET predicted_sign_type_id = $1, status = 'PENDING_REVIEW'
+           WHERE id = $2::uuid AND status = 'MISSING_TYPE_HOLD'`,
+          [signTypeId, candidateId],
+        );
+      }
       this.logger.log('Released candidate ' + candidateId + ' to PENDING_REVIEW (type #' + signTypeId + ')');
     } catch (e: any) {
       this.logger.warn('Failed to release candidate ' + candidateId + ': ' + (e as any)?.message);
@@ -1327,15 +2110,35 @@ export class ModerationService {
     const ids = reports.filter(r => r.candidateId).map(r => r.candidateId as string);
     const byId = new Map<string, CandidateEnriched>();
     if (ids.length > 0) {
-      const rows: any[] = await this.dataSource.query(
-        `SELECT c.id, c.predicted_sign_type_id, c.confidence_score, c.best_frame_url, c.sign_crop_url, c.status,
-                ST_X(ge.sign_location::geometry) AS longitude,
-                ST_Y(ge.sign_location::geometry) AS latitude
-         FROM unverified_sign_candidates c
-         LEFT JOIN candidate_geo_estimations ge ON ge.candidate_id = c.id
-         WHERE c.id = ANY($1)`,
-        [ids],
-      );
+      let rows: any[] = [];
+      if (this.candRepo && typeof this.candRepo.createQueryBuilder === 'function') {
+        rows = await this.candRepo
+          .createQueryBuilder('c')
+          .leftJoin(CandidateGeoEstimation, 'ge', 'ge.candidateId = c.id')
+          .select([
+            'c.id AS id',
+            'c.predictedSignTypeId AS predicted_sign_type_id',
+            'c.confidenceScore AS confidence_score',
+            'c.bestFrameUrl AS best_frame_url',
+            'c.signCropUrl AS sign_crop_url',
+            'c.status AS status',
+            'ST_X(ge.signLocation::geometry) AS longitude',
+            'ST_Y(ge.signLocation::geometry) AS latitude',
+          ])
+          .where('c.id IN (:...ids)', { ids })
+          .getRawMany();
+      }
+      if (rows.length === 0 && typeof this.dataSource?.query === 'function') {
+        rows = await this.dataSource.query(
+          `SELECT c.id, c.predicted_sign_type_id, c.confidence_score, c.best_frame_url, c.sign_crop_url, c.status,
+                  ST_X(ge.sign_location::geometry) AS longitude,
+                  ST_Y(ge.sign_location::geometry) AS latitude
+           FROM unverified_sign_candidates c
+           LEFT JOIN candidate_geo_estimations ge ON ge.candidate_id = c.id
+           WHERE c.id = ANY($1)`,
+          [ids],
+        );
+      }
       for (const row of rows) {
         byId.set(row.id, {
           id: row.id,

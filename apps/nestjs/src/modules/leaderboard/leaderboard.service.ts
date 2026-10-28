@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { DataSource } from 'typeorm';
+import { User } from '../auth/infrastructure/persistence/user.entity';
 
 @Injectable()
 export class LeaderboardService {
@@ -34,22 +35,48 @@ export class LeaderboardService {
       this.logger.warn('mv_community_leaderboard query failed: ' + e?.message);
       // Fallback: compute on the fly from reviewer_profiles if view missing
       try {
-        const rows: any[] = await this.dataSource.query(
-          `SELECT u.id AS user_id, u.full_name, u.avatar_url,
-                  COALESCE(rp.total_reviews,0) AS total_reviews,
-                  COALESCE(rp.correct_reviews,0) AS correct_reviews,
-                  COALESCE(rp.accuracy_rate,0) AS accuracy_rate,
-                  COALESCE(rp.reliability_score,0) AS reliability_score,
-                  COALESCE(rp.current_streak,0) AS current_streak,
-                  COALESCE(sp.total_submissions,0) AS total_submissions,
-                  COALESCE(sp.total_verified_signs,0) AS total_verified_signs,
-                  COALESCE(w.balance,0)::bigint AS current_balance
-           FROM users u
-           LEFT JOIN reviewer_profiles rp ON rp.user_id = u.id
-           LEFT JOIN surveyor_profiles sp ON sp.user_id = u.id
-           LEFT JOIN wallets w ON w.user_id = u.id
-           ORDER BY COALESCE(rp.reliability_score,0) DESC LIMIT 500`,
-        );
+        let rows: any[] = [];
+        if (typeof this.dataSource?.getRepository === 'function') {
+          rows = await this.dataSource
+            .getRepository(User)
+            .createQueryBuilder('u')
+            .select([
+              'u.id AS user_id',
+              'u.fullName AS full_name',
+              'u.avatarUrl AS avatar_url',
+              'COALESCE(rp.total_reviews, 0) AS total_reviews',
+              'COALESCE(rp.correct_reviews, 0) AS correct_reviews',
+              'COALESCE(rp.accuracy_rate, 0) AS accuracy_rate',
+              'COALESCE(rp.reliability_score, 0) AS reliability_score',
+              'COALESCE(rp.current_streak, 0) AS current_streak',
+              'COALESCE(sp.total_submissions, 0) AS total_submissions',
+              'COALESCE(sp.total_verified_signs, 0) AS total_verified_signs',
+              'COALESCE(w.balance, 0)::bigint AS current_balance',
+            ])
+            .leftJoin('reviewer_profiles', 'rp', 'rp.user_id = u.id')
+            .leftJoin('surveyor_profiles', 'sp', 'sp.user_id = u.id')
+            .leftJoin('wallets', 'w', 'w.user_id = u.id')
+            .orderBy('COALESCE(rp.reliability_score, 0)', 'DESC')
+            .limit(500)
+            .getRawMany();
+        } else {
+          rows = await this.dataSource.query(
+            `SELECT u.id AS user_id, u.full_name, u.avatar_url,
+                    COALESCE(rp.total_reviews,0) AS total_reviews,
+                    COALESCE(rp.correct_reviews,0) AS correct_reviews,
+                    COALESCE(rp.accuracy_rate,0) AS accuracy_rate,
+                    COALESCE(rp.reliability_score,0) AS reliability_score,
+                    COALESCE(rp.current_streak,0) AS current_streak,
+                    COALESCE(sp.total_submissions,0) AS total_submissions,
+                    COALESCE(sp.total_verified_signs,0) AS total_verified_signs,
+                    COALESCE(w.balance,0)::bigint AS current_balance
+             FROM users u
+             LEFT JOIN reviewer_profiles rp ON rp.user_id = u.id
+             LEFT JOIN surveyor_profiles sp ON sp.user_id = u.id
+             LEFT JOIN wallets w ON w.user_id = u.id
+             ORDER BY COALESCE(rp.reliability_score,0) DESC LIMIT 500`,
+          );
+        }
         this.cache = { data: rows, expiresAt: now + this.TTL_MS };
         const start = (p - 1) * ps;
         const sliced = rows.slice(start, start + ps);

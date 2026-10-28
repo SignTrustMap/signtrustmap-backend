@@ -107,45 +107,7 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
   ) {}
 
   private async queryWithHealing<T>(sql: string, parameters?: unknown[]): Promise<T> {
-    try {
-      return (await this.repository.query(sql, parameters)) as T;
-    } catch (error: any) {
-      if (
-        error?.code === '42703' &&
-        (String(error?.message).includes('allowed_vehicles') ||
-          String(error?.message).includes('column sign_type.allowed_vehicles does not exist'))
-      ) {
-        try {
-          await this.repository.query(`
-            ALTER TABLE "traffic_sign_types"
-              ADD COLUMN IF NOT EXISTS "allowed_vehicles" text[]
-                NOT NULL DEFAULT ARRAY['CAR','MOTORCYCLE','TRUCK','BUS','BICYCLE','PEDESTRIAN']::text[];
-          `);
-          return (await this.repository.query(sql, parameters)) as T;
-        } catch {
-          throw error;
-        }
-      }
-      if (
-        error?.code === '42703' &&
-        (String(error?.message).includes('commune_code') ||
-          String(error?.message).includes('road_name') ||
-          String(error?.message).includes('display_address'))
-      ) {
-        try {
-          await this.repository.query(`
-            ALTER TABLE "verified_traffic_signs"
-              ADD COLUMN IF NOT EXISTS "commune_code" VARCHAR(5),
-              ADD COLUMN IF NOT EXISTS "road_name" VARCHAR(255),
-              ADD COLUMN IF NOT EXISTS "display_address" TEXT;
-          `);
-          return (await this.repository.query(sql, parameters)) as T;
-        } catch {
-          throw error;
-        }
-      }
-      throw error;
-    }
+    return (await this.repository.query(sql, parameters)) as T;
   }
 
   async findById(id: string): Promise<VerifiedSign | null> {

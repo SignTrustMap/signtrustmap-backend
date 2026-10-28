@@ -19,6 +19,12 @@ export class NavigationSession {
   @Column({ name: 'driver_id', type: 'uuid' })
   driverId: string;
 
+  @Column({ type: 'geometry', spatialFeatureType: 'Point', srid: 4326, nullable: true })
+  origin?: any;
+
+  @Column({ type: 'geometry', spatialFeatureType: 'Point', srid: 4326, nullable: true })
+  destination?: any;
+
   @Column({ name: 'credits_deducted', type: 'int', default: 0 })
   creditsDeducted: number;
 

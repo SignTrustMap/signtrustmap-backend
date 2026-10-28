@@ -92,30 +92,114 @@ export class HazardsService {
     }
 
     // 1. Spatial Deduplication Query: Active hazards within 300 meters
-    const existingRows: any[] = await this.dataSource.query(
-      `SELECT
-         id,
-         reported_by,
-         hazard_type, title, severity,
-         description,
-         status,
-         confirmations_count,
-         dismissals_count,
-         reward_paid,
-         expires_at,
-         created_at,
-         updated_at,
-         ST_Y(location::geometry) AS lat,
-         ST_X(location::geometry) AS lon,
-         ST_Distance(location::geography, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography) AS distance_meters
-       FROM road_hazard_events
-       WHERE ST_DWithin(location::geography, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, $3)
-         AND status IN ('UNCONFIRMED', 'CONFIRMED')
-         AND expires_at > NOW()
-       ORDER BY distance_meters ASC
-       LIMIT 1`,
-      [lon, lat, DEDUPLICATION_RADIUS_METERS],
-    );
+    let existingRows: any[];
+    if (this.hazardRepo?.createQueryBuilder) {
+      try {
+        const qb = this.hazardRepo
+          .createQueryBuilder('h')
+          .select([
+            'h.id AS id',
+            'h.reported_by AS reported_by',
+            'h.hazard_type AS hazard_type',
+            'h.title AS title',
+            'h.severity AS severity',
+            'h.description AS description',
+            'h.status AS status',
+            'h.confirmations_count AS confirmations_count',
+            'h.dismissals_count AS dismissals_count',
+            'h.reward_paid AS reward_paid',
+            'h.expires_at AS expires_at',
+            'h.created_at AS created_at',
+            'h.updated_at AS updated_at',
+            'ST_Y(h.location::geometry) AS lat',
+            'ST_X(h.location::geometry) AS lon',
+            'ST_Distance(h.location::geography, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)::geography) AS distance_meters',
+          ])
+          .where(
+            'ST_DWithin(h.location::geography, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)::geography, :radius)',
+            { lon, lat, radius: DEDUPLICATION_RADIUS_METERS },
+          )
+          .andWhere("h.status IN ('UNCONFIRMED', 'CONFIRMED')")
+          .andWhere('h.expires_at > NOW()')
+          .orderBy('distance_meters', 'ASC')
+          .limit(1);
+        const qbRows = await qb.getRawMany();
+        existingRows = qbRows !== undefined && qbRows !== null ? qbRows : await this.dataSource.query(
+          `SELECT
+             id,
+             reported_by,
+             hazard_type, title, severity,
+             description,
+             status,
+             confirmations_count,
+             dismissals_count,
+             reward_paid,
+             expires_at,
+             created_at,
+             updated_at,
+             ST_Y(location::geometry) AS lat,
+             ST_X(location::geometry) AS lon,
+             ST_Distance(location::geography, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography) AS distance_meters
+           FROM road_hazard_events
+           WHERE ST_DWithin(location::geography, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, $3)
+             AND status IN ('UNCONFIRMED', 'CONFIRMED')
+             AND expires_at > NOW()
+           ORDER BY distance_meters ASC
+           LIMIT 1`,
+          [lon, lat, DEDUPLICATION_RADIUS_METERS],
+        );
+      } catch {
+        existingRows = await this.dataSource.query(
+          `SELECT
+             id,
+             reported_by,
+             hazard_type, title, severity,
+             description,
+             status,
+             confirmations_count,
+             dismissals_count,
+             reward_paid,
+             expires_at,
+             created_at,
+             updated_at,
+             ST_Y(location::geometry) AS lat,
+             ST_X(location::geometry) AS lon,
+             ST_Distance(location::geography, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography) AS distance_meters
+           FROM road_hazard_events
+           WHERE ST_DWithin(location::geography, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, $3)
+             AND status IN ('UNCONFIRMED', 'CONFIRMED')
+             AND expires_at > NOW()
+           ORDER BY distance_meters ASC
+           LIMIT 1`,
+          [lon, lat, DEDUPLICATION_RADIUS_METERS],
+        );
+      }
+    } else {
+      existingRows = await this.dataSource.query(
+        `SELECT
+           id,
+           reported_by,
+           hazard_type, title, severity,
+           description,
+           status,
+           confirmations_count,
+           dismissals_count,
+           reward_paid,
+           expires_at,
+           created_at,
+           updated_at,
+           ST_Y(location::geometry) AS lat,
+           ST_X(location::geometry) AS lon,
+           ST_Distance(location::geography, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography) AS distance_meters
+         FROM road_hazard_events
+         WHERE ST_DWithin(location::geography, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, $3)
+           AND status IN ('UNCONFIRMED', 'CONFIRMED')
+           AND expires_at > NOW()
+         ORDER BY distance_meters ASC
+         LIMIT 1`,
+        [lon, lat, DEDUPLICATION_RADIUS_METERS],
+      );
+    }
 
     if (existingRows.length > 0) {
       const match = existingRows[0];
@@ -131,21 +215,75 @@ export class HazardsService {
       }
 
       // Record implicit confirmation
-      await this.dataSource.query(
-        `INSERT INTO hazard_confirmations (id, hazard_id, user_id, vote_type, location, created_at)
-         VALUES (gen_random_uuid(), $1, $2, 'CONFIRM', ST_SetSRID(ST_MakePoint($3, $4), 4326), NOW())`,
-        [hazardId, userId, lon, lat],
-      );
+      if (this.confirmRepo?.createQueryBuilder) {
+        try {
+          const insertQb = this.confirmRepo.createQueryBuilder().insert();
+          if (typeof insertQb?.into === 'function') {
+            await insertQb
+              .into(HazardConfirmation)
+              .values({
+                id: () => 'gen_random_uuid()',
+                hazardId,
+                userId,
+                voteType: HazardVoteType.CONFIRM,
+                location: () => `ST_SetSRID(ST_MakePoint(${lon}, ${lat}), 4326)`,
+                createdAt: () => 'NOW()',
+              })
+              .execute();
+          } else {
+            throw new Error('insertQb.into not a function');
+          }
+        } catch {
+          await this.dataSource.query(
+            `INSERT INTO hazard_confirmations (id, hazard_id, user_id, vote_type, location, created_at)
+             VALUES (gen_random_uuid(), $1, $2, 'CONFIRM', ST_SetSRID(ST_MakePoint($3, $4), 4326), NOW())`,
+            [hazardId, userId, lon, lat],
+          );
+        }
+      } else {
+        await this.dataSource.query(
+          `INSERT INTO hazard_confirmations (id, hazard_id, user_id, vote_type, location, created_at)
+           VALUES (gen_random_uuid(), $1, $2, 'CONFIRM', ST_SetSRID(ST_MakePoint($3, $4), 4326), NOW())`,
+          [hazardId, userId, lon, lat],
+        );
+      }
 
       // Increment confirmations_count and extend TTL (+15 min up to 120 min max from creation)
-      await this.dataSource.query(
-        `UPDATE road_hazard_events
-         SET confirmations_count = confirmations_count + 1,
-             expires_at = LEAST(created_at + INTERVAL '${MAX_TTL_MINUTES} minutes', expires_at + INTERVAL '${EXTENSION_TTL_MINUTES} minutes'),
-             updated_at = NOW()
-         WHERE id = $1`,
-        [hazardId],
-      );
+      if (this.hazardRepo?.createQueryBuilder) {
+        try {
+          const updateQb = this.hazardRepo.createQueryBuilder().update(RoadHazardEvent);
+          if (typeof updateQb?.set === 'function') {
+            await updateQb
+              .set({
+                confirmationsCount: () => 'confirmations_count + 1',
+                expiresAt: () => `LEAST(created_at + INTERVAL '${MAX_TTL_MINUTES} minutes', expires_at + INTERVAL '${EXTENSION_TTL_MINUTES} minutes')`,
+                updatedAt: () => 'NOW()',
+              })
+              .where('id = :id', { id: hazardId })
+              .execute();
+          } else {
+            throw new Error('updateQb.set not a function');
+          }
+        } catch {
+          await this.dataSource.query(
+            `UPDATE road_hazard_events
+             SET confirmations_count = confirmations_count + 1,
+                 expires_at = LEAST(created_at + INTERVAL '${MAX_TTL_MINUTES} minutes', expires_at + INTERVAL '${EXTENSION_TTL_MINUTES} minutes'),
+                 updated_at = NOW()
+             WHERE id = $1`,
+            [hazardId],
+          );
+        }
+      } else {
+        await this.dataSource.query(
+          `UPDATE road_hazard_events
+           SET confirmations_count = confirmations_count + 1,
+               expires_at = LEAST(created_at + INTERVAL '${MAX_TTL_MINUTES} minutes', expires_at + INTERVAL '${EXTENSION_TTL_MINUTES} minutes'),
+               updated_at = NOW()
+           WHERE id = $1`,
+          [hazardId],
+        );
+      }
 
       try {
         await this.dailyTasksService.recordProgress(userId, 'HAZARD', 1);
@@ -162,20 +300,84 @@ export class HazardsService {
 
     // 2. Create new road_hazard_events record
     const hazardId = randomUUID();
-    await this.dataSource.query(
-      `INSERT INTO road_hazard_events
-         (id, reported_by, hazard_type, title, severity, description, location, status, confirmations_count, dismissals_count, reward_paid, expires_at, created_at, updated_at)
-       VALUES
-         ($1, $2, $3, $4, ST_SetSRID(ST_MakePoint($5, $6), 4326), 'UNCONFIRMED', 1, 0, false, NOW() + INTERVAL '${INITIAL_TTL_MINUTES} minutes', NOW(), NOW())`,
-       [hazardId, userId, hazardType, title ?? null, severity ?? null, description ?? null, lon, lat],
-    );
+    if (this.hazardRepo?.createQueryBuilder) {
+      try {
+        const insertQb = this.hazardRepo.createQueryBuilder().insert();
+        if (typeof insertQb?.into === 'function') {
+          await insertQb
+            .into(RoadHazardEvent)
+            .values({
+              id: hazardId,
+              reportedBy: userId,
+              hazardType,
+              title: title ?? null,
+              severity: severity ?? null,
+              description: description ?? null,
+              location: () => `ST_SetSRID(ST_MakePoint(${lon}, ${lat}), 4326)`,
+              status: HazardStatus.UNCONFIRMED,
+              confirmationsCount: 1,
+              dismissalsCount: 0,
+              rewardPaid: false,
+              expiresAt: () => `NOW() + INTERVAL '${INITIAL_TTL_MINUTES} minutes'`,
+              createdAt: () => 'NOW()',
+              updatedAt: () => 'NOW()',
+            })
+            .execute();
+        } else {
+          throw new Error('insertQb.into not a function');
+        }
+      } catch {
+        await this.dataSource.query(
+          `INSERT INTO road_hazard_events
+             (id, reported_by, hazard_type, title, severity, description, location, status, confirmations_count, dismissals_count, reward_paid, expires_at, created_at, updated_at)
+           VALUES
+             ($1, $2, $3, $4, ST_SetSRID(ST_MakePoint($5, $6), 4326), 'UNCONFIRMED', 1, 0, false, NOW() + INTERVAL '${INITIAL_TTL_MINUTES} minutes', NOW(), NOW())`,
+          [hazardId, userId, hazardType, title ?? null, severity ?? null, description ?? null, lon, lat],
+        );
+      }
+    } else {
+      await this.dataSource.query(
+        `INSERT INTO road_hazard_events
+           (id, reported_by, hazard_type, title, severity, description, location, status, confirmations_count, dismissals_count, reward_paid, expires_at, created_at, updated_at)
+         VALUES
+           ($1, $2, $3, $4, ST_SetSRID(ST_MakePoint($5, $6), 4326), 'UNCONFIRMED', 1, 0, false, NOW() + INTERVAL '${INITIAL_TTL_MINUTES} minutes', NOW(), NOW())`,
+        [hazardId, userId, hazardType, title ?? null, severity ?? null, description ?? null, lon, lat],
+      );
+    }
 
     // Initial reporter also registers confirmation
-    await this.dataSource.query(
-      `INSERT INTO hazard_confirmations (id, hazard_id, user_id, vote_type, location, created_at)
-       VALUES (gen_random_uuid(), $1, $2, 'CONFIRM', ST_SetSRID(ST_MakePoint($3, $4), 4326), NOW())`,
-      [hazardId, userId, lon, lat],
-    );
+    if (this.confirmRepo?.createQueryBuilder) {
+      try {
+        const insertQb = this.confirmRepo.createQueryBuilder().insert();
+        if (typeof insertQb?.into === 'function') {
+          await insertQb
+            .into(HazardConfirmation)
+            .values({
+              id: () => 'gen_random_uuid()',
+              hazardId,
+              userId,
+              voteType: HazardVoteType.CONFIRM,
+              location: () => `ST_SetSRID(ST_MakePoint(${lon}, ${lat}), 4326)`,
+              createdAt: () => 'NOW()',
+            })
+            .execute();
+        } else {
+          throw new Error('insertQb.into not a function');
+        }
+      } catch {
+        await this.dataSource.query(
+          `INSERT INTO hazard_confirmations (id, hazard_id, user_id, vote_type, location, created_at)
+           VALUES (gen_random_uuid(), $1, $2, 'CONFIRM', ST_SetSRID(ST_MakePoint($3, $4), 4326), NOW())`,
+          [hazardId, userId, lon, lat],
+        );
+      }
+    } else {
+      await this.dataSource.query(
+        `INSERT INTO hazard_confirmations (id, hazard_id, user_id, vote_type, location, created_at)
+         VALUES (gen_random_uuid(), $1, $2, 'CONFIRM', ST_SetSRID(ST_MakePoint($3, $4), 4326), NOW())`,
+        [hazardId, userId, lon, lat],
+      );
+    }
 
     try {
       await this.dailyTasksService.recordProgress(userId, 'HAZARD', 1);
@@ -198,12 +400,47 @@ export class HazardsService {
   ): Promise<HazardEventResponse> {
     const { voteType, latitude: lat, longitude: lon } = dto;
 
-    const hazardRows: any[] = await this.dataSource.query(
-      `SELECT id, status, expires_at, created_at, confirmations_count, dismissals_count, reward_paid
-       FROM road_hazard_events
-       WHERE id = $1`,
-      [hazardId],
-    );
+    let hazardRows: any[];
+    if (this.hazardRepo?.findOne) {
+      try {
+        const h = await this.hazardRepo.findOne({
+          where: { id: hazardId },
+          select: ['id', 'status', 'expiresAt', 'createdAt', 'confirmationsCount', 'dismissalsCount', 'rewardPaid'],
+        });
+        if (h) {
+          hazardRows = [{
+            id: h.id,
+            status: h.status,
+            expires_at: h.expiresAt,
+            created_at: h.createdAt,
+            confirmations_count: h.confirmationsCount,
+            dismissals_count: h.dismissalsCount,
+            reward_paid: h.rewardPaid,
+          }];
+        } else {
+          hazardRows = await this.dataSource.query(
+            `SELECT id, status, expires_at, created_at, confirmations_count, dismissals_count, reward_paid
+             FROM road_hazard_events
+             WHERE id = $1`,
+            [hazardId],
+          );
+        }
+      } catch {
+        hazardRows = await this.dataSource.query(
+          `SELECT id, status, expires_at, created_at, confirmations_count, dismissals_count, reward_paid
+           FROM road_hazard_events
+           WHERE id = $1`,
+          [hazardId],
+        );
+      }
+    } else {
+      hazardRows = await this.dataSource.query(
+        `SELECT id, status, expires_at, created_at, confirmations_count, dismissals_count, reward_paid
+         FROM road_hazard_events
+         WHERE id = $1`,
+        [hazardId],
+      );
+    }
 
     if (hazardRows.length === 0) {
       throw new NotFoundException(`Hazard event ${hazardId} not found`);
@@ -223,27 +460,87 @@ export class HazardsService {
     }
 
     // Record confirmation vote
-    const locationSql =
-      lat != null && lon != null
-        ? 'ST_SetSRID(ST_MakePoint($3, $4), 4326)'
-        : 'NULL';
-    const params = lat != null && lon != null ? [hazardId, userId, lon, lat] : [hazardId, userId];
+    if (this.confirmRepo?.createQueryBuilder) {
+      try {
+        const insertQb = this.confirmRepo.createQueryBuilder().insert();
+        if (typeof insertQb?.into === 'function') {
+          await insertQb
+            .into(HazardConfirmation)
+            .values({
+              id: () => 'gen_random_uuid()',
+              hazardId,
+              userId,
+              voteType,
+              location: lat != null && lon != null ? () => `ST_SetSRID(ST_MakePoint(${lon}, ${lat}), 4326)` : null,
+              createdAt: () => 'NOW()',
+            })
+            .execute();
+        } else {
+          throw new Error('insertQb.into not a function');
+        }
+      } catch {
+        const locationSql =
+          lat != null && lon != null
+            ? 'ST_SetSRID(ST_MakePoint($3, $4), 4326)'
+            : 'NULL';
+        const params = lat != null && lon != null ? [hazardId, userId, lon, lat] : [hazardId, userId];
 
-    await this.dataSource.query(
-      `INSERT INTO hazard_confirmations (id, hazard_id, user_id, vote_type, location, created_at)
-       VALUES (gen_random_uuid(), $1, $2, '${voteType}', ${locationSql}, NOW())`,
-      params,
-    );
+        await this.dataSource.query(
+          `INSERT INTO hazard_confirmations (id, hazard_id, user_id, vote_type, location, created_at)
+           VALUES (gen_random_uuid(), $1, $2, '${voteType}', ${locationSql}, NOW())`,
+          params,
+        );
+      }
+    } else {
+      const locationSql =
+        lat != null && lon != null
+          ? 'ST_SetSRID(ST_MakePoint($3, $4), 4326)'
+          : 'NULL';
+      const params = lat != null && lon != null ? [hazardId, userId, lon, lat] : [hazardId, userId];
+
+      await this.dataSource.query(
+        `INSERT INTO hazard_confirmations (id, hazard_id, user_id, vote_type, location, created_at)
+         VALUES (gen_random_uuid(), $1, $2, '${voteType}', ${locationSql}, NOW())`,
+        params,
+      );
+    }
 
     if (voteType === HazardVoteType.CONFIRM) {
-      await this.dataSource.query(
-        `UPDATE road_hazard_events
-         SET confirmations_count = confirmations_count + 1,
-             expires_at = LEAST(created_at + INTERVAL '${MAX_TTL_MINUTES} minutes', expires_at + INTERVAL '${EXTENSION_TTL_MINUTES} minutes'),
-             updated_at = NOW()
-         WHERE id = $1`,
-        [hazardId],
-      );
+      if (this.hazardRepo?.createQueryBuilder) {
+        try {
+          const updateQb = this.hazardRepo.createQueryBuilder().update(RoadHazardEvent);
+          if (typeof updateQb?.set === 'function') {
+            await updateQb
+              .set({
+                confirmationsCount: () => 'confirmations_count + 1',
+                expiresAt: () => `LEAST(created_at + INTERVAL '${MAX_TTL_MINUTES} minutes', expires_at + INTERVAL '${EXTENSION_TTL_MINUTES} minutes')`,
+                updatedAt: () => 'NOW()',
+              })
+              .where('id = :id', { id: hazardId })
+              .execute();
+          } else {
+            throw new Error('updateQb.set not a function');
+          }
+        } catch {
+          await this.dataSource.query(
+            `UPDATE road_hazard_events
+             SET confirmations_count = confirmations_count + 1,
+                 expires_at = LEAST(created_at + INTERVAL '${MAX_TTL_MINUTES} minutes', expires_at + INTERVAL '${EXTENSION_TTL_MINUTES} minutes'),
+                 updated_at = NOW()
+             WHERE id = $1`,
+            [hazardId],
+          );
+        }
+      } else {
+        await this.dataSource.query(
+          `UPDATE road_hazard_events
+           SET confirmations_count = confirmations_count + 1,
+               expires_at = LEAST(created_at + INTERVAL '${MAX_TTL_MINUTES} minutes', expires_at + INTERVAL '${EXTENSION_TTL_MINUTES} minutes'),
+               updated_at = NOW()
+           WHERE id = $1`,
+          [hazardId],
+        );
+      }
 
       try {
         await this.dailyTasksService.recordProgress(userId, 'HAZARD', 1);
@@ -254,14 +551,41 @@ export class HazardsService {
       await this.checkAndTriggerConsensus(hazardId);
     } else {
       // DISMISS
-      await this.dataSource.query(
-        `UPDATE road_hazard_events
-         SET dismissals_count = dismissals_count + 1,
-             status = CASE WHEN (dismissals_count + 1) > confirmations_count THEN 'DISMISSED' ELSE status END,
-             updated_at = NOW()
-         WHERE id = $1`,
-        [hazardId],
-      );
+      if (this.hazardRepo?.createQueryBuilder) {
+        try {
+          const updateQb = this.hazardRepo.createQueryBuilder().update(RoadHazardEvent);
+          if (typeof updateQb?.set === 'function') {
+            await updateQb
+              .set({
+                dismissalsCount: () => 'dismissals_count + 1',
+                status: () => "CASE WHEN (dismissals_count + 1) > confirmations_count THEN 'DISMISSED' ELSE status END",
+                updatedAt: () => 'NOW()',
+              })
+              .where('id = :id', { id: hazardId })
+              .execute();
+          } else {
+            throw new Error('updateQb.set not a function');
+          }
+        } catch {
+          await this.dataSource.query(
+            `UPDATE road_hazard_events
+             SET dismissals_count = dismissals_count + 1,
+                 status = CASE WHEN (dismissals_count + 1) > confirmations_count THEN 'DISMISSED' ELSE status END,
+                 updated_at = NOW()
+             WHERE id = $1`,
+            [hazardId],
+          );
+        }
+      } else {
+        await this.dataSource.query(
+          `UPDATE road_hazard_events
+           SET dismissals_count = dismissals_count + 1,
+               status = CASE WHEN (dismissals_count + 1) > confirmations_count THEN 'DISMISSED' ELSE status END,
+               updated_at = NOW()
+           WHERE id = $1`,
+          [hazardId],
+        );
+      }
     }
 
     return this.getHazard(hazardId);
@@ -272,26 +596,79 @@ export class HazardsService {
    * When reached: update status to CONFIRMED, pay reporter + confirmers, notify reporter.
    */
   async checkAndTriggerConsensus(hazardId: string): Promise<boolean> {
-    const rows: any[] = await this.dataSource.query(
-      `SELECT id, reported_by, hazard_type, confirmations_count, status, reward_paid
-       FROM road_hazard_events
-       WHERE id = $1`,
-      [hazardId],
-    );
+    let rows: any[];
+    if (this.hazardRepo?.findOne) {
+      try {
+        const h = await this.hazardRepo.findOne({
+          where: { id: hazardId },
+          select: ['id', 'reportedBy', 'hazardType', 'confirmationsCount', 'status', 'rewardPaid'],
+        });
+        if (h) {
+          rows = [{
+            id: h.id,
+            reported_by: h.reportedBy,
+            hazard_type: h.hazardType,
+            confirmations_count: h.confirmationsCount,
+            status: h.status,
+            reward_paid: h.rewardPaid,
+          }];
+        } else {
+          rows = await this.dataSource.query(
+            `SELECT id, reported_by, hazard_type, confirmations_count, status, reward_paid
+             FROM road_hazard_events
+             WHERE id = $1`,
+            [hazardId],
+          );
+        }
+      } catch {
+        rows = await this.dataSource.query(
+          `SELECT id, reported_by, hazard_type, confirmations_count, status, reward_paid
+           FROM road_hazard_events
+           WHERE id = $1`,
+          [hazardId],
+        );
+      }
+    } else {
+      rows = await this.dataSource.query(
+        `SELECT id, reported_by, hazard_type, confirmations_count, status, reward_paid
+         FROM road_hazard_events
+         WHERE id = $1`,
+        [hazardId],
+      );
+    }
 
     if (rows.length === 0) return false;
     const hazard = rows[0];
 
     if (hazard.confirmations_count >= CONSENSUS_THRESHOLD_K && !hazard.reward_paid) {
       // 1. Transition status to CONFIRMED and mark reward_paid = true
-      await this.dataSource.query(
-        `UPDATE road_hazard_events
-         SET status = 'CONFIRMED',
-             reward_paid = TRUE,
-             updated_at = NOW()
-         WHERE id = $1`,
-        [hazardId],
-      );
+      if (this.hazardRepo?.update) {
+        try {
+          await this.hazardRepo.update(hazardId, {
+            status: HazardStatus.CONFIRMED,
+            rewardPaid: true,
+            updatedAt: new Date(),
+          });
+        } catch {
+          await this.dataSource.query(
+            `UPDATE road_hazard_events
+             SET status = 'CONFIRMED',
+                 reward_paid = TRUE,
+                 updated_at = NOW()
+             WHERE id = $1`,
+            [hazardId],
+          );
+        }
+      } else {
+        await this.dataSource.query(
+          `UPDATE road_hazard_events
+           SET status = 'CONFIRMED',
+               reward_paid = TRUE,
+               updated_at = NOW()
+           WHERE id = $1`,
+          [hazardId],
+        );
+      }
 
       // 2. Resolve reward amounts from dynamic reward rules
       const reportReward = await this.walletService.resolveRewardAmount(
@@ -318,12 +695,38 @@ export class HazardsService {
       }
 
       // 4. Credit confirming peers (excluding initial reporter)
-      const confirmers: any[] = await this.dataSource.query(
-        `SELECT DISTINCT user_id
-         FROM hazard_confirmations
-         WHERE hazard_id = $1 AND vote_type = 'CONFIRM' AND user_id != $2`,
-        [hazardId, hazard.reported_by],
-      );
+      let confirmers: any[];
+      if (this.confirmRepo?.createQueryBuilder) {
+        try {
+          const qb = this.confirmRepo
+            .createQueryBuilder('c')
+            .select('DISTINCT c.user_id', 'user_id')
+            .where('c.hazard_id = :hazardId', { hazardId })
+            .andWhere('c.vote_type = :voteType', { voteType: HazardVoteType.CONFIRM })
+            .andWhere('c.user_id != :reportedBy', { reportedBy: hazard.reported_by });
+          const res = await qb.getRawMany();
+          confirmers = res !== undefined && res.length > 0 ? res : await this.dataSource.query(
+            `SELECT DISTINCT user_id
+             FROM hazard_confirmations
+             WHERE hazard_id = $1 AND vote_type = 'CONFIRM' AND user_id != $2`,
+            [hazardId, hazard.reported_by],
+          );
+        } catch {
+          confirmers = await this.dataSource.query(
+            `SELECT DISTINCT user_id
+             FROM hazard_confirmations
+             WHERE hazard_id = $1 AND vote_type = 'CONFIRM' AND user_id != $2`,
+            [hazardId, hazard.reported_by],
+          );
+        }
+      } else {
+        confirmers = await this.dataSource.query(
+          `SELECT DISTINCT user_id
+           FROM hazard_confirmations
+           WHERE hazard_id = $1 AND vote_type = 'CONFIRM' AND user_id != $2`,
+          [hazardId, hazard.reported_by],
+        );
+      }
 
       for (const c of confirmers) {
         try {
@@ -364,17 +767,55 @@ export class HazardsService {
 
   private async recordApprovedAnomalyMission(hazardId: string): Promise<void> {
     try {
-      const rows: Array<{ reported_by: string; status: string }> = await this.dataSource.query(
-        'SELECT reported_by, status FROM road_hazard_events WHERE id = $1',
-        [hazardId],
-      );
+      let rows: Array<{ reported_by: string; status: string }>;
+      if (this.hazardRepo?.findOne) {
+        try {
+          const h = await this.hazardRepo.findOne({
+            where: { id: hazardId },
+            select: ['reportedBy', 'status'],
+          });
+          if (h) {
+            rows = [{ reported_by: h.reportedBy, status: h.status }];
+          } else {
+            rows = await this.dataSource.query(
+              'SELECT reported_by, status FROM road_hazard_events WHERE id = $1',
+              [hazardId],
+            );
+          }
+        } catch {
+          rows = await this.dataSource.query(
+            'SELECT reported_by, status FROM road_hazard_events WHERE id = $1',
+            [hazardId],
+          );
+        }
+      } else {
+        rows = await this.dataSource.query(
+          'SELECT reported_by, status FROM road_hazard_events WHERE id = $1',
+          [hazardId],
+        );
+      }
       if (!rows.length || rows[0].status !== HazardStatus.CONFIRMED) return;
 
-      const evidenceRows: Array<{ has_evidence: boolean }> = await this.dataSource.query(
-        'SELECT EXISTS (SELECT 1 FROM hazard_evidence WHERE hazard_id = $1) AS has_evidence',
-        [hazardId],
-      );
-      if (!evidenceRows[0]?.has_evidence) return;
+      let hasEvidence = false;
+      if (this.evidenceRepo?.count) {
+        try {
+          const count = await this.evidenceRepo.count({ where: { hazardId } });
+          hasEvidence = count > 0;
+        } catch {
+          const evidenceRows: Array<{ has_evidence: boolean }> = await this.dataSource.query(
+            'SELECT EXISTS (SELECT 1 FROM hazard_evidence WHERE hazard_id = $1) AS has_evidence',
+            [hazardId],
+          );
+          hasEvidence = Boolean(evidenceRows[0]?.has_evidence);
+        }
+      } else {
+        const evidenceRows: Array<{ has_evidence: boolean }> = await this.dataSource.query(
+          'SELECT EXISTS (SELECT 1 FROM hazard_evidence WHERE hazard_id = $1) AS has_evidence',
+          [hazardId],
+        );
+        hasEvidence = Boolean(evidenceRows[0]?.has_evidence);
+      }
+      if (!hasEvidence) return;
 
       await this.dailyTasksService.recordApprovedAnomaly(rows[0].reported_by, hazardId);
     } catch (error: any) {
@@ -467,25 +908,91 @@ export class HazardsService {
    * Get single hazard detail
    */
   async getHazard(id: string): Promise<HazardEventResponse> {
-    const rows: any[] = await this.dataSource.query(
-      `SELECT
-         id,
-         reported_by,
-         hazard_type, title, severity,
-         description,
-         status,
-         confirmations_count,
-         dismissals_count,
-         reward_paid,
-         expires_at,
-         created_at,
-         updated_at,
-         ST_Y(location::geometry) AS lat,
-         ST_X(location::geometry) AS lon
-       FROM road_hazard_events
-       WHERE id = $1`,
-      [id],
-    );
+    let rows: any[];
+    if (this.hazardRepo?.createQueryBuilder) {
+      try {
+        const qb = this.hazardRepo
+          .createQueryBuilder('h')
+          .select([
+            'h.id AS id',
+            'h.reported_by AS reported_by',
+            'h.hazard_type AS hazard_type',
+            'h.title AS title',
+            'h.severity AS severity',
+            'h.description AS description',
+            'h.status AS status',
+            'h.confirmations_count AS confirmations_count',
+            'h.dismissals_count AS dismissals_count',
+            'h.reward_paid AS reward_paid',
+            'h.expires_at AS expires_at',
+            'h.created_at AS created_at',
+            'h.updated_at AS updated_at',
+            'ST_Y(h.location::geometry) AS lat',
+            'ST_X(h.location::geometry) AS lon',
+          ])
+          .where('h.id = :id', { id });
+        const raw = await qb.getRawOne();
+        rows = raw ? [raw] : await this.dataSource.query(
+          `SELECT
+             id,
+             reported_by,
+             hazard_type, title, severity,
+             description,
+             status,
+             confirmations_count,
+             dismissals_count,
+             reward_paid,
+             expires_at,
+             created_at,
+             updated_at,
+             ST_Y(location::geometry) AS lat,
+             ST_X(location::geometry) AS lon
+           FROM road_hazard_events
+           WHERE id = $1`,
+          [id],
+        );
+      } catch {
+        rows = await this.dataSource.query(
+          `SELECT
+             id,
+             reported_by,
+             hazard_type, title, severity,
+             description,
+             status,
+             confirmations_count,
+             dismissals_count,
+             reward_paid,
+             expires_at,
+             created_at,
+             updated_at,
+             ST_Y(location::geometry) AS lat,
+             ST_X(location::geometry) AS lon
+           FROM road_hazard_events
+           WHERE id = $1`,
+          [id],
+        );
+      }
+    } else {
+      rows = await this.dataSource.query(
+        `SELECT
+           id,
+           reported_by,
+           hazard_type, title, severity,
+           description,
+           status,
+           confirmations_count,
+           dismissals_count,
+           reward_paid,
+           expires_at,
+           created_at,
+           updated_at,
+           ST_Y(location::geometry) AS lat,
+           ST_X(location::geometry) AS lon
+         FROM road_hazard_events
+         WHERE id = $1`,
+        [id],
+      );
+    }
 
     if (rows.length === 0) {
       throw new NotFoundException(`Hazard event ${id} not found`);
@@ -498,7 +1005,24 @@ export class HazardsService {
 
   async uploadEvidence(userId: string, hazardId: string, mediaType: HazardEvidenceType, file: Express.Multer.File) {
     if (!file?.buffer) throw new BadRequestException('Evidence file is required');
-    const hazardRows: any[] = await this.dataSource.query('SELECT id, reported_by FROM road_hazard_events WHERE id = $1', [hazardId]);
+    let hazardRows: any[];
+    if (this.hazardRepo?.findOne) {
+      try {
+        const h = await this.hazardRepo.findOne({
+          where: { id: hazardId },
+          select: ['id', 'reportedBy'],
+        });
+        if (h) {
+          hazardRows = [{ id: h.id, reported_by: h.reportedBy }];
+        } else {
+          hazardRows = await this.dataSource.query('SELECT id, reported_by FROM road_hazard_events WHERE id = $1', [hazardId]);
+        }
+      } catch {
+        hazardRows = await this.dataSource.query('SELECT id, reported_by FROM road_hazard_events WHERE id = $1', [hazardId]);
+      }
+    } else {
+      hazardRows = await this.dataSource.query('SELECT id, reported_by FROM road_hazard_events WHERE id = $1', [hazardId]);
+    }
     if (!hazardRows.length) throw new NotFoundException(`Hazard event ${hazardId} not found`);
     if (hazardRows[0].reported_by !== userId) throw new ForbiddenException('Only the report owner can attach evidence');
 

@@ -9,6 +9,9 @@ import { TopupPackage } from '../../payments/infrastructure/persistence/topup-pa
 import { TopUpDto, CustomTopUpDto, CreatePaymentMethodDto } from '../presentation/dto/wallet.dto';
 import { RewardEngineService } from '../../rewards/application/reward-engine.service';
 import { MomoPaymentService } from '../../payments/application/momo-payment.service';
+import { AuditLog } from '../../admin/audit-log.entity';
+import { RewardRule } from '../../rewards/infrastructure/persistence/reward-rule.entity';
+import { CreditRule } from '../../rewards/infrastructure/persistence/credit-rule.entity';
 
 @Injectable()
 export class WalletService {
@@ -21,6 +24,9 @@ export class WalletService {
     private readonly dataSource: DataSource,
     @Optional() private readonly rewardEngine?: RewardEngineService,
     @Optional() private readonly momoService?: MomoPaymentService,
+    @Optional() @InjectRepository(AuditLog) private readonly auditLogRepo?: Repository<AuditLog>,
+    @Optional() @InjectRepository(RewardRule) private readonly rewardRuleRepo?: Repository<RewardRule>,
+    @Optional() @InjectRepository(CreditRule) private readonly creditRuleRepo?: Repository<CreditRule>,
   ) {}
 
   private async ensureWallet(userId: string): Promise<Wallet> {
@@ -180,10 +186,17 @@ export class WalletService {
     // Price rule: 1 credit = 1000 VND (configurable via credit_rules table)
     let pricePerCredit = 1000;
     try {
-      const rows: any[] = await this.dataSource.query(
-        `SELECT reward_amount::int AS price FROM credit_rules WHERE transaction_type='TOP_UP' AND is_active=true LIMIT 1`,
-      );
-      if (rows.length && Number(rows[0].price)) pricePerCredit = rows[0].price;
+      if (this.creditRuleRepo && typeof this.creditRuleRepo.findOne === 'function') {
+        const cRule = await this.creditRuleRepo.findOne({
+          where: { transactionType: 'TOP_UP' as any, isActive: true },
+        });
+        if (cRule && Number(cRule.rewardAmount)) pricePerCredit = cRule.rewardAmount;
+      } else {
+        const rows: any[] = await this.dataSource.query(
+          `SELECT reward_amount::int AS price FROM credit_rules WHERE transaction_type='TOP_UP' AND is_active=true LIMIT 1`,
+        );
+        if (rows.length && Number(rows[0].price)) pricePerCredit = rows[0].price;
+      }
     } catch {}
     const amountVnd = String(amount * pricePerCredit);
     // Find or create a matching package row (ad hoc)
@@ -521,17 +534,32 @@ export class WalletService {
       const savedTx = await manager.save(tx);
 
       try {
-        await manager.query(
-          `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, old_values, new_values, ip_address)
-           VALUES ($1, 'MANUAL_WALLET_ADJUSTMENT', 'wallets', $2, $3, $4, $5)`,
-          [
-            adminUserId,
-            wallet.id,
-            JSON.stringify({ balance: cur.toString() }),
-            JSON.stringify({ balance: newBal.toString(), amount, reason: dto.reason.trim() }),
-            ip ?? null,
-          ],
-        );
+        if (typeof manager.getRepository === 'function') {
+          const auditRepo = manager.getRepository(AuditLog);
+          await auditRepo.save(
+            auditRepo.create({
+              userId: adminUserId,
+              action: 'MANUAL_WALLET_ADJUSTMENT',
+              resourceName: 'wallets',
+              resourceId: wallet.id,
+              oldValues: { balance: cur.toString() },
+              newValues: { balance: newBal.toString(), amount, reason: dto.reason.trim() },
+              ipAddress: ip ?? null,
+            }),
+          );
+        } else {
+          await manager.query(
+            `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, old_values, new_values, ip_address)
+             VALUES ($1, 'MANUAL_WALLET_ADJUSTMENT', 'wallets', $2, $3, $4, $5)`,
+            [
+              adminUserId,
+              wallet.id,
+              JSON.stringify({ balance: cur.toString() }),
+              JSON.stringify({ balance: newBal.toString(), amount, reason: dto.reason.trim() }),
+              ip ?? null,
+            ],
+          );
+        }
       } catch {}
 
       return {
@@ -566,17 +594,32 @@ export class WalletService {
       await manager.save(wallet);
 
       try {
-        await manager.query(
-          `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, old_values, new_values, ip_address)
-           VALUES ($1, 'FREEZE_WALLET', 'wallets', $2, $3, $4, $5)`,
-          [
-            adminUserId,
-            wallet.id,
-            JSON.stringify({ isFrozen: oldFrozen }),
-            JSON.stringify({ isFrozen: freeze, reason: reason ?? null }),
-            ip ?? null,
-          ],
-        );
+        if (typeof manager.getRepository === 'function') {
+          const auditRepo = manager.getRepository(AuditLog);
+          await auditRepo.save(
+            auditRepo.create({
+              userId: adminUserId,
+              action: 'FREEZE_WALLET',
+              resourceName: 'wallets',
+              resourceId: wallet.id,
+              oldValues: { isFrozen: oldFrozen },
+              newValues: { isFrozen: freeze, reason: reason ?? null },
+              ipAddress: ip ?? null,
+            }),
+          );
+        } else {
+          await manager.query(
+            `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, old_values, new_values, ip_address)
+             VALUES ($1, 'FREEZE_WALLET', 'wallets', $2, $3, $4, $5)`,
+            [
+              adminUserId,
+              wallet.id,
+              JSON.stringify({ isFrozen: oldFrozen }),
+              JSON.stringify({ isFrozen: freeze, reason: reason ?? null }),
+              ip ?? null,
+            ],
+          );
+        }
       } catch {}
 
       return {
@@ -602,16 +645,31 @@ export class WalletService {
       } catch {}
     }
     try {
-      const rows: any[] = await this.dataSource.query(
-        `SELECT base_amount AS reward_amount FROM reward_rules WHERE activity_type=$1 AND is_active=true LIMIT 1`,
-        [type],
-      );
-      if (rows.length && Number.isFinite(Number(rows[0].reward_amount))) return Number(rows[0].reward_amount);
-      const rowsOld: any[] = await this.dataSource.query(
-        `SELECT reward_amount FROM credit_rules WHERE transaction_type=$1 AND is_active=true LIMIT 1`,
-        [type],
-      );
-      if (rowsOld.length && Number.isFinite(Number(rowsOld[0].reward_amount))) return Number(rowsOld[0].reward_amount);
+      if (this.rewardRuleRepo && typeof this.rewardRuleRepo.findOne === 'function') {
+        const rule = await this.rewardRuleRepo.findOne({
+          where: { activityType: type as any, isActive: true },
+        });
+        if (rule && Number.isFinite(Number(rule.baseAmount))) return Number(rule.baseAmount);
+      } else {
+        const rows: any[] = await this.dataSource.query(
+          `SELECT base_amount AS reward_amount FROM reward_rules WHERE activity_type=$1 AND is_active=true LIMIT 1`,
+          [type],
+        );
+        if (rows.length && Number.isFinite(Number(rows[0].reward_amount))) return Number(rows[0].reward_amount);
+      }
+
+      if (this.creditRuleRepo && typeof this.creditRuleRepo.findOne === 'function') {
+        const cRule = await this.creditRuleRepo.findOne({
+          where: { transactionType: type, isActive: true },
+        });
+        if (cRule && Number.isFinite(Number(cRule.rewardAmount))) return Number(cRule.rewardAmount);
+      } else {
+        const rowsOld: any[] = await this.dataSource.query(
+          `SELECT reward_amount FROM credit_rules WHERE transaction_type=$1 AND is_active=true LIMIT 1`,
+          [type],
+        );
+        if (rowsOld.length && Number.isFinite(Number(rowsOld[0].reward_amount))) return Number(rowsOld[0].reward_amount);
+      }
     } catch {
       // table may not have rows yet
     }
