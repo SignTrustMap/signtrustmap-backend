@@ -294,3 +294,26 @@ class CatalogVersion(Base):
     published_by: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     change_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_current: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class RoadHazardEvent(Base):
+    __tablename__ = "road_hazard_events"
+    __table_args__ = {"extend_existing": True}
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
+    )
+    reported_by: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True))
+    hazard_type: Mapped[str] = mapped_column(String(64))
+    title: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    severity: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    location: Mapped[Any] = mapped_column(Geometry(geometry_type="POINT", srid=4326), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="UNCONFIRMED")
+    confirmations_count: Mapped[int] = mapped_column(Integer, default=1)
+    dismissals_count: Mapped[int] = mapped_column(Integer, default=0)
+    reward_paid: Mapped[bool] = mapped_column(Boolean, default=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
