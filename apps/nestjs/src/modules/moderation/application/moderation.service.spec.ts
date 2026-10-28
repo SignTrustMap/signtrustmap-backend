@@ -340,7 +340,7 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
       ['C1', 'staff-1', 'ASSIGNED_SURVEYOR', 'R1', 'Please recapture from the same location.'],
     );
     expect(manager.query).toHaveBeenCalledWith(
-      expect.stringContaining('ORDER BY RANDOM()'),
+      expect.stringContaining('demo@stm.dev'),
     );
     expect(manager.query).toHaveBeenCalledWith(
       expect.stringContaining("role.code = 'SURVEYOR'"),
@@ -626,7 +626,7 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
       ['C1', 'STAFF1', 'RANDOM_SURVEYOR', 'REPORT1', 'Please recapture'],
     );
     expect(manager.query).toHaveBeenCalledWith(
-      expect.stringContaining('ORDER BY RANDOM()'),
+      expect.stringContaining('demo@stm.dev'),
     );
   });
 
@@ -690,6 +690,34 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     expect(catalogSyncService.syncLabels).toHaveBeenCalledTimes(1);
     expect(result.createdSignType).toMatchObject({ id: 42, signCode: 'P.128a' });
     expect(result.report).toMatchObject({ status: MissingTypeStatus.APPROVED });
+  });
+
+  it('approve-and-create-type allows special test sign code T.xxx', async () => {
+    const { service, missing, catRepo, signTypeRepo, dataSource, catalogService } = buildService();
+    const report = { id: 'R1', status: MissingTypeStatus.PENDING, candidateId: 'C1', proposedName: 'Test Sign', proposedCategoryId: 1, reporterId: 'U1' };
+    missing.findOne.mockResolvedValue(report);
+    catRepo.findOne.mockResolvedValue({ id: 1, code: 'PROHIBITORY' });
+    signTypeRepo.findOne.mockResolvedValue(null);
+    catalogService.createSignType.mockResolvedValue({ id: 99, signCode: 'T.xxx' });
+    dataSource.query.mockImplementation((sql: string) =>
+      sql.includes('SELECT DISTINCT split_part') ? [{ prefix: 'P' }] : [],
+    );
+
+    const result = await service.approveAndCreateType('R1', 'staff-1', {
+      signCode: ' t.xxx ',
+      nameVi: 'Biển kiểm thử',
+      nameEn: 'Testing Sign',
+      proposedCategoryId: 1,
+      allowedVehicles: ['CAR'],
+    }, representativeImage());
+
+    expect(catalogService.createSignType).toHaveBeenCalledWith(expect.objectContaining({
+      signCode: 'T.xxx',
+      categoryId: 1,
+      nameVi: 'Biển kiểm thử',
+      representativeImageKey: expect.stringContaining('catalog/representative/T.xxx-'),
+    }));
+    expect(result.createdSignType).toMatchObject({ id: 99, signCode: 'T.xxx' });
   });
 
   it('approve-and-create-type completes approval even if bumpCatalogVersion or candidate release throws', async () => {

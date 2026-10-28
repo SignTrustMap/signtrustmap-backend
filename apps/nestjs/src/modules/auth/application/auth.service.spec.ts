@@ -30,6 +30,7 @@ describe('AuthService (Registration and Role Assignment)', () => {
 
     mockUserRoleRepo = {
       find: jest.fn(),
+      findOne: jest.fn(),
       save: jest.fn(),
       create: jest.fn(),
     };
@@ -79,13 +80,27 @@ describe('AuthService (Registration and Role Assignment)', () => {
     );
   });
 
-  it('registers with default SURVEYOR role when role is omitted', async () => {
+  it('registers with default DRIVER role when role is omitted', async () => {
+    mockUserRepo.findOne.mockResolvedValue(null);
+
+    const result = await service.register({
+      email: 'driver@test.dev',
+      password: 'Password@123',
+      fullName: 'Test Driver',
+    });
+
+    expect(result.user.roles).toEqual(['DRIVER']);
+    expect(result.accessToken).toBe('mock-jwt-token');
+  });
+
+  it('registers with SURVEYOR role when requested', async () => {
     mockUserRepo.findOne.mockResolvedValue(null);
 
     const result = await service.register({
       email: 'surveyor@test.dev',
       password: 'Password@123',
       fullName: 'Test Surveyor',
+      role: 'surveyor',
     });
 
     expect(result.user.roles).toEqual(['SURVEYOR']);
@@ -212,13 +227,13 @@ describe('AuthService (Registration and Role Assignment)', () => {
       expect(mockJwtService.sign).toHaveBeenCalledTimes(1);
     });
 
-    it('initializes a surveyor profile atomically for a new Google user', async () => {
+    it('initializes a driver profile atomically for a new Google user', async () => {
       mockUserRepo.findOne.mockResolvedValue(null);
 
       await service.googleLogin(googleUser);
 
       expect(mockManager.query).toHaveBeenCalledWith(
-        expect.stringContaining('INSERT INTO surveyor_profiles'),
+        expect.stringContaining('INSERT INTO driver_profiles'),
         ['new-user-id'],
       );
     });
@@ -430,6 +445,53 @@ describe('AuthService (Registration and Role Assignment)', () => {
       expect(res.reset).toBe(true);
       expect(user.passwordHash).not.toBe('old');
       expect(mockUserRepo.save).toHaveBeenCalled();
+    });
+  });
+
+  describe('toggleRole (Community role self-management)', () => {
+    it('activates SURVEYOR role and initializes surveyor profile', async () => {
+      mockUserRepo.findOne.mockResolvedValue({ id: 'user-1', email: 'user@test.dev', status: UserStatus.ACTIVE });
+      mockRoleRepo.findOne.mockResolvedValue({ id: 1, code: 'SURVEYOR' });
+      mockUserRoleRepo.findOne.mockResolvedValue(null);
+      mockUserRoleRepo.find.mockResolvedValue([
+        { role: { code: 'DRIVER' } },
+        { role: { code: 'SURVEYOR' } },
+      ]);
+
+      const result = await service.toggleRole('user-1', 'SURVEYOR', true);
+
+      expect(mockUserRoleRepo.save).toHaveBeenCalled();
+      expect(mockDataSource.query).toHaveBeenCalledWith(
+        expect.stringContaining('INSERT INTO surveyor_profiles'),
+        ['user-1'],
+      );
+      expect(result.user.roles).toEqual(['DRIVER', 'SURVEYOR']);
+      expect(result.accessToken).toBe('mock-jwt-token');
+    });
+
+    it('deactivates SURVEYOR role', async () => {
+      mockUserRepo.findOne.mockResolvedValue({ id: 'user-1', email: 'user@test.dev', status: UserStatus.ACTIVE });
+      mockRoleRepo.findOne.mockResolvedValue({ id: 1, code: 'SURVEYOR' });
+      const existingUserRole = { id: 'ur-1', isActive: true };
+      mockUserRoleRepo.findOne.mockResolvedValue(existingUserRole);
+      mockUserRoleRepo.find.mockResolvedValue([
+        { role: { code: 'DRIVER' } },
+      ]);
+
+      const result = await service.toggleRole('user-1', 'surveyor', false);
+
+      expect(existingUserRole.isActive).toBe(false);
+      expect(mockUserRoleRepo.save).toHaveBeenCalledWith(existingUserRole);
+      expect(result.user.roles).toEqual(['DRIVER']);
+    });
+
+    it('rejects toggling non-community roles (ADMIN)', async () => {
+      await expect(service.toggleRole('user-1', 'ADMIN', true)).rejects.toThrow(BadRequestException);
+    });
+
+    it('rejects if user does not exist', async () => {
+      mockUserRepo.findOne.mockResolvedValue(null);
+      await expect(service.toggleRole('missing-user', 'SURVEYOR', true)).rejects.toThrow(UnauthorizedException);
     });
   });
 });

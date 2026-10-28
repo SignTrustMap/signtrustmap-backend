@@ -6,7 +6,10 @@ from typing import Any
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, WebSocket, WebSocketDisconnect
 from geoalchemy2 import Geography, Geometry
-from sqlalchemy import BigInteger, Numeric, cast, func, insert, or_, select, update
+from sqlalchemy import (
+    BigInteger, Numeric, cast, func, insert, or_, select, update,
+    text as sa_text,
+)
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession

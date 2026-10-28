@@ -24,7 +24,7 @@ In [`apps/nestjs/package.json`](../../apps/nestjs/package.json):
 ```json
 "lint": "eslint \"src/**/*.ts\" --max-warnings=0"
 ```
-The Jenkins CI pipeline fails the build if **even one warning** exists:
+The GitHub Actions CI pipeline fails the build if **even one warning** exists:
 - No unused variables (`no-unused-vars`).
 - No implicit or raw `any` types where avoidable.
 - Run `npm run lint` locally before pushing to git.

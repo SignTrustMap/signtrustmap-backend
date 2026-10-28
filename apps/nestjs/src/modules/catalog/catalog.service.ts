@@ -544,10 +544,16 @@ export class CatalogService {
   }
 
   private normalizeSignCode(signCode: string): string {
-    const match = signCode.trim().match(/^([A-Za-z]+)\.\s*(\d+)([A-Za-z0-9]*)$/);
+    const trimmed = signCode.trim();
+    const testMatch = trimmed.match(/^T\.([A-Za-z0-9._-]+)$/i);
+    if (testMatch) {
+      const suffix = testMatch[1].toLowerCase() === 'xxx' ? 'xxx' : testMatch[1];
+      return `T.${suffix}`;
+    }
+    const match = trimmed.match(/^([A-Za-z]+)\.\s*(\d+)([A-Za-z0-9]*)$/);
     if (!match) {
       throw new BadRequestException(
-        'sign_code must match abbreviation.number with an optional alphanumeric suffix',
+        'sign_code must match abbreviation.number with an optional alphanumeric suffix, or T.xxx for testing',
       );
     }
     return `${match[1].toUpperCase()}.${match[2]}${match[3].toLowerCase()}`;

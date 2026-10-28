@@ -57,7 +57,7 @@ export class AuthService {
     const existing = await this.userRepo.findOne({ where: { email: dto.email } });
     if (existing) throw new ConflictException('Email already registered');
     const passwordHash = await bcrypt.hash(dto.password, 10);
-    const targetRoleCode = (dto.role ? dto.role.toUpperCase() : 'SURVEYOR');
+    const targetRoleCode = (dto.role ? dto.role.toUpperCase() : 'DRIVER');
     const ALLOWED_ROLES = ['SURVEYOR', 'DRIVER', 'REVIEWER'];
     if (!ALLOWED_ROLES.includes(targetRoleCode)) {
       throw new BadRequestException(`Role ${dto.role} is not allowed for self-registration`);
@@ -201,8 +201,17 @@ export class AuthService {
           if (error?.code === '23505') throw new ConflictException('Google identity is already linked to another account');
           throw error;
         }
-        const defaultRole = await manager.findOne(Role, { where: { code: 'SURVEYOR' } });
+        const defaultRole = await manager.findOne(Role, { where: { code: 'DRIVER' } });
         if (defaultRole) await manager.save(manager.create(UserRole, { userId: saved.id, roleId: defaultRole.id, isActive: true }));
+        if (defaultRole?.code === 'DRIVER') {
+          await manager.query(
+            `INSERT INTO driver_profiles (user_id)
+             VALUES ($1)
+             ON CONFLICT (user_id) DO NOTHING`,
+            [saved.id],
+         );
+        }
+
         if (defaultRole?.code === 'SURVEYOR') {
           if (typeof manager?.getRepository === 'function') {
             const surveyorRepo = manager.getRepository(SurveyorProfile);
@@ -214,7 +223,12 @@ export class AuthService {
               .orIgnore()
               .execute();
           } else {
-            await manager.query(`INSERT INTO surveyor_profiles (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [saved.id]);
+            await manager.query(
+              `INSERT INTO surveyor_profiles (user_id)
+               VALUES ($1)
+              ON CONFLICT (user_id) DO NOTHING`,
+              [saved.id],
+            );
           }
         }
         await manager.save(manager.create(Wallet, { userId: saved.id, balance: '0' }));
@@ -383,6 +397,64 @@ export class AuthService {
       roles,
       walletBalance,
       profileStats,
+    };
+  }
+
+  async toggleRole(userId: string, roleCode: string, enabled = true) {
+    const normalized = roleCode.toUpperCase();
+    const ALLOWED_COMMUNITY_ROLES = ['SURVEYOR', 'REVIEWER'];
+    if (!ALLOWED_COMMUNITY_ROLES.includes(normalized)) {
+      throw new BadRequestException(`Role ${roleCode} is not allowed for self-management`);
+    }
+
+    const user = await this.userRepo.findOne({ where: { id: userId } });
+    if (!user) throw new UnauthorizedException('User not found');
+    if (user.status !== UserStatus.ACTIVE) throw new UnauthorizedException(`Account is ${user.status}`);
+
+    const role = await this.roleRepo.findOne({ where: { code: normalized } });
+    if (!role) throw new BadRequestException(`Role ${normalized} not found`);
+
+    if (enabled) {
+      const existing = await this.userRoleRepo.findOne({ where: { userId, roleId: role.id } });
+      if (!existing) {
+        await this.userRoleRepo.save(this.userRoleRepo.create({ userId, roleId: role.id, isActive: true }));
+      } else if (!existing.isActive) {
+        existing.isActive = true;
+        await this.userRoleRepo.save(existing);
+      }
+
+      if (normalized === 'SURVEYOR') {
+        await this.dataSource.query(`INSERT INTO surveyor_profiles (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [userId]);
+      } else if (normalized === 'REVIEWER') {
+        await this.dataSource.query(`INSERT INTO reviewer_profiles (user_id, reliability_score) VALUES ($1, 0.5) ON CONFLICT (user_id) DO NOTHING`, [userId]);
+      }
+    } else {
+      const existing = await this.userRoleRepo.findOne({ where: { userId, roleId: role.id } });
+      if (existing && existing.isActive) {
+        existing.isActive = false;
+        await this.userRoleRepo.save(existing);
+      }
+    }
+
+    let currentRoles = await this.getRolesForUser(userId);
+    if (currentRoles.length === 0) {
+      const driverRole = await this.roleRepo.findOne({ where: { code: 'DRIVER' } });
+      if (driverRole) {
+        const existingDriver = await this.userRoleRepo.findOne({ where: { userId, roleId: driverRole.id } });
+        if (existingDriver) {
+          existingDriver.isActive = true;
+          await this.userRoleRepo.save(existingDriver);
+        } else {
+          await this.userRoleRepo.save(this.userRoleRepo.create({ userId, roleId: driverRole.id, isActive: true }));
+        }
+        await this.dataSource.query(`INSERT INTO driver_profiles (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [userId]);
+      }
+      currentRoles = await this.getRolesForUser(userId);
+    }
+
+    return {
+      user: { id: user.id, email: user.email, fullName: user.fullName, roles: currentRoles },
+      accessToken: this.signToken(user, currentRoles),
     };
   }
 

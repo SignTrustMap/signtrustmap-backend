@@ -367,7 +367,7 @@ flowchart LR
 ```
 signtrustmap-backend/
 ├── .env.example                  # Docker Compose and local development template
-├── Jenkinsfile                   # CI pipeline
+├── .github/workflows/ci.yml      # GitHub Actions CI pipeline
 ├── Procfile                      # Heroku process entry point
 ├── docker-compose.yml            # Local application and infrastructure stack
 ├── package.json                  # Root npm workspace commands
@@ -423,17 +423,12 @@ Run the NestJS Jest suite with an LCOV report using `npm run test:cov`.
 Run static analysis with `npm run lint`. Use `npm run lint:fix` locally to apply
 safe ESLint fixes.
 
-### Jenkins CI
+### GitHub Actions CI
 
-The root `Jenkinsfile` defines the CI pipeline. The Jenkins agent must provide
-Node.js 22 and npm 10, matching `package.json`. Each build performs a clean
-`npm ci`, then runs ESLint, Jest coverage, and the production build in parallel.
-The generated `apps/nestjs/coverage` directory is archived as a build artifact.
-
-Create a Pipeline or Multibranch Pipeline job pointed at this repository and
-select **Pipeline script from SCM** with `Jenkinsfile` as the script path. No
-application secrets or running infrastructure are required for the current
-unit-test pipeline.
+The `.github/workflows/ci.yml` workflow defines the main automated CI pipeline.
+Each pull request and push to `preview` and `main` triggers:
+- **NestJS CI**: Environment setup with Node.js 22, clean `npm ci`, ESLint zero-warnings check (`npm run lint`), TypeScript build (`npm run build`), Jest test suite with coverage gating (`npm run test:cov`), and coverage report artifact uploading.
+- **FastAPI CI**: Python 3.11 environment, syntax check (`python -m py_compile`), dependency installation, and full Pytest execution with coverage reporting.
 
 ### Migrating data from the Spring backend
 
