@@ -4,13 +4,17 @@ import {
   ConflictException,
   BadRequestException,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { DailyTask } from './daily-task.entity';
 import { DailyTaskCompletion } from './daily-task-completion.entity';
+import { MissionContributionEvent } from './mission-contribution-event.entity';
+import { UserBadge } from './user-badge.entity';
+import { CreditTransaction, TransactionType } from '../wallet/infrastructure/persistence/credit-transaction.entity';
+import { AuditLog } from '../admin/audit-log.entity';
 import { WalletService } from '../wallet/application/wallet.service';
-import { TransactionType } from '../wallet/infrastructure/persistence/credit-transaction.entity';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RedisService } from '../../integrations/redis/redis.service';
 
@@ -70,6 +74,15 @@ export class DailyTasksService {
     private readonly redisService: RedisService,
     private readonly notificationsService: NotificationsService,
     private readonly dataSource: DataSource,
+    @Optional()
+    @InjectRepository(MissionContributionEvent)
+    private readonly missionEventRepo?: Repository<MissionContributionEvent>,
+    @Optional()
+    @InjectRepository(UserBadge)
+    private readonly userBadgeRepo?: Repository<UserBadge>,
+    @Optional()
+    @InjectRepository(CreditTransaction)
+    private readonly creditTransactionRepo?: Repository<CreditTransaction>,
   ) {}
 
   /**
@@ -230,13 +243,22 @@ export class DailyTasksService {
 
     const streakDates = await this.getRecentContributionDates(userId, dayPeriod.end, timeZone);
     const currentStreakDays = this.calculateCurrentStreak(streakDates, today);
-    const badgeRows: Array<{ badge_code: string; earned_at: Date }> = await this.dataSource.query(
-      `SELECT badge_code, earned_at
-       FROM user_badges
-       WHERE user_id = $1
-       ORDER BY earned_at DESC`,
-      [userId],
-    );
+    let badgeRows: Array<{ badge_code: string; earned_at: Date }> = [];
+    if (this.userBadgeRepo) {
+      const badges = await this.userBadgeRepo.find({
+        where: { userId },
+        order: { earnedAt: 'DESC' },
+      });
+      badgeRows = badges.map((b) => ({ badge_code: b.badgeCode, earned_at: b.earnedAt }));
+    } else {
+      badgeRows = await this.dataSource.query(
+        `SELECT badge_code, earned_at
+         FROM user_badges
+         WHERE user_id = $1
+         ORDER BY earned_at DESC`,
+        [userId],
+      );
+    }
     const streakBonusCredits = await this.getConfiguredStreakBonus();
 
     return {
@@ -309,12 +331,22 @@ export class DailyTasksService {
     sourceId: string,
   ): Promise<void> {
     const occurredAt = new Date();
-    await this.dataSource.query(
-      `INSERT INTO mission_contribution_events (user_id, event_type, source_id, occurred_at)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (user_id, event_type, source_id) DO NOTHING`,
-      [userId, eventType, sourceId, occurredAt],
-    );
+    if (this.missionEventRepo) {
+      await this.missionEventRepo
+        .createQueryBuilder()
+        .insert()
+        .into(MissionContributionEvent)
+        .values({ userId, eventType, sourceId, occurredAt })
+        .orIgnore()
+        .execute();
+    } else {
+      await this.dataSource.query(
+        `INSERT INTO mission_contribution_events (user_id, event_type, source_id, occurred_at)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (user_id, event_type, source_id) DO NOTHING`,
+        [userId, eventType, sourceId, occurredAt],
+      );
+    }
 
     await this.processMissionRewards(userId, eventType, sourceId, occurredAt);
   }
@@ -401,12 +433,22 @@ export class DailyTasksService {
     const streakDays = this.calculateStreakEnding(dates, contributionDate);
     if (streakDays < 7) return;
 
-    await this.dataSource.query(
-      `INSERT INTO user_badges (user_id, badge_code, earned_at)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (user_id, badge_code) DO NOTHING`,
-      [userId, STREAK_SEVEN_BADGE, occurredAt],
-    );
+    if (this.userBadgeRepo) {
+      await this.userBadgeRepo
+        .createQueryBuilder()
+        .insert()
+        .into(UserBadge)
+        .values({ userId, badgeCode: STREAK_SEVEN_BADGE, earnedAt: occurredAt })
+        .orIgnore()
+        .execute();
+    } else {
+      await this.dataSource.query(
+        `INSERT INTO user_badges (user_id, badge_code, earned_at)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (user_id, badge_code) DO NOTHING`,
+        [userId, STREAK_SEVEN_BADGE, occurredAt],
+      );
+    }
 
     const bonus = await this.getConfiguredStreakBonus();
     const streakStartDate = addCalendarDays(contributionDate, -(streakDays - 1));
@@ -439,6 +481,31 @@ export class DailyTasksService {
     period: MissionPeriod,
     timeZone: string,
   ): Promise<MissionActivityDay[]> {
+    if (this.missionEventRepo) {
+      return this.missionEventRepo
+        .createQueryBuilder('mce')
+        .select("to_char(mce.occurred_at AT TIME ZONE :timeZone, 'YYYY-MM-DD')", 'contribution_day')
+        .addSelect("COUNT(*) FILTER (WHERE mce.event_type = 'VERIFIED_SIGN')::int", 'verified_sign_count')
+        .addSelect("COUNT(*) FILTER (WHERE mce.event_type = 'APPROVED_ANOMALY')::int", 'approved_anomaly_count')
+        .addSelect(
+          `COUNT(*) FILTER (
+            WHERE mce.event_type = 'APPROVED_ANOMALY'
+              AND EXISTS (
+                SELECT 1
+                FROM credit_transactions ct
+                WHERE ct.idempotency_key = 'mission:approved-anomaly:' || mce.source_id::text
+              )
+          )::int`,
+          'rewarded_anomaly_count',
+        )
+        .where('mce.user_id = :userId', { userId })
+        .andWhere('mce.occurred_at >= :start', { start: period.start })
+        .andWhere('mce.occurred_at < :end', { end: period.end })
+        .groupBy("to_char(mce.occurred_at AT TIME ZONE :timeZone, 'YYYY-MM-DD')")
+        .orderBy('contribution_day', 'ASC')
+        .setParameters({ timeZone })
+        .getRawMany();
+    }
     return this.dataSource.query(
       `SELECT to_char(occurred_at AT TIME ZONE $4, 'YYYY-MM-DD') AS contribution_day,
               COUNT(*) FILTER (WHERE event_type = 'VERIFIED_SIGN')::int AS verified_sign_count,
@@ -466,6 +533,17 @@ export class DailyTasksService {
     before: Date,
     timeZone: string,
   ): Promise<string[]> {
+    if (this.missionEventRepo) {
+      const rows = await this.missionEventRepo
+        .createQueryBuilder('mce')
+        .select("DISTINCT to_char(mce.occurred_at AT TIME ZONE :timeZone, 'YYYY-MM-DD')", 'contribution_day')
+        .where('mce.user_id = :userId', { userId })
+        .andWhere('mce.occurred_at < :before', { before })
+        .orderBy('contribution_day', 'DESC')
+        .setParameter('timeZone', timeZone)
+        .getRawMany();
+      return rows.map((row) => row.contribution_day);
+    }
     const rows: Array<{ contribution_day: string }> = await this.dataSource.query(
       `SELECT DISTINCT to_char(occurred_at AT TIME ZONE $3, 'YYYY-MM-DD') AS contribution_day
        FROM mission_contribution_events
@@ -493,6 +571,12 @@ export class DailyTasksService {
   }
 
   private async hasReward(idempotencyKey: string): Promise<boolean> {
+    if (this.creditTransactionRepo) {
+      const count = await this.creditTransactionRepo.count({
+        where: { idempotencyKey },
+      });
+      return count > 0;
+    }
     const rows: Array<{ exists: boolean }> = await this.dataSource.query(
       'SELECT EXISTS (SELECT 1 FROM credit_transactions WHERE idempotency_key = $1) AS exists',
       [idempotencyKey],
@@ -684,20 +768,36 @@ export class DailyTasksService {
 
       // 7. Audit log entry
       try {
-        await this.dataSource.query(
-          `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, new_values)
-           VALUES ($1, 'CLAIM_DAILY_TASK', 'daily_task_completions', $2, $3)`,
-          [
+        if (typeof this.dataSource?.getRepository === 'function') {
+          const auditLogRepo = this.dataSource.getRepository(AuditLog);
+          await auditLogRepo.save({
             userId,
-            String(completion.id),
-            JSON.stringify({
+            action: 'CLAIM_DAILY_TASK',
+            resourceName: 'daily_task_completions',
+            resourceId: String(completion.id),
+            newValues: {
               taskId: task.id,
               taskCode: task.taskCode,
               rewardCredits: task.rewardCredits,
               balanceAfter: creditResult.newBalance.toString(),
-            }),
-          ],
-        );
+            },
+          });
+        } else {
+          await this.dataSource.query(
+            `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, new_values)
+             VALUES ($1, 'CLAIM_DAILY_TASK', 'daily_task_completions', $2, $3)`,
+            [
+              userId,
+              String(completion.id),
+              JSON.stringify({
+                taskId: task.id,
+                taskCode: task.taskCode,
+                rewardCredits: task.rewardCredits,
+                balanceAfter: creditResult.newBalance.toString(),
+              }),
+            ],
+          );
+        }
       } catch {}
 
       return {

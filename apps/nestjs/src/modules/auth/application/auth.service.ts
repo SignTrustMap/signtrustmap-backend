@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException, ConflictException, BadRequestException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, ConflictException, BadRequestException, Optional } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -10,6 +10,11 @@ import { User, UserStatus } from '../infrastructure/persistence/user.entity';
 import { UserRole } from '../infrastructure/persistence/user-role.entity';
 import { Role } from '../infrastructure/persistence/role.entity';
 import { Wallet } from '../../wallet/infrastructure/persistence/wallet.entity';
+import { DriverProfile } from '../infrastructure/persistence/driver-profile.entity';
+import { SurveyorProfile } from '../../survey/infrastructure/persistence/surveyor-profile.entity';
+import { ReviewerProfile } from '../../reviews/infrastructure/persistence/reviewer-profile.entity';
+import { OAuthAccount } from '../infrastructure/persistence/oauth-account.entity';
+import { AuthOtpToken } from '../infrastructure/persistence/auth-otp-token.entity';
 import { RegisterDto, LoginDto } from '../presentation/dto/auth.dto';
 import { JwtPayload } from '../domain/auth.types';
 
@@ -30,7 +35,12 @@ export class AuthService {
     @InjectRepository(Wallet) private readonly walletRepo: Repository<Wallet>,
     private readonly jwtService: JwtService,
     private readonly dataSource: DataSource,
-    private readonly configService: ConfigService,
+    @Optional() private readonly configService?: ConfigService,
+    @Optional() @InjectRepository(DriverProfile) private readonly driverProfileRepo?: Repository<DriverProfile>,
+    @Optional() @InjectRepository(SurveyorProfile) private readonly surveyorProfileRepo?: Repository<SurveyorProfile>,
+    @Optional() @InjectRepository(ReviewerProfile) private readonly reviewerProfileRepo?: Repository<ReviewerProfile>,
+    @Optional() @InjectRepository(OAuthAccount) private readonly oauthAccountRepo?: Repository<OAuthAccount>,
+    @Optional() @InjectRepository(AuthOtpToken) private readonly authOtpTokenRepo?: Repository<AuthOtpToken>,
   ) {}
 
   private async getRolesForUser(userId: string): Promise<string[]> {
@@ -62,11 +72,44 @@ export class AuthService {
 
       // Initialize corresponding role profile
       if (targetRoleCode === 'DRIVER') {
-        await manager.query(`INSERT INTO driver_profiles (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [savedUser.id]);
+        if (typeof manager?.getRepository === 'function') {
+          const repo = manager.getRepository(DriverProfile);
+          await repo
+            .createQueryBuilder()
+            .insert()
+            .into(DriverProfile)
+            .values({ userId: savedUser.id })
+            .orIgnore()
+            .execute();
+        } else {
+          await manager.query(`INSERT INTO driver_profiles (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [savedUser.id]);
+        }
       } else if (targetRoleCode === 'REVIEWER') {
-        await manager.query(`INSERT INTO reviewer_profiles (user_id, reliability_score) VALUES ($1, 0.5) ON CONFLICT (user_id) DO NOTHING`, [savedUser.id]);
+        if (typeof manager?.getRepository === 'function') {
+          const repo = manager.getRepository(ReviewerProfile);
+          await repo
+            .createQueryBuilder()
+            .insert()
+            .into(ReviewerProfile)
+            .values({ userId: savedUser.id, reliabilityScore: 0.5 })
+            .orIgnore()
+            .execute();
+        } else {
+          await manager.query(`INSERT INTO reviewer_profiles (user_id, reliability_score) VALUES ($1, 0.5) ON CONFLICT (user_id) DO NOTHING`, [savedUser.id]);
+        }
       } else if (targetRoleCode === 'SURVEYOR') {
-        await manager.query(`INSERT INTO surveyor_profiles (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [savedUser.id]);
+        if (typeof manager?.getRepository === 'function') {
+          const repo = manager.getRepository(SurveyorProfile);
+          await repo
+            .createQueryBuilder()
+            .insert()
+            .into(SurveyorProfile)
+            .values({ userId: savedUser.id })
+            .orIgnore()
+            .execute();
+        } else {
+          await manager.query(`INSERT INTO surveyor_profiles (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [savedUser.id]);
+        }
       }
 
       const roles = role ? [role.code] : [];
@@ -85,7 +128,7 @@ export class AuthService {
   }
 
   async googleTokenLogin(token: string) {
-    const clientId = this.configService.get<string>('jwt.googleClientId');
+    const clientId = this.configService?.get<string>('jwt.googleClientId');
     if (!clientId) throw new UnauthorizedException('Google login is not configured');
     const client = new OAuth2Client(clientId);
     let payload;
@@ -110,13 +153,24 @@ export class AuthService {
     if (!googleUser.email) throw new BadRequestException('Google profile has no email');
     if (!googleUser.providerUserId) throw new UnauthorizedException('Google profile has no stable identity');
     const provider = 'GOOGLE';
-    const linkedAccounts: Array<{ user_id: string }> = await this.dataSource.query(
-      `SELECT "user_id" FROM "oauth_accounts" WHERE "provider" = $1 AND "provider_user_id" = $2 LIMIT 2`,
-      [provider, googleUser.providerUserId],
-    );
+    const oauthRepo = this.oauthAccountRepo ?? (typeof this.dataSource?.getRepository === 'function' ? this.dataSource.getRepository(OAuthAccount) : null);
+    let linkedAccounts: Array<{ user_id: string; userId?: string }> = [];
+    if (oauthRepo) {
+      const records = await oauthRepo.find({
+        where: { provider, providerUserId: googleUser.providerUserId },
+        take: 2,
+      });
+      linkedAccounts = records.map((r) => ({ user_id: r.userId, userId: r.userId }));
+    } else {
+      linkedAccounts = await this.dataSource.query(
+        `SELECT "user_id" FROM "oauth_accounts" WHERE "provider" = $1 AND "provider_user_id" = $2 LIMIT 2`,
+        [provider, googleUser.providerUserId],
+      );
+    }
     if (linkedAccounts.length > 1) throw new ConflictException('Google identity is linked more than once');
     if (linkedAccounts.length === 1) {
-      const linkedUser = await this.userRepo.findOne({ where: { id: linkedAccounts[0].user_id } });
+      const targetUserId = linkedAccounts[0].userId ?? linkedAccounts[0].user_id;
+      const linkedUser = await this.userRepo.findOne({ where: { id: targetUserId } });
       if (!linkedUser) throw new ConflictException('Google identity is linked to a missing account');
       if (linkedUser.status !== UserStatus.ACTIVE) throw new UnauthorizedException(`Account is ${linkedUser.status}`);
       const roles = await this.getRolesForUser(linkedUser.id);
@@ -129,7 +183,20 @@ export class AuthService {
         const newUser = manager.create(User, { email: googleUser.email, passwordHash: null, fullName: googleUser.fullName, avatarUrl: googleUser.avatarUrl, status: UserStatus.ACTIVE });
         const saved = await manager.save(newUser);
         try {
-          await manager.query(`INSERT INTO "oauth_accounts" ("user_id","provider","provider_user_id","email") VALUES ($1,$2,$3,$4)`, [saved.id, provider, googleUser.providerUserId, googleUser.email]);
+          if (typeof manager?.getRepository === 'function') {
+            const trxOauthRepo = manager.getRepository(OAuthAccount);
+            await trxOauthRepo.insert({
+              userId: saved.id,
+              provider,
+              providerUserId: googleUser.providerUserId,
+              email: googleUser.email,
+            });
+          } else {
+            await manager.query(
+              `INSERT INTO "oauth_accounts" ("user_id","provider","provider_user_id","email") VALUES ($1,$2,$3,$4)`,
+              [saved.id, provider, googleUser.providerUserId, googleUser.email],
+            );
+          }
         } catch (error: any) {
           if (error?.code === '23505') throw new ConflictException('Google identity is already linked to another account');
           throw error;
@@ -137,7 +204,18 @@ export class AuthService {
         const defaultRole = await manager.findOne(Role, { where: { code: 'SURVEYOR' } });
         if (defaultRole) await manager.save(manager.create(UserRole, { userId: saved.id, roleId: defaultRole.id, isActive: true }));
         if (defaultRole?.code === 'SURVEYOR') {
-          await manager.query(`INSERT INTO surveyor_profiles (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [saved.id]);
+          if (typeof manager?.getRepository === 'function') {
+            const surveyorRepo = manager.getRepository(SurveyorProfile);
+            await surveyorRepo
+              .createQueryBuilder()
+              .insert()
+              .into(SurveyorProfile)
+              .values({ userId: saved.id })
+              .orIgnore()
+              .execute();
+          } else {
+            await manager.query(`INSERT INTO surveyor_profiles (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [saved.id]);
+          }
         }
         await manager.save(manager.create(Wallet, { userId: saved.id, balance: '0' }));
         const roles = defaultRole ? [defaultRole.code] : [];
@@ -147,15 +225,36 @@ export class AuthService {
     if (user.status !== UserStatus.ACTIVE) {
       throw new UnauthorizedException(`Account is ${user.status}`);
     }
-    const existingLinks: Array<{ providerUserId: string }> = await this.dataSource.query(
-      `SELECT "provider_user_id" AS "providerUserId" FROM "oauth_accounts" WHERE "user_id" = $1 AND "provider" = $2 LIMIT 2`,
-      [user.id, provider],
-    );
+    let existingLinks: Array<{ providerUserId: string }> = [];
+    if (oauthRepo) {
+      const records = await oauthRepo.find({
+        where: { userId: user.id, provider },
+        take: 2,
+      });
+      existingLinks = records.map((r) => ({ providerUserId: r.providerUserId }));
+    } else {
+      existingLinks = await this.dataSource.query(
+        `SELECT "provider_user_id" AS "providerUserId" FROM "oauth_accounts" WHERE "user_id" = $1 AND "provider" = $2 LIMIT 2`,
+        [user.id, provider],
+      );
+    }
     if (existingLinks.some((link) => link.providerUserId !== googleUser.providerUserId)) {
       throw new ConflictException('A different Google identity is already linked to this account');
     }
     try {
-      await this.dataSource.query(`INSERT INTO "oauth_accounts" ("user_id","provider","provider_user_id","email") VALUES ($1,$2,$3,$4)`, [user.id, provider, googleUser.providerUserId, googleUser.email]);
+      if (oauthRepo) {
+        await oauthRepo.insert({
+          userId: user.id,
+          provider,
+          providerUserId: googleUser.providerUserId,
+          email: googleUser.email,
+        });
+      } else {
+        await this.dataSource.query(
+          `INSERT INTO "oauth_accounts" ("user_id","provider","provider_user_id","email") VALUES ($1,$2,$3,$4)`,
+          [user.id, provider, googleUser.providerUserId, googleUser.email],
+        );
+      }
     } catch (error: any) {
       if (error?.code === '23505') throw new ConflictException('Google identity is already linked to another account');
       throw error;
@@ -173,21 +272,44 @@ export class AuthService {
     // Enrich with wallet + profile stats (driver / surveyor / reviewer) when available
     let walletBalance = 0;
     try {
-      const wRows: any[] = await this.dataSource.query('SELECT balance FROM wallets WHERE user_id=$1', [userId]);
-      if (wRows.length) walletBalance = Number(wRows[0].balance);
+      const wallet = await this.walletRepo.findOne({ where: { userId } });
+      if (wallet) {
+        walletBalance = Number(wallet.balance);
+      } else if (this.dataSource) {
+        const wRows: any[] = await this.dataSource.query('SELECT balance FROM wallets WHERE user_id=$1', [userId]);
+        if (wRows.length) walletBalance = Number(wRows[0].balance);
+      }
     } catch {}
     const profileStats: any = {};
     try {
-      const dRows: any[] = await this.dataSource.query('SELECT * FROM driver_profiles WHERE user_id=$1', [userId]);
-      if (dRows.length) profileStats.driver = dRows[0];
+      const driverRepo = this.driverProfileRepo ?? (typeof this.dataSource?.getRepository === 'function' ? this.dataSource.getRepository(DriverProfile) : null);
+      if (driverRepo) {
+        const dProfile = await driverRepo.findOne({ where: { userId } });
+        if (dProfile) profileStats.driver = dProfile;
+      } else {
+        const dRows: any[] = await this.dataSource.query('SELECT * FROM driver_profiles WHERE user_id=$1', [userId]);
+        if (dRows.length) profileStats.driver = dRows[0];
+      }
     } catch {}
     try {
-      const sRows: any[] = await this.dataSource.query('SELECT * FROM surveyor_profiles WHERE user_id=$1', [userId]);
-      if (sRows.length) profileStats.surveyor = sRows[0];
+      const surveyorRepo = this.surveyorProfileRepo ?? (typeof this.dataSource?.getRepository === 'function' ? this.dataSource.getRepository(SurveyorProfile) : null);
+      if (surveyorRepo) {
+        const sProfile = await surveyorRepo.findOne({ where: { userId } });
+        if (sProfile) profileStats.surveyor = sProfile;
+      } else {
+        const sRows: any[] = await this.dataSource.query('SELECT * FROM surveyor_profiles WHERE user_id=$1', [userId]);
+        if (sRows.length) profileStats.surveyor = sRows[0];
+      }
     } catch {}
     try {
-      const rRows: any[] = await this.dataSource.query('SELECT * FROM reviewer_profiles WHERE user_id=$1', [userId]);
-      if (rRows.length) profileStats.reviewer = rRows[0];
+      const reviewerRepo = this.reviewerProfileRepo ?? (typeof this.dataSource?.getRepository === 'function' ? this.dataSource.getRepository(ReviewerProfile) : null);
+      if (reviewerRepo) {
+        const rProfile = await reviewerRepo.findOne({ where: { userId } });
+        if (rProfile) profileStats.reviewer = rProfile;
+      } else {
+        const rRows: any[] = await this.dataSource.query('SELECT * FROM reviewer_profiles WHERE user_id=$1', [userId]);
+        if (rRows.length) profileStats.reviewer = rRows[0];
+      }
     } catch {}
     return {
       id: user.id,
@@ -212,21 +334,44 @@ export class AuthService {
     const roles = await this.getRolesForUser(userId);
     let walletBalance = 0;
     try {
-      const wRows: any[] = await this.dataSource.query('SELECT balance FROM wallets WHERE user_id=$1', [userId]);
-      if (wRows.length) walletBalance = Number(wRows[0].balance);
+      const wallet = await this.walletRepo.findOne({ where: { userId } });
+      if (wallet) {
+        walletBalance = Number(wallet.balance);
+      } else if (this.dataSource) {
+        const wRows: any[] = await this.dataSource.query('SELECT balance FROM wallets WHERE user_id=$1', [userId]);
+        if (wRows.length) walletBalance = Number(wRows[0].balance);
+      }
     } catch {}
     const profileStats: any = {};
     try {
-      const dRows: any[] = await this.dataSource.query('SELECT * FROM driver_profiles WHERE user_id=$1', [userId]);
-      if (dRows.length) profileStats.driver = dRows[0];
+      const driverRepo = this.driverProfileRepo ?? (typeof this.dataSource?.getRepository === 'function' ? this.dataSource.getRepository(DriverProfile) : null);
+      if (driverRepo) {
+        const dProfile = await driverRepo.findOne({ where: { userId } });
+        if (dProfile) profileStats.driver = dProfile;
+      } else {
+        const dRows: any[] = await this.dataSource.query('SELECT * FROM driver_profiles WHERE user_id=$1', [userId]);
+        if (dRows.length) profileStats.driver = dRows[0];
+      }
     } catch {}
     try {
-      const sRows: any[] = await this.dataSource.query('SELECT * FROM surveyor_profiles WHERE user_id=$1', [userId]);
-      if (sRows.length) profileStats.surveyor = sRows[0];
+      const surveyorRepo = this.surveyorProfileRepo ?? (typeof this.dataSource?.getRepository === 'function' ? this.dataSource.getRepository(SurveyorProfile) : null);
+      if (surveyorRepo) {
+        const sProfile = await surveyorRepo.findOne({ where: { userId } });
+        if (sProfile) profileStats.surveyor = sProfile;
+      } else {
+        const sRows: any[] = await this.dataSource.query('SELECT * FROM surveyor_profiles WHERE user_id=$1', [userId]);
+        if (sRows.length) profileStats.surveyor = sRows[0];
+      }
     } catch {}
     try {
-      const rRows: any[] = await this.dataSource.query('SELECT * FROM reviewer_profiles WHERE user_id=$1', [userId]);
-      if (rRows.length) profileStats.reviewer = rRows[0];
+      const reviewerRepo = this.reviewerProfileRepo ?? (typeof this.dataSource?.getRepository === 'function' ? this.dataSource.getRepository(ReviewerProfile) : null);
+      if (reviewerRepo) {
+        const rProfile = await reviewerRepo.findOne({ where: { userId } });
+        if (rProfile) profileStats.reviewer = rProfile;
+      } else {
+        const rRows: any[] = await this.dataSource.query('SELECT * FROM reviewer_profiles WHERE user_id=$1', [userId]);
+        if (rRows.length) profileStats.reviewer = rRows[0];
+      }
     } catch {}
     return {
       id: user.id,
@@ -245,13 +390,34 @@ export class AuthService {
     const user = await this.userRepo.findOne({ where: { email } });
     if (!user) return { sent: true, message: 'If the email exists, an OTP has been sent' };
     const otp = String(randomInt(100000, 1000000));
-    await this.dataSource.query(`UPDATE auth_otp_tokens SET used = true WHERE email = $1 AND used = false`, [email]);
-    await this.dataSource.query(`INSERT INTO auth_otp_tokens (email, otp, expires_at) VALUES ($1,$2,$3)`, [email, otp, new Date(Date.now()+10*60*1000)]);
+    const otpRepo = this.authOtpTokenRepo ?? (typeof this.dataSource?.getRepository === 'function' ? this.dataSource.getRepository(AuthOtpToken) : null);
+    if (otpRepo) {
+      await otpRepo.update({ email, used: false }, { used: true });
+      await otpRepo.save(otpRepo.create({
+        email,
+        otp,
+        expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+        used: false,
+      }));
+    } else {
+      await this.dataSource.query(`UPDATE auth_otp_tokens SET used = true WHERE email = $1 AND used = false`, [email]);
+      await this.dataSource.query(`INSERT INTO auth_otp_tokens (email, otp, expires_at) VALUES ($1,$2,$3)`, [email, otp, new Date(Date.now()+10*60*1000)]);
+    }
     const isDev = process.env.NODE_ENV !== 'production';
     return isDev ? { sent: true, otp, expiresAt: new Date(Date.now()+10*60*1000) } : { sent: true, message: 'OTP sent to email' };
   }
 
   async verifyOtp(email: string, otp: string) {
+    const otpRepo = this.authOtpTokenRepo ?? (typeof this.dataSource?.getRepository === 'function' ? this.dataSource.getRepository(AuthOtpToken) : null);
+    if (otpRepo) {
+      const token = await otpRepo.findOne({
+        where: { email, otp, used: false },
+        order: { createdAt: 'DESC' },
+      });
+      if (!token) throw new BadRequestException('Invalid OTP');
+      if (new Date(token.expiresAt) < new Date()) throw new BadRequestException('OTP expired');
+      return { valid: true, email };
+    }
     const rows: any[] = await this.dataSource.query(`SELECT id, expires_at FROM auth_otp_tokens WHERE email=$1 AND otp=$2 AND used=false ORDER BY created_at DESC LIMIT 1`, [email, otp]);
     if (rows.length === 0) throw new BadRequestException('Invalid OTP');
     if (new Date(rows[0].expires_at) < new Date()) throw new BadRequestException('OTP expired');
@@ -262,13 +428,39 @@ export class AuthService {
     const user = await this.userRepo.findOne({ where: { email } });
     if (!user) return { sent: true, message: 'If the email exists, a new OTP has been sent' };
     const otp = String(randomInt(100000, 1000000));
-    await this.dataSource.query(`UPDATE auth_otp_tokens SET used = true WHERE email = $1 AND used = false`, [email]);
-    await this.dataSource.query(`INSERT INTO auth_otp_tokens (email, otp, expires_at) VALUES ($1,$2,$3)`, [email, otp, new Date(Date.now() + 10 * 60 * 1000)]);
+    const otpRepo = this.authOtpTokenRepo ?? (typeof this.dataSource?.getRepository === 'function' ? this.dataSource.getRepository(AuthOtpToken) : null);
+    if (otpRepo) {
+      await otpRepo.update({ email, used: false }, { used: true });
+      await otpRepo.save(otpRepo.create({
+        email,
+        otp,
+        expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+        used: false,
+      }));
+    } else {
+      await this.dataSource.query(`UPDATE auth_otp_tokens SET used = true WHERE email = $1 AND used = false`, [email]);
+      await this.dataSource.query(`INSERT INTO auth_otp_tokens (email, otp, expires_at) VALUES ($1,$2,$3)`, [email, otp, new Date(Date.now() + 10 * 60 * 1000)]);
+    }
     const isDev = process.env.NODE_ENV !== 'production';
     return isDev ? { sent: true, otp, expiresAt: new Date(Date.now() + 10 * 60 * 1000) } : { sent: true, message: 'OTP resent' };
   }
 
   async resetPassword(email: string, otp: string, newPassword: string) {
+    const otpRepo = this.authOtpTokenRepo ?? (typeof this.dataSource?.getRepository === 'function' ? this.dataSource.getRepository(AuthOtpToken) : null);
+    if (otpRepo) {
+      const token = await otpRepo.findOne({
+        where: { email, otp, used: false },
+        order: { createdAt: 'DESC' },
+      });
+      if (!token) throw new BadRequestException('Invalid OTP');
+      if (new Date(token.expiresAt) < new Date()) throw new BadRequestException('OTP expired');
+      const user = await this.userRepo.findOne({ where: { email } });
+      if (!user) throw new BadRequestException('User not found');
+      user.passwordHash = await bcrypt.hash(newPassword, 10);
+      await this.userRepo.save(user);
+      await otpRepo.update({ id: token.id }, { used: true });
+      return { reset: true };
+    }
     const rows: any[] = await this.dataSource.query(`SELECT id, expires_at FROM auth_otp_tokens WHERE email=$1 AND otp=$2 AND used=false ORDER BY created_at DESC LIMIT 1`, [email, otp]);
     if (rows.length === 0) throw new BadRequestException('Invalid OTP');
     if (new Date(rows[0].expires_at) < new Date()) throw new BadRequestException('OTP expired');
