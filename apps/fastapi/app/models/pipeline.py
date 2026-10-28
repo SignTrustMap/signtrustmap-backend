@@ -14,11 +14,20 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, String, Text, func
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+from geoalchemy2 import Geometry
+from sqlalchemy import BigInteger, Boolean, Float, Integer, String, Text, func
+from sqlalchemy.dialects.postgresql import ENUM, JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.spatial import Base
+
+SUBMISSION_STATUS_ENUM = ENUM(name="submission_status", create_type=False)
+SPATIAL_CONFIDENCE_ENUM = ENUM(name="spatial_confidence_level", create_type=False)
+CANDIDATE_STATUS_ENUM = ENUM(name="candidate_status", create_type=False)
+AI_MODEL_TYPE_ENUM = ENUM(name="ai_model_type", create_type=False)
+TRAINING_JOB_STATUS_ENUM = ENUM(name="training_job_status", create_type=False)
+SUBMISSION_TYPE_ENUM = ENUM(name="submission_type", create_type=False)
+COORDINATE_SOURCE_ENUM = ENUM(name="coordinate_source", create_type=False)
 
 
 class SurveySubmission(Base):
@@ -28,10 +37,10 @@ class SurveySubmission(Base):
         PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
     )
     surveyor_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True))
-    submission_type: Mapped[str] = mapped_column(String(50))
-    status: Mapped[str] = mapped_column(String(50), default="DRAFT")
+    submission_type: Mapped[str] = mapped_column(SUBMISSION_TYPE_ENUM)
+    status: Mapped[str] = mapped_column(SUBMISSION_STATUS_ENUM, default="DRAFT")
     captured_at: Mapped[datetime | None] = mapped_column(server_default=func.now())
-    coordinate_source: Mapped[str | None] = mapped_column(String(50))
+    coordinate_source: Mapped[str | None] = mapped_column(COORDINATE_SOURCE_ENUM, nullable=True)
     note: Mapped[str | None] = mapped_column(Text)
     validation_errors: Mapped[Any] = mapped_column(JSONB, server_default="[]")
     correction_requirements: Mapped[Any] = mapped_column(JSONB, server_default="[]")
@@ -72,9 +81,9 @@ class UnverifiedSignCandidate(Base):
     confidence_score: Mapped[float] = mapped_column()
     best_frame_url: Mapped[str] = mapped_column(String(500))
     sign_crop_url: Mapped[str] = mapped_column(String(500))
-    spatial_confidence: Mapped[str] = mapped_column(String(20), default="HIGH")
+    spatial_confidence: Mapped[str] = mapped_column(SPATIAL_CONFIDENCE_ENUM, default="HIGH")
     active_learning_priority: Mapped[float] = mapped_column(default=0.0)
-    status: Mapped[str] = mapped_column(String(50), default="PENDING_REVIEW")
+    status: Mapped[str] = mapped_column(CANDIDATE_STATUS_ENUM, default="PENDING_REVIEW")
     possible_signs: Mapped[Any] = mapped_column(JSONB, nullable=True)
     selected_sign_type_id: Mapped[int | None] = mapped_column(nullable=True)
     selected_by: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
@@ -101,3 +110,117 @@ class BatchSubmission(Base):
     metadata_json: Mapped[Any] = mapped_column("metadata", JSONB, server_default="{}")
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class SubmissionStatusHistory(Base):
+    __tablename__ = "submission_status_history"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    submission_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True))
+    old_status: Mapped[str | None] = mapped_column(SUBMISSION_STATUS_ENUM, nullable=True)
+    new_status: Mapped[str] = mapped_column(SUBMISSION_STATUS_ENUM)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    changed_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class CandidateDetectionMetadata(Base):
+    __tablename__ = "candidate_detection_metadata"
+
+    candidate_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    frame_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bbox_x: Mapped[float | None] = mapped_column(Float, nullable=True)
+    bbox_y: Mapped[float | None] = mapped_column(Float, nullable=True)
+    bbox_width: Mapped[float | None] = mapped_column(Float, nullable=True)
+    bbox_height: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tracking_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    detector_model_version_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class CandidateGeoEstimation(Base):
+    __tablename__ = "candidate_geo_estimations"
+
+    candidate_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    vehicle_location: Mapped[Any] = mapped_column(Geometry("POINT", srid=4326))
+    sign_location: Mapped[Any] = mapped_column(Geometry("POINT", srid=4326))
+    estimated_distance: Mapped[float] = mapped_column(Float)
+    bearing_angle: Mapped[float] = mapped_column(Float)
+    traffic_direction: Mapped[float | None] = mapped_column(Float, nullable=True)
+    projection_method: Mapped[str] = mapped_column(String(50), default="spherical_trig")
+
+
+class CameraCalibrationProfile(Base):
+    __tablename__ = "camera_calibration_profiles"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True))
+    device_model: Mapped[str] = mapped_column(String(100))
+    camera_height_meters: Mapped[float] = mapped_column(Float, default=1.35)
+    pitch_angle_degrees: Mapped[float] = mapped_column(Float, default=0.0)
+    yaw_offset_degrees: Mapped[float] = mapped_column(Float, default=0.0)
+    hfov_degrees: Mapped[float] = mapped_column(Float, default=60.0)
+    focal_length_px: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class TrafficSignType(Base):
+    __tablename__ = "traffic_sign_types"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    category_id: Mapped[int] = mapped_column(Integer)
+    sign_code: Mapped[str] = mapped_column(String(50))
+    name_vi: Mapped[str] = mapped_column(String(255))
+    name_en: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    labeling_guidelines: Mapped[str | None] = mapped_column(Text, nullable=True)
+    shape: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    color_scheme: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    slug: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class ModelTrainingJob(Base):
+    __tablename__ = "model_training_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
+    )
+    model_type: Mapped[str] = mapped_column(AI_MODEL_TYPE_ENUM)
+    triggered_by: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    status: Mapped[str] = mapped_column(TRAINING_JOB_STATUS_ENUM, default="QUEUED")
+    result_model_version_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    evaluation_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+
+class AiModelVersion(Base):
+    __tablename__ = "ai_model_versions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    model_type: Mapped[str] = mapped_column(AI_MODEL_TYPE_ENUM)
+    version_tag: Mapped[str] = mapped_column(String(50))
+    artifact_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    trained_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False)
+    evaluation_metrics: Mapped[Any] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    action: Mapped[str] = mapped_column(String(100))
+    resource_name: Mapped[str] = mapped_column(String(100))
+    resource_id: Mapped[str] = mapped_column(String(100))
+    old_values: Mapped[Any] = mapped_column(JSONB, nullable=True)
+    new_values: Mapped[Any] = mapped_column(JSONB, nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())

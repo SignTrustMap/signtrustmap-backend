@@ -6,6 +6,8 @@ import {
   BatchProcessingStatus,
   BatchRewardStatus,
 } from '../infrastructure/persistence/batch-submission.entity';
+import { SurveyorProfile } from '../infrastructure/persistence/surveyor-profile.entity';
+import { AuditLog } from '../../admin/audit-log.entity';
 import { CreateBatchSurveyDto } from '../presentation/dto/create-batch-survey.dto';
 import { RewardEngineService } from '../../rewards/application/reward-engine.service';
 import { WalletService } from '../../wallet/application/wallet.service';
@@ -25,6 +27,12 @@ export class BatchSurveyService {
     private readonly walletService: WalletService,
     private readonly notificationsService: NotificationsService,
     @Optional() private readonly dailyTasksService?: DailyTasksService,
+    @Optional()
+    @InjectRepository(SurveyorProfile)
+    private readonly surveyorProfileRepo?: Repository<SurveyorProfile>,
+    @Optional()
+    @InjectRepository(AuditLog)
+    private readonly auditLogRepo?: Repository<AuditLog>,
   ) {}
 
   /**
@@ -70,11 +78,23 @@ export class BatchSurveyService {
 
     // Record submission into outbox/event log
     try {
-      await this.dataSource.query(
-        `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, new_values)
-         VALUES ($1, 'CREATE_BATCH_SUBMISSION', 'batch_submissions', $2, $3)`,
-        [userId, saved.id, JSON.stringify({ totalImages: saved.totalImages, title: saved.title })],
-      );
+      if (this.auditLogRepo) {
+        await this.auditLogRepo.save(
+          this.auditLogRepo.create({
+            userId,
+            action: 'CREATE_BATCH_SUBMISSION',
+            resourceName: 'batch_submissions',
+            resourceId: saved.id,
+            newValues: { totalImages: saved.totalImages, title: saved.title },
+          }),
+        );
+      } else {
+        await this.dataSource.query(
+          `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, new_values)
+           VALUES ($1, 'CREATE_BATCH_SUBMISSION', 'batch_submissions', $2, $3)`,
+          [userId, saved.id, JSON.stringify({ totalImages: saved.totalImages, title: saved.title })],
+        );
+      }
     } catch {}
 
     // Advance daily task progress for survey contribution
@@ -231,14 +251,36 @@ export class BatchSurveyService {
 
     // Update contributor profile
     try {
-      await this.dataSource.query(
-        `INSERT INTO surveyor_profiles (user_id, total_submissions, total_verified_signs, total_credits_earned)
-         VALUES ($1, $2, 0, $3)
-         ON CONFLICT (user_id) DO UPDATE SET
-           total_submissions = surveyor_profiles.total_submissions + $2,
-           total_credits_earned = surveyor_profiles.total_credits_earned + $3`,
-        [batch.userId, batch.totalImages, payoutAmount],
-      );
+      if (this.surveyorProfileRepo) {
+        const surveyor = await this.surveyorProfileRepo.findOne({ where: { userId: batch.userId } });
+        if (!surveyor) {
+          await this.surveyorProfileRepo.save(
+            this.surveyorProfileRepo.create({
+              userId: batch.userId,
+              totalSubmissions: batch.totalImages,
+              totalVerifiedSigns: 0,
+              totalCreditsEarned: payoutAmount,
+            }),
+          );
+        } else {
+          await this.surveyorProfileRepo.update(
+            { userId: batch.userId },
+            {
+              totalSubmissions: () => `total_submissions + ${batch.totalImages}`,
+              totalCreditsEarned: () => `total_credits_earned + ${payoutAmount}`,
+            },
+          );
+        }
+      } else {
+        await this.dataSource.query(
+          `INSERT INTO surveyor_profiles (user_id, total_submissions, total_verified_signs, total_credits_earned)
+           VALUES ($1, $2, 0, $3)
+           ON CONFLICT (user_id) DO UPDATE SET
+             total_submissions = surveyor_profiles.total_submissions + $2,
+             total_credits_earned = surveyor_profiles.total_credits_earned + $3`,
+          [batch.userId, batch.totalImages, payoutAmount],
+        );
+      }
     } catch {}
 
     // Send confirmation notification
