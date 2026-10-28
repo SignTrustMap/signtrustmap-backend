@@ -15,21 +15,24 @@ from datetime import datetime, timezone
 from typing import Any
 
 from celery import shared_task
-from sqlalchemy import text
+from sqlalchemy import func, or_, update
 
 from app.db_sync import get_sync_db
+from app.models.pipeline import RoadHazardEvent
 
 logger = logging.getLogger(__name__)
 
-_SWEEP_EXPIRED_HAZARDS_SQL = text(
-    """
-    UPDATE road_hazard_events
-    SET status = 'DISMISSED',
-        updated_at = NOW()
-    WHERE status IN ('UNCONFIRMED', 'CONFIRMED')
-      AND (expires_at <= NOW() OR dismissals_count > confirmations_count)
-    RETURNING id, hazard_type, status
-    """
+_SWEEP_EXPIRED_HAZARDS_STMT = (
+    update(RoadHazardEvent)
+    .where(
+        RoadHazardEvent.status.in_(["UNCONFIRMED", "CONFIRMED"]),
+        or_(
+            RoadHazardEvent.expires_at <= func.now(),
+            RoadHazardEvent.dismissals_count > RoadHazardEvent.confirmations_count,
+        ),
+    )
+    .values(status="DISMISSED", updated_at=func.now())
+    .returning(RoadHazardEvent.id, RoadHazardEvent.hazard_type, RoadHazardEvent.status)
 )
 
 
@@ -47,7 +50,7 @@ def task_decay_hazard_events(self) -> dict[str, Any]:  # type: ignore[no-untyped
 
     try:
         with get_sync_db() as db:
-            result = db.execute(_SWEEP_EXPIRED_HAZARDS_SQL)
+            result = db.execute(_SWEEP_EXPIRED_HAZARDS_STMT)
             swept_rows = result.mappings().all()
             db.commit()
     except Exception as exc:

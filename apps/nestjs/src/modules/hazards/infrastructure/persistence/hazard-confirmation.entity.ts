@@ -33,6 +33,9 @@ export class HazardConfirmation {
   })
   voteType: HazardVoteType;
 
+  @Column({ type: 'geometry', spatialFeatureType: 'Point', srid: 4326, nullable: true })
+  location?: any;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 
