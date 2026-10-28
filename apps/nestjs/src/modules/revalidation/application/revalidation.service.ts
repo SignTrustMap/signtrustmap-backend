@@ -12,6 +12,13 @@ import { NotificationsService } from '../../notifications/notifications.service'
 import { DailyTasksService } from '../../daily-tasks/daily-tasks.service';
 import { randomUUID } from 'crypto';
 import { AiInferenceService, EarlyClassificationResult } from '../../../integrations/ai-inference/ai-inference.service';
+import { VerifiedSignOrmEntity } from '../../sign-map/infrastructure/persistence/verified-sign.orm-entity';
+import { SignLifecycleEvent } from '../../sign-map/infrastructure/persistence/sign-lifecycle-event.entity';
+import { VerifiedSignHistory } from '../../sign-map/infrastructure/persistence/verified-sign-history.entity';
+import { ModerationCase } from '../../moderation/infrastructure/persistence/moderation-case.entity';
+import { SurveyorProfile } from '../../survey/infrastructure/persistence/surveyor-profile.entity';
+import { TrafficSignType } from '../../catalog/traffic-sign-type.entity';
+import { ConsensusConfig } from '../../consensus/infrastructure/persistence/consensus-config.entity';
 
 const DEFAULT_MIN_VOTES_REQUIRED = 1;
 const DEFAULT_MAX_PROXIMITY_METERS = 50;
@@ -61,9 +68,16 @@ export class RevalidationService {
     private readonly storage: MinioStorageService,
     private readonly walletService: WalletService,
     private readonly notificationsService: NotificationsService,
-    @InjectRepository(FreshnessRule) private readonly freshnessRules?: Repository<FreshnessRule>,
+    @Optional() @InjectRepository(FreshnessRule) private readonly freshnessRules?: Repository<FreshnessRule>,
     @Optional() private readonly dailyTasksService?: DailyTasksService,
     @Optional() private readonly aiInferenceService?: AiInferenceService,
+    @Optional() @InjectRepository(VerifiedSignOrmEntity) private readonly verifiedSigns?: Repository<VerifiedSignOrmEntity>,
+    @Optional() @InjectRepository(SignLifecycleEvent) private readonly lifecycleRepo?: Repository<SignLifecycleEvent>,
+    @Optional() @InjectRepository(VerifiedSignHistory) private readonly signHistoryRepo?: Repository<VerifiedSignHistory>,
+    @Optional() @InjectRepository(ModerationCase) private readonly moderationCases?: Repository<ModerationCase>,
+    @Optional() @InjectRepository(SurveyorProfile) private readonly surveyorProfiles?: Repository<SurveyorProfile>,
+    @Optional() @InjectRepository(TrafficSignType) private readonly signTypes?: Repository<TrafficSignType>,
+    @Optional() @InjectRepository(ConsensusConfig) private readonly consensusConfigs?: Repository<ConsensusConfig>,
   ) {}
   async listTasks(
     page = 1,
@@ -263,10 +277,31 @@ export class RevalidationService {
   async getTask(id: string) {
     const t = await this.tasks.findOne({ where: { id } });
     if (!t) throw new NotFoundException('RevalidationTask ' + id + ' not found');
-    const evs: any[] = await this.dataSource.query(
-      'SELECT id, task_id, user_id, media_url, evidence_type, submitted_at, ST_AsText(location) as location_wkt FROM revalidation_evidences WHERE task_id=$1 ORDER BY submitted_at ASC',
-      [id],
-    );
+    let evs: any[] = [];
+    if (this.evidences && typeof this.evidences.createQueryBuilder === 'function') {
+      try {
+        evs = await this.evidences
+          .createQueryBuilder('e')
+          .select([
+            'e.id AS id',
+            'e.taskId AS task_id',
+            'e.userId AS user_id',
+            'e.mediaUrl AS media_url',
+            'e.evidenceType AS evidence_type',
+            'e.submittedAt AS submitted_at',
+            'ST_AsText(e.location) AS location_wkt',
+          ])
+          .where('e.taskId = :id', { id })
+          .orderBy('e.submittedAt', 'ASC')
+          .getRawMany();
+      } catch {}
+    }
+    if (evs.length === 0 && typeof this.dataSource?.query === 'function') {
+      evs = await this.dataSource.query(
+        'SELECT id, task_id, user_id, media_url, evidence_type, submitted_at, ST_AsText(location) as location_wkt FROM revalidation_evidences WHERE task_id=$1 ORDER BY submitted_at ASC',
+        [id],
+      );
+    }
     const evsWithS3 = evs.map((e) => ({
       ...e,
       media_url: this.toS3Url(e.media_url, e.task_id),
@@ -274,12 +309,26 @@ export class RevalidationService {
     }));
     let location: { lat: number; lon: number } | null = null;
     try {
-      const sRows: any[] = await this.dataSource.query(
-        'SELECT ST_Y(location::geometry) as lat, ST_X(location::geometry) as lon FROM verified_traffic_signs WHERE id=$1',
-        [t.verifiedSignId],
-      );
-      if (sRows.length && sRows[0].lat != null && sRows[0].lon != null) {
-        location = { lat: Number(sRows[0].lat), lon: Number(sRows[0].lon) };
+      let sRow: any = null;
+      if (this.verifiedSigns && typeof this.verifiedSigns.createQueryBuilder === 'function') {
+        try {
+          sRow = await this.verifiedSigns
+            .createQueryBuilder('s')
+            .select('ST_Y(s.location::geometry)', 'lat')
+            .addSelect('ST_X(s.location::geometry)', 'lon')
+            .where('s.id = :signId', { signId: t.verifiedSignId })
+            .getRawOne();
+        } catch {}
+      }
+      if (!sRow && typeof this.dataSource?.query === 'function') {
+        const sRows: any[] = await this.dataSource.query(
+          'SELECT ST_Y(location::geometry) as lat, ST_X(location::geometry) as lon FROM verified_traffic_signs WHERE id=$1',
+          [t.verifiedSignId],
+        );
+        if (sRows.length) sRow = sRows[0];
+      }
+      if (sRow && sRow.lat != null && sRow.lon != null) {
+        location = { lat: Number(sRow.lat), lon: Number(sRow.lon) };
       }
     } catch {}
     return { ...t, bounty: t.rewardCredits, location, evidences: evsWithS3 };
@@ -749,14 +798,28 @@ export class RevalidationService {
 
   private async resolveMinVotesRequired(): Promise<number> {
     try {
-      const rows: any[] = await this.dataSource.query(
-        `SELECT min_votes_required
-         FROM consensus_configs
-         WHERE is_active = true
-         ORDER BY effective_from DESC
-         LIMIT 1`,
-      );
-      if (rows.length && Number.isInteger(rows[0].min_votes_required)) return Number(rows[0].min_votes_required);
+      let minVotes: number | null = null;
+      if (this.consensusConfigs && typeof this.consensusConfigs.findOne === 'function') {
+        try {
+          const cfg = await this.consensusConfigs.findOne({
+            where: { isActive: true },
+            order: { effectiveFrom: 'DESC' },
+            select: ['minVotesRequired'],
+          });
+          if (cfg && Number.isInteger(cfg.minVotesRequired)) minVotes = cfg.minVotesRequired;
+        } catch {}
+      }
+      if (minVotes == null && typeof this.dataSource?.query === 'function') {
+        const rows: any[] = await this.dataSource.query(
+          `SELECT min_votes_required
+           FROM consensus_configs
+           WHERE is_active = true
+           ORDER BY effective_from DESC
+           LIMIT 1`,
+        );
+        if (rows.length && Number.isInteger(rows[0].min_votes_required)) minVotes = Number(rows[0].min_votes_required);
+      }
+      if (minVotes != null) return minVotes;
     } catch {}
     return DEFAULT_MIN_VOTES_REQUIRED;
   }
@@ -1190,13 +1253,25 @@ export class RevalidationService {
 
   async notifySurveyorsForMissingSign(task: RevalidationTask, signId: string): Promise<number> {
     try {
-      if (!this.dataSource?.query) return 0;
-      const surveyorRows: Array<{ user_id: string }> = await this.dataSource.query(
-        `SELECT sp.user_id
-         FROM surveyor_profiles sp
-         ORDER BY sp.user_id
-         LIMIT 20`,
-      );
+      let surveyorRows: Array<{ user_id: string }> = [];
+      if (this.surveyorProfiles && typeof this.surveyorProfiles.find === 'function') {
+        try {
+          const profiles = await this.surveyorProfiles.find({
+            order: { userId: 'ASC' },
+            take: 20,
+            select: ['userId'],
+          });
+          surveyorRows = profiles.map(p => ({ user_id: p.userId }));
+        } catch {}
+      }
+      if (surveyorRows.length === 0 && typeof this.dataSource?.query === 'function') {
+        surveyorRows = await this.dataSource.query(
+          `SELECT sp.user_id
+           FROM surveyor_profiles sp
+           ORDER BY sp.user_id
+           LIMIT 20`,
+        );
+      }
       if (!surveyorRows || surveyorRows.length === 0) {
         return 0;
       }
@@ -1224,26 +1299,59 @@ export class RevalidationService {
     if (!aiResult) return null;
     try {
       if (aiResult.standardCode) {
-        const rows = await this.dataSource.query(
-          'SELECT id FROM traffic_sign_types WHERE UPPER(sign_code) = UPPER($1) LIMIT 1',
-          [aiResult.standardCode],
-        );
-        if (rows.length > 0) return Number(rows[0].id);
+        let signType: TrafficSignType | null = null;
+        if (this.signTypes && typeof this.signTypes.createQueryBuilder === 'function') {
+          try {
+            signType = await this.signTypes
+              .createQueryBuilder('st')
+              .where('UPPER(st.signCode) = UPPER(:code)', { code: aiResult.standardCode })
+              .getOne();
+          } catch {}
+        }
+        if (!signType && typeof this.dataSource?.query === 'function') {
+          const rows = await this.dataSource.query(
+            'SELECT id FROM traffic_sign_types WHERE UPPER(sign_code) = UPPER($1) LIMIT 1',
+            [aiResult.standardCode],
+          );
+          if (rows.length > 0) return Number(rows[0].id);
+        }
+        if (signType) return Number(signType.id);
       }
       const candidateNames = [aiResult.className, aiResult.nameEn, aiResult.nameVi].filter(Boolean) as string[];
       for (const name of candidateNames) {
-        const rows = await this.dataSource.query(
-          'SELECT id FROM traffic_sign_types WHERE LOWER(name_en) = LOWER($1) OR LOWER(name_vi) = LOWER($1) OR LOWER(sign_code) = LOWER($1) LIMIT 1',
-          [name],
-        );
-        if (rows.length > 0) return Number(rows[0].id);
+        let signType: TrafficSignType | null = null;
+        if (this.signTypes && typeof this.signTypes.createQueryBuilder === 'function') {
+          try {
+            signType = await this.signTypes
+              .createQueryBuilder('st')
+              .where('LOWER(st.nameEn) = LOWER(:name) OR LOWER(st.nameVi) = LOWER(:name) OR LOWER(st.signCode) = LOWER(:name)', { name })
+              .getOne();
+          } catch {}
+        }
+        if (!signType && typeof this.dataSource?.query === 'function') {
+          const rows = await this.dataSource.query(
+            'SELECT id FROM traffic_sign_types WHERE LOWER(name_en) = LOWER($1) OR LOWER(name_vi) = LOWER($1) OR LOWER(sign_code) = LOWER($1) LIMIT 1',
+            [name],
+          );
+          if (rows.length > 0) return Number(rows[0].id);
+        }
+        if (signType) return Number(signType.id);
       }
       if (aiResult.classId != null && Number.isInteger(aiResult.classId)) {
-        const rows = await this.dataSource.query(
-          'SELECT id FROM traffic_sign_types WHERE id = $1 LIMIT 1',
-          [aiResult.classId],
-        );
-        if (rows.length > 0) return Number(rows[0].id);
+        let signType: TrafficSignType | null = null;
+        if (this.signTypes && typeof this.signTypes.findOne === 'function') {
+          try {
+            signType = await this.signTypes.findOne({ where: { id: aiResult.classId } });
+          } catch {}
+        }
+        if (!signType && typeof this.dataSource?.query === 'function') {
+          const rows = await this.dataSource.query(
+            'SELECT id FROM traffic_sign_types WHERE id = $1 LIMIT 1',
+            [aiResult.classId],
+          );
+          if (rows.length > 0) return Number(rows[0].id);
+        }
+        if (signType) return Number(signType.id);
       }
     } catch (e: any) {
       this.logger.warn(`Failed to resolve sign type from AI result: ${e?.message}`);
