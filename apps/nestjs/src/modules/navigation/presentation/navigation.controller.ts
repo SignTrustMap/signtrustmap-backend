@@ -84,19 +84,6 @@ export class NavigationController {
     const vehicleType = dto.vehicleType || 'CAR';
     const enabledCategories = dto.enabledCategoryCodes || ['SPEED_LIMIT', 'WARNING', 'PROHIBITION', 'MANDATORY', 'INFORMATION'];
     try {
-      await this.dataSource.query(`
-        CREATE TABLE IF NOT EXISTS driver_profiles (
-          user_id uuid PRIMARY KEY,
-          default_vehicle_type varchar(30) DEFAULT 'CAR',
-          enabled_categories text[] DEFAULT ARRAY['SPEED_LIMIT','WARNING','PROHIBITION','MANDATORY','INFORMATION'],
-          total_nav_sessions int NOT NULL DEFAULT 0,
-          created_at timestamptz NOT NULL DEFAULT now(),
-          updated_at timestamptz NOT NULL DEFAULT now()
-        );
-        ALTER TABLE driver_profiles
-          ADD COLUMN IF NOT EXISTS enabled_categories text[]
-            DEFAULT ARRAY['SPEED_LIMIT','WARNING','PROHIBITION','MANDATORY','INFORMATION'];
-      `);
       await this.dataSource.query(
         `INSERT INTO driver_profiles (user_id, default_vehicle_type, enabled_categories, updated_at)
          VALUES ($1, $2, $3, now())

@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, NotFoundException, BadRequestException, ForbiddenException, Optional, OnModuleInit, Logger } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException, BadRequestException, ForbiddenException, Optional, Logger } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { randomUUID, createHash } from 'crypto';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -46,7 +46,7 @@ function getAffectedRowCount(result: any): number {
 }
 
 @Injectable()
-export class ReviewsService implements OnModuleInit {
+export class ReviewsService {
   private readonly logger = new Logger(ReviewsService.name);
   constructor(
     @InjectRepository(UnverifiedSignCandidate) private readonly candidateRepo: Repository<UnverifiedSignCandidate>,
@@ -129,37 +129,6 @@ export class ReviewsService implements OnModuleInit {
     };
   }
 
-  async onModuleInit() {
-    try {
-      await (this.candidateRepo.manager as any).query(`
-        CREATE TABLE IF NOT EXISTS reviewer_skipped_candidates (
-          reviewer_id uuid NOT NULL,
-          candidate_id uuid NOT NULL,
-          skipped_at timestamptz NOT NULL DEFAULT now(),
-          PRIMARY KEY (reviewer_id, candidate_id)
-        );
-      `);
-    } catch (err: any) {
-      this.logger.warn(`Failed to verify reviewer_skipped_candidates table: ${err?.message}`);
-    }
-    try {
-      await (this.candidateRepo.manager as any).query(`
-        ALTER TABLE unverified_sign_candidates
-          ADD COLUMN IF NOT EXISTS possible_signs jsonb,
-          ADD COLUMN IF NOT EXISTS selected_sign_type_id int REFERENCES traffic_sign_types(id) ON DELETE SET NULL,
-          ADD COLUMN IF NOT EXISTS selected_by uuid REFERENCES users(id) ON DELETE SET NULL,
-          ADD COLUMN IF NOT EXISTS selected_at timestamptz,
-          ADD COLUMN IF NOT EXISTS selection_reason varchar(500);
-        CREATE INDEX IF NOT EXISTS idx_unverified_sign_candidates_selected_sign_type
-          ON unverified_sign_candidates (selected_sign_type_id);
-        ALTER TABLE survey_submissions
-          ADD COLUMN IF NOT EXISTS idempotency_key varchar(128);
-      `);
-    } catch (err: any) {
-      this.logger.warn(`Failed to verify unverified_sign_candidates schema: ${err?.message}`);
-    }
-  }
-
   async queue(reviewerId?: string, page = 1, pageSize = 20, includeOwnSubmissions = false) {
     const safePage = Math.max(1, page); const safeSize = Math.min(Math.max(1, pageSize), 100);
     const allowSelfReview = includeOwnSubmissions || process.env.ALLOW_SELF_REVIEW === 'true';
@@ -218,29 +187,8 @@ export class ReviewsService implements OnModuleInit {
     try {
       [items, total] = await query.getManyAndCount();
     } catch (queryErr: any) {
-      this.logger.warn(`ReviewsService.queue primary query failed: ${queryErr?.message}. Attempting auto-repair.`);
-      try {
-        await (this.candidateRepo.manager as any).query(`
-          ALTER TABLE unverified_sign_candidates
-            ADD COLUMN IF NOT EXISTS possible_signs jsonb,
-            ADD COLUMN IF NOT EXISTS selected_sign_type_id int REFERENCES traffic_sign_types(id) ON DELETE SET NULL,
-            ADD COLUMN IF NOT EXISTS selected_by uuid REFERENCES users(id) ON DELETE SET NULL,
-            ADD COLUMN IF NOT EXISTS selected_at timestamptz,
-            ADD COLUMN IF NOT EXISTS selection_reason varchar(500);
-          ALTER TABLE survey_submissions
-            ADD COLUMN IF NOT EXISTS idempotency_key varchar(128);
-          CREATE TABLE IF NOT EXISTS reviewer_skipped_candidates (
-            reviewer_id uuid NOT NULL,
-            candidate_id uuid NOT NULL,
-            skipped_at timestamptz NOT NULL DEFAULT now(),
-            PRIMARY KEY (reviewer_id, candidate_id)
-          );
-        `);
-        [items, total] = await query.getManyAndCount();
-      } catch (retryErr: any) {
-        this.logger.error(`ReviewsService.queue retry failed: ${retryErr?.message}`);
-        return { items: [], total: 0, page: safePage, pageSize: safeSize, totalPages: 0 };
-      }
+      this.logger.error(`ReviewsService.queue query failed: ${queryErr?.message}`);
+      return { items: [], total: 0, page: safePage, pageSize: safeSize, totalPages: 0 };
     }
 
     for (const item of items) {
@@ -328,14 +276,6 @@ export class ReviewsService implements OnModuleInit {
   async skipCandidate(reviewerId: string, candidateId: string) {
     const candidate = await this.candidateRepo.findOne({ where: { id: candidateId } });
     if (!candidate) throw new NotFoundException('Candidate ' + candidateId + ' not found');
-    await (this.candidateRepo.manager as any).query(`
-      CREATE TABLE IF NOT EXISTS reviewer_skipped_candidates (
-        reviewer_id uuid NOT NULL,
-        candidate_id uuid NOT NULL,
-        skipped_at timestamptz NOT NULL DEFAULT now(),
-        PRIMARY KEY (reviewer_id, candidate_id)
-      );
-    `);
     await (this.candidateRepo.manager as any).query(
       `INSERT INTO reviewer_skipped_candidates (reviewer_id, candidate_id, skipped_at)
        VALUES ($1, $2, now())
