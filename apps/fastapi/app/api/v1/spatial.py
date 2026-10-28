@@ -10,10 +10,13 @@ import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import text
+from geoalchemy2 import Geometry
+from sqlalchemy import cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+from app.models.spatial import VerifiedTrafficSign
+from app.models.pipeline import TrafficSignType, UnverifiedSignCandidate
 from app.schemas.spatial import (
     GeoJSONFeature,
     GeoJSONFeatureCollection,
@@ -41,66 +44,76 @@ async def spatial_health() -> dict:  # type: ignore[no-untyped-def]
     ).model_dump()
 
 
-# GIST index on verified_traffic_signs.location via ST_Within.
-# JOIN with traffic_sign_types enriches each feature with name/code/category.
-_SIGNS_IN_BBOX = text(
-    """
-    SELECT
-        vts.id,
-        vts.sign_type_id,
-        tst.category_id,
-        tst.sign_code,
-        tst.name_vi,
-        tst.name_en,
-        ST_X(vts.location::geometry) AS longitude,
-        ST_Y(vts.location::geometry) AS latitude,
-        vts.traffic_direction,
-        vts.sign_crop_url,
-        usc.best_frame_url,
-        vts.status,
-        vts.freshness_score,
-        vts.last_verified_at,
-        vts.created_at
-    FROM verified_traffic_signs vts
-    JOIN traffic_sign_types tst ON tst.id = vts.sign_type_id
-    LEFT JOIN unverified_sign_candidates usc ON usc.id = vts.origin_candidate_id
-    WHERE
-        ST_Within(
-            vts.location,
-            ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326)
+def _signs_in_bbox_query(
+    min_lon: float,
+    min_lat: float,
+    max_lon: float,
+    max_lat: float,
+    sign_type_id: int | None = None,
+    category_id: int | None = None,
+):
+    stmt = (
+        select(
+            VerifiedTrafficSign.id,
+            VerifiedTrafficSign.sign_type_id,
+            TrafficSignType.category_id,
+            TrafficSignType.sign_code,
+            TrafficSignType.name_vi,
+            TrafficSignType.name_en,
+            func.ST_X(cast(VerifiedTrafficSign.location, Geometry)).label("longitude"),
+            func.ST_Y(cast(VerifiedTrafficSign.location, Geometry)).label("latitude"),
+            VerifiedTrafficSign.traffic_direction,
+            VerifiedTrafficSign.sign_crop_url,
+            UnverifiedSignCandidate.best_frame_url,
+            VerifiedTrafficSign.status,
+            VerifiedTrafficSign.freshness_score,
+            VerifiedTrafficSign.last_verified_at,
+            VerifiedTrafficSign.created_at,
         )
-        AND vts.status = 'ACTIVE'
-        AND (CAST(:sign_type_id AS INTEGER) IS NULL OR vts.sign_type_id = CAST(:sign_type_id AS INTEGER))
-        AND (CAST(:category_id  AS INTEGER) IS NULL OR tst.category_id  = CAST(:category_id  AS INTEGER))
-    ORDER BY vts.last_verified_at DESC
-    """
-)
+        .select_from(VerifiedTrafficSign)
+        .join(TrafficSignType, TrafficSignType.id == VerifiedTrafficSign.sign_type_id)
+        .outerjoin(UnverifiedSignCandidate, UnverifiedSignCandidate.id == VerifiedTrafficSign.origin_candidate_id)
+        .where(
+            func.ST_Within(
+                VerifiedTrafficSign.location,
+                func.ST_MakeEnvelope(min_lon, min_lat, max_lon, max_lat, 4326),
+            ),
+            VerifiedTrafficSign.status == "ACTIVE",
+        )
+        .order_by(VerifiedTrafficSign.last_verified_at.desc())
+    )
+    if sign_type_id is not None:
+        stmt = stmt.where(VerifiedTrafficSign.sign_type_id == sign_type_id)
+    if category_id is not None:
+        stmt = stmt.where(TrafficSignType.category_id == category_id)
+    return stmt
 
-_SIGN_BY_ID = text(
-    """
-    SELECT
-        vts.id,
-        vts.sign_type_id,
-        tst.category_id,
-        tst.sign_code,
-        tst.name_vi,
-        tst.name_en,
-        ST_X(vts.location::geometry) AS longitude,
-        ST_Y(vts.location::geometry) AS latitude,
-        vts.traffic_direction,
-        vts.sign_crop_url,
-        usc.best_frame_url,
-        vts.status,
-        vts.freshness_score,
-        vts.last_verified_at,
-        vts.created_at,
-        vts.updated_at
-    FROM verified_traffic_signs vts
-    JOIN traffic_sign_types tst ON tst.id = vts.sign_type_id
-    LEFT JOIN unverified_sign_candidates usc ON usc.id = vts.origin_candidate_id
-    WHERE vts.id = :id
-    """
-)
+
+def _sign_by_id_query(sign_id: UUID):
+    return (
+        select(
+            VerifiedTrafficSign.id,
+            VerifiedTrafficSign.sign_type_id,
+            TrafficSignType.category_id,
+            TrafficSignType.sign_code,
+            TrafficSignType.name_vi,
+            TrafficSignType.name_en,
+            func.ST_X(cast(VerifiedTrafficSign.location, Geometry)).label("longitude"),
+            func.ST_Y(cast(VerifiedTrafficSign.location, Geometry)).label("latitude"),
+            VerifiedTrafficSign.traffic_direction,
+            VerifiedTrafficSign.sign_crop_url,
+            UnverifiedSignCandidate.best_frame_url,
+            VerifiedTrafficSign.status,
+            VerifiedTrafficSign.freshness_score,
+            VerifiedTrafficSign.last_verified_at,
+            VerifiedTrafficSign.created_at,
+            VerifiedTrafficSign.updated_at,
+        )
+        .select_from(VerifiedTrafficSign)
+        .join(TrafficSignType, TrafficSignType.id == VerifiedTrafficSign.sign_type_id)
+        .outerjoin(UnverifiedSignCandidate, UnverifiedSignCandidate.id == VerifiedTrafficSign.origin_candidate_id)
+        .where(VerifiedTrafficSign.id == sign_id)
+    )
 
 
 @router.get(
@@ -127,17 +140,8 @@ async def get_signs_in_viewport(
         min_lat, max_lat = max_lat, min_lat
     if min_lon > max_lon:
         min_lon, max_lon = max_lon, min_lon
-    result = await db.execute(
-        _SIGNS_IN_BBOX,
-        {
-            "min_lon": min_lon,
-            "min_lat": min_lat,
-            "max_lon": max_lon,
-            "max_lat": max_lat,
-            "sign_type_id": sign_type_id,
-            "category_id": category_id,
-        },
-    )
+    stmt = _signs_in_bbox_query(min_lon, min_lat, max_lon, max_lat, sign_type_id, category_id)
+    result = await db.execute(stmt)
     rows = result.mappings().all()
     features: list[GeoJSONFeature] = [
         GeoJSONFeature(
@@ -185,7 +189,8 @@ async def get_sign_detail(
     sign_id: UUID,
     db: AsyncSession = Depends(get_db),
 ) -> SignDetailResponse:
-    result = await db.execute(_SIGN_BY_ID, {"id": str(sign_id)})
+    stmt = _sign_by_id_query(sign_id)
+    result = await db.execute(stmt)
     row = result.mappings().first()
     if row is None:
         raise HTTPException(status_code=404, detail=f"Sign {sign_id} not found")

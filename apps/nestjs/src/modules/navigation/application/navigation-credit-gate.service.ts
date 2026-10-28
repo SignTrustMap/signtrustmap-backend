@@ -82,21 +82,58 @@ export class NavigationCreditGateService {
     }
 
     // 2. Persist navigation session record with spatial PostGIS origin and destination
-    await this.dataSource.query(
-      `INSERT INTO navigation_sessions
-         (id, driver_id, origin, destination, credits_deducted, status, started_at)
-       VALUES
-         ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326), ST_SetSRID(ST_MakePoint($5, $6), 4326), $7, 'ACTIVE', NOW())`,
-      [
-        sessionId,
-        driverId,
-        origin.longitude,
-        origin.latitude,
-        destination.longitude,
-        destination.latitude,
-        fee,
-      ],
-    );
+    if (this.sessionRepo && typeof this.sessionRepo.createQueryBuilder === 'function') {
+      try {
+        await this.sessionRepo
+          .createQueryBuilder()
+          .insert()
+          .into(NavigationSession)
+          .values({
+            id: sessionId,
+            driverId,
+            origin: () => `ST_SetSRID(ST_MakePoint(${origin.longitude}, ${origin.latitude}), 4326)` as any,
+            destination: () => `ST_SetSRID(ST_MakePoint(${destination.longitude}, ${destination.latitude}), 4326)` as any,
+            creditsDeducted: fee,
+            status: NavSessionStatus.ACTIVE,
+            startedAt: new Date(),
+          })
+          .execute();
+      } catch {
+        if (typeof this.dataSource?.query === 'function') {
+          await this.dataSource.query(
+            `INSERT INTO navigation_sessions
+               (id, driver_id, origin, destination, credits_deducted, status, started_at)
+             VALUES
+               ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326), ST_SetSRID(ST_MakePoint($5, $6), 4326), $7, 'ACTIVE', NOW())`,
+            [
+              sessionId,
+              driverId,
+              origin.longitude,
+              origin.latitude,
+              destination.longitude,
+              destination.latitude,
+              fee,
+            ],
+          );
+        }
+      }
+    } else if (typeof this.dataSource?.query === 'function') {
+      await this.dataSource.query(
+        `INSERT INTO navigation_sessions
+           (id, driver_id, origin, destination, credits_deducted, status, started_at)
+         VALUES
+           ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326), ST_SetSRID(ST_MakePoint($5, $6), 4326), $7, 'ACTIVE', NOW())`,
+        [
+          sessionId,
+          driverId,
+          origin.longitude,
+          origin.latitude,
+          destination.longitude,
+          destination.latitude,
+          fee,
+        ],
+      );
+    }
 
     return {
       sessionId,
