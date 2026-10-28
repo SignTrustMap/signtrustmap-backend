@@ -5,6 +5,7 @@ import { WalletModule } from '../wallet/wallet.module';
 import { NavigationSession } from './infrastructure/persistence/navigation-session.entity';
 import { CustomAlertProfile } from './infrastructure/persistence/custom-alert-profile.entity';
 import { SavedRoute } from './infrastructure/persistence/saved-route.entity';
+import { DriverProfile } from '../auth/infrastructure/persistence/driver-profile.entity';
 import { NavigationCreditGateService } from './application/navigation-credit-gate.service';
 import { RoutePreviewService } from './application/route-preview.service';
 import { RoutingService } from './application/routing.service';
@@ -20,6 +21,7 @@ import { SavedRoutesController } from './presentation/saved-routes.controller';
       NavigationSession,
       CustomAlertProfile,
       SavedRoute,
+      DriverProfile,
     ]),
     SignMapModule,
     WalletModule,

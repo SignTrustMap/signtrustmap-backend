@@ -7,7 +7,8 @@ import {
   NotFoundException,
   Optional,
 } from '@nestjs/common';
-import { DataSource, QueryFailedError } from 'typeorm';
+import { InjectRepository } from '@nestjs/typeorm';
+import { DataSource, QueryFailedError, Repository, MoreThanOrEqual } from 'typeorm';
 import { CatalogService } from '../../catalog/catalog.service';
 import {
   VERIFIED_SIGN_REPOSITORY,
@@ -26,6 +27,9 @@ import { WalletService } from '../../wallet/application/wallet.service';
 import { TransactionType } from '../../wallet/infrastructure/persistence/credit-transaction.entity';
 import { RevalidationService } from '../../revalidation/application/revalidation.service';
 import { SpatialAdminService } from '../../spatial-admin/application/spatial-admin.service';
+import { SignConfirmationEntity } from '../infrastructure/persistence/sign-confirmation.entity';
+import { SignLifecycleEvent } from '../infrastructure/persistence/sign-lifecycle-event.entity';
+import { VerifiedSignOrmEntity } from '../infrastructure/persistence/verified-sign.orm-entity';
 
 interface PostgreSqlError {
   code?: string;
@@ -48,6 +52,15 @@ export class VerifiedSignService {
     private readonly revalidationService?: RevalidationService,
     @Optional()
     private readonly spatialAdminService?: SpatialAdminService,
+    @Optional()
+    @InjectRepository(SignConfirmationEntity)
+    private readonly confirmationRepo?: Repository<SignConfirmationEntity>,
+    @Optional()
+    @InjectRepository(SignLifecycleEvent)
+    private readonly lifecycleRepo?: Repository<SignLifecycleEvent>,
+    @Optional()
+    @InjectRepository(VerifiedSignOrmEntity)
+    private readonly verifiedSignOrmRepo?: Repository<VerifiedSignOrmEntity>,
   ) {}
 
   async create(request: CreateVerifiedSignRequest): Promise<VerifiedSign> {
@@ -185,44 +198,120 @@ export class VerifiedSignService {
     if (request.isPresent) {
       // 7-day user cooldown for same sign confirmation
       const cooldownCutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-      const recentRows: any[] = await this.dataSource.query(
-        `SELECT id FROM sign_confirmations
-         WHERE sign_id = $1 AND user_id = $2 AND created_at >= $3
-         LIMIT 1`,
-        [signId, userId, cooldownCutoff],
-      );
+      let cooldownActive = false;
+      if (this.confirmationRepo && typeof this.confirmationRepo.findOne === 'function') {
+        try {
+          const recent = await this.confirmationRepo.findOne({
+            where: {
+              signId,
+              userId,
+              createdAt: MoreThanOrEqual(cooldownCutoff),
+            },
+            select: ['id'],
+          });
+          cooldownActive = !!recent;
+        } catch {}
+      }
+      if (!cooldownActive && typeof this.dataSource?.query === 'function') {
+        const recentRows: any[] = await this.dataSource.query(
+          `SELECT id FROM sign_confirmations
+           WHERE sign_id = $1 AND user_id = $2 AND created_at >= $3
+           LIMIT 1`,
+          [signId, userId, cooldownCutoff],
+        );
+        cooldownActive = recentRows.length > 0;
+      }
 
-      const cooldownActive = recentRows.length > 0;
       const creditsAwarded = cooldownActive
         ? 0
         : calculateConfirmationReward(sign.lastVerifiedAt, sign.createdAt);
 
       // Update verified traffic sign freshness score and confirmation count
-      await this.dataSource.query(
-        `UPDATE verified_traffic_signs
-         SET last_verified_at = NOW(),
-             freshness_score = 1,
-             confirmation_count = COALESCE(confirmation_count, 0) + 1,
-             updated_at = NOW()
-         WHERE id = $1`,
-        [signId],
-      );
+      if (this.verifiedSignOrmRepo && typeof this.verifiedSignOrmRepo.createQueryBuilder === 'function') {
+        try {
+          await this.verifiedSignOrmRepo
+            .createQueryBuilder()
+            .update(VerifiedSignOrmEntity)
+            .set({
+              lastVerifiedAt: new Date(),
+              freshnessScore: 1,
+              confirmationCount: () => 'COALESCE(confirmation_count, 0) + 1',
+              updatedAt: new Date(),
+            })
+            .where('id = :signId', { signId })
+            .execute();
+        } catch {
+          if (typeof this.dataSource?.query === 'function') {
+            await this.dataSource.query(
+              `UPDATE verified_traffic_signs
+               SET last_verified_at = NOW(),
+                   freshness_score = 1,
+                   confirmation_count = COALESCE(confirmation_count, 0) + 1,
+                   updated_at = NOW()
+               WHERE id = $1`,
+              [signId],
+            );
+          }
+        }
+      } else if (typeof this.dataSource?.query === 'function') {
+        await this.dataSource.query(
+          `UPDATE verified_traffic_signs
+           SET last_verified_at = NOW(),
+               freshness_score = 1,
+               confirmation_count = COALESCE(confirmation_count, 0) + 1,
+               updated_at = NOW()
+           WHERE id = $1`,
+          [signId],
+        );
+      }
 
       // Record confirmation record
-      await this.dataSource.query(
-        `INSERT INTO sign_confirmations (id, sign_id, user_id, is_present, credits_awarded, created_at)
-         VALUES (gen_random_uuid(), $1, $2, TRUE, $3, NOW())`,
-        [signId, userId, creditsAwarded],
-      );
+      if (this.confirmationRepo && typeof this.confirmationRepo.save === 'function') {
+        try {
+          await this.confirmationRepo.save(
+            this.confirmationRepo.create({
+              signId,
+              userId,
+              isPresent: true,
+              creditsAwarded,
+            }),
+          );
+        } catch {
+          if (typeof this.dataSource?.query === 'function') {
+            await this.dataSource.query(
+              `INSERT INTO sign_confirmations (id, sign_id, user_id, is_present, credits_awarded, created_at)
+               VALUES (gen_random_uuid(), $1, $2, TRUE, $3, NOW())`,
+              [signId, userId, creditsAwarded],
+            );
+          }
+        }
+      } else if (typeof this.dataSource?.query === 'function') {
+        await this.dataSource.query(
+          `INSERT INTO sign_confirmations (id, sign_id, user_id, is_present, credits_awarded, created_at)
+           VALUES (gen_random_uuid(), $1, $2, TRUE, $3, NOW())`,
+          [signId, userId, creditsAwarded],
+        );
+      }
 
       // Log sign lifecycle event
       const note = request.note ?? `Sign confirmed present by user (+${creditsAwarded} credits)`;
       try {
-        await this.dataSource.query(
-          `INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, triggered_by, note)
-           VALUES ($1, 'CONFIRMED', $2, $3)`,
-          [signId, userId, note],
-        );
+        if (this.lifecycleRepo && typeof this.lifecycleRepo.save === 'function') {
+          await this.lifecycleRepo.save(
+            this.lifecycleRepo.create({
+              verifiedSignId: signId,
+              eventType: 'CONFIRMED',
+              triggeredBy: userId,
+              note,
+            }),
+          );
+        } else if (typeof this.dataSource?.query === 'function') {
+          await this.dataSource.query(
+            `INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, triggered_by, note)
+             VALUES ($1, 'CONFIRMED', $2, $3)`,
+            [signId, userId, note],
+          );
+        }
       } catch (e: any) {
         this.logger.warn(`Lifecycle event logging failed: ${e?.message}`);
       }
@@ -255,20 +344,52 @@ export class VerifiedSignService {
       };
     } else {
       // isPresent === false: report missing / dispute
-      await this.dataSource.query(
-        `INSERT INTO sign_confirmations (id, sign_id, user_id, is_present, credits_awarded, created_at)
-         VALUES (gen_random_uuid(), $1, $2, FALSE, 0, NOW())`,
-        [signId, userId],
-      );
+      if (this.confirmationRepo && typeof this.confirmationRepo.save === 'function') {
+        try {
+          await this.confirmationRepo.save(
+            this.confirmationRepo.create({
+              signId,
+              userId,
+              isPresent: false,
+              creditsAwarded: 0,
+            }),
+          );
+        } catch {
+          if (typeof this.dataSource?.query === 'function') {
+            await this.dataSource.query(
+              `INSERT INTO sign_confirmations (id, sign_id, user_id, is_present, credits_awarded, created_at)
+               VALUES (gen_random_uuid(), $1, $2, FALSE, 0, NOW())`,
+              [signId, userId],
+            );
+          }
+        }
+      } else if (typeof this.dataSource?.query === 'function') {
+        await this.dataSource.query(
+          `INSERT INTO sign_confirmations (id, sign_id, user_id, is_present, credits_awarded, created_at)
+           VALUES (gen_random_uuid(), $1, $2, FALSE, 0, NOW())`,
+          [signId, userId],
+        );
+      }
 
       // Log sign lifecycle dispute event
       const disputeNote = request.note ?? 'Sign reported missing by user confirmation';
       try {
-        await this.dataSource.query(
-          `INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, triggered_by, note)
-           VALUES ($1, 'DISPUTED', $2, $3)`,
-          [signId, userId, disputeNote],
-        );
+        if (this.lifecycleRepo && typeof this.lifecycleRepo.save === 'function') {
+          await this.lifecycleRepo.save(
+            this.lifecycleRepo.create({
+              verifiedSignId: signId,
+              eventType: 'DISPUTED',
+              triggeredBy: userId,
+              note: disputeNote,
+            }),
+          );
+        } else if (typeof this.dataSource?.query === 'function') {
+          await this.dataSource.query(
+            `INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, triggered_by, note)
+             VALUES ($1, 'DISPUTED', $2, $3)`,
+            [signId, userId, disputeNote],
+          );
+        }
       } catch (e: any) {
         this.logger.warn(`Lifecycle event logging failed: ${e?.message}`);
       }
