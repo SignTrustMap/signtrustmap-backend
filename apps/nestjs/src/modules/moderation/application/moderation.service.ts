@@ -1983,35 +1983,25 @@ export class ModerationService {
     if (!match) {
       throw new BadRequestException('signCode must match PREFIX.number with an optional alphanumeric suffix, or T.xxx for testing');
     }
+
     const [, rawPrefix, number, rawSuffix] = match;
     const prefix = rawPrefix.toUpperCase();
     const suffix = rawSuffix.toLowerCase();
-const prefix = signCode.split('.')[0];
-if (prefix !== 'T' && !validPrefixes.includes(prefix)) {
-  throw new BadRequestException(/* thông báo hiện có */);
-}
-      const existingPrefixes: Array<{ prefix: string }> = await this.dataSource.query(
-        `SELECT DISTINCT split_part(upper(sign_code), '.', 1) AS prefix
-         FROM traffic_sign_types
-         WHERE upper(sign_code) ~ '^[A-Z]+\\.[0-9]+[A-Z0-9]*$'
-         ORDER BY prefix`,
-if (prefix !== 'T' && !validPrefixes.includes(prefix)) {
-  throw new BadRequestException(
-    'signCode prefix must match an existing catalog prefix: ' +
-      (validPrefixes.join(', ') || '(none)'),
-  );
-}
+    const existingPrefixes: Array<{ prefix: string }> = await this.dataSource.query(
+      `SELECT DISTINCT split_part(upper(sign_code), '.', 1) AS prefix
+       FROM traffic_sign_types
+       WHERE upper(sign_code) ~ '^[A-Z]+\\.[0-9]+[A-Z0-9]*$'
+       ORDER BY prefix`,
+    );
+    const validPrefixes = existingPrefixes.map((row) => row.prefix);
+    if (!validPrefixes.includes(prefix)) {
+      throw new BadRequestException(
+        'signCode prefix must match an existing catalog prefix: ' + (validPrefixes.join(', ') || '(none)'),
       );
-      const validPrefixes = existingPrefixes.map((row) => row.prefix);
-      if (!validPrefixes.includes(prefix)) {
-        throw new BadRequestException(
-          'signCode prefix must match an existing catalog prefix: ' + (validPrefixes.join(', ') || '(none)'),
-        );
-      }
     }
+
     return `${prefix}.${number}${suffix}`;
   }
-
   private async uploadNewSignRepresentativeImage(file: Express.Multer.File, signCode: string) {
     const supportedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
     if (!supportedTypes.includes(file.mimetype)) {

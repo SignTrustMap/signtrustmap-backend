@@ -214,12 +214,12 @@ export class AuthService {
 
         if (defaultRole?.code === 'SURVEYOR') {
           if (typeof manager?.getRepository === 'function') {
-           const surveyorRepo = manager.getRepository(SurveyorProfile);
-           await surveyorRepo
+            const surveyorRepo = manager.getRepository(SurveyorProfile);
+            await surveyorRepo
               .createQueryBuilder()
               .insert()
-             .into(SurveyorProfile)
-             .values({ userId: saved.id })
+              .into(SurveyorProfile)
+              .values({ userId: saved.id })
               .orIgnore()
               .execute();
           } else {
@@ -227,10 +227,9 @@ export class AuthService {
               `INSERT INTO surveyor_profiles (user_id)
                VALUES ($1)
               ON CONFLICT (user_id) DO NOTHING`,
-             [saved.id],
+              [saved.id],
             );
           }
-        }
         }
         await manager.save(manager.create(Wallet, { userId: saved.id, balance: '0' }));
         const roles = defaultRole ? [defaultRole.code] : [];

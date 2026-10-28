@@ -249,14 +249,14 @@ async def list_my_sessions(
     p2 = max(1, page)
     ps2 = min(max(1, pageSize), 100)
     try:
-tr = await db.execute(_count_sessions_stmt(driver_id))
+        tr = await db.execute(_count_sessions_stmt(driver_id))
         tot = tr.mappings().first()
         total = tot["cnt"] if tot else 0
         offset = (p2 - 1) * ps2
         if total == 0 or offset >= total:
             rows = []
         else:
-res = await db.execute(_list_sessions_stmt(driver_id, ps2, offset))
+            res = await db.execute(_list_sessions_stmt(driver_id, ps2, offset))
             rows = res.mappings().all()
         items = [_row_to_session_response(r) for r in rows]
         total_pages = (total + ps2 - 1) // ps2 if ps2 else 0
@@ -282,7 +282,7 @@ async def get_navigation_session(
     db: AsyncSession = Depends(get_db),
 ) -> SessionResponse:
     try:
-res = await db.execute(_get_session_stmt(session_id))
+        res = await db.execute(_get_session_stmt(session_id))
         row = res.mappings().first()
         if row is None:
             raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
@@ -306,7 +306,7 @@ async def update_navigation_session(
     db: AsyncSession = Depends(get_db),
 ) -> SessionResponse:
     try:
-result = await db.execute(_update_session_stmt(session_id, body.status))
+        result = await db.execute(_update_session_stmt(session_id, body.status))
         await db.commit()
         row = result.mappings().first()
         if row is None:
