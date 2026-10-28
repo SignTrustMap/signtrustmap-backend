@@ -4,6 +4,7 @@ import {
   BadRequestException,
   BadGatewayException,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
@@ -17,6 +18,7 @@ import {
   CreditTransaction,
   TransactionType,
 } from '../../wallet/infrastructure/persistence/credit-transaction.entity';
+import { CreditRule } from '../../rewards/infrastructure/persistence/credit-rule.entity';
 import { CreateMomoPaymentDto } from '../presentation/dto/create-momo-payment.dto';
 import { MomoIpnDto } from '../presentation/dto/momo-ipn.dto';
 
@@ -32,6 +34,9 @@ export class MomoPaymentService {
     @InjectRepository(Wallet) private readonly walletRepo: Repository<Wallet>,
     @InjectRepository(CreditTransaction) private readonly txRepo: Repository<CreditTransaction>,
     private readonly dataSource: DataSource,
+    @Optional()
+    @InjectRepository(CreditRule)
+    private readonly creditRuleRepo?: Repository<CreditRule>,
   ) {
     this.config = getMomoConfig();
   }
@@ -81,11 +86,20 @@ export class MomoPaymentService {
       creditAmount = amount;
       let pricePerCredit = 1000;
       try {
-        const rows: any[] = await this.dataSource.query(
-          `SELECT reward_amount::int AS price FROM credit_rules WHERE transaction_type='TOP_UP' AND is_active=true LIMIT 1`,
-        );
-        if (rows.length && Number(rows[0].price)) {
-          pricePerCredit = rows[0].price;
+        if (this.creditRuleRepo && typeof this.creditRuleRepo.findOne === 'function') {
+          const cRule = await this.creditRuleRepo.findOne({
+            where: { transactionType: 'TOP_UP' as any, isActive: true },
+          });
+          if (cRule && Number(cRule.rewardAmount)) {
+            pricePerCredit = cRule.rewardAmount;
+          }
+        } else {
+          const rows: any[] = await this.dataSource.query(
+            `SELECT reward_amount::int AS price FROM credit_rules WHERE transaction_type='TOP_UP' AND is_active=true LIMIT 1`,
+          );
+          if (rows.length && Number(rows[0].price)) {
+            pricePerCredit = rows[0].price;
+          }
         }
       } catch {}
       amountVnd = amount * pricePerCredit;
@@ -266,10 +280,21 @@ export class MomoPaymentService {
       isValid,
     });
     const savedCb = await this.callbackRepo.save(cb);
-    await this.dataSource.query(
-      `UPDATE payment_callbacks SET is_valid=$1, processed_at=now() WHERE id=$2`,
-      [isValid, savedCb.id],
-    );
+    if (this.callbackRepo?.update) {
+      try {
+        await this.callbackRepo.update(savedCb.id, { isValid, processedAt: new Date() });
+      } catch {
+        await this.dataSource.query(
+          `UPDATE payment_callbacks SET is_valid=$1, processed_at=now() WHERE id=$2`,
+          [isValid, savedCb.id],
+        );
+      }
+    } else {
+      await this.dataSource.query(
+        `UPDATE payment_callbacks SET is_valid=$1, processed_at=now() WHERE id=$2`,
+        [isValid, savedCb.id],
+      );
+    }
 
     if (!isValid) {
       this.logger.warn(`Invalid signature in MoMo IPN callback for order ${dto.orderId}`);

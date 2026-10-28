@@ -11,6 +11,7 @@ import { AuditLog } from './audit-log.entity';
 import { AiModelVersion } from './ai-model-version.entity';
 import { ModelTrainingJob } from './model-training-job.entity';
 import { UserStatusHistory } from './user-status-history.entity';
+import { ConsensusConfig } from '../consensus/infrastructure/persistence/consensus-config.entity';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { UserStatusHistory } from './user-status-history.entity';
       AiModelVersion,
       ModelTrainingJob,
       UserStatusHistory,
+      ConsensusConfig,
     ]),
   ],
   controllers: [AdminController, MlopsController],

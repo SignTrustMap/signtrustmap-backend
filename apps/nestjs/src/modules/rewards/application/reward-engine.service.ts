@@ -1,9 +1,10 @@
-import { Injectable, NotFoundException, ConflictException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, Logger, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { RewardRule } from '../infrastructure/persistence/reward-rule.entity';
+import { CreditRule } from '../infrastructure/persistence/credit-rule.entity';
 import { CreateRewardRuleDto, UpdateRewardRuleDto } from '../presentation/dto/reward-rule.dto';
-import { TransactionType } from '../../wallet/infrastructure/persistence/credit-transaction.entity';
+import { CreditTransaction, TransactionType } from '../../wallet/infrastructure/persistence/credit-transaction.entity';
 
 export interface RewardEvaluationResult {
   eligible: boolean;
@@ -23,6 +24,12 @@ export class RewardEngineService {
     @InjectRepository(RewardRule)
     private readonly ruleRepo: Repository<RewardRule>,
     private readonly dataSource: DataSource,
+    @Optional()
+    @InjectRepository(CreditRule)
+    private readonly creditRuleRepo?: Repository<CreditRule>,
+    @Optional()
+    @InjectRepository(CreditTransaction)
+    private readonly txRepo?: Repository<CreditTransaction>,
   ) {}
 
   /**
@@ -49,12 +56,21 @@ export class RewardEngineService {
       // Fallback check against credit_rules table if present
       let fallbackAmount = context?.baseFallback ?? 10;
       try {
-        const rows: any[] = await this.dataSource.query(
-          `SELECT reward_amount FROM credit_rules WHERE transaction_type=$1 AND is_active=true LIMIT 1`,
-          [activityType],
-        );
-        if (rows.length && Number.isFinite(Number(rows[0].reward_amount))) {
-          fallbackAmount = Number(rows[0].reward_amount);
+        if (this.creditRuleRepo && typeof this.creditRuleRepo.findOne === 'function') {
+          const cRule = await this.creditRuleRepo.findOne({
+            where: { transactionType: activityType as any, isActive: true },
+          });
+          if (cRule && Number.isFinite(Number(cRule.rewardAmount))) {
+            fallbackAmount = Number(cRule.rewardAmount);
+          }
+        } else {
+          const rows: any[] = await this.dataSource.query(
+            `SELECT reward_amount FROM credit_rules WHERE transaction_type=$1 AND is_active=true LIMIT 1`,
+            [activityType],
+          );
+          if (rows.length && Number.isFinite(Number(rows[0].reward_amount))) {
+            fallbackAmount = Number(rows[0].reward_amount);
+          }
         }
       } catch {}
 
@@ -93,16 +109,40 @@ export class RewardEngineService {
     const startOfUtcDay = new Date();
     startOfUtcDay.setUTCHours(0, 0, 0, 0);
 
-    const countRows: any[] = await this.dataSource.query(
-      `SELECT COUNT(*)::int AS cnt
-       FROM credit_transactions ct
-       JOIN wallets w ON w.id = ct.wallet_id
-       WHERE w.user_id = $1
-         AND ct.transaction_type = $2
-         AND ct.created_at >= $3`,
-      [userId, activityType, startOfUtcDay],
-    );
-    const todayCount = countRows[0]?.cnt ?? 0;
+    let todayCount = 0;
+    try {
+      if (this.txRepo && typeof this.txRepo.createQueryBuilder === 'function') {
+        todayCount = await this.txRepo
+          .createQueryBuilder('ct')
+          .innerJoin('wallets', 'w', 'w.id = ct.wallet_id')
+          .where('w.user_id = :userId', { userId })
+          .andWhere('ct.transaction_type = :activityType', { activityType })
+          .andWhere('ct.created_at >= :startOfUtcDay', { startOfUtcDay })
+          .getCount();
+      } else {
+        const countRows: any[] = await this.dataSource.query(
+          `SELECT COUNT(*)::int AS cnt
+           FROM credit_transactions ct
+           JOIN wallets w ON w.id = ct.wallet_id
+           WHERE w.user_id = $1
+             AND ct.transaction_type = $2
+             AND ct.created_at >= $3`,
+          [userId, activityType, startOfUtcDay],
+        );
+        todayCount = countRows[0]?.cnt ?? 0;
+      }
+    } catch {
+      const countRows: any[] = await this.dataSource.query(
+        `SELECT COUNT(*)::int AS cnt
+         FROM credit_transactions ct
+         JOIN wallets w ON w.id = ct.wallet_id
+         WHERE w.user_id = $1
+           AND ct.transaction_type = $2
+           AND ct.created_at >= $3`,
+        [userId, activityType, startOfUtcDay],
+      );
+      todayCount = countRows[0]?.cnt ?? 0;
+    }
 
     if (todayCount >= rule.dailyLimit) {
       return {
