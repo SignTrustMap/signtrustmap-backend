@@ -1,5 +1,5 @@
 import { ConflictException, Injectable, NotFoundException, BadRequestException, ForbiddenException, Optional, Logger } from '@nestjs/common';
-import { DataSource } from 'typeorm';
+import { DataSource, In } from 'typeorm';
 import { randomUUID, createHash } from 'crypto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -13,6 +13,9 @@ import { VoteDto, RequestRecaptureDto, SelectSignRemedyDto } from '../presentati
 import { ConsensusService } from '../../consensus/application/consensus.service';
 import { SpatialAdminService } from '../../spatial-admin/application/spatial-admin.service';
 import { ReviewerSkippedCandidate } from '../infrastructure/persistence/reviewer-skipped-candidate.entity';
+import { ReviewerProfile } from '../infrastructure/persistence/reviewer-profile.entity';
+import { ReviewFlag } from '../infrastructure/persistence/review-flag.entity';
+import { ReviewerReliabilityHistory } from '../infrastructure/persistence/reviewer-reliability-history.entity';
 import { DailyTasksService } from '../../daily-tasks/daily-tasks.service';
 import { CandidateRecaptureRequest } from '../infrastructure/persistence/candidate-recapture-request.entity';
 import { NotificationsService } from '../../notifications/notifications.service';
@@ -61,6 +64,9 @@ export class ReviewsService {
     @Optional() private readonly dataSource?: DataSource,
     @Optional() private readonly storageService?: MinioStorageService,
     @Optional() private readonly aiInferenceService?: AiInferenceService,
+    @Optional() @InjectRepository(ReviewerProfile) private readonly reviewerProfileRepo?: Repository<ReviewerProfile>,
+    @Optional() @InjectRepository(ReviewFlag) private readonly reviewFlagRepo?: Repository<ReviewFlag>,
+    @Optional() @InjectRepository(ReviewerReliabilityHistory) private readonly reliabilityHistoryRepo?: Repository<ReviewerReliabilityHistory>,
   ) {}
 
   async getSignRemedies(candidateId: string): Promise<{ candidateId: string; items: SignRemedySuggestion[] }> {
@@ -215,24 +221,44 @@ export class ReviewsService {
 
     // Phase 4 Governance Safeguard: check reviewer suspension status
     try {
-      const rRows: any[] = await (this.candidateRepo.manager as any).query(
-        'SELECT * FROM reviewer_profiles WHERE user_id = $1',
-        [reviewerId],
-      );
-      if (rRows.length > 0) {
-        const profile = rRows[0];
-        if (profile.is_review_suspended) {
-          if (profile.suspended_until && new Date() > new Date(profile.suspended_until)) {
-            // 7-day cooldown expired: automatically lift suspension
-            await (this.candidateRepo.manager as any).query(
-              `UPDATE reviewer_profiles 
-               SET is_review_suspended = FALSE, consecutive_errors = 0, suspended_until = NULL, suspension_reason = NULL, updated_at = NOW() 
-               WHERE user_id = $1`,
-              [reviewerId],
+      if (this.reviewerProfileRepo) {
+        const profile = await this.reviewerProfileRepo.findOne({ where: { userId: reviewerId } });
+        if (profile && profile.isReviewSuspended) {
+          if (profile.suspendedUntil && new Date() > new Date(profile.suspendedUntil)) {
+            await this.reviewerProfileRepo.update(
+              { userId: reviewerId },
+              {
+                isReviewSuspended: false,
+                consecutiveErrors: 0,
+                suspendedUntil: null,
+                suspensionReason: null,
+              },
             );
           } else {
-            const reason = profile.suspension_reason || 'REVIEW_PRIVILEGES_SUSPENDED';
+            const reason = profile.suspensionReason || 'REVIEW_PRIVILEGES_SUSPENDED';
             throw new ForbiddenException(`REVIEW_PRIVILEGES_SUSPENDED: ${reason}`);
+          }
+        }
+      } else if (typeof (this.candidateRepo.manager as any)?.query === 'function') {
+        const rRows: any[] = await (this.candidateRepo.manager as any).query(
+          'SELECT * FROM reviewer_profiles WHERE user_id = $1',
+          [reviewerId],
+        );
+        if (rRows.length > 0) {
+          const profile = rRows[0];
+          if (profile.is_review_suspended) {
+            if (profile.suspended_until && new Date() > new Date(profile.suspended_until)) {
+              // 7-day cooldown expired: automatically lift suspension
+              await (this.candidateRepo.manager as any).query(
+                `UPDATE reviewer_profiles 
+                 SET is_review_suspended = FALSE, consecutive_errors = 0, suspended_until = NULL, suspension_reason = NULL, updated_at = NOW() 
+                 WHERE user_id = $1`,
+                [reviewerId],
+              );
+            } else {
+              const reason = profile.suspension_reason || 'REVIEW_PRIVILEGES_SUSPENDED';
+              throw new ForbiddenException(`REVIEW_PRIVILEGES_SUSPENDED: ${reason}`);
+            }
           }
         }
       }
@@ -276,12 +302,22 @@ export class ReviewsService {
   async skipCandidate(reviewerId: string, candidateId: string) {
     const candidate = await this.candidateRepo.findOne({ where: { id: candidateId } });
     if (!candidate) throw new NotFoundException('Candidate ' + candidateId + ' not found');
-    await (this.candidateRepo.manager as any).query(
-      `INSERT INTO reviewer_skipped_candidates (reviewer_id, candidate_id, skipped_at)
-       VALUES ($1, $2, now())
-       ON CONFLICT (reviewer_id, candidate_id) DO UPDATE SET skipped_at = now()`,
-      [reviewerId, candidateId],
-    );
+    if (this.skippedRepo) {
+      await this.skippedRepo.save(
+        this.skippedRepo.create({
+          reviewerId,
+          candidateId,
+          skippedAt: new Date(),
+        }),
+      );
+    } else if (typeof (this.candidateRepo.manager as any)?.query === 'function') {
+      await (this.candidateRepo.manager as any).query(
+        `INSERT INTO reviewer_skipped_candidates (reviewer_id, candidate_id, skipped_at)
+         VALUES ($1, $2, now())
+         ON CONFLICT (reviewer_id, candidate_id) DO UPDATE SET skipped_at = now()`,
+        [reviewerId, candidateId],
+      );
+    }
     return { skipped: true, candidateId, reviewerId };
   }
 
@@ -314,13 +350,17 @@ export class ReviewsService {
   private async persistPossibleSigns(candidateId: string, signs: PossibleSignDto[]): Promise<void> {
     if (!candidateId || !signs || signs.length === 0) return;
     try {
-      if (typeof (this.candidateRepo?.manager as any)?.query === 'function') {
-        await (this.candidateRepo.manager as any).query(
-          `UPDATE unverified_sign_candidates SET possible_signs = $1 WHERE id = $2`,
-          [JSON.stringify(signs), candidateId],
-        );
-      }
-    } catch {}
+      await this.candidateRepo.update(candidateId, { possibleSigns: signs });
+    } catch {
+      try {
+        if (typeof (this.candidateRepo?.manager as any)?.query === 'function') {
+          await (this.candidateRepo.manager as any).query(
+            `UPDATE unverified_sign_candidates SET possible_signs = $1 WHERE id = $2`,
+            [JSON.stringify(signs), candidateId],
+          );
+        }
+      } catch {}
+    }
   }
 
   private async mapAiCandidatesToCatalog(rawCandidates: TopCandidateResult[]): Promise<PossibleSignDto[]> {
@@ -714,23 +754,27 @@ export class ReviewsService {
   async getMyStats(reviewerId: string) {
     let profile: any = null;
     try {
-      const rows: any[] = await (this.candidateRepo.manager as any).query(
-        'SELECT * FROM reviewer_profiles WHERE user_id = $1',
-        [reviewerId],
-      );
-      if (rows.length) profile = rows[0];
+      if (this.reviewerProfileRepo) {
+        profile = await this.reviewerProfileRepo.findOne({ where: { userId: reviewerId } });
+      } else if (typeof (this.candidateRepo.manager as any)?.query === 'function') {
+        const rows: any[] = await (this.candidateRepo.manager as any).query(
+          'SELECT * FROM reviewer_profiles WHERE user_id = $1',
+          [reviewerId],
+        );
+        if (rows.length) profile = rows[0];
+      }
     } catch {}
 
-    const totalCorrect = profile ? Number(profile.total_correct_votes ?? profile.correct_reviews ?? 0) : 0;
-    const totalFalse = profile ? Number(profile.total_false_votes ?? 0) : 0;
+    const totalCorrect = profile ? Number(profile.totalCorrectVotes ?? profile.total_correct_votes ?? profile.correctReviews ?? profile.correct_reviews ?? 0) : 0;
+    const totalFalse = profile ? Number(profile.totalFalseVotes ?? profile.total_false_votes ?? 0) : 0;
     const totalVotes = totalCorrect + totalFalse;
-    const isProvisional = profile ? Boolean(profile.is_provisional ?? (totalVotes < 5)) : true;
-    const isSuspended = profile ? Boolean(profile.is_review_suspended) : false;
-    const consecutiveErrors = profile ? Number(profile.consecutive_errors ?? 0) : 0;
+    const isProvisional = profile ? Boolean(profile.isProvisional ?? profile.is_provisional ?? (totalVotes < 5)) : true;
+    const isSuspended = profile ? Boolean(profile.isReviewSuspended ?? profile.is_review_suspended) : false;
+    const consecutiveErrors = profile ? Number(profile.consecutiveErrors ?? profile.consecutive_errors ?? 0) : 0;
 
     let reliabilityScore = 100.0;
-    if (profile && profile.reliability_score != null) {
-      const raw = Number(profile.reliability_score);
+    if (profile && (profile.reliabilityScore != null || profile.reliability_score != null)) {
+      const raw = Number(profile.reliabilityScore ?? profile.reliability_score);
       reliabilityScore = raw <= 1.0 && totalVotes > 0 ? Number((raw * 100).toFixed(2)) : Number(raw.toFixed(2));
     }
 
@@ -877,14 +921,36 @@ export class ReviewsService {
 
     // Ensure reviewer profile exists
     try {
-      await (this.candidateRepo.manager as any).query(
-        `INSERT INTO reviewer_profiles (
-          user_id, reliability_score, total_reviews, correct_reviews, accuracy_rate, current_streak,
-          total_correct_votes, total_false_votes, consecutive_errors, is_provisional, is_review_suspended
-        ) VALUES ($1, 100.00, 0, 0, 0, 0, 0, 0, 0, false, false)
-        ON CONFLICT (user_id) DO UPDATE SET is_review_suspended = false`,
-        [reviewerId],
-      );
+      if (this.reviewerProfileRepo) {
+        let profile = await this.reviewerProfileRepo.findOne({ where: { userId: reviewerId } });
+        if (!profile) {
+          profile = this.reviewerProfileRepo.create({
+            userId: reviewerId,
+            reliabilityScore: 100.00,
+            totalReviews: 0,
+            correctReviews: 0,
+            accuracyRate: 0,
+            currentStreak: 0,
+            totalCorrectVotes: 0,
+            totalFalseVotes: 0,
+            consecutiveErrors: 0,
+            isProvisional: false,
+            isReviewSuspended: false,
+          });
+          await this.reviewerProfileRepo.save(profile);
+        } else {
+          await this.reviewerProfileRepo.update({ userId: reviewerId }, { isReviewSuspended: false });
+        }
+      } else if (typeof (this.candidateRepo.manager as any)?.query === 'function') {
+        await (this.candidateRepo.manager as any).query(
+          `INSERT INTO reviewer_profiles (
+            user_id, reliability_score, total_reviews, correct_reviews, accuracy_rate, current_streak,
+            total_correct_votes, total_false_votes, consecutive_errors, is_provisional, is_review_suspended
+          ) VALUES ($1, 100.00, 0, 0, 0, 0, 0, 0, 0, false, false)
+          ON CONFLICT (user_id) DO UPDATE SET is_review_suspended = false`,
+          [reviewerId],
+        );
+      }
     } catch {}
 
     // Reset status to PENDING_REVIEW if candidate was already processed or stuck
@@ -953,25 +1019,45 @@ export class ReviewsService {
 
     // Remove any skipped records for this reviewer
     try {
-      await (this.candidateRepo.manager as any).query(
-        'DELETE FROM reviewer_skipped_candidates WHERE reviewer_id = $1 AND candidate_id = ANY($2)',
-        [reviewerId, targetIds],
-      );
+      if (this.skippedRepo) {
+        await this.skippedRepo.delete({ reviewerId, candidateId: In(targetIds) } as any);
+      } else if (typeof (this.candidateRepo.manager as any)?.query === 'function') {
+        await (this.candidateRepo.manager as any).query(
+          'DELETE FROM reviewer_skipped_candidates WHERE reviewer_id = $1 AND candidate_id = ANY($2)',
+          [reviewerId, targetIds],
+        );
+      }
     } catch {}
 
     // Remove any existing reviews from this reviewer so they can review them again
     try {
-      await (this.candidateRepo.manager as any).query(
-        'DELETE FROM candidate_reviews WHERE reviewer_id = $1 AND candidate_id = ANY($2)',
-        [reviewerId, targetIds],
-      );
+      if (typeof this.reviewRepo?.delete === 'function') {
+        await this.reviewRepo.delete({ reviewerId, candidateId: In(targetIds) } as any);
+      } else if (typeof (this.candidateRepo.manager as any)?.query === 'function') {
+        await (this.candidateRepo.manager as any).query(
+          'DELETE FROM candidate_reviews WHERE reviewer_id = $1 AND candidate_id = ANY($2)',
+          [reviewerId, targetIds],
+        );
+      }
     } catch {}
 
     // Ensure candidate status is PENDING_REVIEW
-    await (this.candidateRepo.manager as any).query(
-      "UPDATE unverified_sign_candidates SET status = 'PENDING_REVIEW' WHERE id = ANY($1) AND status != 'VERIFIED'",
-      [targetIds],
-    );
+    try {
+      await this.candidateRepo
+        .createQueryBuilder()
+        .update(UnverifiedSignCandidate)
+        .set({ status: CandidateStatus.PENDING_REVIEW })
+        .where('id IN (:...targetIds)', { targetIds })
+        .andWhere('status != :verified', { verified: CandidateStatus.VERIFIED })
+        .execute();
+    } catch {
+      if (typeof (this.candidateRepo.manager as any)?.query === 'function') {
+        await (this.candidateRepo.manager as any).query(
+          "UPDATE unverified_sign_candidates SET status = 'PENDING_REVIEW' WHERE id = ANY($1) AND status != 'VERIFIED'",
+          [targetIds],
+        );
+      }
+    }
 
     return {
       success: true,
@@ -1355,15 +1441,58 @@ export class ReviewsService {
     const p = Math.max(1, page);
     const ps = Math.min(Math.max(1, pageSize), 100);
 
+    let total = 0;
+    let items: any[] = [];
+
+    if (this.recaptureRepo && typeof this.recaptureRepo.createQueryBuilder === 'function') {
+      try {
+        const qb = this.recaptureRepo.createQueryBuilder('crr')
+          .select([
+            'crr.id AS request_id',
+            'crr.candidate_id AS candidate_id',
+            'crr.reason AS reason',
+            'crr.note AS note',
+            'crr.missing_type_report_id AS missing_type_report_id',
+            'crr.completed_at AS completed_at',
+            'crr.created_at AS requested_at',
+            'c.sign_crop_url AS sign_crop_url',
+            'c.best_frame_url AS best_frame_url',
+            'c.confidence_score AS confidence_score',
+            'tst.sign_code AS sign_code',
+            'tst.name_vi AS name_vi',
+            'tst.name_en AS name_en',
+            'ST_X(cge.sign_location::geometry) AS longitude',
+            'ST_Y(cge.sign_location::geometry) AS latitude',
+          ])
+          .innerJoin('unverified_sign_candidates', 'c', 'c.id = crr.candidate_id')
+          .leftJoin('traffic_sign_types', 'tst', 'tst.id = c.predicted_sign_type_id')
+          .leftJoin('candidate_geo_estimations', 'cge', 'cge.candidate_id = c.id')
+          .where('crr.surveyor_id = :surveyorId', { surveyorId })
+          .andWhere('crr.completed_at IS NULL')
+          .orderBy('crr.created_at', 'DESC')
+          .skip((p - 1) * ps)
+          .take(ps);
+
+        total = await this.recaptureRepo
+          .createQueryBuilder('crr')
+          .where('crr.surveyor_id = :surveyorId', { surveyorId })
+          .andWhere('crr.completed_at IS NULL')
+          .getCount();
+
+        items = await qb.getRawMany();
+        return { items, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
+      } catch {}
+    }
+
     const countRows = await (this.candidateRepo.manager as any).query(
       `SELECT COUNT(*)::int AS cnt
        FROM candidate_recapture_requests crr
        WHERE crr.surveyor_id = $1 AND crr.completed_at IS NULL`,
       [surveyorId],
     );
-    const total = countRows[0]?.cnt ?? 0;
+    total = countRows[0]?.cnt ?? 0;
 
-    const items = await (this.candidateRepo.manager as any).query(
+    items = await (this.candidateRepo.manager as any).query(
       `SELECT
          crr.id AS request_id,
          crr.candidate_id,
