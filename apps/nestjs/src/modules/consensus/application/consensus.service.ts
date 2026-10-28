@@ -13,7 +13,16 @@ import { WalletService } from '../../wallet/application/wallet.service';
 import { NotificationsService } from '../../notifications/notifications.service';
 import { SpatialAdminService } from '../../spatial-admin/application/spatial-admin.service';
 import { ReviewerProfile } from '../../reviews/infrastructure/persistence/reviewer-profile.entity';
+import { ReviewerReliabilityHistory } from '../../reviews/infrastructure/persistence/reviewer-reliability-history.entity';
 import { DailyTasksService } from '../../daily-tasks/daily-tasks.service';
+import { VerifiedSignOrmEntity } from '../../sign-map/infrastructure/persistence/verified-sign.orm-entity';
+import { SignLifecycleEvent } from '../../sign-map/infrastructure/persistence/sign-lifecycle-event.entity';
+import { VerifiedSignHistory } from '../../sign-map/infrastructure/persistence/verified-sign-history.entity';
+import { CandidateGeoEstimation } from '../../survey/infrastructure/persistence/candidate-geo-estimation.entity';
+import { SurveySubmission } from '../../survey/infrastructure/persistence/survey-submission.entity';
+import { SurveyorProfile } from '../../survey/infrastructure/persistence/surveyor-profile.entity';
+import { ModerationCase } from '../../moderation/infrastructure/persistence/moderation-case.entity';
+import { RevalidationTask, TaskStatus } from '../../revalidation/infrastructure/persistence/revalidation-task.entity';
 
 @Injectable()
 export class ConsensusService {
@@ -30,6 +39,15 @@ export class ConsensusService {
     @Optional() private readonly spatialAdminService?: SpatialAdminService,
     @Optional() @InjectRepository(ReviewerProfile) private readonly reviewerProfileRepo?: Repository<ReviewerProfile>,
     @Optional() private readonly dailyTasksService?: DailyTasksService,
+    @Optional() @InjectRepository(VerifiedSignOrmEntity) private readonly verifiedSignRepo?: Repository<VerifiedSignOrmEntity>,
+    @Optional() @InjectRepository(SignLifecycleEvent) private readonly lifecycleRepo?: Repository<SignLifecycleEvent>,
+    @Optional() @InjectRepository(VerifiedSignHistory) private readonly signHistoryRepo?: Repository<VerifiedSignHistory>,
+    @Optional() @InjectRepository(RevalidationTask) private readonly revalidationTaskRepo?: Repository<RevalidationTask>,
+    @Optional() @InjectRepository(CandidateGeoEstimation) private readonly geoEstimationRepo?: Repository<CandidateGeoEstimation>,
+    @Optional() @InjectRepository(SurveySubmission) private readonly submissionRepo?: Repository<SurveySubmission>,
+    @Optional() @InjectRepository(SurveyorProfile) private readonly surveyorProfileRepo?: Repository<SurveyorProfile>,
+    @Optional() @InjectRepository(ModerationCase) private readonly moderationCaseRepo?: Repository<ModerationCase>,
+    @Optional() @InjectRepository(ReviewerReliabilityHistory) private readonly reviewerHistoryRepo?: Repository<ReviewerReliabilityHistory>,
   ) {}
 
   async evaluate(candidateId: string): Promise<ConsensusLog | null> {
@@ -73,23 +91,36 @@ export class ConsensusService {
     const voterDetails: Array<{ reviewerId: string; weight: number; vote: number; suggestedSignTypeId: number | null }> = [];
 
     for (const r of reviews) {
-      const rows: any[] = await this.dataSource.query(
-        'SELECT reliability_score, is_provisional, total_correct_votes, total_false_votes FROM reviewer_profiles WHERE user_id=$1',
-        [r.reviewerId],
-      );
+      let profile: any = null;
+      if (this.reviewerProfileRepo && typeof this.reviewerProfileRepo.findOne === 'function') {
+        profile = await this.reviewerProfileRepo.findOne({
+          where: { userId: r.reviewerId },
+        });
+      }
+      if (!profile && typeof this.dataSource?.query === 'function') {
+        const rows: any[] = await this.dataSource.query(
+          'SELECT reliability_score, is_provisional, total_correct_votes, total_false_votes FROM reviewer_profiles WHERE user_id=$1',
+          [r.reviewerId],
+        );
+        if (rows.length > 0) profile = rows[0];
+      }
 
       let w = config.provisionalVoteWeight ?? 0.5;
-      if (rows.length > 0) {
-        const rawScore = Number(rows[0].reliability_score ?? 100);
+      if (profile) {
+        const rawScore = Number(profile.reliabilityScore ?? profile.reliability_score ?? 100);
         const relPct = rawScore <= 1.0 ? rawScore * 100 : rawScore;
-        const totalVotes = Number(rows[0].total_correct_votes ?? 0) + Number(rows[0].total_false_votes ?? 0);
+        const correctVotes = Number(profile.totalCorrectVotes ?? profile.total_correct_votes ?? 0);
+        const falseVotes = Number(profile.totalFalseVotes ?? profile.total_false_votes ?? 0);
+        const totalVotes = correctVotes + falseVotes;
         // Sample baseline gate: provisional if < 5 reviews
         const isProvisional =
-          rows[0].is_provisional !== undefined
-            ? Boolean(rows[0].is_provisional)
-            : rows[0].total_correct_votes !== undefined
-              ? totalVotes < (config.minSampleBaseline ?? 5)
-              : false;
+          profile.isProvisional !== undefined
+            ? Boolean(profile.isProvisional)
+            : profile.is_provisional !== undefined
+              ? Boolean(profile.is_provisional)
+              : (profile.totalCorrectVotes !== undefined || profile.total_correct_votes !== undefined)
+                ? totalVotes < (config.minSampleBaseline ?? 5)
+                : false;
 
         w = isProvisional ? (config.provisionalVoteWeight ?? 0.5) : Math.max(0.1, Number((relPct / 100).toFixed(4)));
       }
@@ -197,12 +228,25 @@ export class ConsensusService {
     let bearing: number | null = null;
 
     try {
-      const rows: any[] = await this.dataSource.query(
-        'SELECT ST_AsText(sign_location) AS sign_wkt, ST_AsText(vehicle_location) AS vehicle_wkt, traffic_direction FROM candidate_geo_estimations WHERE candidate_id=$1',
-        [candidate.id],
-      );
-      if (rows.length > 0) {
-        const wkt = rows[0].sign_wkt || rows[0].vehicle_wkt;
+      let geoRow: any = null;
+      if (this.geoEstimationRepo && typeof this.geoEstimationRepo.createQueryBuilder === 'function') {
+        geoRow = await this.geoEstimationRepo
+          .createQueryBuilder('g')
+          .select('ST_AsText(g.signLocation)', 'sign_wkt')
+          .addSelect('ST_AsText(g.vehicleLocation)', 'vehicle_wkt')
+          .addSelect('g.trafficDirection', 'traffic_direction')
+          .where('g.candidateId = :cid', { cid: candidate.id })
+          .getRawOne();
+      }
+      if (!geoRow && typeof this.dataSource?.query === 'function') {
+        const rows: any[] = await this.dataSource.query(
+          'SELECT ST_AsText(sign_location) AS sign_wkt, ST_AsText(vehicle_location) AS vehicle_wkt, traffic_direction FROM candidate_geo_estimations WHERE candidate_id=$1',
+          [candidate.id],
+        );
+        if (rows.length > 0) geoRow = rows[0];
+      }
+      if (geoRow) {
+        const wkt = geoRow.sign_wkt || geoRow.vehicle_wkt;
         if (wkt) {
           const m = String(wkt).match(/POINT\s*\(\s*([^\s]+)\s+([^\s]+)\s*\)/);
           if (m) {
@@ -210,7 +254,7 @@ export class ConsensusService {
             lat = parseFloat(m[2]);
           }
         }
-        if (rows[0].traffic_direction != null) bearing = Number(rows[0].traffic_direction);
+        if (geoRow.traffic_direction != null) bearing = Number(geoRow.traffic_direction);
       }
     } catch {}
 
@@ -237,64 +281,157 @@ export class ConsensusService {
     await this.candidateRepo.update(candidate.id, { status: CandidateStatus.VERIFIED });
     let missionEligible = false;
     try {
-      await this.dataSource.query(
-        `INSERT INTO verified_traffic_signs (
-           id, sign_type_id, origin_candidate_id, location, traffic_direction,
-           sign_crop_url, status, freshness_score, last_verified_at,
-           commune_code, road_name, display_address
-         ) VALUES (
-           gen_random_uuid(), $1, $2, ST_SetSRID(ST_MakePoint($3,$4),4326), $5,
-           $6, 'ACTIVE', 1, now(),
-           $7, $8, $9
-         ) ON CONFLICT (origin_candidate_id) DO NOTHING`,
-        [signTypeId, candidate.id, lon, lat, bearing, candidate.signCropUrl, communeCode, roadName, displayAddress],
-      );
-      const vRows: any[] = await this.dataSource.query(
-        'SELECT id FROM verified_traffic_signs WHERE origin_candidate_id=$1',
-        [candidate.id],
-      );
-      if (vRows.length > 0) {
+      let newSignId: string | null = null;
+      if (this.verifiedSignRepo && typeof this.verifiedSignRepo.createQueryBuilder === 'function') {
+        await this.verifiedSignRepo
+          .createQueryBuilder()
+          .insert()
+          .into(VerifiedSignOrmEntity)
+          .values({
+            signTypeId,
+            originCandidateId: candidate.id,
+            location: () => `ST_SetSRID(ST_MakePoint(${lon}, ${lat}), 4326)`,
+            trafficDirection: bearing,
+            signCropUrl: candidate.signCropUrl,
+            status: 'ACTIVE',
+            freshnessScore: 1,
+            lastVerifiedAt: new Date(),
+            communeCode,
+            roadName,
+            displayAddress,
+          } as any)
+          .orIgnore()
+          .execute();
+        const vSign = await this.verifiedSignRepo.findOne({
+          where: { originCandidateId: candidate.id },
+          select: ['id'],
+        });
+        if (vSign) newSignId = vSign.id;
+      } else if (typeof this.dataSource?.query === 'function') {
+        await this.dataSource.query(
+          `INSERT INTO verified_traffic_signs (
+             id, sign_type_id, origin_candidate_id, location, traffic_direction,
+             sign_crop_url, status, freshness_score, last_verified_at,
+             commune_code, road_name, display_address
+           ) VALUES (
+             gen_random_uuid(), $1, $2, ST_SetSRID(ST_MakePoint($3,$4),4326), $5,
+             $6, 'ACTIVE', 1, now(),
+             $7, $8, $9
+           ) ON CONFLICT (origin_candidate_id) DO NOTHING`,
+          [signTypeId, candidate.id, lon, lat, bearing, candidate.signCropUrl, communeCode, roadName, displayAddress],
+        );
+        const vRows: any[] = await this.dataSource.query(
+          'SELECT id FROM verified_traffic_signs WHERE origin_candidate_id=$1',
+          [candidate.id],
+        );
+        if (vRows.length > 0) newSignId = vRows[0].id;
+      }
+
+      if (newSignId) {
         missionEligible = true;
-        const newSignId = vRows[0].id;
         try {
-          await this.dataSource.query(
-            "INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, note) VALUES ($1,'PUBLISHED','Consensus APPROVED')",
-            [newSignId],
-          );
+          if (this.lifecycleRepo && typeof this.lifecycleRepo.save === 'function') {
+            await this.lifecycleRepo.save(
+              this.lifecycleRepo.create({
+                verifiedSignId: newSignId,
+                eventType: 'PUBLISHED',
+                note: 'Consensus APPROVED',
+              }),
+            );
+          } else if (typeof this.dataSource?.query === 'function') {
+            await this.dataSource.query(
+              "INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, note) VALUES ($1,'PUBLISHED','Consensus APPROVED')",
+              [newSignId],
+            );
+          }
         } catch {}
 
         // Decommission and supersede any existing older sign in the exact same spot (within 5 meters)
         try {
-          const oldSigns: any[] = await this.dataSource.query(
-            `SELECT id FROM verified_traffic_signs
-             WHERE id != $1
-               AND status = 'ACTIVE'
-               AND ST_DWithin(
-                 location::geography,
-                 ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography,
-                 5
-               )`,
-            [newSignId, lon, lat],
-          );
+          let oldSigns: any[] = [];
+          if (this.verifiedSignRepo && typeof this.verifiedSignRepo.createQueryBuilder === 'function') {
+            oldSigns = await this.verifiedSignRepo
+              .createQueryBuilder('s')
+              .select('s.id', 'id')
+              .where('s.id != :newSignId', { newSignId })
+              .andWhere("s.status = 'ACTIVE'")
+              .andWhere(
+                'ST_DWithin(s.location::geography, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)::geography, 5)',
+                { lon, lat },
+              )
+              .getRawMany();
+          } else if (typeof this.dataSource?.query === 'function') {
+            oldSigns = await this.dataSource.query(
+              `SELECT id FROM verified_traffic_signs
+               WHERE id != $1
+                 AND status = 'ACTIVE'
+                 AND ST_DWithin(
+                   location::geography,
+                   ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography,
+                   5
+                 )`,
+              [newSignId, lon, lat],
+            );
+          }
+
           for (const oldSign of oldSigns) {
-            await this.dataSource.query(
-              "UPDATE verified_traffic_signs SET status = 'DECOMMISSIONED', updated_at = NOW() WHERE id = $1",
-              [oldSign.id],
-            );
-            await this.dataSource.query(
-              "INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, note) VALUES ($1, 'DECOMMISSIONED', $2)",
-              [oldSign.id, `Superseded by verified sign #${newSignId}`],
-            );
-            try {
+            if (this.verifiedSignRepo && typeof this.verifiedSignRepo.update === 'function') {
+              await this.verifiedSignRepo.update(oldSign.id, {
+                status: 'DECOMMISSIONED',
+                updatedAt: new Date(),
+              });
+            } else if (typeof this.dataSource?.query === 'function') {
               await this.dataSource.query(
-                "INSERT INTO verified_sign_history (verified_sign_id, change_reason) VALUES ($1, $2)",
+                "UPDATE verified_traffic_signs SET status = 'DECOMMISSIONED', updated_at = NOW() WHERE id = $1",
+                [oldSign.id],
+              );
+            }
+
+            if (this.lifecycleRepo && typeof this.lifecycleRepo.save === 'function') {
+              await this.lifecycleRepo.save(
+                this.lifecycleRepo.create({
+                  verifiedSignId: oldSign.id,
+                  eventType: 'DECOMMISSIONED',
+                  note: `Superseded by verified sign #${newSignId}`,
+                }),
+              );
+            } else if (typeof this.dataSource?.query === 'function') {
+              await this.dataSource.query(
+                "INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, note) VALUES ($1, 'DECOMMISSIONED', $2)",
                 [oldSign.id, `Superseded by verified sign #${newSignId}`],
               );
+            }
+
+            try {
+              if (this.signHistoryRepo && typeof this.signHistoryRepo.save === 'function') {
+                await this.signHistoryRepo.save(
+                  this.signHistoryRepo.create({
+                    verifiedSignId: oldSign.id,
+                    changeReason: `Superseded by verified sign #${newSignId}`,
+                  }),
+                );
+              } else if (typeof this.dataSource?.query === 'function') {
+                await this.dataSource.query(
+                  "INSERT INTO verified_sign_history (verified_sign_id, change_reason) VALUES ($1, $2)",
+                  [oldSign.id, `Superseded by verified sign #${newSignId}`],
+                );
+              }
             } catch {}
-            await this.dataSource.query(
-              "UPDATE revalidation_tasks SET status = 'COMPLETED' WHERE verified_sign_id = $1 AND status IN ('OPEN', 'EVALUATING')",
-              [oldSign.id],
-            );
+
+            if (this.revalidationTaskRepo && typeof this.revalidationTaskRepo.createQueryBuilder === 'function') {
+              await this.revalidationTaskRepo
+                .createQueryBuilder()
+                .update(RevalidationTask)
+                .set({ status: TaskStatus.COMPLETED })
+                .where('verifiedSignId = :oldSignId', { oldSignId: oldSign.id })
+                .andWhere("status IN ('OPEN', 'EVALUATING')")
+                .execute();
+            } else if (typeof this.dataSource?.query === 'function') {
+              await this.dataSource.query(
+                "UPDATE revalidation_tasks SET status = 'COMPLETED' WHERE verified_sign_id = $1 AND status IN ('OPEN', 'EVALUATING')",
+                [oldSign.id],
+              );
+            }
           }
         } catch (e: any) {
           this.logger.warn(`Failed to supersede older signs near (${lat}, ${lon}): ${e?.message}`);
@@ -322,7 +459,7 @@ export class ConsensusService {
         try {
           // Reputation-Weighted Review Reward Bonus Multiplier:
           // ReviewReward = BaseReward * (0.5 + 0.5 * (Reliability / 100))
-          const relScore = profile ? Number(profile.reliability_score ?? 100) : 100;
+          const relScore = profile ? Number(profile.reliabilityScore ?? profile.reliability_score ?? 100) : 100;
           const normalizedPct = relScore <= 1.0 ? relScore * 100 : relScore;
           const multiplier = 0.5 + 0.5 * (normalizedPct / 100);
           const finalReward = Math.max(1, Math.round(baseReward * multiplier));
@@ -343,14 +480,41 @@ export class ConsensusService {
 
     await this.notifyVoters(candidate, voterDetails, winningVote, 'APPROVED', log.id);
     try {
-      const subRows: any[] = await this.dataSource.query('SELECT surveyor_id FROM survey_submissions WHERE id=$1', [
-        candidate.submissionId,
-      ]);
-      if (subRows.length > 0 && subRows[0].surveyor_id) {
-        await this.dataSource.query(
-          'INSERT INTO surveyor_profiles (user_id, total_submissions, total_verified_signs, total_credits_earned) VALUES ($1, 0, 1, 0) ON CONFLICT (user_id) DO UPDATE SET total_verified_signs = surveyor_profiles.total_verified_signs + 1',
-          [subRows[0].surveyor_id],
-        );
+      let surveyorId: string | null = null;
+      if (this.submissionRepo && typeof this.submissionRepo.findOne === 'function') {
+        const sub = await this.submissionRepo.findOne({
+          where: { id: candidate.submissionId },
+          select: ['surveyorId'],
+        });
+        if (sub) surveyorId = sub.surveyorId;
+      }
+      if (!surveyorId && typeof this.dataSource?.query === 'function') {
+        const subRows: any[] = await this.dataSource.query('SELECT surveyor_id FROM survey_submissions WHERE id=$1', [
+          candidate.submissionId,
+        ]);
+        if (subRows.length > 0 && subRows[0].surveyor_id) surveyorId = subRows[0].surveyor_id;
+      }
+
+      if (surveyorId) {
+        if (this.surveyorProfileRepo && typeof this.surveyorProfileRepo.createQueryBuilder === 'function') {
+          await this.surveyorProfileRepo
+            .createQueryBuilder()
+            .insert()
+            .into(SurveyorProfile)
+            .values({
+              userId: surveyorId,
+              totalSubmissions: 0,
+              totalVerifiedSigns: 1,
+              totalCreditsEarned: 0,
+            })
+            .onConflict('(user_id) DO UPDATE SET total_verified_signs = surveyor_profiles.total_verified_signs + 1')
+            .execute();
+        } else if (typeof this.dataSource?.query === 'function') {
+          await this.dataSource.query(
+            'INSERT INTO surveyor_profiles (user_id, total_submissions, total_verified_signs, total_credits_earned) VALUES ($1, 0, 1, 0) ON CONFLICT (user_id) DO UPDATE SET total_verified_signs = surveyor_profiles.total_verified_signs + 1',
+            [surveyorId],
+          );
+        }
       }
     } catch {}
   }
@@ -369,7 +533,7 @@ export class ConsensusService {
       const profile = await this.updateReviewerProfile(v.reviewerId, aligned, config, log.id);
       if (aligned === 1) {
         try {
-          const relScore = profile ? Number(profile.reliability_score ?? 100) : 100;
+          const relScore = profile ? Number(profile.reliabilityScore ?? profile.reliability_score ?? 100) : 100;
           const normalizedPct = relScore <= 1.0 ? relScore * 100 : relScore;
           const multiplier = 0.5 + 0.5 * (normalizedPct / 100);
           const finalReward = Math.max(1, Math.round(baseReward * multiplier));
@@ -398,10 +562,21 @@ export class ConsensusService {
   ) {
     await this.candidateRepo.update(candidate.id, { status: CandidateStatus.ESCALATED_MODERATION });
     try {
-      await this.dataSource.query(
-        "INSERT INTO moderation_cases (id, case_type, target_entity_type, target_entity_id, status, created_at) VALUES (gen_random_uuid(), 'REVIEW_CONFLICT', 'unverified_sign_candidate', $1, 'PENDING', now())",
-        [candidate.id],
-      );
+      if (this.moderationCaseRepo && typeof this.moderationCaseRepo.save === 'function') {
+        await this.moderationCaseRepo.save(
+          this.moderationCaseRepo.create({
+            caseType: 'REVIEW_CONFLICT' as any,
+            targetEntityType: 'unverified_sign_candidate',
+            targetEntityId: candidate.id,
+            status: 'PENDING' as any,
+          }),
+        );
+      } else if (typeof this.dataSource?.query === 'function') {
+        await this.dataSource.query(
+          "INSERT INTO moderation_cases (id, case_type, target_entity_type, target_entity_id, status, created_at) VALUES (gen_random_uuid(), 'REVIEW_CONFLICT', 'unverified_sign_candidate', $1, 'PENDING', now())",
+          [candidate.id],
+        );
+      }
     } catch (e: any) {
       this.logger.warn('moderation case insert failed: ' + e?.message);
     }
@@ -419,7 +594,15 @@ export class ConsensusService {
     isEscalated = false,
   ): Promise<any> {
     try {
-      const rows: any[] = await this.dataSource.query('SELECT * FROM reviewer_profiles WHERE user_id=$1', [reviewerId]);
+      let r: any = null;
+      if (this.reviewerProfileRepo && typeof this.reviewerProfileRepo.findOne === 'function') {
+        r = await this.reviewerProfileRepo.findOne({ where: { userId: reviewerId } });
+      }
+      if (!r && typeof this.dataSource?.query === 'function') {
+        const rows: any[] = await this.dataSource.query('SELECT * FROM reviewer_profiles WHERE user_id=$1', [reviewerId]);
+        if (rows.length > 0) r = rows[0];
+      }
+
       let oldScore = 100.0;
       let totalReviews = 0;
       let correctReviews = 0;
@@ -428,24 +611,45 @@ export class ConsensusService {
       let totalFalseVotes = 0;
       let consecutiveErrors = 0;
 
-      if (rows.length > 0) {
-        const r = rows[0];
-        oldScore = Number(r.reliability_score ?? 100);
-        totalReviews = Number(r.total_reviews ?? 0);
-        correctReviews = Number(r.correct_reviews ?? 0);
-        currentStreak = Number(r.current_streak ?? 0);
-        totalCorrectVotes = Number(r.total_correct_votes ?? correctReviews);
-        totalFalseVotes = Number(r.total_false_votes ?? Math.max(0, totalReviews - correctReviews));
-        consecutiveErrors = Number(r.consecutive_errors ?? 0);
+      if (r) {
+        oldScore = Number(r.reliabilityScore ?? r.reliability_score ?? 100);
+        totalReviews = Number(r.totalReviews ?? r.total_reviews ?? 0);
+        correctReviews = Number(r.correctReviews ?? r.correct_reviews ?? 0);
+        currentStreak = Number(r.currentStreak ?? r.current_streak ?? 0);
+        totalCorrectVotes = Number(r.totalCorrectVotes ?? r.total_correct_votes ?? correctReviews);
+        totalFalseVotes = Number(r.totalFalseVotes ?? r.total_false_votes ?? Math.max(0, totalReviews - correctReviews));
+        consecutiveErrors = Number(r.consecutiveErrors ?? r.consecutive_errors ?? 0);
       } else {
-        await this.dataSource.query(
-          `INSERT INTO reviewer_profiles (
-            user_id, reliability_score, total_reviews, correct_reviews, accuracy_rate, current_streak,
-            total_correct_votes, total_false_votes, consecutive_errors, is_provisional, is_review_suspended
-          ) VALUES ($1, 100.00, 0, 0, 0, 0, 0, 0, 0, true, false)
-          ON CONFLICT (user_id) DO NOTHING`,
-          [reviewerId],
-        );
+        if (this.reviewerProfileRepo && typeof this.reviewerProfileRepo.createQueryBuilder === 'function') {
+          await this.reviewerProfileRepo
+            .createQueryBuilder()
+            .insert()
+            .into(ReviewerProfile)
+            .values({
+              userId: reviewerId,
+              reliabilityScore: 100.0,
+              totalReviews: 0,
+              correctReviews: 0,
+              accuracyRate: 0,
+              currentStreak: 0,
+              totalCorrectVotes: 0,
+              totalFalseVotes: 0,
+              consecutiveErrors: 0,
+              isProvisional: true,
+              isReviewSuspended: false,
+            })
+            .orIgnore()
+            .execute();
+        } else if (typeof this.dataSource?.query === 'function') {
+          await this.dataSource.query(
+            `INSERT INTO reviewer_profiles (
+              user_id, reliability_score, total_reviews, correct_reviews, accuracy_rate, current_streak,
+              total_correct_votes, total_false_votes, consecutive_errors, is_provisional, is_review_suspended
+            ) VALUES ($1, 100.00, 0, 0, 0, 0, 0, 0, 0, true, false)
+            ON CONFLICT (user_id) DO NOTHING`,
+            [reviewerId],
+          );
+        }
       }
 
       if (!isEscalated) {
@@ -498,47 +702,79 @@ export class ConsensusService {
 
       const newAccuracy = totalReviews > 0 ? Number((correctReviews / totalReviews).toFixed(4)) : 0;
 
-      await this.dataSource.query(
-        `UPDATE reviewer_profiles SET
-          reliability_score = $1,
-          total_correct_votes = $2,
-          total_false_votes = $3,
-          consecutive_errors = $4,
-          is_provisional = $5,
-          is_review_suspended = $6,
-          suspended_at = $7,
-          suspended_until = $8,
-          suspension_reason = $9,
-          total_reviews = $10,
-          correct_reviews = $11,
-          accuracy_rate = $12,
-          current_streak = $13,
-          last_reviewed_at = now(),
-          updated_at = now()
-        WHERE user_id = $14`,
-        [
-          newScore,
+      if (this.reviewerProfileRepo && typeof this.reviewerProfileRepo.update === 'function') {
+        await this.reviewerProfileRepo.update(reviewerId, {
+          reliabilityScore: newScore,
           totalCorrectVotes,
           totalFalseVotes,
           consecutiveErrors,
           isProvisional,
-          isSuspended,
+          isReviewSuspended: isSuspended,
           suspendedAt,
           suspendedUntil,
           suspensionReason,
           totalReviews,
           correctReviews,
-          newAccuracy,
+          accuracyRate: newAccuracy,
           currentStreak,
-          reviewerId,
-        ],
-      );
+          lastReviewedAt: new Date(),
+          updatedAt: new Date(),
+        });
+      } else if (typeof this.dataSource?.query === 'function') {
+        await this.dataSource.query(
+          `UPDATE reviewer_profiles SET
+            reliability_score = $1,
+            total_correct_votes = $2,
+            total_false_votes = $3,
+            consecutive_errors = $4,
+            is_provisional = $5,
+            is_review_suspended = $6,
+            suspended_at = $7,
+            suspended_until = $8,
+            suspension_reason = $9,
+            total_reviews = $10,
+            correct_reviews = $11,
+            accuracy_rate = $12,
+            current_streak = $13,
+            last_reviewed_at = now(),
+            updated_at = now()
+          WHERE user_id = $14`,
+          [
+            newScore,
+            totalCorrectVotes,
+            totalFalseVotes,
+            consecutiveErrors,
+            isProvisional,
+            isSuspended,
+            suspendedAt,
+            suspendedUntil,
+            suspensionReason,
+            totalReviews,
+            correctReviews,
+            newAccuracy,
+            currentStreak,
+            reviewerId,
+          ],
+        );
+      }
 
-      await this.dataSource.query(
-        `INSERT INTO reviewer_reliability_history (reviewer_id, consensus_log_id, old_score, new_score, alignment_value)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [reviewerId, consensusLogId, oldScore, newScore, aligned === 0.5 ? 0 : aligned === 1 ? 1 : -1],
-      );
+      if (this.reviewerHistoryRepo && typeof this.reviewerHistoryRepo.save === 'function') {
+        await this.reviewerHistoryRepo.save(
+          this.reviewerHistoryRepo.create({
+            reviewerId,
+            consensusLogId,
+            oldScore,
+            newScore,
+            alignmentValue: aligned === 0.5 ? 0 : aligned === 1 ? 1 : -1,
+          }),
+        );
+      } else if (typeof this.dataSource?.query === 'function') {
+        await this.dataSource.query(
+          `INSERT INTO reviewer_reliability_history (reviewer_id, consensus_log_id, old_score, new_score, alignment_value)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [reviewerId, consensusLogId, oldScore, newScore, aligned === 0.5 ? 0 : aligned === 1 ? 1 : -1],
+        );
+      }
 
       return {
         user_id: reviewerId,

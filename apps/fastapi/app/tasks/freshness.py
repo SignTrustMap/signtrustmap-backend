@@ -25,9 +25,24 @@ from datetime import datetime, timezone
 from typing import Any
 
 from celery import shared_task
-from sqlalchemy import text
+from sqlalchemy import (
+    bindparam,
+    func,
+    insert,
+    literal_column,
+    select,
+    update,
+)
 
 from app.db_sync import get_sync_db
+from app.models.pipeline import (
+    RevalidationTask,
+    RouteClassification,
+    SignCategory,
+    SignLifecycleEvent,
+    TrafficSignType,
+)
+from app.models.spatial import VerifiedTrafficSign
 
 logger = logging.getLogger(__name__)
 
@@ -66,94 +81,120 @@ DEFAULT_ROUTE_CLASSES = {
     },
 }
 
-_ROUTE_CLASSES_SQL = text(
-    """
-    SELECT id, name, road_type, default_lifetime_days, revalidation_threshold_days, spatial_buffer_meters
-    FROM route_classifications
-    """
+_ROUTE_CLASSES_SQL = select(
+    RouteClassification.id,
+    RouteClassification.name,
+    RouteClassification.road_type,
+    RouteClassification.default_lifetime_days,
+    RouteClassification.revalidation_threshold_days,
+    RouteClassification.spatial_buffer_meters,
 )
 
-_ACTIVE_SIGNS_SQL = text(
-    """
-    SELECT
-        vts.id                                                       AS sign_id,
-        vts.last_verified_at,
-        vts.status,
-        vts.freshness_score,
-        vts.route_classification_id,
-        vts.road_name,
-        tst.sign_code,
-        COALESCE(sc.name_en, '') || ' ' || COALESCE(sc.name_vi, '') AS category_name,
-        EXTRACT(EPOCH FROM (NOW() - vts.last_verified_at)) / 86400.0 AS age_days
-    FROM verified_traffic_signs vts
-    JOIN traffic_sign_types     tst ON tst.id = vts.sign_type_id
-    LEFT JOIN sign_categories   sc  ON sc.id = tst.category_id
-    WHERE vts.status IN ('ACTIVE', 'STALE', 'REVALIDATION_REQUIRED')
-       OR (
-            vts.status = 'INACTIVE'
-            AND NOT EXISTS (
-                SELECT 1 FROM revalidation_tasks rt
-                WHERE rt.verified_sign_id = vts.id
-                  AND rt.status IN ('OPEN', 'EVALUATING')
-            )
-       )
-    ORDER BY vts.last_verified_at ASC
-    """
+_CATEGORY_NAME_EXPR = (
+    func.coalesce(SignCategory.name_en, "")
+    + " "
+    + func.coalesce(SignCategory.name_vi, "")
 )
 
-_CHECK_EXISTING_TASK_SQL = text(
-    """
-    SELECT id FROM revalidation_tasks
-    WHERE verified_sign_id = :sign_id
-      AND status IN ('OPEN', 'EVALUATING')
-    LIMIT 1
-    """
+_AGE_DAYS_EXPR = (
+    func.extract("epoch", func.now() - VerifiedTrafficSign.last_verified_at) / 86400.0
 )
 
-_INSERT_TASK_SQL = text(
-    """
-    INSERT INTO revalidation_tasks
-        (verified_sign_id, priority, reward_credits, urgency, status, route_classification_id, created_at, expired_at)
-    VALUES
-        (:sign_id, CAST(:priority AS task_priority), :reward_credits, :urgency, 'OPEN', :route_class_id, NOW(), NOW() + (:remaining_days * INTERVAL '1 day'))
-    RETURNING id
-    """
+_EXISTING_REVAL_TASK_SUBQ = (
+    select(1)
+    .where(
+        (RevalidationTask.verified_sign_id == VerifiedTrafficSign.id)
+        & (RevalidationTask.status.in_(["OPEN", "EVALUATING"]))
+    )
+    .exists()
 )
 
-_UPDATE_SIGN_STALE_SQL = text(
-    """
-    UPDATE verified_traffic_signs
-    SET status = 'STALE',
-        freshness_score = :freshness_score,
-        updated_at = NOW()
-    WHERE id = :sign_id
-    """
+_ACTIVE_SIGNS_SQL = (
+    select(
+        VerifiedTrafficSign.id.label("sign_id"),
+        VerifiedTrafficSign.last_verified_at,
+        VerifiedTrafficSign.status,
+        VerifiedTrafficSign.freshness_score,
+        VerifiedTrafficSign.route_classification_id,
+        VerifiedTrafficSign.road_name,
+        TrafficSignType.sign_code,
+        _CATEGORY_NAME_EXPR.label("category_name"),
+        _AGE_DAYS_EXPR.label("age_days"),
+    )
+    .select_from(VerifiedTrafficSign)
+    .join(TrafficSignType, TrafficSignType.id == VerifiedTrafficSign.sign_type_id)
+    .outerjoin(SignCategory, SignCategory.id == TrafficSignType.category_id)
+    .where(
+        VerifiedTrafficSign.status.in_(["ACTIVE", "STALE", "REVALIDATION_REQUIRED"])
+        | (
+            (VerifiedTrafficSign.status == "INACTIVE")
+            & (~_EXISTING_REVAL_TASK_SUBQ)
+        )
+    )
+    .order_by(VerifiedTrafficSign.last_verified_at.asc())
 )
 
-_UPDATE_SIGN_INACTIVE_SQL = text(
-    """
-    UPDATE verified_traffic_signs
-    SET status = 'INACTIVE',
-        freshness_score = 0.0,
-        updated_at = NOW()
-    WHERE id = :sign_id
-    """
+_CHECK_EXISTING_TASK_SQL = (
+    select(RevalidationTask.id)
+    .where(
+        (RevalidationTask.verified_sign_id == bindparam("sign_id"))
+        & (RevalidationTask.status.in_(["OPEN", "EVALUATING"]))
+    )
+    .limit(1)
 )
 
-_UPDATE_SIGN_SCORE_SQL = text(
-    """
-    UPDATE verified_traffic_signs
-    SET freshness_score = :freshness_score,
-        updated_at = NOW()
-    WHERE id = :sign_id
-    """
+_INSERT_TASK_SQL = (
+    insert(RevalidationTask)
+    .values(
+        verified_sign_id=bindparam("sign_id"),
+        priority=bindparam("priority"),
+        reward_credits=bindparam("reward_credits"),
+        urgency=bindparam("urgency"),
+        status="OPEN",
+        route_classification_id=bindparam("route_class_id"),
+        created_at=func.now(),
+        expired_at=func.now() + (bindparam("remaining_days") * literal_column("INTERVAL '1 day'")),
+    )
+    .returning(RevalidationTask.id)
 )
 
-_INSERT_LIFECYCLE_EVENT_SQL = text(
-    """
-    INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, note)
-    VALUES (:sign_id, :event_type, :note)
-    """
+_UPDATE_SIGN_STALE_SQL = (
+    update(VerifiedTrafficSign)
+    .where(VerifiedTrafficSign.id == bindparam("sign_id"))
+    .values(
+        status="STALE",
+        freshness_score=bindparam("freshness_score"),
+        updated_at=func.now(),
+    )
+)
+
+_UPDATE_SIGN_INACTIVE_SQL = (
+    update(VerifiedTrafficSign)
+    .where(VerifiedTrafficSign.id == bindparam("sign_id"))
+    .values(
+        status="INACTIVE",
+        freshness_score=0.0,
+        updated_at=func.now(),
+    )
+)
+
+_UPDATE_SIGN_SCORE_SQL = (
+    update(VerifiedTrafficSign)
+    .where(VerifiedTrafficSign.id == bindparam("sign_id"))
+    .values(
+        freshness_score=bindparam("freshness_score"),
+        updated_at=func.now(),
+    )
+)
+
+_INSERT_LIFECYCLE_EVENT_SQL = (
+    insert(SignLifecycleEvent)
+    .values(
+        verified_sign_id=bindparam("sign_id"),
+        event_type=bindparam("event_type"),
+        note=bindparam("note"),
+        created_at=func.now(),
+    )
 )
 
 

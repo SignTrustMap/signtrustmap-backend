@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Any
 
 from geoalchemy2 import Geometry
-from sqlalchemy import BigInteger, Boolean, Float, Integer, String, Text, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import ENUM, JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -28,6 +28,8 @@ AI_MODEL_TYPE_ENUM = ENUM(name="ai_model_type", create_type=False)
 TRAINING_JOB_STATUS_ENUM = ENUM(name="training_job_status", create_type=False)
 SUBMISSION_TYPE_ENUM = ENUM(name="submission_type", create_type=False)
 COORDINATE_SOURCE_ENUM = ENUM(name="coordinate_source", create_type=False)
+TASK_PRIORITY_ENUM = ENUM(name="task_priority", create_type=False)
+TASK_STATUS_ENUM = ENUM(name="task_status", create_type=False)
 
 
 class SurveySubmission(Base):
@@ -224,3 +226,71 @@ class AuditLog(Base):
     new_values: Mapped[Any] = mapped_column(JSONB, nullable=True)
     ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class RouteClassification(Base):
+    __tablename__ = "route_classifications"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(100))
+    road_type: Mapped[str] = mapped_column(String(50))
+    default_lifetime_days: Mapped[int] = mapped_column(Integer)
+    revalidation_threshold_days: Mapped[int] = mapped_column(Integer)
+    spatial_buffer_meters: Mapped[int] = mapped_column(Integer, default=20)
+
+
+class RevalidationTask(Base):
+    __tablename__ = "revalidation_tasks"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
+    )
+    verified_sign_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True))
+    freshness_rule_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    priority: Mapped[str] = mapped_column(TASK_PRIORITY_ENUM, default="MEDIUM")
+    reward_credits: Mapped[int] = mapped_column(Integer, default=10)
+    urgency: Mapped[float] = mapped_column(Float, default=0.0)
+    route_classification_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(TASK_STATUS_ENUM, default="OPEN")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SignLifecycleEvent(Base):
+    __tablename__ = "sign_lifecycle_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    verified_sign_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True))
+    event_type: Mapped[str] = mapped_column(String(50))
+    performed_by: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SignCategory(Base):
+    __tablename__ = "sign_categories"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    code: Mapped[str] = mapped_column(String(50))
+    name_vi: Mapped[str] = mapped_column(String(100))
+    name_en: Mapped[str] = mapped_column(String(100))
+
+
+class SignTypeAiPrompt(Base):
+    __tablename__ = "sign_type_ai_prompts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sign_type_id: Mapped[int] = mapped_column(Integer)
+    target_model: Mapped[str] = mapped_column(String(50))
+    prompt_text: Mapped[str] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class CatalogVersion(Base):
+    __tablename__ = "catalog_versions"
+
+    id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    version_number: Mapped[int] = mapped_column(Integer)
+    published_by: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    change_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True)
