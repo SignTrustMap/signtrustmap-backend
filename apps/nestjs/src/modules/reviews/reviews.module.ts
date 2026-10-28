@@ -12,6 +12,7 @@ import { DailyTasksModule } from '../daily-tasks/daily-tasks.module';
 import { ReviewerSkippedCandidate } from './infrastructure/persistence/reviewer-skipped-candidate.entity';
 import { ReviewerProfile } from './infrastructure/persistence/reviewer-profile.entity';
 import { CandidateRecaptureRequest } from './infrastructure/persistence/candidate-recapture-request.entity';
+import { ReviewerReliabilityHistory } from './infrastructure/persistence/reviewer-reliability-history.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { AiInferenceModule } from '../../integrations/ai-inference/ai-inference.module';
 
@@ -25,6 +26,7 @@ import { AiInferenceModule } from '../../integrations/ai-inference/ai-inference.
       ReviewerSkippedCandidate,
       ReviewerProfile,
       CandidateRecaptureRequest,
+      ReviewerReliabilityHistory,
     ]),
     ConsensusModule,
     SpatialAdminModule,

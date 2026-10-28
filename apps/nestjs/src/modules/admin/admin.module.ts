@@ -8,11 +8,22 @@ import { User } from '../auth/infrastructure/persistence/user.entity';
 import { UserRole } from '../auth/infrastructure/persistence/user-role.entity';
 import { Role } from '../auth/infrastructure/persistence/role.entity';
 import { AuditLog } from './audit-log.entity';
+import { AiModelVersion } from './ai-model-version.entity';
+import { ModelTrainingJob } from './model-training-job.entity';
+import { UserStatusHistory } from './user-status-history.entity';
 
 @Module({
   imports: [
     WalletModule,
-    TypeOrmModule.forFeature([User, UserRole, Role, AuditLog]),
+    TypeOrmModule.forFeature([
+      User,
+      UserRole,
+      Role,
+      AuditLog,
+      AiModelVersion,
+      ModelTrainingJob,
+      UserStatusHistory,
+    ]),
   ],
   controllers: [AdminController, MlopsController],
   providers: [AdminService],
