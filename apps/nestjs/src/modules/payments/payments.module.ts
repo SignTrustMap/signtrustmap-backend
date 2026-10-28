@@ -8,9 +8,10 @@ import { TopupPackage } from './infrastructure/persistence/topup-package.entity'
 import { PaymentsController } from './presentation/payments.controller';
 import { CreditTransaction } from '../wallet/infrastructure/persistence/credit-transaction.entity';
 import { Wallet } from '../wallet/infrastructure/persistence/wallet.entity';
+import { CreditRule } from '../rewards/infrastructure/persistence/credit-rule.entity';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([PaymentOrder, PaymentCallback, TopupPackage, Wallet, CreditTransaction])],
+  imports: [TypeOrmModule.forFeature([PaymentOrder, PaymentCallback, TopupPackage, Wallet, CreditTransaction, CreditRule])],
   controllers: [PaymentsController],
   providers: [PaymentsService, MomoPaymentService],
   exports: [PaymentsService, MomoPaymentService],

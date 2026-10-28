@@ -1,7 +1,14 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
-import { DataSource } from 'typeorm';
+import { Injectable, NotFoundException, BadRequestException, Optional } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { User } from '../auth/infrastructure/persistence/user.entity';
+import { UserRole } from '../auth/infrastructure/persistence/user-role.entity';
+import { Role } from '../auth/infrastructure/persistence/role.entity';
 import { AuditLog } from './audit-log.entity';
+import { AiModelVersion } from './ai-model-version.entity';
+import { ModelTrainingJob } from './model-training-job.entity';
+import { UserStatusHistory } from './user-status-history.entity';
+import { ConsensusConfig } from '../consensus/infrastructure/persistence/consensus-config.entity';
 import {
   UpdateConsensusConfigDto,
   UpdateRouteMatrixDto,
@@ -11,7 +18,17 @@ import {
 
 @Injectable()
 export class AdminService {
-  constructor(private readonly dataSource: DataSource) { }
+  constructor(
+    private readonly dataSource: DataSource,
+    @Optional() @InjectRepository(User) private readonly userRepo?: Repository<User>,
+    @Optional() @InjectRepository(UserRole) private readonly userRoleRepo?: Repository<UserRole>,
+    @Optional() @InjectRepository(Role) private readonly roleRepo?: Repository<Role>,
+    @Optional() @InjectRepository(AuditLog) private readonly auditLogRepo?: Repository<AuditLog>,
+    @Optional() @InjectRepository(AiModelVersion) private readonly aiModelVersionRepo?: Repository<AiModelVersion>,
+    @Optional() @InjectRepository(ModelTrainingJob) private readonly modelTrainingJobRepo?: Repository<ModelTrainingJob>,
+    @Optional() @InjectRepository(UserStatusHistory) private readonly userStatusHistoryRepo?: Repository<UserStatusHistory>,
+    @Optional() @InjectRepository(ConsensusConfig) private readonly consensusConfigRepo?: Repository<ConsensusConfig>,
+  ) {}
   async listUsers(q: { role?: string; status?: string; search?: string; page?: number; pageSize?: number }) {
     const page = Math.max(1, q.page ?? 1);
     const pageSize = Math.min(Math.max(1, q.pageSize ?? 20), 100);
@@ -72,6 +89,35 @@ export class AdminService {
     return { items, total, page, pageSize, totalPages: Math.ceil(total / pageSize) };
   }
   async updateUserStatus(userId: string, newStatus: string, reason: string | undefined, changedBy: string, ip?: string) {
+    if (this.userRepo && typeof this.userRepo.findOne === 'function' && this.userStatusHistoryRepo && this.auditLogRepo) {
+      const user = await this.userRepo.findOne({ where: { id: userId } });
+      if (!user) throw new NotFoundException('User ' + userId + ' not found');
+      const oldStatus = user.status;
+      if (oldStatus === newStatus) throw new BadRequestException('User is already ' + newStatus);
+      await this.userRepo.update(userId, { status: newStatus as any });
+      await this.userStatusHistoryRepo.save(
+        this.userStatusHistoryRepo.create({
+          userId,
+          oldStatus,
+          newStatus,
+          reason: reason ?? null,
+          changedBy,
+        }),
+      );
+      await this.auditLogRepo.save(
+        this.auditLogRepo.create({
+          userId: changedBy,
+          action: 'UPDATE_USER_STATUS',
+          resourceName: 'users',
+          resourceId: userId,
+          oldValues: { status: oldStatus },
+          newValues: { status: newStatus, reason },
+          ipAddress: ip ?? null,
+        }),
+      );
+      return { userId, oldStatus, newStatus };
+    }
+
     const rows: any[] = await this.dataSource.query('SELECT id, status FROM users WHERE id=$1', [userId]);
     if (rows.length === 0) throw new NotFoundException('User ' + userId + ' not found');
     const oldStatus = rows[0].status;
@@ -82,6 +128,37 @@ export class AdminService {
     return { userId, oldStatus, newStatus };
   }
   async assignRole(userId: string, roleCode: string, assignedBy: string, isActive = true) {
+    if (this.userRepo && this.roleRepo && this.userRoleRepo && this.auditLogRepo) {
+      const user = await this.userRepo.findOne({ where: { id: userId } });
+      if (!user) throw new NotFoundException('User ' + userId + ' not found');
+      const role = await this.roleRepo.findOne({ where: { code: roleCode } });
+      if (!role) throw new NotFoundException('Role ' + roleCode + ' not found');
+      const roleId = role.id;
+      const existing = await this.userRoleRepo.findOne({ where: { userId, roleId } });
+      if (existing) {
+        await this.userRoleRepo.update(existing.id, { isActive });
+      } else {
+        await this.userRoleRepo.save(
+          this.userRoleRepo.create({
+            userId,
+            roleId,
+            assignedBy,
+            isActive,
+          }),
+        );
+      }
+      await this.auditLogRepo.save(
+        this.auditLogRepo.create({
+          userId: assignedBy,
+          action: 'ASSIGN_ROLE',
+          resourceName: 'user_roles',
+          resourceId: userId,
+          newValues: { roleCode, isActive },
+        }),
+      );
+      return { userId, roleCode, roleId, isActive };
+    }
+
     const uRows: any[] = await this.dataSource.query('SELECT id FROM users WHERE id=$1', [userId]);
     if (uRows.length === 0) throw new NotFoundException('User ' + userId + ' not found');
     const rRows: any[] = await this.dataSource.query('SELECT id, code FROM roles WHERE code=$1', [roleCode]);
@@ -275,6 +352,46 @@ export class AdminService {
    * Retrieves current active consensus config parameters
    */
   async getConsensusConfig() {
+    if (this.consensusConfigRepo && typeof this.consensusConfigRepo.findOne === 'function') {
+      const c = await this.consensusConfigRepo.findOne({
+        where: { isActive: true },
+        order: { effectiveFrom: 'DESC' },
+      });
+      if (!c) {
+        return {
+          approvalThreshold: 2.0,
+          rejectionThreshold: -2.0,
+          minVotesRequired: 3,
+          alphaSmoothingFactor: 0.1,
+          weightCorrect: 1.0,
+          penaltyFalse: 2.0,
+          minSampleBaseline: 5,
+          minReliabilityThreshold: 50.0,
+          consecutiveErrorLimit: 3,
+          suspensionCooldownDays: 7,
+          provisionalVoteWeight: 0.5,
+          isActive: true,
+        };
+      }
+      return {
+        id: c.id,
+        approvalThreshold: Number(c.approvalThreshold),
+        rejectionThreshold: Number(c.rejectionThreshold),
+        minVotesRequired: Number(c.minVotesRequired),
+        alphaSmoothingFactor: Number(c.alphaSmoothingFactor),
+        weightCorrect: Number(c.weightCorrect),
+        penaltyFalse: Number(c.penaltyFalse),
+        minSampleBaseline: Number(c.minSampleBaseline),
+        minReliabilityThreshold: Number(c.minReliabilityThreshold),
+        consecutiveErrorLimit: Number(c.consecutiveErrorLimit),
+        suspensionCooldownDays: Number(c.suspensionCooldownDays),
+        provisionalVoteWeight: Number(c.provisionalVoteWeight),
+        createdBy: c.createdBy,
+        isActive: c.isActive,
+        effectiveFrom: c.effectiveFrom,
+      };
+    }
+
     const rows = await this.dataSource.query(
       `SELECT * FROM consensus_configs WHERE is_active = true ORDER BY effective_from DESC LIMIT 1`,
     );
@@ -330,6 +447,55 @@ export class AdminService {
     const consecutiveErrorLimit = dto.consecutiveErrorLimit ?? current.consecutiveErrorLimit;
     const suspensionCooldownDays = dto.suspensionCooldownDays ?? current.suspensionCooldownDays;
     const provisionalVoteWeight = dto.provisionalVoteWeight ?? current.provisionalVoteWeight;
+
+    if (this.consensusConfigRepo && this.auditLogRepo) {
+      await this.consensusConfigRepo.update({ isActive: true }, { isActive: false });
+      const created = this.consensusConfigRepo.create({
+        approvalThreshold,
+        rejectionThreshold,
+        minVotesRequired,
+        alphaSmoothingFactor,
+        weightCorrect,
+        penaltyFalse,
+        minSampleBaseline,
+        minReliabilityThreshold,
+        consecutiveErrorLimit,
+        suspensionCooldownDays,
+        provisionalVoteWeight,
+        createdBy: adminUserId,
+        isActive: true,
+        effectiveFrom: new Date(),
+      });
+      const inserted = await this.consensusConfigRepo.save(created);
+      await this.auditLogRepo.save(
+        this.auditLogRepo.create({
+          userId: adminUserId,
+          action: 'UPDATE_CONSENSUS_CONFIG',
+          resourceName: 'consensus_configs',
+          resourceId: String(inserted.id),
+          oldValues: current,
+          newValues: { ...dto, id: inserted.id },
+          ipAddress: ip ?? null,
+        }),
+      );
+      return {
+        id: inserted.id,
+        approvalThreshold: Number(inserted.approvalThreshold),
+        rejectionThreshold: Number(inserted.rejectionThreshold),
+        minVotesRequired: Number(inserted.minVotesRequired),
+        alphaSmoothingFactor: Number(inserted.alphaSmoothingFactor),
+        weightCorrect: Number(inserted.weightCorrect),
+        penaltyFalse: Number(inserted.penaltyFalse),
+        minSampleBaseline: Number(inserted.minSampleBaseline),
+        minReliabilityThreshold: Number(inserted.minReliabilityThreshold),
+        consecutiveErrorLimit: Number(inserted.consecutiveErrorLimit),
+        suspensionCooldownDays: Number(inserted.suspensionCooldownDays),
+        provisionalVoteWeight: Number(inserted.provisionalVoteWeight),
+        createdBy: inserted.createdBy,
+        isActive: inserted.isActive,
+        effectiveFrom: inserted.effectiveFrom,
+      };
+    }
 
     // Deactivate previous active configs
     await this.dataSource.query(`UPDATE consensus_configs SET is_active = false WHERE is_active = true`);
@@ -614,6 +780,33 @@ export class AdminService {
    * Governed promotion of candidate AI model version to active production
    */
   async promoteModelVersion(id: number, adminUserId: string, ip?: string) {
+    if (this.aiModelVersionRepo && this.auditLogRepo) {
+      const target = await this.aiModelVersionRepo.findOne({ where: { id } });
+      if (!target) {
+        throw new NotFoundException(`AI model version #${id} not found`);
+      }
+      await this.aiModelVersionRepo.update({ modelType: target.modelType, isActive: true }, { isActive: false });
+      await this.aiModelVersionRepo.update(id, { isActive: true });
+      await this.auditLogRepo.save(
+        this.auditLogRepo.create({
+          userId: adminUserId,
+          action: 'PROMOTE_MODEL_VERSION',
+          resourceName: 'ai_model_versions',
+          resourceId: String(id),
+          oldValues: { is_active: false },
+          newValues: { is_active: true, versionTag: target.versionTag, modelType: target.modelType },
+          ipAddress: ip ?? null,
+        }),
+      );
+      return {
+        versionId: id,
+        modelType: target.modelType,
+        versionTag: target.versionTag,
+        isActive: true,
+        promotedAt: new Date(),
+      };
+    }
+
     const rows = await this.dataSource.query(
       `SELECT * FROM ai_model_versions WHERE id = $1`,
       [id],
@@ -661,6 +854,38 @@ export class AdminService {
    * Rollback an active model version to previous stable deployment
    */
   async rollbackModelVersion(id: number, adminUserId: string, ip?: string) {
+    if (this.aiModelVersionRepo && this.auditLogRepo) {
+      const target = await this.aiModelVersionRepo.findOne({ where: { id } });
+      if (!target) {
+        throw new NotFoundException(`AI model version #${id} not found`);
+      }
+      await this.aiModelVersionRepo.update(id, { isActive: false });
+      const prev = await this.aiModelVersionRepo
+        .createQueryBuilder('m')
+        .where('m.modelType = :modelType AND m.id != :id', { modelType: target.modelType, id })
+        .orderBy('m.createdAt', 'DESC')
+        .getOne();
+      if (prev) {
+        await this.aiModelVersionRepo.update(prev.id, { isActive: true });
+      }
+      await this.auditLogRepo.save(
+        this.auditLogRepo.create({
+          userId: adminUserId,
+          action: 'ROLLBACK_MODEL_VERSION',
+          resourceName: 'ai_model_versions',
+          resourceId: String(id),
+          oldValues: { wasActive: target.isActive },
+          newValues: { reactivatedId: prev?.id },
+          ipAddress: ip ?? null,
+        }),
+      );
+      return {
+        versionId: id,
+        rolledBack: true,
+        reactivatedVersion: prev ? prev.versionTag : null,
+      };
+    }
+
     const rows = await this.dataSource.query(
       `SELECT * FROM ai_model_versions WHERE id = $1`,
       [id],
@@ -712,6 +937,34 @@ export class AdminService {
    * Retrieves overall health and status of MLOps pipeline
    */
   async getPipelineStatus() {
+    if (this.aiModelVersionRepo && this.modelTrainingJobRepo) {
+      const yolo = await this.aiModelVersionRepo.findOne({
+        where: { modelType: 'YOLO12' as any, isActive: true },
+        select: ['versionTag'],
+      });
+      const clip = await this.aiModelVersionRepo.findOne({
+        where: { modelType: 'CLIP' as any, isActive: true },
+        select: ['versionTag'],
+      });
+      const pendingJobsCount = await this.modelTrainingJobRepo
+        .createQueryBuilder('j')
+        .where("j.status IN ('QUEUED', 'RUNNING')")
+        .getCount();
+      const lastCompleted = await this.modelTrainingJobRepo
+        .createQueryBuilder('j')
+        .where("j.status = 'COMPLETED'")
+        .orderBy('j.completedAt', 'DESC')
+        .getOne();
+
+      return {
+        status: 'HEALTHY',
+        activeDetector: yolo?.versionTag ?? 'YOLOv12x-v2.3',
+        activeClassifier: clip?.versionTag ?? 'CLIP-ViT-B-32-v1.0',
+        pendingJobsCount,
+        lastRetrainedAt: lastCompleted?.completedAt ?? null,
+      };
+    }
+
     const yoloRows = await this.dataSource.query(
       `SELECT version_tag FROM ai_model_versions WHERE model_type = 'YOLO12' AND is_active = true LIMIT 1`,
     );

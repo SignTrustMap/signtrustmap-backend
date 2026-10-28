@@ -113,7 +113,15 @@ export class PaymentsService {
     // Write callback row (outside tx so it is never rolled back even if later logic fails)
     const cb = this.callbacks.create({ paymentOrderId: order.id, rawPayload, isValid });
     const savedCb = await this.callbacks.save(cb);
-    await this.dataSource.query(`UPDATE payment_callbacks SET is_valid=$1, processed_at=now() WHERE id=$2`, [isValid, savedCb.id]);
+    if (this.callbacks?.update) {
+      try {
+        await this.callbacks.update(savedCb.id, { isValid, processedAt: new Date() });
+      } catch {
+        await this.dataSource.query(`UPDATE payment_callbacks SET is_valid=$1, processed_at=now() WHERE id=$2`, [isValid, savedCb.id]);
+      }
+    } else {
+      await this.dataSource.query(`UPDATE payment_callbacks SET is_valid=$1, processed_at=now() WHERE id=$2`, [isValid, savedCb.id]);
+    }
 
     if (!isValid) throw new BadRequestException('Invalid payment callback');
 

@@ -8,6 +8,8 @@ import { CatalogController } from './catalog.controller';
 import { SignTypeAiPrompt } from './sign-type-ai-prompt.entity';
 import { SignTypeImage } from './sign-type-image.entity';
 import { SignTypeOsmMapping } from './sign-type-osm-mapping.entity';
+import { UnverifiedSignCandidate } from '../survey/infrastructure/persistence/unverified-sign-candidate.entity';
+import { SubmissionStatusHistory } from '../survey/infrastructure/persistence/submission-status-history.entity';
 import { CatalogSyncModule } from '../../integrations/catalog-sync/catalog-sync.module';
 import { MinioModule } from '../../integrations/minio/minio.module';
 
@@ -22,6 +24,8 @@ import { MinioModule } from '../../integrations/minio/minio.module';
       SignTypeAiPrompt,
       SignTypeOsmMapping,
       SignTypeImage,
+      UnverifiedSignCandidate,
+      SubmissionStatusHistory,
     ]),
   ],
   controllers: [CatalogController],
