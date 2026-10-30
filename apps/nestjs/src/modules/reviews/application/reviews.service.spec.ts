@@ -815,7 +815,8 @@ describe('ReviewsService test helpers', () => {
 
     function buildSubmitService(overrides: any = {}) {
       const txQuery = jest.fn()
-        .mockResolvedValueOnce([{ status: CandidateStatus.RECAPTURE_REQUESTED, request_id: 'req-1', missing_type_report_id: 'report-1', report_status: 'INCOMPLETE' }])
+        .mockResolvedValueOnce([{ status: CandidateStatus.RECAPTURE_REQUESTED, submission_id: 'submission-1', request_id: 'req-1', missing_type_report_id: 'report-1', report_status: 'INCOMPLETE' }])
+        .mockResolvedValueOnce({ rowCount: 1 })
         .mockResolvedValueOnce({ rowCount: 1 })
         .mockResolvedValueOnce({ rowCount: 1 })
         .mockResolvedValueOnce({ rowCount: 1 })
@@ -864,6 +865,10 @@ describe('ReviewsService test helpers', () => {
           expect.stringContaining('recaptures/cand-1/req-1/best-frame-'),
           'cand-1',
         ],
+      );
+      expect(txQuery).toHaveBeenCalledWith(
+        expect.stringContaining('UPDATE survey_submissions'),
+        ['surveyor-2', 'submission-1'],
       );
       expect(txQuery).toHaveBeenCalledWith(
         expect.stringContaining('SET reporter_id = $1, status = \'PENDING\''),

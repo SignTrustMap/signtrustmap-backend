@@ -71,10 +71,8 @@ export class ModerationService {
    * review/consensus queue stops offering it until staff resolve the report.
    */
   async reportNewSign(reporterId: string, dto: CreateNewSignTypeReportDto) {
+    if (!dto.candidateId) throw new BadRequestException('candidateId is required');
     const proposedName = dto.proposedName?.trim() || null;
-    if (!dto.candidateId && !proposedName) {
-      throw new BadRequestException('candidateId is required when no proposedName is provided');
-    }
 
     return this.dataSource.transaction(async (manager) => {
       if (dto.candidateId) {
@@ -136,6 +134,7 @@ export class ModerationService {
         description: dto.description ?? null,
         suggestedShape: dto.suggestedShape ?? null,
         suggestedColorScheme: dto.suggestedColorScheme ?? null,
+        status: MissingTypeStatus.PENDING,
       };
       const r = typeof manager.getRepository === 'function'
         ? manager.getRepository(MissingSignTypeReport).create(reportPayload as any)
@@ -1292,7 +1291,8 @@ export class ModerationService {
       if (activeRequestsCount > 0) {
         throw new ConflictException('An active recapture request already exists for candidate ' + candidate.id);
       }
-      surveyorId = await this.selectRandomActiveSurveyor(manager);
+      // Open quest; eligible Surveyors discover nearby requests through GET /reviews/me/recaptures.
+      const surveyorId: string | null = null;
 
       let updateReportAffected = 0;
       if (typeof manager.getRepository === 'function') {
@@ -1461,45 +1461,6 @@ export class ModerationService {
     return this.getMissingReport(reportId);
   }
 
-  private async selectRandomActiveSurveyor(manager: EntityManager): Promise<string> {
-    if (typeof manager.getRepository === 'function') {
-      const surveyor = await manager.getRepository(User)
-        .createQueryBuilder('u')
-        .innerJoin('u.userRoles', 'ur')
-        .innerJoin('ur.role', 'role')
-        .where('u.status = :status', { status: UserStatus.ACTIVE })
-        .andWhere('ur.isActive = true')
-        .andWhere('role.code = :roleCode', { roleCode: 'SURVEYOR' })
-        .orderBy('RANDOM()')
-        .getOne();
-      if (!surveyor) {
-        throw new BadRequestException('No active surveyor is available for recapture assignment');
-      }
-      return surveyor.id;
-    }
-    const surveyors: Array<{ id: string }> = await manager.query(
-      `SELECT u.id
-       FROM users u
-       WHERE u.status = 'ACTIVE'
-         AND (
-           u.email = 'demo@stm.dev'
-           OR EXISTS (
-             SELECT 1
-             FROM user_roles ur
-             JOIN roles role ON role.id = ur.role_id
-             WHERE ur.user_id = u.id
-               AND ur.is_active = TRUE
-               AND role.code = 'SURVEYOR'
-           )
-         )
-       ORDER BY CASE WHEN u.email = 'demo@stm.dev' THEN 0 ELSE 1 END, RANDOM()
-       LIMIT 1`,
-    );
-    if (!surveyors[0]) {
-      throw new BadRequestException('No active surveyor is available for recapture assignment');
-    }
-    return surveyors[0].id;
-  }
   async getNewSignReport(id: string) {
     const r = await this.missing.findOne({ where: { id } });
     if (!r) throw new NotFoundException('NewSignTypeReport ' + id + ' not found');
@@ -1653,54 +1614,6 @@ export class ModerationService {
       const rid = mc.targetEntityId;
       if (rid && actionType === 'APPROVED') await this.handleApprovedReport(rid, staffId, dto);
       else if (rid && actionType === 'MERGED' && targetTypeId) await this.handleMergedReport(rid, staffId, dto, targetTypeId);
-    } else if (actionType === 'REQUEST_RECAPTURE' && mc.targetEntityType === 'candidate' && mc.targetEntityId) {
-      try {
-        await this.candRepo.update(mc.targetEntityId, { status: CandidateStatus.RECAPTURE_REQUESTED });
-        let surveyorId: string | null = null;
-        if (this.candRepo && typeof this.candRepo.createQueryBuilder === 'function') {
-          const candWithSub = await this.candRepo.createQueryBuilder('c')
-            .leftJoinAndSelect('c.submission', 's')
-            .where('c.id = :id', { id: mc.targetEntityId })
-            .getOne();
-          surveyorId = candWithSub?.submission?.surveyorId ?? null;
-        }
-        if (!surveyorId && typeof this.dataSource?.query === 'function') {
-          const subRows: any[] = await this.dataSource.query(
-            `SELECT s.surveyor_id FROM survey_submissions s
-             JOIN unverified_sign_candidates c ON c.submission_id = s.id
-             WHERE c.id = $1`,
-            [mc.targetEntityId],
-          );
-          surveyorId = subRows[0]?.surveyor_id ?? null;
-        }
-        if (this.recaptureRepo && typeof this.recaptureRepo.save === 'function') {
-          await this.recaptureRepo.save(this.recaptureRepo.create({
-            candidateId: mc.targetEntityId,
-            reviewerId: staffId,
-            surveyorId,
-            reason: 'MODERATION_RECAPTURE_REQUESTED',
-            note: dto.resolutionNote,
-          }));
-        } else if (typeof this.dataSource?.query === 'function') {
-          await this.dataSource.query(
-            `INSERT INTO candidate_recapture_requests (candidate_id, reviewer_id, surveyor_id, reason, note)
-             VALUES ($1, $2, $3, 'MODERATION_RECAPTURE_REQUESTED', $4)`,
-            [mc.targetEntityId, staffId, surveyorId, dto.resolutionNote],
-          );
-        }
-        if (surveyorId && this.notificationsService) {
-          await this.notificationsService.create(
-            surveyorId,
-            'IMAGE_RECAPTURE_REQUESTED',
-            'YÃªu cáº§u chá»¥p láº¡i áº£nh biá»ƒn bÃ¡o',
-            `Quáº£n trá»‹ viÃªn yÃªu cáº§u chá»¥p láº¡i áº£nh biá»ƒn bÃ¡o: ${dto.resolutionNote}`,
-            'candidate',
-            mc.targetEntityId,
-          );
-        }
-      } catch (err: any) {
-        this.logger.warn(`Failed to process moderation recapture request: ${err?.message}`);
-      }
     }
     mc.status = ModerationStatus.RESOLVED;
     mc.resolutionNote = dto.resolutionNote;
@@ -1803,7 +1716,8 @@ export class ModerationService {
           `Cannot request recapture for candidate ${candidate.id}: expected exactly one INCOMPLETE Missing Type Report, found ${reportRows.length}`,
         );
       }
-      surveyorId = await this.selectRandomActiveSurveyor(manager);
+      // Open quest; the first eligible nearby Surveyor claims it on submission.
+      const surveyorId: string | null = null;
 
       let updateCandAffected = 0;
       if (typeof manager.getRepository === 'function') {
@@ -1976,15 +1890,9 @@ export class ModerationService {
 
   private async validateAndNormalizeSignCode(input: string): Promise<string> {
     const trimmed = input.trim();
-    const testMatch = trimmed.match(/^T\.([A-Za-z0-9._-]+)$/i);
-    if (testMatch) {
-      const suffix = testMatch[1].toLowerCase() === 'xxx' ? 'xxx' : testMatch[1];
-      return `T.${suffix}`;
-    }
-
     const match = trimmed.match(/^([A-Za-z]+)\.\s*(\d+)([A-Za-z0-9]*)$/);
     if (!match) {
-      throw new BadRequestException('signCode must match PREFIX.number with an optional alphanumeric suffix, or T.xxx for testing');
+      throw new BadRequestException('signCode must match PREFIX.number with an optional alphanumeric suffix');
     }
 
     const [, rawPrefix, number, rawSuffix] = match;
@@ -1996,7 +1904,8 @@ export class ModerationService {
        WHERE upper(sign_code) ~ '^[A-Z]+\\.[0-9]+[A-Z0-9]*$'
        ORDER BY prefix`,
     );
-    const validPrefixes = existingPrefixes.map((row) => row.prefix);
+    const allowedPrefixes = new Set(['P', 'W', 'R', 'I', 'E', 'IE', 'S']);
+    const validPrefixes = existingPrefixes.map((row) => row.prefix).filter((prefix) => allowedPrefixes.has(prefix));
     if (!validPrefixes.includes(prefix)) {
       throw new BadRequestException(
         'signCode prefix must match an existing catalog prefix: ' + (validPrefixes.join(', ') || '(none)'),

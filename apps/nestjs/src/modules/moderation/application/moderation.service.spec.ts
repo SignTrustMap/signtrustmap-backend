@@ -337,13 +337,7 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     expect(result).toMatchObject({ id: 'R1', status: MissingTypeStatus.INCOMPLETE });
     expect(manager.query).toHaveBeenCalledWith(
       expect.stringContaining('missing_type_report_id'),
-      ['C1', 'staff-1', 'ASSIGNED_SURVEYOR', 'R1', 'Please recapture from the same location.'],
-    );
-    expect(manager.query).toHaveBeenCalledWith(
-      expect.stringContaining('demo@stm.dev'),
-    );
-    expect(manager.query).toHaveBeenCalledWith(
-      expect.stringContaining("role.code = 'SURVEYOR'"),
+      ['C1', 'staff-1', 'R1', 'Please recapture from the same location.'],
     );
     expect(manager.query).toHaveBeenCalledWith(
       expect.stringContaining("SET status = $2"),
@@ -620,10 +614,7 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     expect(result.status).toBe('RESOLVED');
     expect(manager.query).toHaveBeenCalledWith(
       expect.stringContaining('missing_type_report_id'),
-      ['C1', 'STAFF1', 'RANDOM_SURVEYOR', 'REPORT1', 'Please recapture'],
-    );
-    expect(manager.query).toHaveBeenCalledWith(
-      expect.stringContaining('demo@stm.dev'),
+      ['C1', 'STAFF1', 'REPORT1', 'Please recapture'],
     );
   });
 
@@ -689,19 +680,19 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     expect(result.report).toMatchObject({ status: MissingTypeStatus.APPROVED });
   });
 
-  it('approve-and-create-type allows special test sign code T.xxx', async () => {
+  it('approve-and-create-type accepts canonical catalog sign code prefixes', async () => {
     const { service, missing, catRepo, signTypeRepo, dataSource, catalogService } = buildService();
     const report = { id: 'R1', status: MissingTypeStatus.PENDING, candidateId: 'C1', proposedName: 'Test Sign', proposedCategoryId: 1, reporterId: 'U1' };
     missing.findOne.mockResolvedValue(report);
     catRepo.findOne.mockResolvedValue({ id: 1, code: 'PROHIBITORY' });
     signTypeRepo.findOne.mockResolvedValue(null);
-    catalogService.createSignType.mockResolvedValue({ id: 99, signCode: 'T.xxx' });
+    catalogService.createSignType.mockResolvedValue({ id: 99, signCode: 'P.110' });
     dataSource.query.mockImplementation((sql: string) =>
       sql.includes('SELECT DISTINCT split_part') ? [{ prefix: 'P' }] : [],
     );
 
     const result = await service.approveAndCreateType('R1', 'staff-1', {
-      signCode: ' t.xxx ',
+      signCode: ' p. 110 ',
       nameVi: 'Biá»ƒn kiá»ƒm thá»­',
       nameEn: 'Testing Sign',
       proposedCategoryId: 1,
@@ -709,12 +700,12 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     }, representativeImage());
 
     expect(catalogService.createSignType).toHaveBeenCalledWith(expect.objectContaining({
-      signCode: 'T.xxx',
+      signCode: 'P.110',
       categoryId: 1,
       nameVi: 'Biá»ƒn kiá»ƒm thá»­',
-      representativeImageKey: expect.stringContaining('catalog/representative/T.xxx-'),
+      representativeImageKey: expect.stringContaining('catalog/representative/P.110-'),
     }));
-    expect(result.createdSignType).toMatchObject({ id: 99, signCode: 'T.xxx' });
+    expect(result.createdSignType).toMatchObject({ id: 99, signCode: 'P.110' });
   });
 
   it('approve-and-create-type completes approval even if bumpCatalogVersion or candidate release throws', async () => {

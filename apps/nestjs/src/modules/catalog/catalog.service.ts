@@ -559,15 +559,10 @@ export class CatalogService {
 
   private normalizeSignCode(signCode: string): string {
     const trimmed = signCode.trim();
-    const testMatch = trimmed.match(/^T\.([A-Za-z0-9._-]+)$/i);
-    if (testMatch) {
-      const suffix = testMatch[1].toLowerCase() === 'xxx' ? 'xxx' : testMatch[1];
-      return `T.${suffix}`;
-    }
     const match = trimmed.match(/^([A-Za-z]+)\.\s*(\d+)([A-Za-z0-9]*)$/);
     if (!match) {
       throw new BadRequestException(
-        'sign_code must match abbreviation.number with an optional alphanumeric suffix, or T.xxx for testing',
+        'sign_code must match abbreviation.number with an optional alphanumeric suffix',
       );
     }
     return `${match[1].toUpperCase()}.${match[2]}${match[3].toLowerCase()}`;
@@ -581,10 +576,12 @@ export class CatalogService {
        ORDER BY prefix`,
     );
     const prefix = signCode.split('.')[0];
-    if (!prefixes.some((row) => row.prefix === prefix)) {
+    const canonicalPrefixes = new Set(['P', 'W', 'R', 'I', 'E', 'IE', 'S']);
+    const knownPrefixes = prefixes.map((row) => row.prefix).filter((value) => canonicalPrefixes.has(value));
+    if (!canonicalPrefixes.has(prefix) || !knownPrefixes.includes(prefix)) {
       throw new BadRequestException(
         'sign_code prefix must match an existing catalog prefix: ' +
-          (prefixes.map((row) => row.prefix).join(', ') || '(none)'),
+          (knownPrefixes.join(', ') || '(none)'),
       );
     }
   }
