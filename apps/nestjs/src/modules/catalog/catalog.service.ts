@@ -574,13 +574,16 @@ export class CatalogService {
   }
 
   private async validateSignCodePrefix(signCode: string): Promise<void> {
+    const prefix = signCode.split('.')[0];
+    if (prefix === 'T') {
+      return;
+    }
     const prefixes: Array<{ prefix: string }> = await this.dataSource.query(
       `SELECT DISTINCT split_part(upper(sign_code), '.', 1) AS prefix
        FROM traffic_sign_types
        WHERE upper(sign_code) ~ '^[A-Z]+\\.[0-9]+[A-Z0-9]*$'
        ORDER BY prefix`,
     );
-    const prefix = signCode.split('.')[0];
     if (!prefixes.some((row) => row.prefix === prefix)) {
       throw new BadRequestException(
         'sign_code prefix must match an existing catalog prefix: ' +

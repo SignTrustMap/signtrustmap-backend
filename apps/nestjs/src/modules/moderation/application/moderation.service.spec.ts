@@ -337,13 +337,7 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     expect(result).toMatchObject({ id: 'R1', status: MissingTypeStatus.INCOMPLETE });
     expect(manager.query).toHaveBeenCalledWith(
       expect.stringContaining('missing_type_report_id'),
-      ['C1', 'staff-1', 'ASSIGNED_SURVEYOR', 'R1', 'Please recapture from the same location.'],
-    );
-    expect(manager.query).toHaveBeenCalledWith(
-      expect.stringContaining('demo@stm.dev'),
-    );
-    expect(manager.query).toHaveBeenCalledWith(
-      expect.stringContaining("role.code = 'SURVEYOR'"),
+      ['C1', 'staff-1', 'R1', 'Please recapture from the same location.'],
     );
     expect(manager.query).toHaveBeenCalledWith(
       expect.stringContaining("SET status = $2"),
@@ -620,10 +614,7 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     expect(result.status).toBe('RESOLVED');
     expect(manager.query).toHaveBeenCalledWith(
       expect.stringContaining('missing_type_report_id'),
-      ['C1', 'STAFF1', 'RANDOM_SURVEYOR', 'REPORT1', 'Please recapture'],
-    );
-    expect(manager.query).toHaveBeenCalledWith(
-      expect.stringContaining('demo@stm.dev'),
+      ['C1', 'STAFF1', 'REPORT1', 'Please recapture'],
     );
   });
 

@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException, ConflictException, Logger, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource, In, ILike } from 'typeorm';
+import { Repository, DataSource, EntityManager, In, ILike } from 'typeorm';
 import { randomUUID } from 'crypto';
 import { NewSignTypeReport, MissingSignTypeReport, MissingTypeStatus } from '../infrastructure/persistence/missing-sign-type-report.entity';
 import { ModerationAction } from '../infrastructure/persistence/moderation-action.entity';
@@ -1292,7 +1292,6 @@ export class ModerationService {
       if (activeRequestsCount > 0) {
         throw new ConflictException('An active recapture request already exists for candidate ' + candidate.id);
       }
-      surveyorId = await this.selectRandomActiveSurveyor(manager);
 
       let updateReportAffected = 0;
       if (typeof manager.getRepository === 'function') {
@@ -1349,7 +1348,6 @@ export class ModerationService {
           await recRepo.save(recRepo.create({
             candidateId: candidate.id,
             reviewerId: staffId,
-            surveyorId,
             missingTypeReportId: reportId,
             reason: 'MISSING_TYPE_RECAPTURE_REQUESTED',
             note,
@@ -1357,9 +1355,9 @@ export class ModerationService {
         } else if (typeof manager.query === 'function') {
           await manager.query(
             `INSERT INTO candidate_recapture_requests
-               (candidate_id, reviewer_id, surveyor_id, missing_type_report_id, reason, note)
-             VALUES ($1, $2, $3, $4, 'MISSING_TYPE_RECAPTURE_REQUESTED', $5)`,
-            [candidate.id, staffId, surveyorId, reportId, note],
+               (candidate_id, reviewer_id, missing_type_report_id, reason, note)
+             VALUES ($1, $2, $3, 'MISSING_TYPE_RECAPTURE_REQUESTED', $4)`,
+            [candidate.id, staffId, reportId, note],
           );
         }
       } catch (error: any) {
@@ -1803,7 +1801,6 @@ export class ModerationService {
           `Cannot request recapture for candidate ${candidate.id}: expected exactly one INCOMPLETE Missing Type Report, found ${reportRows.length}`,
         );
       }
-      surveyorId = await this.selectRandomActiveSurveyor(manager);
 
       let updateCandAffected = 0;
       if (typeof manager.getRepository === 'function') {
@@ -1834,7 +1831,6 @@ export class ModerationService {
           await recRepo.save(recRepo.create({
             candidateId: candidate.id,
             reviewerId: staffId,
-            surveyorId,
             missingTypeReportId: reportRows[0].id,
             reason: 'MODERATION_RECAPTURE_REQUESTED',
             note: dto.resolutionNote ?? null,
@@ -1842,9 +1838,9 @@ export class ModerationService {
         } else if (typeof manager.query === 'function') {
           await manager.query(
             `INSERT INTO candidate_recapture_requests
-               (candidate_id, reviewer_id, surveyor_id, missing_type_report_id, reason, note)
-             VALUES ($1, $2, $3, $4, 'MODERATION_RECAPTURE_REQUESTED', $5)`,
-            [candidate.id, staffId, surveyorId, reportRows[0].id, dto.resolutionNote ?? null],
+               (candidate_id, reviewer_id, missing_type_report_id, reason, note)
+             VALUES ($1, $2, $3, 'MODERATION_RECAPTURE_REQUESTED', $4)`,
+            [candidate.id, staffId, reportRows[0].id, dto.resolutionNote ?? null],
           );
         }
       } catch (error: any) {
