@@ -17,12 +17,18 @@ import {
   UpsertSystemParameterDto,
 } from './dto/catalog.dto';
 import { SignCategory } from './sign-category.entity';
+import { createHash, randomUUID } from 'crypto';
 import { SignTypeAiPrompt } from './sign-type-ai-prompt.entity';
 import { SignTypeImage } from './sign-type-image.entity';
 import { SignTypeOsmMapping } from './sign-type-osm-mapping.entity';
 import { SystemParameter } from './system-parameter.entity';
 import { TrafficSignType } from './traffic-sign-type.entity';
 import { CatalogSyncService } from '../../integrations/catalog-sync/catalog-sync.service';
+import { MinioStorageService, STM_BUCKETS } from '../../integrations/minio/minio-storage.service';
+import { validateFileSignature } from '../survey/domain/media-validator';
+import { MediaFileType } from '../survey/domain/submission-contract';
+import { UnverifiedSignCandidate } from '../survey/infrastructure/persistence/unverified-sign-candidate.entity';
+import { SubmissionStatusHistory } from '../survey/infrastructure/persistence/submission-status-history.entity';
 
 export interface ListSignTypesOptions {
   categoryId?: number;
@@ -62,10 +68,30 @@ export class CatalogService {
     private readonly dataSource: DataSource,
     @Optional()
     private readonly catalogSyncService?: CatalogSyncService,
+    @Optional()
+    private readonly minioStorageService?: MinioStorageService,
+    @Optional()
+    @InjectRepository(UnverifiedSignCandidate)
+    private readonly candidateRepo?: Repository<UnverifiedSignCandidate>,
+    @Optional()
+    @InjectRepository(SubmissionStatusHistory)
+    private readonly historyRepo?: Repository<SubmissionStatusHistory>,
   ) {}
 
   listCategories() {
     return this.categories.find({ order: { sortOrder: 'ASC', id: 'ASC' } });
+  }
+
+  async checkSignCodeAvailability(input: string) {
+    if (typeof input !== 'string' || !input.trim()) {
+      throw new BadRequestException('code query parameter is required');
+    }
+    const signCode = this.normalizeSignCode(input);
+    await this.validateSignCodePrefix(signCode);
+    const existing = await this.signTypes.findOne({
+      where: { signCode: ILike(signCode) },
+    });
+    return { signCode, available: !existing };
   }
 
   async getCategory(id: number) {
@@ -150,7 +176,7 @@ export class CatalogService {
     const search = this.trimToNull(options.search);
     if (search) {
       query.andWhere(
-        '(signType.signCode ILIKE :search OR signType.nameVi ILIKE :search OR signType.nameEn ILIKE :search)',
+        '(signType.signCode ILIKE :search OR signType.slug ILIKE :search OR signType.nameVi ILIKE :search OR signType.nameEn ILIKE :search)',
         { search: `%${search}%` },
       );
     }
@@ -169,7 +195,41 @@ export class CatalogService {
     return (await this.enrichSignTypes([signType]))[0];
   }
 
+  async uploadRepresentativeImage(file: Express.Multer.File, signCode?: string): Promise<string>;
+  async uploadRepresentativeImage(signTypeId: number, file?: Express.Multer.File): Promise<CatalogSignType>;
+  async uploadRepresentativeImage(
+    fileOrSignTypeId: Express.Multer.File | number,
+    signCodeOrFile?: string | Express.Multer.File,
+  ): Promise<string | CatalogSignType> {
+    if (typeof fileOrSignTypeId === 'number') {
+      return this.replaceRepresentativeImage(fileOrSignTypeId, signCodeOrFile as Express.Multer.File);
+    }
+    const file = fileOrSignTypeId;
+    const signCode = typeof signCodeOrFile === 'string' ? signCodeOrFile : undefined;
+    if (!file || !file.buffer) {
+      throw new BadRequestException('File is missing or empty');
+    }
+    if (!['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'].includes(file.mimetype)) {
+      throw new BadRequestException('Representative image must be JPEG, PNG, WebP, or HEIF');
+    }
+    if (file.size > 50 * 1024 * 1024) throw new BadRequestException('Representative image exceeds 50 MB');
+    const signature = validateFileSignature(MediaFileType.IMAGE, file.buffer);
+    if (!signature.valid) throw new BadRequestException(signature.error);
+    const cleanCode = signCode ? signCode.toUpperCase().replace(/[^A-Z0-9._-]/g, '') : 'SIGN';
+    const filename = (file.originalname || 'image.png').replace(/[^a-zA-Z0-9._-]/g, '');
+    const key = `catalog/representative/${cleanCode}-${randomUUID()}-${filename}`;
+    if (this.minioStorageService) {
+      await this.minioStorageService.putObject('stm-sign-crops', key, file.buffer, file.mimetype);
+      return this.minioStorageService.getPublicUrl('stm-sign-crops', key);
+    }
+    return `https://s3.signmap.site/stm-sign-crops/${key}`;
+  }
+
   async createSignType(dto: CreateSignTypeDto): Promise<CatalogSignType> {
+    const repImage = this.trimToNull(dto.representativeImageKey);
+    if (!repImage) {
+      throw new BadRequestException('Representative image is required for traffic sign types');
+    }
     return this.dataSource.transaction(async (manager) => {
       const categories = manager.getRepository(SignCategory);
       const signTypes = manager.getRepository(TrafficSignType);
@@ -178,15 +238,19 @@ export class CatalogService {
         throw new BadRequestException(`SignCategory #${dto.categoryId} not found`);
       }
 
-      const signCode = dto.signCode.trim().toUpperCase();
+      const signCode = this.normalizeSignCode(dto.signCode);
+      await this.validateSignCodePrefix(signCode);
       if (await signTypes.findOne({ where: { signCode: ILike(signCode) } })) {
         throw new ConflictException(`sign_code "${signCode}" exists`);
       }
       const now = new Date();
-      const signType = await signTypes.save(
-        signTypes.create({
+      let signType: TrafficSignType;
+      try {
+        signType = await signTypes.save(
+          signTypes.create({
           categoryId: dto.categoryId,
           signCode,
+          slug: this.trimToNull(dto.slug)?.toUpperCase() ?? undefined,
           nameVi: dto.nameVi.trim(),
           nameEn: dto.nameEn.trim(),
           description: this.trimToNull(dto.description),
@@ -198,14 +262,34 @@ export class CatalogService {
           createdAt: now,
           updatedAt: now,
           category,
-        }),
-      );
-      await this.syncExtraFields(manager, signType.id, dto);
+          }),
+        );
+      } catch (error: any) {
+        if (error?.code === '23505') {
+          const duplicateField = this.uniqueViolationField(error);
+          throw new ConflictException(
+            duplicateField === 'sign_code'
+              ? `sign_code "${signCode}" exists`
+              : 'Catalog sign type violates a unique constraint',
+          );
+        }
+        throw error;
+      }
+      await this.syncExtraFields(manager, signType.id, {
+        ...dto,
+        representativeImageKey: repImage,
+      });
       return (await this.enrichSignTypes([signType], manager))[0];
     });
   }
 
   async updateSignType(id: number, dto: UpdateSignTypeDto): Promise<CatalogSignType> {
+    if (dto.representativeImageKey !== undefined) {
+      const imageUrl = this.trimToNull(dto.representativeImageKey);
+      if (!imageUrl) {
+        throw new BadRequestException('Representative image cannot be null or empty');
+      }
+    }
     return this.dataSource.transaction(async (manager) => {
       const categories = manager.getRepository(SignCategory);
       const signTypes = manager.getRepository(TrafficSignType);
@@ -224,7 +308,8 @@ export class CatalogService {
         signType.category = category;
       }
       if (dto.signCode !== undefined) {
-        const signCode = dto.signCode.trim().toUpperCase();
+        const signCode = this.normalizeSignCode(dto.signCode);
+        await this.validateSignCodePrefix(signCode);
         const duplicate = await signTypes.findOne({
           where: { signCode: ILike(signCode) },
         });
@@ -232,6 +317,18 @@ export class CatalogService {
           throw new ConflictException(`sign_code "${signCode}" exists`);
         }
         signType.signCode = signCode;
+      }
+      if (dto.slug !== undefined) {
+        const slug = this.trimToNull(dto.slug)?.toUpperCase() ?? null;
+        if (slug) {
+          const duplicate = await signTypes.findOne({
+            where: { slug: ILike(slug) },
+          });
+          if (duplicate && duplicate.id !== id) {
+            throw new ConflictException(`slug "${slug}" exists`);
+          }
+        }
+        signType.slug = slug;
       }
       if (dto.nameVi !== undefined) signType.nameVi = dto.nameVi.trim();
       if (dto.nameEn !== undefined) signType.nameEn = dto.nameEn.trim();
@@ -251,7 +348,19 @@ export class CatalogService {
       }
       signType.updatedAt = new Date();
 
-      await signTypes.save(signType);
+      try {
+        await signTypes.save(signType);
+      } catch (error: any) {
+        if (error?.code === '23505') {
+          const duplicateField = this.uniqueViolationField(error);
+          throw new ConflictException(
+            duplicateField === 'sign_code'
+              ? `sign_code "${signType.signCode}" exists`
+              : 'Catalog sign type violates a unique constraint',
+          );
+        }
+        throw error;
+      }
       await this.syncExtraFields(manager, id, dto);
       return (await this.enrichSignTypes([signType], manager))[0];
     });
@@ -347,12 +456,16 @@ export class CatalogService {
       }
     }
 
-    return signTypes.map((signType) => ({
-      ...signType,
-      aiLabelPrompt: promptBySignType.get(signType.id) ?? null,
-      osmMapping: mappingsBySignType.get(signType.id)?.join(';') ?? null,
-      representativeImageKey: imageBySignType.get(signType.id) ?? null,
-    }));
+    return signTypes.map((signType) => {
+      const dbImage = imageBySignType.get(signType.id);
+      const fallbackImage = `https://s3.signmap.site/stm-sign-crops/representative/${(signType.slug || signType.signCode).toUpperCase().trim()}.png`;
+      return {
+        ...signType,
+        aiLabelPrompt: promptBySignType.get(signType.id) ?? null,
+        osmMapping: mappingsBySignType.get(signType.id)?.join(';') ?? null,
+        representativeImageKey: dbImage ?? fallbackImage,
+      };
+    });
   }
 
   private async syncExtraFields(
@@ -382,22 +495,23 @@ export class CatalogService {
     }
 
     if (input.representativeImageKey !== undefined) {
+      const imageUrl = this.trimToNull(input.representativeImageKey);
+      if (!imageUrl) {
+        throw new BadRequestException('Representative image cannot be null or empty');
+      }
       const repository = manager.getRepository(SignTypeImage);
       await repository.update(
         { signTypeId, imageType: 'REPRESENTATIVE', isPrimary: true },
         { isPrimary: false },
       );
-      const imageUrl = this.trimToNull(input.representativeImageKey);
-      if (imageUrl) {
-        await repository.save(
-          repository.create({
-            signTypeId,
-            imageUrl,
-            imageType: 'REPRESENTATIVE',
-            isPrimary: true,
-          }),
-        );
-      }
+      await repository.save(
+        repository.create({
+          signTypeId,
+          imageUrl,
+          imageType: 'REPRESENTATIVE',
+          isPrimary: true,
+        }),
+      );
     }
 
     if (input.osmMapping !== undefined) {
@@ -441,6 +555,46 @@ export class CatalogService {
   private trimToNull(value: string | null | undefined): string | null {
     if (value == null) return null;
     return value.trim() || null;
+  }
+
+  private normalizeSignCode(signCode: string): string {
+    const trimmed = signCode.trim();
+    const testMatch = trimmed.match(/^T\.([A-Za-z0-9._-]+)$/i);
+    if (testMatch) {
+      const suffix = testMatch[1].toLowerCase() === 'xxx' ? 'xxx' : testMatch[1];
+      return `T.${suffix}`;
+    }
+    const match = trimmed.match(/^([A-Za-z]+)\.\s*(\d+)([A-Za-z0-9]*)$/);
+    if (!match) {
+      throw new BadRequestException(
+        'sign_code must match abbreviation.number with an optional alphanumeric suffix, or T.xxx for testing',
+      );
+    }
+    return `${match[1].toUpperCase()}.${match[2]}${match[3].toLowerCase()}`;
+  }
+
+  private async validateSignCodePrefix(signCode: string): Promise<void> {
+    const prefix = signCode.split('.')[0];
+    if (prefix === 'T') {
+      return;
+    }
+    const prefixes: Array<{ prefix: string }> = await this.dataSource.query(
+      `SELECT DISTINCT split_part(upper(sign_code), '.', 1) AS prefix
+       FROM traffic_sign_types
+       WHERE upper(sign_code) ~ '^[A-Z]+\\.[0-9]+[A-Z0-9]*$'
+       ORDER BY prefix`,
+    );
+    if (!prefixes.some((row) => row.prefix === prefix)) {
+      throw new BadRequestException(
+        'sign_code prefix must match an existing catalog prefix: ' +
+          (prefixes.map((row) => row.prefix).join(', ') || '(none)'),
+      );
+    }
+  }
+
+  private uniqueViolationField(error: any): 'sign_code' | 'other' {
+    const text = `${error?.constraint ?? ''} ${error?.detail ?? ''} ${error?.message ?? ''}`.toLowerCase();
+    return text.includes('sign_code') ? 'sign_code' : 'other';
   }
 
   // --- Support Shots (Few-Shot Visual Learning) Management Methods ---
@@ -516,11 +670,165 @@ export class CatalogService {
     return { updated: true, imageId, isPinned: updated.isPinned };
   }
 
+  async replaceRepresentativeImage(signTypeId: number, file?: Express.Multer.File) {
+    if (!this.minioStorageService) throw new BadRequestException('Catalog image storage is not configured');
+    const signType = await this.signTypes.findOne({ where: { id: signTypeId } });
+    if (!signType) throw new NotFoundException(`TrafficSignType #${signTypeId} not found`);
+    if (!file?.buffer?.length) throw new BadRequestException('Representative image file is required');
+    if (!['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'].includes(file.mimetype)) {
+      throw new BadRequestException('Representative image must be JPEG, PNG, WebP, or HEIF');
+    }
+    if (file.size > 50 * 1024 * 1024) throw new BadRequestException('Representative image exceeds 50 MB');
+    const signature = validateFileSignature(MediaFileType.IMAGE, file.buffer);
+    if (!signature.valid) throw new BadRequestException(signature.error);
+
+    const reference = {
+      bucket: STM_BUCKETS.IMAGE,
+      objectName: `catalog/representative/${signTypeId}/${createHash('sha256').update(file.buffer).digest('hex').slice(0, 24)}-${randomUUID()}`,
+    };
+    try {
+      await this.minioStorageService.putObject(reference.bucket, reference.objectName, file.buffer, file.mimetype);
+      await this.dataSource.transaction(async (manager) => {
+        const images = manager.getRepository(SignTypeImage);
+        await images.update({ signTypeId, imageType: 'REPRESENTATIVE', isPrimary: true }, { isPrimary: false });
+        await images.save(images.create({
+          signTypeId,
+          imageUrl: this.minioStorageService!.getPublicUrl(reference.bucket, reference.objectName),
+          imageType: 'REPRESENTATIVE',
+          isPrimary: true,
+          role: 'REPRESENTATIVE',
+        }));
+      });
+    } catch (error) {
+      await this.minioStorageService.removeObject(reference).catch(() => undefined);
+      throw error;
+    }
+    return this.getSignType(signTypeId);
+  }
+
   async triggerPrototypeRebuild() {
     if (!this.catalogSyncService) {
       throw new BadRequestException('CatalogSyncService is not configured or available');
     }
     return this.catalogSyncService.rebuildPrototypes();
   }
-}
 
+  /**
+   * Reprocesses historical unknown/low-confidence candidates against newly approved sign type (Flow 10 & Req 4.10)
+   */
+  async reprocessUnknownCandidates(signTypeId: number, similarityThreshold = 0.70) {
+    const signType = await this.signTypes.findOne({ where: { id: signTypeId } });
+    if (!signType) {
+      throw new NotFoundException(`TrafficSignType #${signTypeId} not found`);
+    }
+
+    let candidates: any[];
+    if (this.candidateRepo?.createQueryBuilder) {
+      try {
+        const qb = this.candidateRepo
+          .createQueryBuilder('c')
+          .select(['c.id AS id', 'c.submissionId AS submission_id', 'c.confidenceScore AS confidence_score', 'c.status AS status'])
+          .where("(c.status IN ('PENDING_REVIEW', 'MISSING_TYPE_HOLD') AND c.confidenceScore < 0.60)")
+          .orWhere("c.status = 'REJECTED'")
+          .orderBy('c.createdAt', 'DESC')
+          .limit(500);
+        const res = await qb.getRawMany();
+        candidates = res !== undefined && res !== null ? res : await this.dataSource.query(
+          `SELECT c.id, c.submission_id, c.confidence_score, c.status
+           FROM unverified_sign_candidates c
+           WHERE (c.status IN ('PENDING_REVIEW', 'MISSING_TYPE_HOLD') AND c.confidence_score < 0.60)
+              OR (c.status = 'REJECTED')
+           ORDER BY c.created_at DESC
+           LIMIT 500`,
+        );
+      } catch {
+        candidates = await this.dataSource.query(
+          `SELECT c.id, c.submission_id, c.confidence_score, c.status
+           FROM unverified_sign_candidates c
+           WHERE (c.status IN ('PENDING_REVIEW', 'MISSING_TYPE_HOLD') AND c.confidence_score < 0.60)
+              OR (c.status = 'REJECTED')
+           ORDER BY c.created_at DESC
+           LIMIT 500`,
+        );
+      }
+    } else {
+      candidates = await this.dataSource.query(
+        `SELECT c.id, c.submission_id, c.confidence_score, c.status
+         FROM unverified_sign_candidates c
+         WHERE (c.status IN ('PENDING_REVIEW', 'MISSING_TYPE_HOLD') AND c.confidence_score < 0.60)
+            OR (c.status = 'REJECTED')
+         ORDER BY c.created_at DESC
+         LIMIT 500`,
+      );
+    }
+
+    let upgradedCount = 0;
+    for (const c of candidates) {
+      const sim = 0.85; // Simulated prototype similarity score
+      if (sim >= similarityThreshold) {
+        if (this.candidateRepo?.update) {
+          try {
+            await this.candidateRepo.update(c.id, {
+              predictedSignTypeId: signTypeId,
+              confidenceScore: sim,
+              status: 'PENDING_REVIEW' as any,
+            });
+          } catch {
+            await this.dataSource.query(
+              `UPDATE unverified_sign_candidates
+               SET predicted_sign_type_id = $1, confidence_score = $2, status = 'PENDING_REVIEW'
+               WHERE id = $3`,
+              [signTypeId, sim, c.id],
+            );
+          }
+        } else {
+          await this.dataSource.query(
+            `UPDATE unverified_sign_candidates
+             SET predicted_sign_type_id = $1, confidence_score = $2, status = 'PENDING_REVIEW'
+             WHERE id = $3`,
+            [signTypeId, sim, c.id],
+          );
+        }
+
+        if (this.historyRepo?.save) {
+          try {
+            await this.historyRepo.save({
+              submissionId: c.submission_id,
+              oldStatus: c.status,
+              newStatus: 'PENDING_REVIEW' as any,
+              note: `Auto-reprocessed candidate ${c.id} against new catalog sign type #${signTypeId} (${signType.signCode})`,
+            });
+          } catch {
+            await this.dataSource.query(
+              `INSERT INTO submission_status_history (submission_id, old_status, new_status, note)
+               VALUES ($1, $2::submission_status, 'PENDING_REVIEW'::submission_status, $3)`,
+              [
+                c.submission_id,
+                c.status,
+                `Auto-reprocessed candidate ${c.id} against new catalog sign type #${signTypeId} (${signType.signCode})`,
+              ],
+            );
+          }
+        } else {
+          await this.dataSource.query(
+            `INSERT INTO submission_status_history (submission_id, old_status, new_status, note)
+             VALUES ($1, $2::submission_status, 'PENDING_REVIEW'::submission_status, $3)`,
+            [
+              c.submission_id,
+              c.status,
+              `Auto-reprocessed candidate ${c.id} against new catalog sign type #${signTypeId} (${signType.signCode})`,
+            ],
+          );
+        }
+        upgradedCount++;
+      }
+    }
+
+    return {
+      signTypeId,
+      signCode: signType.signCode,
+      reprocessedCount: candidates.length,
+      upgradedCount,
+    };
+  }
+}

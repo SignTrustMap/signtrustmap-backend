@@ -10,7 +10,7 @@ UPDATE "traffic_sign_types"
 SET "sign_code" = 'I.425',
     "name_vi" = 'Bệnh viện',
     "name_en" = 'Hospital',
-    "category_id" = 4,
+    "category_id" = 7,
     "shape" = 'RECTANGLE',
     "color_scheme" = 'BLUE_WHITE',
     "updated_at" = now()
@@ -21,7 +21,7 @@ UPDATE "traffic_sign_types"
 SET "sign_code" = 'I.442',
     "name_vi" = 'Chợ',
     "name_en" = 'Market',
-    "category_id" = 4,
+    "category_id" = 7,
     "shape" = 'RECTANGLE',
     "color_scheme" = 'BLUE_WHITE',
     "updated_at" = now()
@@ -32,7 +32,7 @@ UPDATE "traffic_sign_types"
 SET "sign_code" = 'P.114',
     "name_vi" = 'Cấm xe súc vật kéo / xe thô sơ',
     "name_en" = 'No slow moving vehicles',
-    "category_id" = 1,
+    "category_id" = 6,
     "shape" = 'ROUND',
     "color_scheme" = 'RED_WHITE',
     "updated_at" = now()
@@ -43,7 +43,7 @@ UPDATE "traffic_sign_types"
 SET "sign_code" = 'I.441a',
     "name_vi" = 'Đường hầm',
     "name_en" = 'Tunnel',
-    "category_id" = 4,
+    "category_id" = 7,
     "shape" = 'RECTANGLE',
     "color_scheme" = 'BLUE_WHITE',
     "updated_at" = now()
@@ -65,7 +65,7 @@ UPDATE "traffic_sign_types"
 SET "sign_code" = 'P.105',
     "name_vi" = 'Cấm xe ô tô và xe mô tô',
     "name_en" = 'No cars and motorcycles',
-    "category_id" = 1,
+    "category_id" = 6,
     "shape" = 'ROUND',
     "color_scheme" = 'RED_WHITE',
     "updated_at" = now()
@@ -76,7 +76,7 @@ UPDATE "traffic_sign_types"
 SET "sign_code" = 'I.441b',
     "name_vi" = 'Hết đường hầm',
     "name_en" = 'End tunnel',
-    "category_id" = 4,
+    "category_id" = 7,
     "shape" = 'RECTANGLE',
     "color_scheme" = 'BLUE_WHITE',
     "updated_at" = now()
@@ -87,7 +87,7 @@ UPDATE "traffic_sign_types"
 SET "sign_code" = 'P.106c',
     "name_vi" = 'Cấm xe chở hàng nguy hiểm',
     "name_en" = 'No vehicles carrying dangerous goods',
-    "category_id" = 1,
+    "category_id" = 6,
     "shape" = 'ROUND',
     "color_scheme" = 'RED_WHITE',
     "updated_at" = now()

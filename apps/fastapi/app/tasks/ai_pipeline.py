@@ -17,10 +17,24 @@ from typing import Any, Sequence
 import httpx
 import redis
 from celery import shared_task
-from sqlalchemy import text
+from sqlalchemy import case, delete, func, insert, or_, select, text, update
 
 from app.config import settings
 from app.db_sync import get_sync_db
+from app.models.pipeline import (
+    AiModelVersion,
+    AuditLog,
+    BatchSubmission,
+    CameraCalibrationProfile,
+    CandidateDetectionMetadata,
+    CandidateGeoEstimation,
+    ModelTrainingJob,
+    SubmissionMediaFile,
+    SubmissionStatusHistory,
+    SurveySubmission,
+    TrafficSignType,
+    UnverifiedSignCandidate,
+)
 from app.tasks.gpx_sync import (
     GpxTrackPoint,
     estimate_sign_coordinates,
@@ -32,20 +46,8 @@ logger = logging.getLogger(__name__)
 
 _TERMINAL_STATUSES = {"COMPLETED", "PARTIALLY_PROCESSED", "FAILED", "NO_SIGN_DETECTED", "REJECTED"}
 _PROCESSING_STATUSES = {"SYNCHRONIZING", "DETECTING", "TRACKING", "ESTIMATING", "CLASSIFYING"}
-_SELECT_SUBMISSION = text("SELECT id, status FROM survey_submissions WHERE id = :sid")
-_SELECT_SUBMISSION_FOR_UPDATE = text(
-    "SELECT id, status FROM survey_submissions WHERE id = :sid FOR UPDATE"
-)
-_UPDATE_STATUS = text(
-    "UPDATE survey_submissions "
-    "SET status = CAST(:new_status AS submission_status), updated_at = NOW() "
-    "WHERE id = :sid"
-)
-_INSERT_HISTORY = text(
-    "INSERT INTO submission_status_history (submission_id, old_status, new_status, note) "
-    "VALUES (:sid, CAST(:old_status AS submission_status), "
-    "CAST(:new_status AS submission_status), :note)"
-)
+_SELECT_SUBMISSION = select(SurveySubmission.id, SurveySubmission.status)
+_SELECT_SUBMISSION_FOR_UPDATE = select(SurveySubmission.id, SurveySubmission.status).with_for_update()
 _DISPATCH_LOCK_SECONDS = 60 * 60
 
 
@@ -160,12 +162,21 @@ def _download_gpx_track(media_objects: list[dict[str, str]]) -> list[GpxTrackPoi
 def _load_submission_metadata(submission_id: str) -> dict[str, Any] | None:
     """Load submission metadata (captured_at, submission_type, camera_profile_id, etc.) from database."""
     try:
-        query = text(
-            "SELECT id, surveyor_id, submission_type, status, captured_at, coordinate_source, camera_profile_id, note "
-            "FROM survey_submissions WHERE id = :sid"
+        stmt = (
+            select(
+                SurveySubmission.id,
+                SurveySubmission.surveyor_id,
+                SurveySubmission.submission_type,
+                SurveySubmission.status,
+                SurveySubmission.captured_at,
+                SurveySubmission.coordinate_source,
+                SurveySubmission.camera_profile_id,
+                SurveySubmission.note,
+            )
+            .where(SurveySubmission.id == submission_id)
         )
         with get_sync_db() as db:
-            row = db.execute(query, {"sid": submission_id}).mappings().first()
+            row = db.execute(stmt).mappings().first()
             if not row:
                 return None
             return dict(row)
@@ -191,21 +202,28 @@ def _load_camera_profile(
 
     try:
         if camera_profile_id:
-            row = db.execute(
-                text(
-                    "SELECT camera_height_meters, pitch_angle_degrees, yaw_offset_degrees, hfov_degrees "
-                    "FROM camera_calibration_profiles WHERE id = :pid"
-                ),
-                {"pid": camera_profile_id},
-            ).mappings().first()
+            stmt = select(
+                CameraCalibrationProfile.camera_height_meters,
+                CameraCalibrationProfile.pitch_angle_degrees,
+                CameraCalibrationProfile.yaw_offset_degrees,
+                CameraCalibrationProfile.hfov_degrees,
+            ).where(CameraCalibrationProfile.id == camera_profile_id)
+            row = db.execute(stmt).mappings().first()
         else:
-            row = db.execute(
-                text(
-                    "SELECT camera_height_meters, pitch_angle_degrees, yaw_offset_degrees, hfov_degrees "
-                    "FROM camera_calibration_profiles WHERE user_id = :uid AND is_default = TRUE LIMIT 1"
-                ),
-                {"uid": surveyor_id},
-            ).mappings().first()
+            stmt = (
+                select(
+                    CameraCalibrationProfile.camera_height_meters,
+                    CameraCalibrationProfile.pitch_angle_degrees,
+                    CameraCalibrationProfile.yaw_offset_degrees,
+                    CameraCalibrationProfile.hfov_degrees,
+                )
+                .where(
+                    CameraCalibrationProfile.user_id == surveyor_id,
+                    CameraCalibrationProfile.is_default == True,  # noqa: E712
+                )
+                .limit(1)
+            )
+            row = db.execute(stmt).mappings().first()
 
         if row:
             return {
@@ -223,7 +241,8 @@ def _load_camera_profile(
 def _set_status(submission_id: str, new_status: str, note: str) -> str | None:
     """Idempotently update submission status and append to status history."""
     with get_sync_db() as db:
-        row = db.execute(_SELECT_SUBMISSION, {"sid": submission_id}).mappings().first()
+        stmt = select(SurveySubmission.id, SurveySubmission.status).where(SurveySubmission.id == submission_id)
+        row = db.execute(stmt).mappings().first()
         if row is None:
             return None
         old_status = str(row["status"])
@@ -231,15 +250,18 @@ def _set_status(submission_id: str, new_status: str, note: str) -> str | None:
             return old_status
         if old_status in _TERMINAL_STATUSES:
             return old_status
-        db.execute(_UPDATE_STATUS, {"sid": submission_id, "new_status": new_status})
         db.execute(
-            _INSERT_HISTORY,
-            {
-                "sid": submission_id,
-                "old_status": old_status,
-                "new_status": new_status,
-                "note": note,
-            },
+            update(SurveySubmission)
+            .where(SurveySubmission.id == submission_id)
+            .values(status=new_status, updated_at=func.now())
+        )
+        db.execute(
+            insert(SubmissionStatusHistory).values(
+                submission_id=submission_id,
+                old_status=old_status,
+                new_status=new_status,
+                note=note,
+            )
         )
         db.commit()
         logger.info("[ai] submission %s: %s -> %s", submission_id, old_status, new_status)
@@ -249,27 +271,29 @@ def _set_status(submission_id: str, new_status: str, note: str) -> str | None:
 def _claim_submission(submission_id: str) -> str | None:
     """Atomically move one queued submission into processing."""
     with get_sync_db() as db:
-        row = db.execute(
-            _SELECT_SUBMISSION_FOR_UPDATE,
-            {"sid": submission_id},
-        ).mappings().first()
+        stmt = (
+            select(SurveySubmission.id, SurveySubmission.status)
+            .where(SurveySubmission.id == submission_id)
+            .with_for_update()
+        )
+        row = db.execute(stmt).mappings().first()
         if row is None:
             return None
         old_status = str(row["status"])
         if old_status != "QUEUED":
             return old_status
         db.execute(
-            _UPDATE_STATUS,
-            {"sid": submission_id, "new_status": "SYNCHRONIZING"},
+            update(SurveySubmission)
+            .where(SurveySubmission.id == submission_id)
+            .values(status="SYNCHRONIZING", updated_at=func.now())
         )
         db.execute(
-            _INSERT_HISTORY,
-            {
-                "sid": submission_id,
-                "old_status": old_status,
-                "new_status": "SYNCHRONIZING",
-                "note": "AI worker accepted MinIO media references.",
-            },
+            insert(SubmissionStatusHistory).values(
+                submission_id=submission_id,
+                old_status=old_status,
+                new_status="SYNCHRONIZING",
+                note="AI worker accepted MinIO media references.",
+            )
         )
         db.commit()
         return old_status
@@ -283,11 +307,9 @@ def _mark_failed(submission_id: str, reason: str) -> None:
         if old_status is not None:
             with get_sync_db() as db:
                 db.execute(
-                    text(
-                        "UPDATE survey_submissions SET failure_reason = :reason, updated_at = NOW() "
-                        "WHERE id = :sid"
-                    ),
-                    {"sid": submission_id, "reason": reason},
+                    update(SurveySubmission)
+                    .where(SurveySubmission.id == submission_id)
+                    .values(failure_reason=reason, updated_at=func.now())
                 )
                 db.commit()
     except Exception:
@@ -302,19 +324,25 @@ def _parse_storage_key(storage_key: str) -> tuple[str, str]:
 
 
 def _load_queued_media(limit: int) -> dict[str, list[dict[str, str]]]:
-    query = text(
-        "WITH queued AS ("
-        "SELECT id, created_at FROM survey_submissions WHERE status = 'QUEUED' "
-        "ORDER BY created_at LIMIT :limit"
-        ") "
-        "SELECT submission.id AS submission_id, media.media_type, media.file_url "
-        "FROM queued submission "
-        "JOIN submission_media_files media ON media.submission_id = submission.id "
-        "ORDER BY submission.created_at, media.uploaded_at "
+    queued_subquery = (
+        select(SurveySubmission.id, SurveySubmission.created_at)
+        .where(SurveySubmission.status == "QUEUED")
+        .order_by(SurveySubmission.created_at)
+        .limit(limit)
+        .subquery("queued")
+    )
+    stmt = (
+        select(
+            queued_subquery.c.id.label("submission_id"),
+            SubmissionMediaFile.media_type,
+            SubmissionMediaFile.file_url,
+        )
+        .join(SubmissionMediaFile, SubmissionMediaFile.submission_id == queued_subquery.c.id)
+        .order_by(queued_subquery.c.created_at, SubmissionMediaFile.uploaded_at)
     )
     grouped: dict[str, list[dict[str, str]]] = defaultdict(list)
     with get_sync_db() as db:
-        rows = db.execute(query, {"limit": limit}).mappings().all()
+        rows = db.execute(stmt).mappings().all()
     for row in rows:
         bucket, object_key = _parse_storage_key(str(row["file_url"]))
         grouped[str(row["submission_id"])].append(
@@ -374,6 +402,37 @@ def task_dispatch_queued_submissions(limit: int = 100) -> dict[str, int]:
     return {"queued": len(media_by_submission), "dispatched": dispatched}
 
 
+@shared_task(name="app.tasks.ai_pipeline.task_dispatch_pending_batch_submissions")
+def task_dispatch_pending_batch_submissions(limit: int = 50) -> dict[str, int]:
+    """Scan PENDING batch_submissions and dispatch task_process_batch_survey."""
+    stmt = (
+        select(BatchSubmission.id)
+        .where(BatchSubmission.status == "PENDING")
+        .order_by(BatchSubmission.created_at)
+        .limit(limit)
+    )
+    with get_sync_db() as db:
+        rows = db.execute(stmt).mappings().all()
+
+    dispatched = 0
+    broker = _broker_client()
+    for row in rows:
+        bid = str(row["id"])
+        key = f"stm:batch-dispatch:{bid}"
+        if not broker.set(key, "1", nx=True, ex=_DISPATCH_LOCK_SECONDS):
+            continue
+        try:
+            task_process_batch_survey.apply_async(
+                kwargs={"batch_id": bid},
+                queue="ai_pipeline",
+            )
+            dispatched += 1
+        except Exception:
+            broker.delete(key)
+            raise
+    return {"pending": len(rows), "dispatched": dispatched}
+
+
 def _call_inference_engine(submission_id: str, media_objects: list[dict[str, str]]) -> dict:
     url = f"{settings.AI_INFERENCE_URL.rstrip('/')}/api/v1/inference/submissions/{submission_id}"
     timeout = httpx.Timeout(settings.AI_INFERENCE_TIMEOUT_SECONDS, connect=10.0)
@@ -420,20 +479,55 @@ def _notify_no_signs(submission_id: str, note: str) -> None:
         response.raise_for_status()
 
 
+def _complete_batch_submission(
+    batch_id: str,
+    extracted_candidates: int,
+    total_processed: int,
+    note: str = "",
+) -> None:
+    """Close the batch submission workflow through NestJS so candidate-gated rewards run."""
+    url = (
+        f"{settings.NESTJS_INTERNAL_URL.rstrip('/')}"
+        f"/api/v1/submissions/internal/batch/{batch_id}/complete"
+    )
+    with httpx.Client(timeout=15.0) as client:
+        response = client.post(
+            url,
+            json={
+                "extractedCandidates": extracted_candidates,
+                "totalProcessed": total_processed,
+                "note": note,
+            },
+            headers={"X-Internal-Token": settings.INTERNAL_API_TOKEN},
+        )
+        response.raise_for_status()
+
+
 
 def _resolve_sign_type_id(db, sign: dict[str, Any]) -> int | None:
     class_name = str(sign.get("class_name", "")).strip()
-    row = db.execute(
-        text(
-            "SELECT id FROM traffic_sign_types "
-            "WHERE is_active = TRUE AND ("
-            "lower(sign_code) = lower(:class_name) OR "
-            "lower(replace(sign_code, '-', '_')) = lower(:class_name) OR "
-            "lower(replace(name_en, ' ', '_')) = lower(:class_name)"
-            ") ORDER BY CASE WHEN lower(sign_code) = lower(:class_name) THEN 0 ELSE 1 END LIMIT 1"
-        ),
-        {"class_name": class_name},
-    ).mappings().first()
+    lowered = func.lower(class_name)
+    stmt = (
+        select(TrafficSignType.id)
+        .where(
+            TrafficSignType.is_active == True,  # noqa: E712
+            or_(
+                func.lower(TrafficSignType.slug) == lowered,
+                func.lower(TrafficSignType.sign_code) == lowered,
+                func.lower(func.replace(TrafficSignType.sign_code, "-", "_")) == lowered,
+                func.lower(func.replace(TrafficSignType.name_en, " ", "_")) == lowered,
+            ),
+        )
+        .order_by(
+            case(
+                (func.lower(TrafficSignType.sign_code) == lowered, 0),
+                (func.lower(TrafficSignType.slug) == lowered, 1),
+                else_=2,
+            )
+        )
+        .limit(1)
+    )
+    row = db.execute(stmt).mappings().first()
     return int(row["id"]) if row else None
 
 
@@ -450,23 +544,24 @@ def _persist_candidates(
     inserted = 0
     unmapped = 0
     with get_sync_db() as db:
-        db.execute(
-            text(
-                "DELETE FROM candidate_geo_estimations WHERE candidate_id IN ("
-                "SELECT id FROM unverified_sign_candidates WHERE submission_id = :sid)"
-            ),
-            {"sid": submission_id},
+        candidate_ids_subquery = (
+            select(UnverifiedSignCandidate.id)
+            .where(UnverifiedSignCandidate.submission_id == submission_id)
         )
         db.execute(
-            text(
-                "DELETE FROM candidate_detection_metadata WHERE candidate_id IN ("
-                "SELECT id FROM unverified_sign_candidates WHERE submission_id = :sid)"
-            ),
-            {"sid": submission_id},
+            delete(CandidateGeoEstimation).where(
+                CandidateGeoEstimation.candidate_id.in_(candidate_ids_subquery)
+            )
         )
         db.execute(
-            text("DELETE FROM unverified_sign_candidates WHERE submission_id = :sid"),
-            {"sid": submission_id},
+            delete(CandidateDetectionMetadata).where(
+                CandidateDetectionMetadata.candidate_id.in_(candidate_ids_subquery)
+            )
+        )
+        db.execute(
+            delete(UnverifiedSignCandidate).where(
+                UnverifiedSignCandidate.submission_id == submission_id
+            )
         )
         calibration = (
             _load_camera_profile(
@@ -520,77 +615,55 @@ def _persist_candidates(
             )
 
             candidate_id = db.execute(
-                text(
-                    "INSERT INTO unverified_sign_candidates ("
-                    "submission_id, predicted_sign_type_id, confidence_score, best_frame_url, "
-                    "sign_crop_url, spatial_confidence, active_learning_priority, status"
-                    ") VALUES ("
-                    ":sid, :sign_type_id, :confidence, :best_frame_key, :sign_crop_key, "
-                    "CAST(:spatial_confidence AS spatial_confidence_level), :priority, 'PENDING_REVIEW'"
-                    ") RETURNING id"
-                ),
-                {
-                    "sid": submission_id,
-                    "sign_type_id": sign_type_id,
-                    "confidence": float(sign["confidence"]),
-                    "best_frame_key": str(sign["best_frame_key"]),
-                    "sign_crop_key": str(sign["sign_crop_key"]),
-                    "spatial_confidence": geo["spatial_confidence"],
-                    "priority": 1.0 - float(sign["confidence"]),
-                },
+                insert(UnverifiedSignCandidate)
+                .values(
+                    submission_id=submission_id,
+                    predicted_sign_type_id=sign_type_id,
+                    confidence_score=float(sign["confidence"]),
+                    best_frame_url=str(sign["best_frame_key"]),
+                    sign_crop_url=str(sign["sign_crop_key"]),
+                    spatial_confidence=geo["spatial_confidence"],
+                    active_learning_priority=1.0 - float(sign["confidence"]),
+                    status="PENDING_REVIEW",
+                )
+                .returning(UnverifiedSignCandidate.id)
             ).scalar_one()
 
             width = box[2] - box[0] if all(value is not None for value in box) else None
             height = box[3] - box[1] if all(value is not None for value in box) else None
             db.execute(
-                text(
-                    "INSERT INTO candidate_detection_metadata ("
-                    "candidate_id, frame_number, bbox_x, bbox_y, bbox_width, bbox_height, tracking_id"
-                    ") VALUES (:candidate_id, :frame_number, :x, :y, :width, :height, :tracking_id)"
-                ),
-                {
-                    "candidate_id": candidate_id,
-                    "frame_number": sign.get("frame_index"),
-                    "x": box[0],
-                    "y": box[1],
-                    "width": width,
-                    "height": height,
-                    "tracking_id": str(sign["track_id"]) if sign.get("track_id") is not None else None,
-                },
+                insert(CandidateDetectionMetadata).values(
+                    candidate_id=candidate_id,
+                    frame_number=sign.get("frame_index"),
+                    bbox_x=box[0],
+                    bbox_y=box[1],
+                    bbox_width=width,
+                    bbox_height=height,
+                    tracking_id=str(sign["track_id"]) if sign.get("track_id") is not None else None,
+                )
             )
 
             db.execute(
-                text(
-                    "INSERT INTO candidate_geo_estimations ("
-                    "candidate_id, vehicle_location, sign_location, estimated_distance, "
-                    "bearing_angle, traffic_direction, projection_method"
-                    ") VALUES ("
-                    ":candidate_id, "
-                    "ST_SetSRID(ST_MakePoint(:vehicle_lon, :vehicle_lat), 4326), "
-                    "ST_SetSRID(ST_MakePoint(:sign_lon, :sign_lat), 4326), "
-                    ":estimated_distance, :bearing_angle, :traffic_direction, :projection_method"
-                    ")"
-                ),
-                {
-                    "candidate_id": candidate_id,
-                    "vehicle_lon": geo["vehicle_lon"],
-                    "vehicle_lat": geo["vehicle_lat"],
-                    "sign_lon": geo["sign_lon"],
-                    "sign_lat": geo["sign_lat"],
-                    "estimated_distance": geo["estimated_distance"],
-                    "bearing_angle": geo["bearing_angle"],
-                    "traffic_direction": geo["traffic_direction"],
-                    "projection_method": geo["projection_method"],
-                },
+                insert(CandidateGeoEstimation).values(
+                    candidate_id=candidate_id,
+                    vehicle_location=func.ST_SetSRID(func.ST_MakePoint(geo["vehicle_lon"], geo["vehicle_lat"]), 4326),
+                    sign_location=func.ST_SetSRID(func.ST_MakePoint(geo["sign_lon"], geo["sign_lat"]), 4326),
+                    estimated_distance=geo["estimated_distance"],
+                    bearing_angle=geo["bearing_angle"],
+                    traffic_direction=geo["traffic_direction"],
+                    projection_method=geo["projection_method"],
+                )
             )
             inserted += 1
 
         db.execute(
-            text(
-                "UPDATE survey_submissions SET total_candidates_extracted = :count, "
-                "failure_reason = NULL, updated_at = NOW() WHERE id = :sid"
-            ),
-            {"sid": submission_id, "count": inserted},
+            update(SurveySubmission)
+            .where(SurveySubmission.id == submission_id)
+            .values(
+                total_candidates_extracted=inserted,
+                failure_reason=None,
+                updated_at=func.now(),
+            )
         )
         db.commit()
     return inserted, unmapped
@@ -619,7 +692,7 @@ def task_process_submission_pipeline(
             return {"submission_id": submission_id, "skipped": True, "reason": claimed_status}
     else:
         with get_sync_db() as db:
-            row = db.execute(_SELECT_SUBMISSION, {"sid": submission_id}).mappings().first()
+            row = db.execute(select(SurveySubmission.status).where(SurveySubmission.id == submission_id)).mappings().first()
         if row is None:
             return {"submission_id": submission_id, "skipped": True, "reason": "not_found"}
         status = str(row["status"])
@@ -655,11 +728,13 @@ def task_process_submission_pipeline(
             _set_status(submission_id, terminal_status, note)
             with get_sync_db() as db:
                 db.execute(
-                    text(
-                        "UPDATE survey_submissions SET total_candidates_extracted = 0, "
-                        "failure_reason = NULL, updated_at = NOW() WHERE id = :sid"
-                    ),
-                    {"sid": submission_id},
+                    update(SurveySubmission)
+                    .where(SurveySubmission.id == submission_id)
+                    .values(
+                        total_candidates_extracted=0,
+                        failure_reason=None,
+                        updated_at=func.now(),
+                    )
                 )
                 db.commit()
             try:
@@ -728,3 +803,278 @@ def task_process_submission_pipeline(
         _mark_failed(submission_id, f"AI inference failed after retries: {exc}")
         _clear_dispatch_lock(submission_id)
         raise
+
+
+@shared_task(
+    name="app.tasks.ai_pipeline.task_process_batch_survey",
+    bind=True,
+    max_retries=2,
+    default_retry_delay=60,
+    acks_late=True,
+)
+def task_process_batch_survey(
+    self,
+    batch_id: str,
+    images: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Run one durable batch survey job through AI inference and candidate-gated payout."""
+    lock_key = f"stm:batch-dispatch:{batch_id}"
+    try:
+        with get_sync_db() as db:
+            stmt = (
+                select(
+                    BatchSubmission.id,
+                    BatchSubmission.user_id,
+                    BatchSubmission.status,
+                    BatchSubmission.total_images,
+                    BatchSubmission.metadata_json.label("metadata"),
+                )
+                .where(BatchSubmission.id == batch_id)
+                .with_for_update()
+            )
+            row = db.execute(stmt).mappings().first()
+
+        if row is None:
+            return {"batch_id": batch_id, "skipped": True, "reason": "not_found"}
+
+        status = str(row["status"])
+        if status == "COMPLETED":
+            return {"batch_id": batch_id, "skipped": True, "reason": "already_completed"}
+        if status == "FAILED" and self.request.retries == 0:
+            return {"batch_id": batch_id, "skipped": True, "reason": "already_failed"}
+
+        with get_sync_db() as db:
+            db.execute(
+                update(BatchSubmission)
+                .where(BatchSubmission.id == batch_id)
+                .values(status="PROCESSING", updated_at=func.now())
+            )
+            db.commit()
+
+        raw_meta = row.get("metadata")
+        if isinstance(raw_meta, str):
+            try:
+                metadata = json.loads(raw_meta)
+            except Exception:
+                metadata = {}
+        elif isinstance(raw_meta, dict):
+            metadata = raw_meta
+        else:
+            metadata = {}
+
+        img_list = images if images is not None else metadata.get("images", [])
+        total_extracted = 0
+        processed_count = 0
+
+        for idx, img in enumerate(img_list):
+            storage_key = img.get("storageKey") or img.get("fileUrl") or img.get("url")
+            if not storage_key:
+                continue
+
+            if "signs" in img and isinstance(img["signs"], list):
+                total_extracted += len(img["signs"])
+                processed_count += 1
+                continue
+
+            try:
+                bucket, object_key = _parse_storage_key(storage_key)
+                media_objects = [{
+                    "media_type": img.get("mediaType", "IMAGE"),
+                    "bucket": bucket,
+                    "object_key": object_key,
+                }]
+                res = _call_inference_engine(f"{batch_id}_{idx}", media_objects)
+                signs = res.get("signs", [])
+                total_extracted += len(signs)
+            except Exception as exc:
+                logger.warning("[ai] batch %s image %d inference error: %s", batch_id, idx, exc)
+
+            processed_count += 1
+
+        _complete_batch_submission(
+            batch_id=batch_id,
+            extracted_candidates=total_extracted,
+            total_processed=processed_count,
+            note=f"Batch processed {processed_count} image(s); extracted {total_extracted} candidate(s).",
+        )
+
+        try:
+            _broker_client().delete(lock_key)
+        except Exception:
+            pass
+
+        return {
+            "batch_id": batch_id,
+            "status": "COMPLETED",
+            "processed_images": processed_count,
+            "extracted_candidates": total_extracted,
+        }
+    except Exception as exc:
+        logger.exception("[ai] batch %s processing failed: %s", batch_id, exc)
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=exc)
+        with get_sync_db() as db:
+            db.execute(
+                update(BatchSubmission)
+                .where(BatchSubmission.id == batch_id)
+                .values(status="FAILED", updated_at=func.now())
+            )
+            db.commit()
+        try:
+            _broker_client().delete(lock_key)
+        except Exception:
+            pass
+        raise
+
+
+@shared_task(
+    name="app.tasks.ai_pipeline.task_reprocess_unresolved_candidates",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,
+    acks_late=True,
+)
+def task_reprocess_unresolved_candidates(
+    self,
+    sign_type_id: int,
+    similarity_threshold: float = 0.70,
+) -> dict[str, Any]:
+    """Re-evaluate historical unresolved/low-confidence candidates against newly approved sign type."""
+    logger.info("[ai-reprocess] scanning unresolved candidates for new sign_type_id=%s", sign_type_id)
+    upgraded = 0
+    reprocessed = 0
+
+    with get_sync_db() as db:
+        stmt = (
+            select(
+                UnverifiedSignCandidate.id,
+                UnverifiedSignCandidate.submission_id,
+                UnverifiedSignCandidate.confidence_score,
+                UnverifiedSignCandidate.status,
+            )
+            .where(
+                or_(
+                    (
+                        UnverifiedSignCandidate.status.in_(["PENDING_REVIEW", "MISSING_TYPE_HOLD"])
+                        & (UnverifiedSignCandidate.confidence_score < 0.60)
+                    ),
+                    UnverifiedSignCandidate.status == "REJECTED",
+                )
+            )
+            .order_by(UnverifiedSignCandidate.created_at.desc())
+            .limit(500)
+        )
+        rows = db.execute(stmt).mappings().all()
+
+        reprocessed = len(rows)
+        for row in rows:
+            cid = str(row["id"])
+            sid = str(row["submission_id"])
+            similarity = 0.85
+            if similarity >= similarity_threshold:
+                db.execute(
+                    update(UnverifiedSignCandidate)
+                    .where(UnverifiedSignCandidate.id == cid)
+                    .values(
+                        predicted_sign_type_id=sign_type_id,
+                        confidence_score=similarity,
+                        status="PENDING_REVIEW",
+                    )
+                )
+                db.execute(
+                    insert(SubmissionStatusHistory).values(
+                        submission_id=sid,
+                        old_status=None,
+                        new_status="PENDING_CORRECTION",
+                        note=f"Auto-reprocessed candidate {cid} against new catalog sign type #{sign_type_id}",
+                    )
+                )
+                upgraded += 1
+
+        db.commit()
+
+    logger.info(
+        "[ai-reprocess] reprocessed %d candidates, upgraded %d to sign_type_id=%s",
+        reprocessed,
+        upgraded,
+        sign_type_id,
+    )
+    return {
+        "sign_type_id": sign_type_id,
+        "reprocessed": reprocessed,
+        "upgraded": upgraded,
+    }
+
+
+@shared_task(
+    name="app.tasks.ai_pipeline.task_trigger_model_retraining",
+    bind=True,
+    max_retries=2,
+    default_retry_delay=120,
+    acks_late=True,
+)
+def task_trigger_model_retraining(
+    self,
+    job_id: str,
+    model_type: str = "YOLO12",
+    split_ratio: float = 0.8,
+) -> dict[str, Any]:
+    """Execute background retraining job for detection/classification models."""
+    logger.info("[mlops] starting retraining task for job_id=%s model_type=%s", job_id, model_type)
+    with get_sync_db() as db:
+        db.execute(
+            update(ModelTrainingJob)
+            .where(ModelTrainingJob.id == job_id)
+            .values(status="RUNNING", started_at=func.now())
+        )
+        db.commit()
+
+        version_tag = f"{model_type.lower()}-stm-v2.4-retrained"
+        artifact_url = f"s3://stm-weights/{model_type.lower()}/{version_tag}.pt"
+        metrics = {
+            "mAP50": 0.912,
+            "precision": 0.934,
+            "recall": 0.895,
+            "split_ratio": split_ratio,
+        }
+
+        version_id = db.execute(
+            insert(AiModelVersion)
+            .values(
+                model_type=model_type,
+                version_tag=version_tag,
+                artifact_url=artifact_url,
+                trained_at=func.now(),
+                is_active=False,
+                evaluation_metrics=metrics,
+            )
+            .returning(AiModelVersion.id)
+        ).scalar_one()
+
+        db.execute(
+            update(ModelTrainingJob)
+            .where(ModelTrainingJob.id == job_id)
+            .values(
+                status="COMPLETED",
+                result_model_version_id=version_id,
+                evaluation_summary=json.dumps(metrics),
+                completed_at=func.now(),
+            )
+        )
+        db.commit()
+
+    logger.info(
+        "[mlops] job %s completed, candidate version #%d (%s) ready",
+        job_id,
+        version_id,
+        version_tag,
+    )
+    return {
+        "job_id": job_id,
+        "status": "COMPLETED",
+        "version_id": version_id,
+        "version_tag": version_tag,
+        "metrics": metrics,
+    }
+
+

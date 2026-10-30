@@ -1,13 +1,17 @@
-import { Type } from 'class-transformer';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Transform } from 'class-transformer';
 import { IsArray, IsIn, IsInt, IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
 import { VEHICLE_TYPES, VehicleType } from '../../../../common/vehicle-types';
 import { RouteDirectionsRequest } from '../../domain/routing.types';
+import { ToNumber } from '../../../../common/transformers/to-number.transformer';
 
 export class UpdateNavigationPreferencesDto {
+  @ApiPropertyOptional({ enum: Object.values(VEHICLE_TYPES), example: 'CAR' })
   @IsOptional()
   @IsIn(Object.values(VEHICLE_TYPES))
   vehicleType?: VehicleType;
 
+  @ApiPropertyOptional({ type: [String], example: ['SPEED_LIMIT', 'WARNING'] })
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
@@ -15,59 +19,75 @@ export class UpdateNavigationPreferencesDto {
 }
 
 export class RouteDirectionsRequestDto implements RouteDirectionsRequest {
+  @ApiPropertyOptional({ enum: ['DRIVING', 'CYCLING', 'WALKING', 'BIKE', 'MOTORCYCLE'], example: 'DRIVING' })
   @IsOptional()
-  @IsIn(['DRIVING', 'CYCLING', 'WALKING'])
-  vehicleMode?: 'DRIVING' | 'CYCLING' | 'WALKING';
+  @Transform(({ value }) => (typeof value === 'string' ? value.toUpperCase() : value))
+  @IsIn(['DRIVING', 'CYCLING', 'WALKING', 'BIKE', 'MOTORCYCLE'])
+  vehicleMode?: 'DRIVING' | 'CYCLING' | 'WALKING' | 'BIKE' | 'MOTORCYCLE';
 
+  @ApiPropertyOptional({ description: 'Legacy vehicle mode alias', example: 'DRIVING' })
+  @IsOptional()
+  @IsString()
+  _vehicleMode?: string;
+
+  @ApiPropertyOptional({ enum: Object.values(VEHICLE_TYPES), example: 'CAR' })
   @IsOptional()
   @IsIn(Object.values(VEHICLE_TYPES))
   vehicleType?: VehicleType;
 
+  @ApiPropertyOptional({ type: [String], example: ['SPEED_LIMIT', 'WARNING'] })
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
   enabledCategoryCodes?: string[];
 
-  @Type(() => Number)
+  @ApiProperty({ description: 'Origin latitude coordinate', example: 10.7949, minimum: -90, maximum: 90 })
+  @ToNumber()
   @IsNumber()
   @Min(-90)
   @Max(90)
   originLatitude: number;
 
-  @Type(() => Number)
+  @ApiProperty({ description: 'Origin longitude coordinate', example: 106.7218, minimum: -180, maximum: 180 })
+  @ToNumber()
   @IsNumber()
   @Min(-180)
   @Max(180)
   originLongitude: number;
 
-  @Type(() => Number)
+  @ApiProperty({ description: 'Destination latitude coordinate', example: 10.7725, minimum: -90, maximum: 90 })
+  @ToNumber()
   @IsNumber()
   @Min(-90)
   @Max(90)
   destinationLatitude: number;
 
-  @Type(() => Number)
+  @ApiProperty({ description: 'Destination longitude coordinate', example: 106.6980, minimum: -180, maximum: 180 })
+  @ToNumber()
   @IsNumber()
   @Min(-180)
   @Max(180)
   destinationLongitude: number;
 
+  @ApiPropertyOptional({ description: 'Alternative route threshold percent', minimum: 0, maximum: 100, example: 0 })
   @IsOptional()
-  @Type(() => Number)
+  @ToNumber()
   @IsNumber()
   @Min(0)
   @Max(100)
   alternativeThresholdPercent?: number;
 
+  @ApiPropertyOptional({ description: 'Max alternative routes', minimum: 0, maximum: 10, example: 0 })
   @IsOptional()
-  @Type(() => Number)
+  @ToNumber()
   @IsInt()
   @Min(0)
   @Max(10)
   maxAlternatives?: number;
 
+  @ApiPropertyOptional({ description: 'Snap radius in meters', minimum: 1, maximum: 10000, example: 100 })
   @IsOptional()
-  @Type(() => Number)
+  @ToNumber()
   @IsNumber()
   @Min(1)
   @Max(10_000)

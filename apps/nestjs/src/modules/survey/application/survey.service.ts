@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash } from 'crypto';
 import { DataSource, EntityManager, MoreThanOrEqual, Repository } from 'typeorm';
@@ -30,11 +30,17 @@ import {
 } from '../domain/media-validator';
 import { UploadChunk } from '../infrastructure/persistence/upload-chunk.entity';
 import { UploadSession, UploadStatus } from '../infrastructure/persistence/upload-session.entity';
+import { SubmissionStatusHistory } from '../infrastructure/persistence/submission-status-history.entity';
+import { SurveyorProfile } from '../infrastructure/persistence/surveyor-profile.entity';
+import { UnverifiedSignCandidate } from '../infrastructure/persistence/unverified-sign-candidate.entity';
+import { DailyTask } from '../../daily-tasks/daily-task.entity';
+import { RevalidationTask } from '../../revalidation/infrastructure/persistence/revalidation-task.entity';
 import { TransactionType } from '../../wallet/infrastructure/persistence/credit-transaction.entity';
 import { NotificationsService } from '../../notifications/notifications.service';
 import { MinioStorageService } from '../../../integrations/minio/minio-storage.service';
 import type { StoredObjectReference } from '../../../integrations/minio/minio-storage.service';
 import { WalletService } from '../../wallet/application/wallet.service';
+import { DailyTasksService } from '../../daily-tasks/daily-tasks.service';
 import { InitializeUploadDto } from '../presentation/dto/initialize-upload.dto';
 import { UploadChunkBodyDto } from '../presentation/dto/upload-chunk.dto';
 import { CreateSubmissionDto } from '../presentation/dto/create-submission.dto';
@@ -51,6 +57,19 @@ export class SurveyService {
     private readonly dataSource: DataSource,
     private readonly walletService: WalletService,
     private readonly notificationsService: NotificationsService,
+    @Optional() private readonly dailyTasksService?: DailyTasksService,
+    @Optional()
+    @InjectRepository(SubmissionStatusHistory)
+    private readonly statusHistoryRepo?: Repository<SubmissionStatusHistory>,
+    @Optional()
+    @InjectRepository(SurveyorProfile)
+    private readonly surveyorProfileRepo?: Repository<SurveyorProfile>,
+    @Optional()
+    @InjectRepository(SubmissionMediaFile)
+    private readonly mediaFileRepo?: Repository<SubmissionMediaFile>,
+    @Optional()
+    @InjectRepository(UnverifiedSignCandidate)
+    private readonly candidateRepo?: Repository<UnverifiedSignCandidate>,
   ) {}
 
   private validateCapturedAt(capturedAt: string) {
@@ -76,6 +95,13 @@ export class SurveyService {
   }
 
   async createSubmission(userId: string, dto: CreateSubmissionDto) {
+    const idempotencyKey = dto.idempotencyKey?.trim() || null;
+    if (idempotencyKey) {
+      const existing = await this.submissionRepo.findOne({
+        where: { surveyorId: userId, idempotencyKey },
+      });
+      if (existing) return this.submissionResponse(existing);
+    }
     this.validateCapturedAt(dto.capturedAt);
     this.validateCoordinates(dto.latitude, dto.longitude);
 
@@ -105,8 +131,19 @@ export class SurveyService {
       note: formattedNote,
       validationErrors: [],
       correctionRequirements: [],
+      idempotencyKey,
     });
-    const saved = await this.submissionRepo.save(submission);
+    let saved: SurveySubmission;
+    try {
+      saved = await this.submissionRepo.save(submission);
+    } catch (error: any) {
+      if (error?.code !== '23505' || !idempotencyKey) throw error;
+      const existing = await this.submissionRepo.findOne({
+        where: { surveyorId: userId, idempotencyKey },
+      });
+      if (!existing) throw error;
+      return this.submissionResponse(existing);
+    }
     await this.recordStatusChange(saved.id, null, SubmissionStatus.DRAFT, 'Submission created');
     return this.submissionResponse(saved);
   }
@@ -225,10 +262,22 @@ export class SurveyService {
       });
       const savedMedia = await manager.save(SubmissionMediaFile, media);
 
-      await manager.query(
-        'INSERT INTO submission_status_history (submission_id, old_status, new_status, note) VALUES ($1, NULL, $2::submission_status, $3)',
-        [savedSubmission.id, SubmissionStatus.DRAFT, 'Frame batch submission session created'],
-      );
+      if (typeof manager.getRepository === 'function') {
+        const historyRepo = manager.getRepository(SubmissionStatusHistory);
+        await historyRepo.save(
+          historyRepo.create({
+            submissionId: savedSubmission.id,
+            oldStatus: null,
+            newStatus: SubmissionStatus.DRAFT,
+            note: 'Frame batch submission session created',
+          }),
+        );
+      } else if (typeof manager.query === 'function') {
+        await manager.query(
+          'INSERT INTO submission_status_history (submission_id, old_status, new_status, note) VALUES ($1, NULL, $2::submission_status, $3)',
+          [savedSubmission.id, SubmissionStatus.DRAFT, 'Frame batch submission session created'],
+        );
+      }
 
       return {
         sessionId: savedSession.id,
@@ -269,10 +318,38 @@ export class SurveyService {
       );
     }
 
+    const idempotencyKey = dto.idempotencyKey?.trim() || null;
+    if (idempotencyKey) {
+      const existing = await this.sessionRepo.findOne({
+        where: { userId, idempotencyKey },
+      });
+      if (existing) {
+        if (existing.submissionId !== submissionId) {
+          throw new ConflictException('Idempotency key is already used for another upload session');
+        }
+        return this.uploadSessionResponse(existing);
+      }
+    }
+
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
-    const session = this.sessionRepo.create({ submissionId, userId, originalFilename: dto.originalFilename, mediaType: dto.mediaType, totalSizeBytes: String(dto.totalSizeBytes), totalChunks: dto.totalChunks, receivedChunks: 0, checksumExpected: dto.checksumExpected ?? null, status: UploadStatus.INITIATED, expiresAt } as any);
-    const saved = await this.sessionRepo.save(session) as unknown as UploadSession;
-    return { sessionId: saved.id, submissionId: saved.submissionId, originalFilename: saved.originalFilename, mediaType: saved.mediaType, totalSizeBytes: saved.totalSizeBytes, totalChunks: saved.totalChunks, receivedChunks: saved.receivedChunks, status: saved.status, expiresAt: saved.expiresAt, createdAt: saved.createdAt };
+    const session = this.sessionRepo.create({ submissionId, userId, originalFilename: dto.originalFilename, mediaType: dto.mediaType, totalSizeBytes: String(dto.totalSizeBytes), totalChunks: dto.totalChunks, receivedChunks: 0, checksumExpected: dto.checksumExpected ?? null, status: UploadStatus.INITIATED, expiresAt, idempotencyKey } as any);
+    let saved: UploadSession;
+    try {
+      saved = await this.sessionRepo.save(session) as unknown as UploadSession;
+    } catch (error: any) {
+      if (error?.code !== '23505' || !idempotencyKey) throw error;
+      const existing = await this.sessionRepo.findOne({ where: { userId, idempotencyKey } });
+      if (!existing) throw error;
+      if (existing.submissionId !== submissionId) {
+        throw new ConflictException('Idempotency key is already used for another upload session');
+      }
+      return this.uploadSessionResponse(existing);
+    }
+    return this.uploadSessionResponse(saved);
+  }
+
+  private uploadSessionResponse(session: UploadSession) {
+    return { sessionId: session.id, submissionId: session.submissionId, originalFilename: session.originalFilename, mediaType: session.mediaType, totalSizeBytes: session.totalSizeBytes, totalChunks: session.totalChunks, receivedChunks: session.receivedChunks, status: session.status, expiresAt: session.expiresAt, createdAt: session.createdAt };
   }
   async uploadChunk(userId: string, sessionId: string, body: UploadChunkBodyDto, file: Express.Multer.File) {
     if (!file) throw new BadRequestException('File chunk (form field "file") is required');
@@ -320,10 +397,37 @@ export class SurveyService {
       };
     }
     const bucket = this.storageService.bucketForMediaType(session.mediaType);
-    const storageKey = 'chunks/' + userId + '/' + sessionId + '/' + String(chunkIndex).padStart(6, '0');
+    // Include the checksum so concurrent retries with different content cannot
+    // overwrite an object that another request has already persisted.
+    const storageKey = 'chunks/' + userId + '/' + sessionId + '/' + String(chunkIndex).padStart(6, '0') + '-' + chunkChecksum;
     try { await this.storageService.putObject(bucket, storageKey, file.buffer, file.mimetype); } catch (err: any) { throw new BadRequestException('Failed to store chunk ' + chunkIndex + ': ' + (err?.message ?? 'unknown storage error')); }
     const chunk: UploadChunk = this.chunkRepo.create({ sessionId: session.id, chunkIndex, sizeBytes: file.size, storageKey: bucket + '/' + storageKey, checksum: chunkChecksum } as unknown as UploadChunk);
-    await this.chunkRepo.save(chunk);
+    try {
+      await this.chunkRepo.save(chunk);
+    } catch (error: any) {
+      if (error?.code !== '23505') throw error;
+      const concurrent = await this.chunkRepo.findOne({ where: { sessionId: session.id, chunkIndex } });
+      if (!concurrent) throw error;
+      if (concurrent.sizeBytes !== file.size || concurrent.checksum !== chunkChecksum) {
+        if (concurrent.storageKey !== chunk.storageKey) {
+          await this.storageService.removeObject({ bucket, objectName: storageKey }).catch(() => undefined);
+        }
+        throw new ConflictException('Chunk ' + chunkIndex + ' already received with different content');
+      }
+      const receivedChunks = await this.chunkRepo.count({ where: { sessionId: session.id } });
+      return {
+        sessionId: session.id,
+        chunkIndex,
+        storageKey: concurrent.storageKey,
+        sizeBytes: concurrent.sizeBytes,
+        receivedChunks,
+        totalChunks: session.totalChunks,
+        status: session.status,
+        readyToComplete: receivedChunks === session.totalChunks,
+        isComplete: false,
+        submissionId: session.submissionId,
+      };
+    }
     const newReceived = await this.chunkRepo.count({ where: { sessionId: session.id } });
     await this.sessionRepo.update(session.id, {
       receivedChunks: newReceived,
@@ -585,19 +689,32 @@ export class SurveyService {
           ? SubmissionStatus.REJECTED
           : SubmissionStatus.PENDING_CORRECTION;
       const saved = await manager.save(SurveySubmission, submission);
-      await manager.query(
-        'INSERT INTO submission_status_history (submission_id, old_status, new_status, note) VALUES ($1, $2::submission_status, $3::submission_status, $4)',
-        [
-          saved.id,
-          oldStatus,
-          saved.status,
-          accepted
-            ? 'Submission contract validated'
-            : hasUnrepairableError
-              ? 'Submission rejected: invalid file format or corrupted media'
-              : 'Submission requires correction',
-        ],
-      );
+      const historyNote = accepted
+        ? 'Submission contract validated'
+        : hasUnrepairableError
+          ? 'Submission rejected: invalid file format or corrupted media'
+          : 'Submission requires correction';
+
+      if (typeof manager.getRepository === 'function') {
+        const historyRepo = manager.getRepository(SubmissionStatusHistory);
+        await historyRepo.save(
+          historyRepo.create({
+            submissionId: saved.id,
+            oldStatus,
+            newStatus: saved.status,
+            note: historyNote,
+          }),
+        );
+      } else if (typeof manager.query === 'function') {
+        await manager.query(
+          'INSERT INTO submission_status_history (submission_id, old_status, new_status, note) VALUES ($1, $2::submission_status, $3::submission_status, $4)',
+          [saved.id, oldStatus, saved.status, historyNote],
+        );
+      }
+
+      if (accepted && this.dailyTasksService) {
+        this.dailyTasksService.recordProgress(userId, 'SURVEY', 1).catch(() => {});
+      }
 
       return {
         accepted,
@@ -854,10 +971,21 @@ export class SurveyService {
     note: string,
   ) {
     try {
-      await this.dataSource.query(
-        'INSERT INTO submission_status_history (submission_id, old_status, new_status, note) VALUES ($1, $2::submission_status, $3::submission_status, $4)',
-        [submissionId, oldStatus, newStatus, note],
-      );
+      if (this.statusHistoryRepo) {
+        await this.statusHistoryRepo.save(
+          this.statusHistoryRepo.create({
+            submissionId,
+            oldStatus: oldStatus ? String(oldStatus) : null,
+            newStatus: String(newStatus),
+            note,
+          }),
+        );
+      } else if (typeof this.dataSource?.query === 'function') {
+        await this.dataSource.query(
+          'INSERT INTO submission_status_history (submission_id, old_status, new_status, note) VALUES ($1, $2::submission_status, $3::submission_status, $4)',
+          [submissionId, oldStatus, newStatus, note],
+        );
+      }
     } catch (error: any) {
       this.logger.warn('history insert failed: ' + error?.message);
     }
@@ -900,78 +1028,224 @@ export class SurveyService {
     let candidates: any[] = [];
     let sessions: any[] = [];
     let mediaFiles: any[] = [];
-    try { history = await this.dataSource.query('SELECT id, old_status, new_status, note, changed_at FROM submission_status_history WHERE submission_id=$1 ORDER BY changed_at ASC', [submissionId]); } catch (e: any) { this.logger.warn('history query failed: ' + e?.message); }
     try {
-      candidates = await this.dataSource.query(
-        `SELECT c.id, c.predicted_sign_type_id, c.status, c.confidence_score, c.best_frame_url, c.sign_crop_url,
-                c.spatial_confidence, c.active_learning_priority, c.created_at,
-                t.sign_code, t.name_vi, t.name_en,
-                ST_AsGeoJSON(g.sign_location) AS sign_location_geojson,
-                ST_AsGeoJSON(g.vehicle_location) AS vehicle_location_geojson,
-                g.estimated_distance, g.bearing_angle, g.traffic_direction, g.projection_method
-         FROM unverified_sign_candidates c
-         LEFT JOIN traffic_sign_types t ON t.id = c.predicted_sign_type_id
-         LEFT JOIN candidate_geo_estimations g ON g.candidate_id = c.id
-         WHERE c.submission_id = $1
-         ORDER BY c.created_at ASC`,
-        [submissionId],
-      );
+      if (this.statusHistoryRepo) {
+        history = await this.statusHistoryRepo.find({
+          where: { submissionId },
+          order: { changedAt: 'ASC' },
+        });
+      } else if (typeof this.dataSource?.query === 'function') {
+        history = await this.dataSource.query('SELECT id, old_status, new_status, note, changed_at FROM submission_status_history WHERE submission_id=$1 ORDER BY changed_at ASC', [submissionId]);
+      }
+    } catch (e: any) { this.logger.warn('history query failed: ' + e?.message); }
+
+    try {
+      if (typeof this.dataSource?.createQueryBuilder === 'function') {
+        const qb = this.dataSource
+          .createQueryBuilder()
+          .select([
+            'c.id AS id',
+            'c.predicted_sign_type_id AS predicted_sign_type_id',
+            'c.status AS status',
+            'c.confidence_score AS confidence_score',
+            'c.best_frame_url AS best_frame_url',
+            'c.sign_crop_url AS sign_crop_url',
+            'c.spatial_confidence AS spatial_confidence',
+            'c.active_learning_priority AS active_learning_priority',
+            'c.created_at AS created_at',
+            't.sign_code AS sign_code',
+            't.name_vi AS name_vi',
+            't.name_en AS name_en',
+            'ST_AsGeoJSON(g.sign_location) AS sign_location_geojson',
+            'ST_AsGeoJSON(g.vehicle_location) AS vehicle_location_geojson',
+            'g.estimated_distance AS estimated_distance',
+            'g.bearing_angle AS bearing_angle',
+            'g.traffic_direction AS traffic_direction',
+            'g.projection_method AS projection_method',
+          ])
+          .from('unverified_sign_candidates', 'c')
+          .leftJoin('traffic_sign_types', 't', 't.id = c.predicted_sign_type_id')
+          .leftJoin('candidate_geo_estimations', 'g', 'g.candidate_id = c.id')
+          .where('c.submission_id = :submissionId', { submissionId })
+          .orderBy('c.created_at', 'ASC');
+        candidates = await qb.getRawMany();
+      } else {
+        throw new Error('No createQueryBuilder on dataSource');
+      }
     } catch {
       try {
-        candidates = await this.dataSource.query(
-          'SELECT id, predicted_sign_type_id, status, confidence_score, best_frame_url, sign_crop_url, active_learning_priority, created_at FROM unverified_sign_candidates WHERE submission_id=$1 ORDER BY created_at ASC',
-          [submissionId],
-        );
+        if (this.candidateRepo) {
+          candidates = await this.candidateRepo.find({
+            where: { submissionId },
+            order: { createdAt: 'ASC' },
+          });
+        } else if (typeof this.dataSource?.query === 'function') {
+          candidates = await this.dataSource.query(
+            'SELECT id, predicted_sign_type_id, status, confidence_score, best_frame_url, sign_crop_url, active_learning_priority, created_at FROM unverified_sign_candidates WHERE submission_id=$1 ORDER BY created_at ASC',
+            [submissionId],
+          );
+        }
       } catch (e: any) {
         this.logger.warn('candidate query failed: ' + e?.message);
       }
     }
-    try { sessions = await this.dataSource.query('SELECT id, original_filename, media_type, total_chunks, received_chunks, status, created_at FROM upload_sessions WHERE submission_id=$1 ORDER BY created_at ASC', [submissionId]); } catch {}
-    try { mediaFiles = await this.dataSource.query('SELECT id, upload_session_id, media_type, file_url, file_size_bytes, duration_seconds, checksum, uploaded_at FROM submission_media_files WHERE submission_id=$1 ORDER BY uploaded_at ASC', [submissionId]); } catch {}
+    try {
+      if (typeof this.sessionRepo?.find === 'function') {
+        sessions = await this.sessionRepo.find({
+          where: { submissionId },
+          order: { createdAt: 'ASC' },
+        });
+      } else if (typeof this.dataSource?.query === 'function') {
+        sessions = await this.dataSource.query('SELECT id, original_filename, media_type, total_chunks, received_chunks, status, created_at FROM upload_sessions WHERE submission_id=$1 ORDER BY created_at ASC', [submissionId]);
+      }
+    } catch {}
+    try {
+      if (this.mediaFileRepo) {
+        mediaFiles = await this.mediaFileRepo.find({
+          where: { submissionId },
+          order: { uploadedAt: 'ASC' },
+        });
+      } else if (typeof this.dataSource?.query === 'function') {
+        mediaFiles = await this.dataSource.query('SELECT id, upload_session_id, media_type, file_url, file_size_bytes, duration_seconds, checksum, uploaded_at FROM submission_media_files WHERE submission_id=$1 ORDER BY uploaded_at ASC', [submissionId]);
+      }
+    } catch {}
     return { submission: this.submissionResponse(sub), history, candidates, totalCandidates: candidates.length, sessions, mediaFiles };
   }
   async getMyPendingCount(userId: string): Promise<{ total: number; pending: number; countsByStatus?: Record<string, number> }> {
-    const count = await this.submissionRepo.count({ where: { surveyorId: userId } as any }).catch(() => 0);
-    // Pending = not terminal
-    const pending = await this.dataSource
-      .query(`SELECT COUNT(*)::int AS cnt FROM survey_submissions WHERE surveyor_id=$1 AND status NOT IN ('COMPLETED','FAILED','PARTIALLY_PROCESSED','NO_SIGN_DETECTED','REJECTED')`, [userId])
-      .then((rows: any[]) => rows[0]?.cnt ?? 0)
-      .catch(() => 0);
+    const total = await this.submissionRepo.count({ where: { surveyorId: userId } as any }).catch(() => 0);
+    const nonPending = [
+      SubmissionStatus.COMPLETED,
+      SubmissionStatus.FAILED,
+      SubmissionStatus.PARTIALLY_PROCESSED,
+      SubmissionStatus.NO_SIGN_DETECTED,
+      SubmissionStatus.REJECTED,
+    ];
+    let pending = 0;
     const countsByStatus: Record<string, number> = {};
-    try {
-      const rows: any[] = await this.dataSource.query(
-        'SELECT status, COUNT(*)::int AS cnt FROM survey_submissions WHERE surveyor_id=$1 GROUP BY status',
-        [userId],
-      );
-      for (const r of rows) {
-        countsByStatus[r.status] = Number(r.cnt);
+
+    if (typeof this.submissionRepo.createQueryBuilder === 'function') {
+      try {
+        pending = await this.submissionRepo
+          .createQueryBuilder('s')
+          .where('s.surveyorId = :userId', { userId })
+          .andWhere('s.status NOT IN (:...nonPending)', { nonPending })
+          .getCount();
+      } catch {
+        pending = 0;
       }
-    } catch {}
-    return { total: count, pending, countsByStatus };
+      try {
+        const rows = await this.submissionRepo
+          .createQueryBuilder('s')
+          .select('s.status', 'status')
+          .addSelect('COUNT(*)::int', 'cnt')
+          .where('s.surveyorId = :userId', { userId })
+          .groupBy('s.status')
+          .getRawMany();
+        for (const r of rows) {
+          countsByStatus[r.status] = Number(r.cnt);
+        }
+      } catch {}
+    } else if (typeof this.dataSource?.query === 'function') {
+      pending = await this.dataSource
+        .query(`SELECT COUNT(*)::int AS cnt FROM survey_submissions WHERE surveyor_id=$1 AND status NOT IN ('COMPLETED','FAILED','PARTIALLY_PROCESSED','NO_SIGN_DETECTED','REJECTED')`, [userId])
+        .then((rows: any[]) => rows[0]?.cnt ?? 0)
+        .catch(() => 0);
+      try {
+        const rows: any[] = await this.dataSource.query(
+          'SELECT status, COUNT(*)::int AS cnt FROM survey_submissions WHERE surveyor_id=$1 GROUP BY status',
+          [userId],
+        );
+        for (const r of rows) {
+          countsByStatus[r.status] = Number(r.cnt);
+        }
+      } catch {}
+    }
+
+    return { total, pending, countsByStatus };
   }
 
   async getMyStats(userId: string) {
     const total = await this.submissionRepo.count({ where: { surveyorId: userId } as any }).catch(() => 0);
-    const pending = await this.dataSource
-      .query(`SELECT COUNT(*)::int AS cnt FROM survey_submissions WHERE surveyor_id=$1 AND status NOT IN ('COMPLETED','FAILED','PARTIALLY_PROCESSED','NO_SIGN_DETECTED','REJECTED')`, [userId])
-      .then((rows: any[]) => rows[0]?.cnt ?? 0)
-      .catch(() => 0);
+    const nonPending = [
+      SubmissionStatus.COMPLETED,
+      SubmissionStatus.FAILED,
+      SubmissionStatus.PARTIALLY_PROCESSED,
+      SubmissionStatus.NO_SIGN_DETECTED,
+      SubmissionStatus.REJECTED,
+    ];
+    let pending = 0;
+    if (typeof this.submissionRepo.createQueryBuilder === 'function') {
+      try {
+        pending = await this.submissionRepo
+          .createQueryBuilder('s')
+          .where('s.surveyorId = :userId', { userId })
+          .andWhere('s.status NOT IN (:...nonPending)', { nonPending })
+          .getCount();
+      } catch {
+        pending = 0;
+      }
+    } else if (typeof this.dataSource?.query === 'function') {
+      pending = await this.dataSource
+        .query(`SELECT COUNT(*)::int AS cnt FROM survey_submissions WHERE surveyor_id=$1 AND status NOT IN ('COMPLETED','FAILED','PARTIALLY_PROCESSED','NO_SIGN_DETECTED','REJECTED')`, [userId])
+        .then((rows: any[]) => rows[0]?.cnt ?? 0)
+        .catch(() => 0);
+    }
+
     let creditScore: number | null = null;
     try {
-      const rows: any[] = await this.dataSource.query('SELECT balance FROM wallets WHERE user_id=$1', [userId]);
-      if (rows.length) creditScore = Number(rows[0].balance);
-    } catch {}
+      const walletRes = await this.walletService.getWallet(userId);
+      if (walletRes?.wallet) creditScore = Number(walletRes.wallet.balance);
+    } catch {
+      try {
+        if (typeof this.dataSource?.query === 'function') {
+          const rows: any[] = await this.dataSource.query('SELECT balance FROM wallets WHERE user_id=$1', [userId]);
+          if (rows.length) creditScore = Number(rows[0].balance);
+        }
+      } catch {}
+    }
+
     let dailyTasks: any[] = [];
     try {
-      dailyTasks = await this.dataSource.query('SELECT * FROM daily_tasks WHERE is_active=true ORDER BY id ASC LIMIT 20');
-    } catch {}
+      if (typeof this.dataSource?.getRepository === 'function') {
+        dailyTasks = await this.dataSource.getRepository(DailyTask).find({
+          where: { isActive: true },
+          order: { id: 'ASC' },
+          take: 20,
+        });
+      } else {
+        throw new Error('No getRepository');
+      }
+    } catch {
+      try {
+        if (typeof this.dataSource?.query === 'function') {
+          dailyTasks = await this.dataSource.query('SELECT * FROM daily_tasks WHERE is_active=true ORDER BY id ASC LIMIT 20');
+        }
+      } catch {}
+    }
+
     let revalidationCount = 0;
     try {
-      const rows: any[] = await this.dataSource.query(
-        `SELECT COUNT(*)::int AS cnt FROM revalidation_tasks rt JOIN verified_traffic_signs vts ON vts.id=rt.verified_sign_id WHERE rt.status='OPEN'`,
-      );
-      revalidationCount = rows[0]?.cnt ?? 0;
-    } catch {}
+      if (typeof this.dataSource?.getRepository === 'function') {
+        revalidationCount = await this.dataSource
+          .getRepository(RevalidationTask)
+          .createQueryBuilder('rt')
+          .innerJoin('verified_traffic_signs', 'vts', 'vts.id = rt.verifiedSignId')
+          .where('rt.status = :status', { status: 'OPEN' })
+          .getCount();
+      } else {
+        throw new Error('No getRepository');
+      }
+    } catch {
+      try {
+        if (typeof this.dataSource?.query === 'function') {
+          const rows: any[] = await this.dataSource.query(
+            `SELECT COUNT(*)::int AS cnt FROM revalidation_tasks rt JOIN verified_traffic_signs vts ON vts.id=rt.verified_sign_id WHERE rt.status='OPEN'`,
+          );
+          revalidationCount = rows[0]?.cnt ?? 0;
+        }
+      } catch {}
+    }
+
     return { userId, totalSubmissions: total, pendingSubmissions: pending, creditScore, revalidationAvailable: revalidationCount, dailyTasks };
   }
 
@@ -1004,14 +1278,14 @@ export class SurveyService {
     if (validationErrors !== undefined) sub.validationErrors = validationErrors;
     if (correctionRequirements !== undefined) sub.correctionRequirements = correctionRequirements;
     await this.submissionRepo.save(sub);
-    try { await this.dataSource.query('INSERT INTO submission_status_history (submission_id, old_status, new_status, note) VALUES ($1, $2::submission_status, $3::submission_status, $4)', [sub.id, String(oldStatus), String(newStatus), note ?? 'Status advanced to ' + newStatus]); } catch (e: any) { this.logger.warn('history insert failed: ' + e?.message); }
+    await this.recordStatusChange(sub.id, oldStatus, newStatus, note ?? 'Status advanced to ' + newStatus);
     if (newStatus === SubmissionStatus.NO_SIGN_DETECTED) {
       try {
         await this.notificationsService.create(
           sub.surveyorId,
           'SURVEY_NO_SIGNS',
-          'No signs detected',
-          'Your submission ' + sub.id.slice(0, 8) + ' was processed, but no traffic signs were detected.',
+          'Không phát hiện biển báo',
+          'Bản gửi ' + sub.id.slice(0, 8) + ' đã được xử lý nhưng không phát hiện biển báo giao thông nào.',
           'survey_submission',
           sub.id,
         );
@@ -1028,12 +1302,112 @@ export class SurveyService {
     }
     const oldStatus = sub.status;
     sub.status = SubmissionStatus.COMPLETED;
+    const candidatesCount = sub.totalCandidatesExtracted ?? 0;
+    let rewardAmount = 0;
+    if (candidatesCount > 0) {
+      rewardAmount = await this.walletService.resolveRewardAmount(
+        TransactionType.SURVEY_REWARD,
+        10,
+        sub.surveyorId,
+        { candidateCount: candidatesCount },
+      );
+      if (rewardAmount > 0) {
+        try {
+          await this.walletService.creditUser(
+            sub.surveyorId,
+            rewardAmount,
+            TransactionType.SURVEY_REWARD,
+            'survey_submission',
+            sub.id,
+            'Survey reward (submission ' + sub.id.slice(0, 8) + ' completed with ' + candidatesCount + ' candidate(s))',
+            { idempotencyKey: `survey_reward:${sub.id}` },
+          );
+          sub.rewardStatus = 'PAID';
+          sub.rewardAmount = rewardAmount;
+        } catch (e: any) {
+          this.logger.warn('survey reward credit failed ' + sub.surveyorId + ': ' + e?.message);
+          sub.rewardStatus = 'APPROVED';
+          sub.rewardAmount = rewardAmount;
+        }
+      } else {
+        sub.rewardStatus = 'NONE';
+        sub.rewardAmount = 0;
+      }
+    } else {
+      sub.rewardStatus = 'REJECTED';
+      sub.rewardAmount = 0;
+    }
     await this.submissionRepo.save(sub);
-    try { await this.dataSource.query('INSERT INTO submission_status_history (submission_id, old_status, new_status, note) VALUES ($1,$2::submission_status,$3::submission_status,$4)', [sub.id, String(oldStatus), String(SubmissionStatus.COMPLETED), note ?? 'AI pipeline completed']); } catch {}
-    const rewardAmount = await this.walletService.resolveRewardAmount(TransactionType.SURVEY_REWARD, 10);
-    try { await this.walletService.creditUser(sub.surveyorId, rewardAmount, TransactionType.SURVEY_REWARD, 'survey_submission', sub.id, 'Survey reward (submission ' + sub.id.slice(0,8) + ' completed)'); } catch (e: any) { this.logger.warn('survey reward credit failed ' + sub.surveyorId + ': ' + e?.message); }
-    try { await this.dataSource.query('INSERT INTO surveyor_profiles (user_id, total_submissions, total_verified_signs, total_credits_earned) VALUES ($1, 1, 0, $2) ON CONFLICT (user_id) DO UPDATE SET total_submissions = surveyor_profiles.total_submissions + 1, total_credits_earned = surveyor_profiles.total_credits_earned + $2', [sub.surveyorId, rewardAmount]); } catch {}
-    try { await this.notificationsService.create(sub.surveyorId, 'SURVEY_COMPLETED', 'Survey completed', 'Your submission ' + sub.id.slice(0,8) + ' has been processed (+' + rewardAmount + ' credits).', 'survey_submission', sub.id); } catch {}
+    await this.recordStatusChange(sub.id, oldStatus, SubmissionStatus.COMPLETED, note ?? 'AI pipeline completed');
+    if (rewardAmount > 0) {
+      try {
+        if (this.surveyorProfileRepo) {
+          const surveyor = await this.surveyorProfileRepo.findOne({ where: { userId: sub.surveyorId } });
+          if (!surveyor) {
+            await this.surveyorProfileRepo.save(
+              this.surveyorProfileRepo.create({
+                userId: sub.surveyorId,
+                totalSubmissions: 1,
+                totalVerifiedSigns: 0,
+                totalCreditsEarned: rewardAmount,
+              }),
+            );
+          } else {
+            await this.surveyorProfileRepo.update(
+              { userId: sub.surveyorId },
+              {
+                totalSubmissions: () => 'total_submissions + 1',
+                totalCreditsEarned: () => `total_credits_earned + ${rewardAmount}`,
+              },
+            );
+          }
+        } else if (typeof this.dataSource?.query === 'function') {
+          await this.dataSource.query('INSERT INTO surveyor_profiles (user_id, total_submissions, total_verified_signs, total_credits_earned) VALUES ($1, 1, 0, $2) ON CONFLICT (user_id) DO UPDATE SET total_submissions = surveyor_profiles.total_submissions + 1, total_credits_earned = surveyor_profiles.total_credits_earned + $2', [sub.surveyorId, rewardAmount]);
+        }
+      } catch {}
+      try { await this.notificationsService.create(sub.surveyorId, 'SURVEY_COMPLETED', 'Khảo sát đã hoàn tất', 'Bản gửi ' + sub.id.slice(0,8) + ' đã được xử lý. Bạn nhận được +' + rewardAmount + ' credits.', 'survey_submission', sub.id); } catch {}
+    }
     return { alreadyCompleted: false, submission: sub, rewardAmount };
+  }
+
+  /**
+   * Generates a direct-to-S3 presigned PUT upload URL for high-bandwidth telemetry files (dashcam MP4, GPX tracks).
+   */
+  async generatePresignedUploadUrl(
+    userId: string,
+    submissionId: string,
+    dto: { mediaType: 'VIDEO' | 'GPX' | 'IMAGE'; fileName?: string; contentType?: string },
+  ) {
+    const sub = await this.submissionRepo.findOne({ where: { id: submissionId } });
+    if (!sub) {
+      throw new NotFoundException(`Survey submission #${submissionId} not found`);
+    }
+    if (sub.surveyorId !== userId) {
+      throw new ForbiddenException('You do not have permission to upload for this submission');
+    }
+
+    const bucket = this.storageService.bucketForMediaType(dto.mediaType);
+    const ext = dto.fileName
+      ? dto.fileName.split('.').pop()
+      : dto.mediaType === 'VIDEO'
+        ? 'mp4'
+        : dto.mediaType === 'GPX'
+          ? 'gpx'
+          : 'jpg';
+    const safeName = dto.fileName
+      ? dto.fileName.replace(/[^a-zA-Z0-9._-]/g, '_')
+      : `${dto.mediaType.toLowerCase()}.${ext}`;
+    const objectKey = `submissions/${submissionId}/${Date.now()}_${safeName}`;
+    const expiresIn = 3600;
+
+    const uploadUrl = await this.storageService.presignedPutObject(bucket, objectKey, expiresIn);
+
+    return {
+      uploadUrl,
+      bucket,
+      objectKey,
+      expiresIn,
+      mediaType: dto.mediaType,
+    };
   }
 }

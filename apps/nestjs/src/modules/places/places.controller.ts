@@ -2,6 +2,7 @@ import { Controller, Get, Post, Delete, Body, Param, Query, ParseUUIDPipe } from
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { PlacesService } from './places.service';
+import { AddRecentSearchDto, AddSavedPlaceDto } from './dto/places.dto';
 
 @ApiTags('Places')
 @ApiBearerAuth()
@@ -18,7 +19,7 @@ export class PlacesController {
 
   @ApiOperation({ summary: 'Add saved place', description: 'Save a location with label, coordinates, and address' })
   @Post('places/saved')
-  addSaved(@CurrentUser() user: any, @Body() dto: { label: string; address: string; latitude: number; longitude: number; placeType?: string }) {
+  addSaved(@CurrentUser() user: any, @Body() dto: AddSavedPlaceDto) {
     return this.svc.addSavedPlace(user.id, dto);
   }
 
@@ -38,7 +39,7 @@ export class PlacesController {
 
   @ApiOperation({ summary: 'Add recent search', description: 'Record a destination query or place in recent history' })
   @Post('places/recent-searches')
-  addRecent(@CurrentUser() user: any, @Body() dto: { query: string; address?: string; latitude?: number; longitude?: number }) {
+  addRecent(@CurrentUser() user: any, @Body() dto: AddRecentSearchDto) {
     return this.svc.addRecentSearch(user.id, dto);
   }
 

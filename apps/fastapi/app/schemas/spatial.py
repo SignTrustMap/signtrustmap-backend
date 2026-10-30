@@ -141,9 +141,44 @@ class SessionResponse(BaseModel):
     destination_longitude: float
 
 
+class PaginatedSessionsResponse(BaseModel):
+    items: list[SessionResponse] = Field(default_factory=list, description="List of navigation sessions")
+    total: int = Field(ge=0, description="Total count of sessions for this driver")
+    page: int = Field(ge=1, description="Current page number")
+    pageSize: int = Field(ge=1, le=100, description="Page size")
+    totalPages: int = Field(ge=0, description="Total number of pages")
+
+
 class UpdateSessionRequest(BaseModel):
     """Body for PATCH /navigation/sessions/{id}."""
 
     status: Literal["COMPLETED", "CANCELED"] = Field(
         description="Terminal status. Only ACTIVE sessions can be transitioned."
     )
+
+
+# ── Offline PMTiles Map Packs ───────────────────────────────────────────────
+class OfflineMapPack(BaseModel):
+    id: str
+    name: str
+    description: str
+    region: str
+    country_code: str = Field(default="VN", validation_alias="country_code", serialization_alias="countryCode")
+    format: str = "pmtiles"
+    file_name: str = Field(validation_alias="file_name", serialization_alias="fileName")
+    size_bytes: int = Field(validation_alias="size_bytes", serialization_alias="sizeBytes")
+    size_mb: float = Field(validation_alias="size_mb", serialization_alias="sizeMb")
+    min_zoom: int = Field(default=0, validation_alias="min_zoom", serialization_alias="minZoom")
+    max_zoom: int = Field(default=15, validation_alias="max_zoom", serialization_alias="maxZoom")
+    bounds: list[float]  # [west, south, east, north]
+    is_available: bool = Field(default=True, validation_alias="is_available", serialization_alias="isAvailable")
+    last_modified: datetime | None = Field(default=None, validation_alias="last_modified", serialization_alias="lastModified")
+    download_url: str = Field(validation_alias="download_url", serialization_alias="downloadUrl")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class OfflineMapPacksResponse(BaseModel):
+    packs: list[OfflineMapPack]
+    total: int
+

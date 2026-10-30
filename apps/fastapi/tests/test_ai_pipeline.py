@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
@@ -333,4 +334,161 @@ class AiPipelineContractTests(TestCase):
         self.assertEqual(profile["camera_height_m"], 1.35)
         self.assertEqual(profile["pitch_deg"], 0.0)
         self.assertEqual(profile["yaw_offset_deg"], 0.0)
+
+    def test_batch_dispatcher_dispatches_pending_batches(self) -> None:
+        db = MagicMock()
+        db.execute.return_value.mappings.return_value.all.return_value = [
+            {"id": "batch-1"},
+            {"id": "batch-2"},
+        ]
+        broker = MagicMock()
+        broker.set.return_value = True
+
+        with (
+            patch.object(ai_pipeline, "get_sync_db") as get_sync_db,
+            patch.object(ai_pipeline, "_broker_client", return_value=broker),
+            patch.object(ai_pipeline.task_process_batch_survey, "apply_async") as apply_async,
+        ):
+            get_sync_db.return_value.__enter__.return_value = db
+            result = ai_pipeline.task_dispatch_pending_batch_submissions.run()
+
+        self.assertEqual(result, {"pending": 2, "dispatched": 2})
+        self.assertEqual(apply_async.call_count, 2)
+        apply_async.assert_any_call(
+            kwargs={"batch_id": "batch-1"},
+            queue="ai_pipeline",
+        )
+        apply_async.assert_any_call(
+            kwargs={"batch_id": "batch-2"},
+            queue="ai_pipeline",
+        )
+
+    def test_complete_batch_submission_posts_to_nestjs(self) -> None:
+        client = MagicMock()
+        response = MagicMock()
+        client.__enter__.return_value.post.return_value = response
+
+        with patch.object(ai_pipeline.httpx, "Client", return_value=client):
+            ai_pipeline._complete_batch_submission(
+                batch_id="batch-uuid-1",
+                extracted_candidates=3,
+                total_processed=5,
+                note="Batch complete",
+            )
+
+        client.__enter__.return_value.post.assert_called_once_with(
+            "http://localhost:3000/api/v1/submissions/internal/batch/batch-uuid-1/complete",
+            json={
+                "extractedCandidates": 3,
+                "totalProcessed": 5,
+                "note": "Batch complete",
+            },
+            headers={"X-Internal-Token": "stm_internal_secret_dev"},
+        )
+
+    def test_task_process_batch_survey_processes_images_and_notifies(self) -> None:
+        task = ai_pipeline.task_process_batch_survey
+        db = MagicMock()
+        db.execute.return_value.mappings.return_value.first.return_value = {
+            "id": "batch-uuid-1",
+            "user_id": "user-uuid-1",
+            "status": "PENDING",
+            "total_images": 2,
+            "metadata": {
+                "images": [
+                    {"storageKey": "stm-raw/batch1/img1.jpg", "mediaType": "IMAGE"},
+                    {"storageKey": "stm-raw/batch1/img2.jpg", "mediaType": "IMAGE"},
+                ]
+            },
+        }
+
+        broker = MagicMock()
+
+        with (
+            patch.object(ai_pipeline, "get_sync_db") as get_sync_db,
+            patch.object(ai_pipeline, "_broker_client", return_value=broker),
+            patch.object(
+                ai_pipeline,
+                "_call_inference_engine",
+                side_effect=[
+                    {"signs": [{"class_name": "P.102", "confidence": 0.9}]},
+                    {"signs": [{"class_name": "P.103", "confidence": 0.85}, {"class_name": "W.201", "confidence": 0.88}]},
+                ],
+            ) as call_engine,
+            patch.object(ai_pipeline, "_complete_batch_submission") as complete_batch,
+        ):
+            get_sync_db.return_value.__enter__.return_value = db
+            result = task.apply(args=["batch-uuid-1"]).get()
+
+        self.assertEqual(
+            result,
+            {
+                "batch_id": "batch-uuid-1",
+                "status": "COMPLETED",
+                "processed_images": 2,
+                "extracted_candidates": 3,
+            },
+        )
+        self.assertEqual(call_engine.call_count, 2)
+        complete_batch.assert_called_once_with(
+            batch_id="batch-uuid-1",
+            extracted_candidates=3,
+            total_processed=2,
+            note="Batch processed 2 image(s); extracted 3 candidate(s).",
+        )
+        broker.delete.assert_called_once_with("stm:batch-dispatch:batch-uuid-1")
+
+    def test_task_process_batch_survey_skips_already_completed(self) -> None:
+        task = ai_pipeline.task_process_batch_survey
+        db = MagicMock()
+        db.execute.return_value.mappings.return_value.first.return_value = {
+            "id": "batch-uuid-1",
+            "status": "COMPLETED",
+        }
+
+        with patch.object(ai_pipeline, "get_sync_db") as get_sync_db:
+            get_sync_db.return_value.__enter__.return_value = db
+            result = task.apply(args=["batch-uuid-1"]).get()
+
+        self.assertEqual(
+            result,
+            {"batch_id": "batch-uuid-1", "skipped": True, "reason": "already_completed"},
+        )
+
+    def test_task_reprocess_unresolved_candidates_upgrades_matching(self) -> None:
+        task = ai_pipeline.task_reprocess_unresolved_candidates
+        db = MagicMock()
+        db.execute.return_value.mappings.return_value.all.return_value = [
+            {
+                "id": "cand-1",
+                "submission_id": "sub-1",
+                "confidence_score": 0.45,
+                "status": "PENDING_REVIEW",
+            }
+        ]
+
+        with patch.object(ai_pipeline, "get_sync_db") as get_sync_db:
+            get_sync_db.return_value.__enter__.return_value = db
+            result = task.apply(args=[105, 0.70]).get()
+
+        self.assertEqual(result["sign_type_id"], 105)
+        self.assertEqual(result["reprocessed"], 1)
+        self.assertEqual(result["upgraded"], 1)
+        self.assertTrue(db.commit.called)
+
+    def test_task_trigger_model_retraining_completes_job(self) -> None:
+        task = ai_pipeline.task_trigger_model_retraining
+        db = MagicMock()
+        db.execute.return_value.scalar_one.return_value = 99
+
+        with patch.object(ai_pipeline, "get_sync_db") as get_sync_db:
+            get_sync_db.return_value.__enter__.return_value = db
+            result = task.apply(args=["job-uuid-1", "YOLO12", 0.8]).get()
+
+        self.assertEqual(result["status"], "COMPLETED")
+        self.assertEqual(result["version_id"], 99)
+        self.assertIn("yolo12", result["version_tag"])
+        self.assertTrue(db.commit.called)
+
+
 

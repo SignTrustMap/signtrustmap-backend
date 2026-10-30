@@ -1,3 +1,4 @@
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
   IsArray,
@@ -18,6 +19,7 @@ const trim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim() : value;
 
 export class CreateSignCategoryDto {
+  @ApiProperty({ description: 'Category code', pattern: '^[A-Za-z0-9_-]+$', example: 'REGULATORY' })
   @Transform(trim)
   @IsString()
   @MinLength(1)
@@ -53,6 +55,7 @@ export class CreateSignCategoryDto {
 }
 
 export class UpdateSignCategoryDto {
+  @ApiPropertyOptional({ description: 'Category code', pattern: '^[A-Za-z0-9_-]+$', example: 'REGULATORY' })
   @IsOptional()
   @Transform(trim)
   @IsString()
@@ -95,12 +98,19 @@ export class CreateSignTypeDto {
   @Min(1)
   categoryId: number;
 
+  @ApiProperty({ description: 'Traffic sign code (e.g. W.201a)', pattern: '^[A-Za-z0-9._-]+$', example: 'W.201a' })
   @Transform(trim)
   @IsString()
   @MinLength(1)
   @MaxLength(50)
   @Matches(/^[A-Za-z0-9._-]+$/)
   signCode: string;
+
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @MaxLength(100)
+  slug?: string;
 
   @Transform(trim)
   @IsString()
@@ -135,7 +145,9 @@ export class CreateSignTypeDto {
   osmMapping?: string;
 
   @IsOptional()
+  @Transform(trim)
   @IsString()
+  @MinLength(1)
   @MaxLength(500)
   representativeImageKey?: string;
 
@@ -166,6 +178,7 @@ export class UpdateSignTypeDto {
   @Min(1)
   categoryId?: number;
 
+  @ApiPropertyOptional({ description: 'Traffic sign code (e.g. W.201a)', pattern: '^[A-Za-z0-9._-]+$', example: 'W.201a' })
   @IsOptional()
   @Transform(trim)
   @IsString()
@@ -173,6 +186,12 @@ export class UpdateSignTypeDto {
   @MaxLength(50)
   @Matches(/^[A-Za-z0-9._-]+$/)
   signCode?: string;
+
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @MaxLength(100)
+  slug?: string | null;
 
   @IsOptional()
   @Transform(trim)
@@ -209,9 +228,11 @@ export class UpdateSignTypeDto {
   osmMapping?: string | null;
 
   @IsOptional()
+  @Transform(trim)
   @IsString()
+  @MinLength(1)
   @MaxLength(500)
-  representativeImageKey?: string | null;
+  representativeImageKey?: string;
 
   @IsOptional()
   @IsString()
@@ -313,4 +334,14 @@ export class SetSupportShotPinDto {
   @IsBoolean()
   isPinned: boolean;
 }
+
+export class ReprocessCandidatesDto {
+  @ApiPropertyOptional({ description: 'Cosine similarity threshold (0.0 to 1.0)', minimum: 0, maximum: 1, example: 0.85 })
+  @IsOptional()
+  @Type(() => Number)
+  @Max(1)
+  @Min(0)
+  similarityThreshold?: number;
+}
+
 

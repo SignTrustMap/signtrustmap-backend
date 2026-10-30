@@ -1,4 +1,4 @@
-import { BadGatewayException } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { RouteDirectionsRequestDto } from '../presentation/dto/routing.dto';
 import { OsrmRoutingClient } from './osrm-routing.client';
@@ -23,6 +23,7 @@ describe('OsrmRoutingClient', () => {
           osrm: {
             baseUrl: 'https://osrm.test/',
             profile: 'driving',
+            motorcycleProfile: 'motorcycle',
             timeoutMs: 1_000,
           },
         },
@@ -146,6 +147,34 @@ describe('OsrmRoutingClient', () => {
     );
   });
 
+  it('maps OSRM HTTP 400 responses to BadRequestException instead of 502 Bad Gateway', async () => {
+    jest.spyOn(global, 'fetch').mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: async () => ({ message: 'Could not find a matching segment for coordinate' }),
+      text: async () => '{"message":"Could not find a matching segment for coordinate"}',
+    } as Response);
+
+    await expect(client().findDirections(request, 25, 3)).rejects.toEqual(
+      new BadRequestException(
+        'OSRM routing service returned HTTP 400: Could not find a matching segment for coordinate',
+      ),
+    );
+  });
+
+  it('maps OSRM HTTP 404 responses to NotFoundException', async () => {
+    jest.spyOn(global, 'fetch').mockResolvedValue({
+      ok: false,
+      status: 404,
+      json: async () => ({ message: 'No route' }),
+      text: async () => '{"message":"No route"}',
+    } as Response);
+
+    await expect(client().findDirections(request, 25, 3)).rejects.toEqual(
+      new NotFoundException('No route found between the specified coordinates'),
+    );
+  });
+
   it('routes with bicycle profile and calibrates duration to cycling speed', async () => {
     const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue({
       ok: true,
@@ -213,8 +242,68 @@ describe('OsrmRoutingClient', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(String(fetchMock.mock.calls[0][0])).toContain('/route/v1/bike/');
-    expect(String(fetchMock.mock.calls[1][0])).toContain('/route/v1/driving/');
     expect(response.shortestPath.distanceMeters).toBe(1000);
     expect(response.shortestPath.durationSeconds).toBe(240);
+  });
+
+  it('routes with a motorcycle profile and calibrates duration with motorcycle factor', async () => {
+    const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => fixture,
+    } as Response);
+
+    const motorcycleRequest: RouteDirectionsRequestDto = {
+      ...request,
+      vehicleType: 'MOTORCYCLE',
+    };
+
+    const response = await client().findDirections(motorcycleRequest, 25, 3);
+
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toContain('/route/v1/motorcycle/');
+    expect(response.shortestPath.recommendation).toBe('Shortest route (Motorcycle)');
+    // 160s * 0.95 = 152s
+    expect(response.shortestPath.durationSeconds).toBe(152);
+  });
+
+  it('routes with vehicleMode BIKE resolving to motorcycle', async () => {
+    const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => fixture,
+    } as Response);
+
+    const bikeRequest: RouteDirectionsRequestDto = {
+      ...request,
+      vehicleMode: 'BIKE',
+    };
+
+    const response = await client().findDirections(bikeRequest, 25, 3);
+
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toContain('/route/v1/motorcycle/');
+    expect(response.shortestPath.recommendation).toBe('Shortest route (Motorcycle)');
+    expect(response.shortestPath.durationSeconds).toBe(152);
+  });
+
+  it('routes with _vehicleMode BIKE resolving to motorcycle', async () => {
+    const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => fixture,
+    } as Response);
+
+    const bikeRequest: RouteDirectionsRequestDto = {
+      ...request,
+      _vehicleMode: 'BIKE',
+    };
+
+    const response = await client().findDirections(bikeRequest, 25, 3);
+
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toContain('/route/v1/motorcycle/');
+    expect(response.shortestPath.recommendation).toBe('Shortest route (Motorcycle)');
+    expect(response.shortestPath.durationSeconds).toBe(152);
   });
 });

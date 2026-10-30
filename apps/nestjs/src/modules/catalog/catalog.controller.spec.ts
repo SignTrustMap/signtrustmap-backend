@@ -6,10 +6,18 @@ import { CatalogService } from './catalog.service';
 describe('CatalogController', () => {
   const service = {
     listSignTypes: jest.fn(),
+    checkSignCodeAvailability: jest.fn(),
+    uploadRepresentativeImage: jest.fn(),
   } as unknown as CatalogService;
   const controller = new CatalogController(service);
 
   beforeEach(() => jest.resetAllMocks());
+
+  it('checks sign code availability through the catalog service', () => {
+    controller.checkSignCode('P.110');
+
+    expect(service.checkSignCodeAvailability).toHaveBeenCalledWith('P.110');
+  });
 
   it('maps Spring pagination and existing filter aliases', () => {
     controller.listSignTypes({
@@ -35,6 +43,9 @@ describe('CatalogController', () => {
       'ADMIN',
     ]);
     expect(Reflect.getMetadata(ROLES_KEY, CatalogController.prototype.updateSignType)).toEqual([
+      'ADMIN',
+    ]);
+    expect(Reflect.getMetadata(ROLES_KEY, CatalogController.prototype.uploadRepresentativeImage)).toEqual([
       'ADMIN',
     ]);
   });

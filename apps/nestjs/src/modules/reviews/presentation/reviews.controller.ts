@@ -1,15 +1,51 @@
-import { Controller, Body, Param, ParseUUIDPipe, Post, Query, Get, Patch, Delete, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Controller, Body, Param, ParseUUIDPipe, Post, Query, Get, Patch, Delete, UseGuards, UseInterceptors, UploadedFiles } from '@nestjs/common';
+import { FileFieldsInterceptor } from '@nestjs/platform-express';
+import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { Public } from '../../../common/decorators/public.decorator';
+import { Roles } from '../../../common/decorators/roles.decorator';
 import { ReviewsService } from '../application/reviews.service';
-import { VoteDto, ReportDto } from './dto/vote.dto';
+import {
+  VoteDto,
+  ReportDto,
+  TestReviewDto,
+  TestAssignDto,
+  RequestRecaptureDto,
+  SubmitRecaptureDto,
+  SelectSignRemedyDto,
+  SetActiveLearningPriorityDto,
+  SetBulkActiveLearningPrioritiesDto,
+  ReviewQueueQueryDto,
+  CanNotIdentifyDto,
+} from './dto/vote.dto';
 import { InternalTokenGuard } from '../../../common/guards/internal-token.guard';
 
 @ApiTags('Reviews')
 @Controller('reviews')
 export class ReviewsController {
   constructor(private readonly reviewsService: ReviewsService) {}
+
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Get AI sign replacement suggestions',
+    description: 'Return up to five AI-ranked traffic sign types that may replace the candidate label',
+  })
+  @Get('candidates/:candidateId/sign-remedies')
+  getSignRemedies(@Param('candidateId', ParseUUIDPipe) candidateId: string) {
+    return this.reviewsService.getSignRemedies(candidateId);
+  }
+
+  @ApiBearerAuth()
+  @Roles('REVIEWER', 'ADMIN', 'STAFF')
+  @ApiOperation({ summary: 'Select an AI sign replacement suggestion', description: 'Persist the active AI top-five suggestion selected by the reviewer for this candidate' })
+  @Post('candidates/:candidateId/sign-remedies/select')
+  selectSignRemedy(
+    @CurrentUser() user: any,
+    @Param('candidateId', ParseUUIDPipe) candidateId: string,
+    @Body() dto: SelectSignRemedyDto,
+  ) {
+    return this.reviewsService.selectSignRemedy(user.id, candidateId, dto);
+  }
 
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get my review history', description: 'Paginated list of previous sign reviews and consensus verdicts submitted by current reviewer' })
@@ -31,6 +67,13 @@ export class ReviewsController {
   @ApiOperation({ summary: 'Get reviewer statistics', description: 'Review accuracy rate, total votes cast, and consensus agreement score' })
   @Get('me/stats')
   async myStats(@CurrentUser() user: any) {
+    return this.reviewsService.getMyStats(user.id);
+  }
+
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get reviewer governance statistics', description: 'Reviewer reliability score, correct/false votes, provisional status, and suspension flag' })
+  @Get('stats')
+  async stats(@CurrentUser() user: any) {
     return this.reviewsService.getMyStats(user.id);
   }
 
@@ -58,8 +101,80 @@ export class ReviewsController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Mark sign as unidentifiable', description: 'Skip candidate and mark as cannot identify when sign is obscured or ambiguous' })
   @Post('candidates/:candidateId/can-not-identify')
-  async canNotIdentify(@CurrentUser() user: any, @Param('candidateId', ParseUUIDPipe) candidateId: string, @Body() body?: { note?: string }) {
+  async canNotIdentify(@CurrentUser() user: any, @Param('candidateId', ParseUUIDPipe) candidateId: string, @Body() body?: CanNotIdentifyDto) {
     return this.reviewsService.canNotIdentify(user.id, candidateId, body?.note);
+  }
+
+  @ApiBearerAuth()
+  @Roles('REVIEWER', 'ADMIN', 'STAFF')
+  @ApiOperation({
+    summary: 'Request image recapture from surveyor',
+    description: 'Reviewer or Admin requests original surveyor to capture a clearer image because the existing image is too hard to verify (e.g. blurry, poor lighting, obscured, bad angle)',
+  })
+  @Post('candidates/:candidateId/request-recapture')
+  async requestRecapture(
+    @CurrentUser() user: any,
+    @Param('candidateId', ParseUUIDPipe) candidateId: string,
+    @Body() dto: RequestRecaptureDto,
+  ) {
+    const allowSelf = user?.role === 'ADMIN';
+    return this.reviewsService.requestRecapture(user.id, candidateId, dto, allowSelf);
+  }
+
+  @ApiBearerAuth()
+  @Roles('SURVEYOR', 'ADMIN')
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({ summary: 'Submit surveyor recapture evidence', description: 'Upload replacement sign crop and best-frame evidence for an assigned recapture request' })
+  @Post('candidates/:candidateId/recapture')
+  @UseInterceptors(FileFieldsInterceptor([
+    { name: 'signCrop', maxCount: 1 },
+    { name: 'bestFrame', maxCount: 1 },
+  ], { limits: { fileSize: 50 * 1024 * 1024 } }))
+  async submitRecapture(
+    @CurrentUser() user: any,
+    @Param('candidateId', ParseUUIDPipe) candidateId: string,
+    @Body() dto: SubmitRecaptureDto,
+    @UploadedFiles() files: { signCrop?: Express.Multer.File[]; bestFrame?: Express.Multer.File[] },
+  ) {
+    return this.reviewsService.submitRecapture(user.id, candidateId, dto, files);
+  }
+
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Get recapture requests for candidate',
+    description: 'Retrieve history of recapture requests and reviewer feedback submitted for this candidate sign',
+  })
+  @Get('candidates/:candidateId/recaptures')
+  async getCandidateRecaptures(
+    @Param('candidateId', ParseUUIDPipe) candidateId: string,
+  ) {
+    return this.reviewsService.getRecapturesForCandidate(candidateId);
+  }
+
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Get my pending recapture requests as surveyor',
+    description: 'List assigned recapture requests and open quests within 5 km of the supplied GPS coordinates',
+  })
+  @Get('me/recaptures')
+  async getMyRecaptures(
+    @CurrentUser() user: any,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+    @Query('latitude') latitude?: string,
+    @Query('longitude') longitude?: string,
+  ) {
+    const p = page ? parseInt(page, 10) : 1;
+    const ps = pageSize ? parseInt(pageSize, 10) : 20;
+    const lat = latitude === undefined ? undefined : Number.parseFloat(latitude);
+    const lon = longitude === undefined ? undefined : Number.parseFloat(longitude);
+    return this.reviewsService.getMyRecaptures(
+      user.id,
+      Number.isNaN(p) ? 1 : p,
+      Number.isNaN(ps) ? 20 : ps,
+      lat,
+      lon,
+    );
   }
 
   @ApiBearerAuth()
@@ -74,13 +189,61 @@ export class ReviewsController {
   @Get('queue')
   async queue(
     @CurrentUser() user: any,
-    @Query('page') page?: string,
-    @Query('pageSize') pageSize?: string,
+    @Query() queryDto?: ReviewQueueQueryDto | any,
+    @Query('pageSize') legacyPageSize?: string,
+    @Query('includeOwnSubmissions') legacyIncludeOwnSubmissions?: string,
   ) {
-    const p = page ? parseInt(page, 10) : 1;
-    const ps = pageSize ? parseInt(pageSize, 10) : 20;
-    return this.reviewsService.queue(user.id, Number.isNaN(p) ? 1 : p, Number.isNaN(ps) ? 20 : ps);
+    let p = 1;
+    let ps = 20;
+    let allowSelf = false;
+
+    if (typeof queryDto === 'string' || typeof queryDto === 'number') {
+      p = parseInt(String(queryDto), 10);
+      ps = legacyPageSize ? parseInt(legacyPageSize, 10) : 20;
+      allowSelf = legacyIncludeOwnSubmissions === 'true' || legacyIncludeOwnSubmissions === '1';
+    } else if (queryDto && typeof queryDto === 'object') {
+      p = queryDto.page ? Number(queryDto.page) : 1;
+      ps = queryDto.pageSize ? Number(queryDto.pageSize) : 20;
+      allowSelf = queryDto.includeOwnSubmissions === true ||
+        queryDto.includeOwnSubmissions === 'true' ||
+        queryDto.includeOwnSubmissions === '1';
+    }
+
+    return this.reviewsService.queue(
+      user?.id,
+      Number.isNaN(p) ? 1 : p,
+      Number.isNaN(ps) ? 20 : ps,
+      allowSelf,
+    );
   }
+
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Test review candidate sign (Testing/Development)',
+    description: 'Submit review for a candidate with 1 specific reviewer and immediately evaluate consensus. Bypasses surveyor check.',
+  })
+  @Post('test-review')
+  async testReview(@CurrentUser() user: any, @Body() dto: TestReviewDto) {
+    const targetReviewerId = dto.reviewerId || user.id;
+    return this.reviewsService.testReviewCandidate(dto.candidateId, targetReviewerId, {
+      vote: dto.vote,
+      suggestedSignTypeId: dto.suggestedSignTypeId,
+      declineReason: dto.declineReason,
+      declineNote: dto.declineNote,
+    });
+  }
+
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Direct/Assign candidates to 1 specific reviewer for testing',
+    description: 'Clear previous skipped/reviewed flags or prepare pending candidates for a specific reviewer queue',
+  })
+  @Post('test-assign')
+  async testAssign(@CurrentUser() user: any, @Body() dto: TestAssignDto) {
+    const targetReviewerId = dto.reviewerId || user.id;
+    return this.reviewsService.directCandidatesToReviewer(targetReviewerId, dto.candidateIds);
+  }
+
   // -- Flow 14: Active Learning orchestration hooks (internal) --
   // Backend dev provides the shell; AI teammate calls these after scoring candidates.
   // Single-candidate: PATCH /reviews/internal/:candidateId/active-learning-priority
@@ -100,7 +263,7 @@ export class ReviewsController {
   @UseGuards(InternalTokenGuard)
   @ApiOperation({ summary: 'Internal set active learning priority', description: 'Update review queue priority based on AI model uncertainty score' })
   @Patch('internal/:candidateId/active-learning-priority')
-  async setPriority(@Param('candidateId', ParseUUIDPipe) candidateId: string, @Body() body: { priority: number }) {
+  async setPriority(@Param('candidateId', ParseUUIDPipe) candidateId: string, @Body() body: SetActiveLearningPriorityDto) {
     return this.reviewsService.setActiveLearningPriority(candidateId, body.priority);
   }
 
@@ -108,7 +271,7 @@ export class ReviewsController {
   @UseGuards(InternalTokenGuard)
   @ApiOperation({ summary: 'Internal set bulk active learning priorities', description: 'Batch update review queue priorities from AI service' })
   @Post('internal/active-learning-priorities')
-  async setBulkPriorities(@Body() body: { items: Array<{ candidateId: string; priority: number }> }) {
+  async setBulkPriorities(@Body() body: SetBulkActiveLearningPrioritiesDto) {
     return this.reviewsService.setBulkActiveLearningPriorities(body.items);
   }
 

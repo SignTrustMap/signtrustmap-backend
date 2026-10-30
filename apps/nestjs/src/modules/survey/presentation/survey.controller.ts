@@ -11,14 +11,45 @@ import { UseInterceptors, UploadedFile } from '@nestjs/common';
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { CreateSubmissionDto } from './dto/create-submission.dto';
 import { UpdateSubmissionDto } from './dto/update-submission.dto';
-import { UpdateSubmissionStatusDto } from './dto/update-submission-status.dto';
+import { UpdateSubmissionStatusDto, MarkSubmissionCompletedDto } from './dto/update-submission-status.dto';
 import { CreateFrameBatchSessionDto } from './dto/create-frame-batch.dto';
+import { CompleteBatchSurveyDto, CreateBatchSurveyDto } from './dto/create-batch-survey.dto';
+import { CreatePresignedUrlDto } from './dto/create-presigned-url.dto';
+import { BatchSurveyService } from '../application/batch-survey.service';
 
 @ApiTags('Survey Submissions')
 @Roles('SURVEYOR', 'ADMIN')
 @Controller('submissions')
 export class SurveyController {
-  constructor(private readonly surveyService: SurveyService) {}
+  constructor(
+    private readonly surveyService: SurveyService,
+    private readonly batchService: BatchSurveyService,
+  ) {}
+
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Create multi-image batch survey', description: 'Submit an asynchronous batch of multiple geo-tagged images for candidate extraction' })
+  @Post('batch')
+  async createBatch(@CurrentUser() user: any, @Body() dto: CreateBatchSurveyDto) {
+    return this.batchService.createBatch(user.id, dto);
+  }
+
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get batch survey status', description: 'Retrieve processing progress and candidate-gated reward status of a batch submission' })
+  @Get('batch/:batchId')
+  async getBatch(@CurrentUser() user: any, @Param('batchId', ParseUUIDPipe) batchId: string) {
+    return this.batchService.getBatch(user.id, batchId);
+  }
+
+  @Public()
+  @UseGuards(InternalTokenGuard)
+  @ApiOperation({ summary: 'Internal complete batch survey processing', description: 'Worker callback to report batch candidate extraction and trigger reward settlement' })
+  @Post('internal/batch/:batchId/complete')
+  async completeBatch(
+    @Param('batchId', ParseUUIDPipe) batchId: string,
+    @Body() body: CompleteBatchSurveyDto,
+  ) {
+    return this.batchService.completeBatch(batchId, body);
+  }
 
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Create frame batch survey session', description: 'Submit reduced FPS sampled frames with GPS telemetry and camera calibration metadata in a single session' })
@@ -46,6 +77,20 @@ export class SurveyController {
   @Post(':submissionId/uploads')
   async initialize(@CurrentUser() user: any, @Param('submissionId', ParseUUIDPipe) submissionId: string, @Body() dto: InitializeUploadDto) {
     return this.surveyService.initialize(user.id, submissionId, dto);
+  }
+
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Generate S3 direct presigned PUT URL',
+    description: 'Generates a signed direct-to-S3 upload URL for high-bandwidth dashcam videos or GPX traces',
+  })
+  @Post(':submissionId/uploads/presigned-url')
+  async getPresignedUploadUrl(
+    @CurrentUser() user: any,
+    @Param('submissionId', ParseUUIDPipe) submissionId: string,
+    @Body() dto: CreatePresignedUrlDto,
+  ) {
+    return this.surveyService.generatePresignedUploadUrl(user.id, submissionId, dto);
   }
 
   @ApiBearerAuth()
@@ -101,7 +146,7 @@ export class SurveyController {
   @UseGuards(InternalTokenGuard)
   @ApiOperation({ summary: 'Internal mark submission completed', description: 'AI worker callback to mark pipeline processing as complete' })
   @Post('internal/:submissionId/complete')
-  async markCompleted(@Param('submissionId', ParseUUIDPipe) submissionId: string, @Body() body?: { note?: string }) { return this.surveyService.markCompleted(submissionId, body?.note); }
+  async markCompleted(@Param('submissionId', ParseUUIDPipe) submissionId: string, @Body() body?: MarkSubmissionCompletedDto) { return this.surveyService.markCompleted(submissionId, body?.note); }
 
   @Public()
   @UseGuards(InternalTokenGuard)

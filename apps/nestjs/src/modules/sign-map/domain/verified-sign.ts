@@ -9,6 +9,7 @@ export interface RouteSignsRequest {
   geometry: RoutePoint[];
   vehicleType?: VehicleType;
   enabledCategoryCodes?: string[];
+  onlyFixedSigns?: boolean;
 }
 
 export interface SignCategorySummary {
@@ -41,6 +42,9 @@ export interface VerifiedSign {
   longitude: number;
   trafficDirection: number | null;
   signCropUrl: string;
+  scenePhotoUrl?: string | null;
+  frameUrl?: string | null;
+  bestFrameUrl?: string | null;
   status: string;
   freshnessScore: number;
   confirmationCount?: number;

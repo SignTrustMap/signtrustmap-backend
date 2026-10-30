@@ -2,7 +2,7 @@ import { Controller, Post, Get, Patch, Body, UseGuards, Req } from '@nestjs/comm
 import { AuthGuard } from '@nestjs/passport';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthService } from '../application/auth.service';
-import { RegisterDto, LoginDto, UpdateProfileDto, ForgotPasswordDto, VerifyOtpDto, ResetPasswordDto, ResendOtpDto } from './dto/auth.dto';
+import { RegisterDto, LoginDto, UpdateProfileDto, ForgotPasswordDto, VerifyOtpDto, ResetPasswordDto, ResendOtpDto, ToggleRoleDto } from './dto/auth.dto';
 import { GoogleLoginDto } from './dto/google-login.dto';
 import { Public } from '../../../common/decorators/public.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
@@ -91,5 +91,19 @@ export class AuthController {
   @Patch('me')
   async updateMe(@CurrentUser() user: any, @Body() dto: UpdateProfileDto) {
     return this.authService.updateProfile(user.id, dto);
+  }
+
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Toggle or enroll community role', description: 'Allow authenticated users to activate or deactivate optional community roles (SURVEYOR or REVIEWER). Returns refreshed user and access token.' })
+  @Post('me/roles')
+  async toggleRole(@CurrentUser() user: any, @Body() dto: ToggleRoleDto) {
+    return this.authService.toggleRole(user.id, dto.role, dto.enabled ?? true);
+  }
+
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Enroll in community role', description: 'Allow authenticated users to enroll in SURVEYOR or REVIEWER role. Returns refreshed user and access token.' })
+  @Post('roles/enroll')
+  async enrollRole(@CurrentUser() user: any, @Body() dto: ToggleRoleDto) {
+    return this.authService.toggleRole(user.id, dto.role, dto.enabled ?? true);
   }
 }

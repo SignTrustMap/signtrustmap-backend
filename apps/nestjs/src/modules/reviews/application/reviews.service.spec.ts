@@ -1,4 +1,4 @@
-import { ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { Repository, SelectQueryBuilder } from 'typeorm';
 import { TrafficSignType } from '../../catalog/traffic-sign-type.entity';
 import { ConsensusService } from '../../consensus/application/consensus.service';
@@ -75,6 +75,91 @@ describe('ReviewsService queue', () => {
   });
 });
 
+describe('ReviewsService sign remedies', () => {
+  it('maps AI top five predictions to catalog sign types', async () => {
+    const candidateRepo = {
+      findOne: jest.fn().mockResolvedValue({ id: 'candidate-1', signCropUrl: 'https://s3.example/crop.jpg' }),
+      save: jest.fn().mockImplementation(async (candidate) => candidate),
+    } as any;
+    const signTypeRepo = {
+      find: jest.fn().mockResolvedValue([
+        { id: 7, signCode: 'W.227', slug: 'ROAD_WORKS', nameVi: 'Công trường', nameEn: 'Road works', isActive: true },
+      ]),
+    } as any;
+    const aiInferenceService = {
+      classifyEarly: jest.fn().mockResolvedValue({
+        top5: [
+          { classId: 7, standardCode: 'W.227', nameVi: 'Công trường', confidence: 0.82 },
+        ],
+      }),
+    } as any;
+    const service = new ReviewsService(
+      candidateRepo,
+      {} as any,
+      signTypeRepo,
+      {} as any,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      aiInferenceService,
+    );
+
+    await expect(service.getSignRemedies('candidate-1')).resolves.toEqual({
+      candidateId: 'candidate-1',
+      items: [{
+        rank: 1,
+        signTypeId: 7,
+        classId: 7,
+        standardCode: 'W.227',
+        slug: 'ROAD_WORKS',
+        nameVi: 'Công trường',
+        nameEn: 'Road works',
+        confidence: 0.82,
+        reason: 'AI top-5 classification match',
+      }],
+    });
+    expect(aiInferenceService.classifyEarly).toHaveBeenCalledWith({ mediaUrl: 'https://s3.example/crop.jpg' });
+    expect(candidateRepo.save).toHaveBeenCalledWith(expect.objectContaining({
+      possibleSigns: [expect.objectContaining({ signTypeId: 7, confidence: 0.82 })],
+    }));
+  });
+
+  it('allows a reviewer to select one persisted AI suggestion', async () => {
+    const candidate = {
+      id: 'candidate-1',
+      status: CandidateStatus.PENDING_REVIEW,
+      possibleSigns: [{ signTypeId: 7, confidence: 0.82, reason: 'AI top-5 classification match' }],
+    };
+    const candidateRepo = {
+      findOne: jest.fn().mockResolvedValue(candidate),
+      save: jest.fn().mockImplementation(async (value) => value),
+    } as any;
+    const signTypeRepo = {
+      findOne: jest.fn().mockResolvedValue({ id: 7, isActive: true }),
+    } as any;
+    const service = new ReviewsService(candidateRepo, {} as any, signTypeRepo, {} as any);
+
+    await expect(service.selectSignRemedy('reviewer-1', 'candidate-1', { signTypeId: 7 }))
+      .resolves.toMatchObject({ candidateId: 'candidate-1', selectedSignTypeId: 7, selectedBy: 'reviewer-1' });
+    expect(candidateRepo.save).toHaveBeenCalledWith(expect.objectContaining({ selectedSignTypeId: 7, selectedBy: 'reviewer-1' }));
+  });
+
+  it('rejects selection outside the persisted AI suggestions', async () => {
+    const candidateRepo = {
+      findOne: jest.fn().mockResolvedValue({ id: 'candidate-1', status: CandidateStatus.PENDING_REVIEW, possibleSigns: [{ signTypeId: 7 }] }),
+    } as any;
+    const signTypeRepo = { findOne: jest.fn().mockResolvedValue({ id: 8, isActive: true }) } as any;
+    const service = new ReviewsService(candidateRepo, {} as any, signTypeRepo, {} as any);
+
+    await expect(service.selectSignRemedy('reviewer-1', 'candidate-1', { signTypeId: 8 }))
+      .rejects.toThrow('must be one of the persisted AI suggestions');
+  });
+});
+
 describe('ReviewsService vote', () => {
   it('throws ForbiddenException when reviewer is the surveyor who uploaded the submission', async () => {
     const candidates = {
@@ -136,5 +221,1029 @@ describe('ReviewsService vote', () => {
         vote: 1,
       }),
     );
+  });
+
+  it('throws ForbiddenException when reviewer is suspended', async () => {
+    const rawQuery = jest.fn().mockResolvedValue([
+      {
+        user_id: 'suspended-user',
+        is_review_suspended: true,
+        suspended_until: new Date(Date.now() + 86400000), // tomorrow
+        suspension_reason: 'BELOW_MIN_RELIABILITY',
+      },
+    ]);
+    const candidate = {
+      id: 'cand-1',
+      status: CandidateStatus.PENDING_REVIEW,
+      submission: { surveyorId: 'other-surveyor' },
+    };
+    const candidates = {
+      findOne: jest.fn().mockResolvedValue(candidate),
+      manager: { query: rawQuery },
+    } as unknown as Repository<UnverifiedSignCandidate>;
+
+    const service = new ReviewsService(
+      candidates,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+
+    await expect(
+      service.vote('suspended-user', 'cand-1', { vote: 1 }),
+    ).rejects.toThrow('REVIEW_PRIVILEGES_SUSPENDED: BELOW_MIN_RELIABILITY');
+  });
+
+  it('automatically lifts suspension when cooldown period has expired', async () => {
+    const rawQuery = jest.fn().mockImplementation(async (sql: string) => {
+      if (sql.includes('SELECT * FROM reviewer_profiles')) {
+        return [
+          {
+            user_id: 'cooldown-user',
+            is_review_suspended: true,
+            suspended_until: new Date(Date.now() - 86400000), // yesterday
+            suspension_reason: 'CONSECUTIVE_ERRORS',
+          },
+        ];
+      }
+      return [];
+    });
+    const candidate = {
+      id: 'cand-1',
+      status: CandidateStatus.PENDING_REVIEW,
+      submission: { surveyorId: 'other-surveyor' },
+    };
+    const candidates = {
+      findOne: jest.fn().mockResolvedValue(candidate),
+      manager: { query: rawQuery },
+    } as unknown as Repository<UnverifiedSignCandidate>;
+    const createdReview = { id: 'rev-1', vote: 1 };
+    const reviews = {
+      findOne: jest.fn().mockResolvedValue(null),
+      create: jest.fn().mockReturnValue(createdReview),
+      save: jest.fn().mockResolvedValue(createdReview),
+    } as unknown as Repository<CandidateReview>;
+    const consensus = {
+      evaluate: jest.fn().mockResolvedValue(null),
+    } as unknown as ConsensusService;
+
+    const service = new ReviewsService(
+      candidates,
+      reviews,
+      {} as any,
+      consensus,
+    );
+
+    const result = await service.vote('cooldown-user', 'cand-1', { vote: 1 });
+    expect(result.review).toEqual(createdReview);
+    expect(rawQuery).toHaveBeenCalledWith(
+      expect.stringContaining('UPDATE reviewer_profiles'),
+      ['cooldown-user'],
+    );
+  });
+});
+
+describe('ReviewsService getMyStats (Phase 4 Governance)', () => {
+  it('returns Phase 4 reliability governance statistics', async () => {
+    const rawQuery = jest.fn().mockResolvedValue([
+      {
+        user_id: 'rev-1',
+        reliability_score: 92.5,
+        total_correct_votes: 37,
+        total_false_votes: 3,
+        consecutive_errors: 0,
+        is_provisional: false,
+        is_review_suspended: false,
+      },
+    ]);
+    const candidates = {
+      manager: { query: rawQuery },
+    } as unknown as Repository<UnverifiedSignCandidate>;
+    const reviews = {
+      count: jest.fn().mockResolvedValue(40),
+      find: jest.fn().mockResolvedValue([]),
+    } as unknown as Repository<CandidateReview>;
+
+    const service = new ReviewsService(
+      candidates,
+      reviews,
+      {} as any,
+      {} as any,
+    );
+
+    const stats = await service.getMyStats('rev-1');
+    expect(stats.reliabilityScore).toBe(92.5);
+    expect(stats.totalCorrect).toBe(37);
+    expect(stats.totalFalse).toBe(3);
+    expect(stats.isProvisional).toBe(false);
+    expect(stats.isSuspended).toBe(false);
+    expect(stats.consecutiveErrors).toBe(0);
+  });
+});
+
+describe('ReviewsService undoVote', () => {
+  it('throws NotFoundException if no vote exists', async () => {
+    const reviews = {
+      findOne: jest.fn().mockResolvedValue(null),
+    } as unknown as Repository<CandidateReview>;
+    const service = new ReviewsService({} as any, reviews, {} as any, {} as any);
+    await expect(service.undoVote('rev-1', 'c-1')).rejects.toThrow();
+  });
+
+  it('throws BadRequestException if candidate already finalized', async () => {
+    const reviews = {
+      findOne: jest.fn().mockResolvedValue({ id: 'r-1' }),
+    } as unknown as Repository<CandidateReview>;
+    const candidates = {
+      findOne: jest.fn().mockResolvedValue({ id: 'c-1', status: CandidateStatus.VERIFIED }),
+    } as unknown as Repository<UnverifiedSignCandidate>;
+    const service = new ReviewsService(candidates, reviews, {} as any, {} as any);
+    await expect(service.undoVote('rev-1', 'c-1')).rejects.toThrow();
+  });
+
+  it('deletes review when candidate is still in review', async () => {
+    const reviews = {
+      findOne: jest.fn().mockResolvedValue({ id: 'r-1' }),
+      delete: jest.fn().mockResolvedValue({ affected: 1 }),
+    } as unknown as Repository<CandidateReview>;
+    const candidates = {
+      findOne: jest.fn().mockResolvedValue({ id: 'c-1', status: CandidateStatus.PENDING_REVIEW }),
+    } as unknown as Repository<UnverifiedSignCandidate>;
+    const service = new ReviewsService(candidates, reviews, {} as any, {} as any);
+    const res = await service.undoVote('rev-1', 'c-1');
+    expect(res).toEqual({ undone: true, candidateId: 'c-1', reviewerId: 'rev-1' });
+    expect(reviews.delete).toHaveBeenCalledWith({ candidateId: 'c-1', reviewerId: 'rev-1' });
+  });
+});
+
+describe('ReviewsService reportCandidate', () => {
+  it('rejects empty reason or missing candidate', async () => {
+    const service = new ReviewsService({ findOne: jest.fn().mockResolvedValue(null) } as any, {} as any, {} as any, {} as any);
+    await expect(service.reportCandidate('rev-1', 'c-1', { reason: '' })).rejects.toThrow();
+    await expect(service.reportCandidate('rev-1', 'c-1', { reason: 'suspicious' })).rejects.toThrow();
+  });
+
+  it('creates moderation case if not already reported', async () => {
+    const rawQuery = jest.fn()
+      .mockResolvedValueOnce([]) // not already reported
+      .mockResolvedValueOnce([{ id: 'case-1' }]) // insert moderation case
+      .mockResolvedValueOnce([]) // insert action
+      .mockResolvedValueOnce([]); // insert flag
+    const candidates = {
+      findOne: jest.fn().mockResolvedValue({ id: 'c-1' }),
+      manager: { query: rawQuery },
+    } as unknown as Repository<UnverifiedSignCandidate>;
+    const service = new ReviewsService(candidates, {} as any, {} as any, {} as any);
+    const res = await service.reportCandidate('rev-1', 'c-1', { reason: 'Spam sign' });
+    expect(res).toBeDefined();
+    expect(rawQuery).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO moderation_cases'),
+      ['c-1'],
+    );
+  });
+});
+
+describe('ReviewsService test helpers', () => {
+  it('testReviewCandidate prepares profile, records vote, and triggers single-reviewer consensus', async () => {
+    const rawQuery = jest.fn().mockResolvedValue([]);
+    const candidate = {
+      id: 'cand-test-1',
+      status: CandidateStatus.PENDING_REVIEW,
+      submission: { surveyorId: 'rev-test-1' }, // same as reviewer (self-review testing)
+    };
+    const candidates = {
+      findOne: jest.fn().mockResolvedValue(candidate),
+      update: jest.fn().mockResolvedValue(undefined),
+      manager: { query: rawQuery },
+    } as unknown as Repository<UnverifiedSignCandidate>;
+    const reviews = {
+      delete: jest.fn().mockResolvedValue(undefined),
+      create: jest.fn((val) => val),
+      save: jest.fn(async (val) => ({ ...val, id: 'review-1' })),
+    } as unknown as Repository<CandidateReview>;
+    const consensus = {
+      evaluate: jest.fn().mockResolvedValue({ id: 'log-test-1', finalOutcome: 'APPROVED' }),
+    } as unknown as ConsensusService;
+
+    const service = new ReviewsService(candidates, reviews, {} as any, consensus);
+
+    const result = await service.testReviewCandidate('cand-test-1', 'rev-test-1', {
+      vote: 1,
+      suggestedSignTypeId: 5,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.candidateId).toBe('cand-test-1');
+    expect(result.reviewerId).toBe('rev-test-1');
+    expect(result.consensusLog).toEqual({ id: 'log-test-1', finalOutcome: 'APPROVED' });
+    expect(rawQuery).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO reviewer_profiles'),
+      ['rev-test-1'],
+    );
+    expect(reviews.delete).toHaveBeenCalledWith({ candidateId: 'cand-test-1', reviewerId: 'rev-test-1' });
+    expect(consensus.evaluate).toHaveBeenCalledWith('cand-test-1');
+  });
+
+  it('directCandidatesToReviewer resets candidate status and clears skips/reviews for reviewer', async () => {
+    const rawQuery = jest.fn().mockResolvedValue([]);
+    const candidates = {
+      find: jest.fn().mockResolvedValue([{ id: 'c-1' }, { id: 'c-2' }]),
+      manager: { query: rawQuery },
+    } as unknown as Repository<UnverifiedSignCandidate>;
+
+    const service = new ReviewsService(candidates, {} as any, {} as any, {} as any);
+
+    const result = await service.directCandidatesToReviewer('rev-test-1', ['c-1', 'c-2']);
+
+    expect(result.success).toBe(true);
+    expect(result.assignedCount).toBe(2);
+    expect(rawQuery).toHaveBeenCalledWith(
+      expect.stringContaining('DELETE FROM reviewer_skipped_candidates'),
+      ['rev-test-1', ['c-1', 'c-2']],
+    );
+    expect(rawQuery).toHaveBeenCalledWith(
+      expect.stringContaining('DELETE FROM candidate_reviews'),
+      ['rev-test-1', ['c-1', 'c-2']],
+    );
+    expect(rawQuery).toHaveBeenCalledWith(
+      expect.stringContaining("UPDATE unverified_sign_candidates SET status = 'PENDING_REVIEW'"),
+      [['c-1', 'c-2']],
+    );
+  });
+
+  describe('requestRecapture', () => {
+    it('throws NotFoundException when candidate does not exist', async () => {
+      const candidates = {
+        findOne: jest.fn().mockResolvedValue(null),
+      } as unknown as Repository<UnverifiedSignCandidate>;
+      const service = new ReviewsService(candidates, {} as any, {} as any, {} as any);
+
+      await expect(
+        service.requestRecapture('rev-1', 'cand-404', { reason: 'BLURRY' }),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('throws BadRequestException when candidate status is already VERIFIED, REJECTED, or RECAPTURE_REQUESTED', async () => {
+      const candidates = {
+        findOne: jest.fn().mockResolvedValue({
+          id: 'cand-1',
+          status: CandidateStatus.VERIFIED,
+        }),
+      } as unknown as Repository<UnverifiedSignCandidate>;
+      const service = new ReviewsService(candidates, {} as any, {} as any, {} as any);
+
+      await expect(
+        service.requestRecapture('rev-1', 'cand-1', { reason: 'BLURRY' }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('throws ForbiddenException when reviewer is the surveyor and allowSelfReview is false', async () => {
+      const candidates = {
+        findOne: jest.fn().mockResolvedValue({
+          id: 'cand-1',
+          status: CandidateStatus.PENDING_REVIEW,
+          submission: { surveyorId: 'rev-1' },
+        }),
+      } as unknown as Repository<UnverifiedSignCandidate>;
+      const service = new ReviewsService(candidates, {} as any, {} as any, {} as any);
+
+      await expect(
+        service.requestRecapture('rev-1', 'cand-1', { reason: 'BLURRY' }, false),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('rejects a missing or ambiguous Missing Type Report association', async () => {
+      const candidates = {
+        findOne: jest.fn().mockResolvedValue({
+          id: 'cand-1', status: CandidateStatus.MISSING_TYPE_HOLD,
+          submission: { surveyorId: 'surv-1' },
+        }),
+        manager: { query: jest.fn()
+          .mockResolvedValueOnce([{ status: CandidateStatus.MISSING_TYPE_HOLD }])
+          .mockResolvedValueOnce([])
+          .mockResolvedValueOnce([{ id: 'r1' }, { id: 'r2' }]) },
+      } as any;
+      const service = new ReviewsService(candidates, {} as any, {} as any, {} as any);
+      await expect(service.requestRecapture('rev-1', 'cand-1', { reason: 'BLURRY' }))
+        .rejects.toThrow('expected exactly one INCOMPLETE');
+    });
+
+    it('successfully creates recapture request, updates candidate status, and dispatches notification', async () => {
+      const rawQuery = jest.fn()
+        .mockResolvedValueOnce([{ status: CandidateStatus.PENDING_REVIEW }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'report-1', status: 'INCOMPLETE' }])
+        .mockResolvedValueOnce({ rowCount: 1 })
+        .mockResolvedValueOnce([{ id: 'req-1', missing_type_report_id: 'report-1' }])
+        .mockResolvedValue([]);
+      const candidates = {
+        findOne: jest.fn().mockResolvedValue({
+          id: 'cand-1',
+          status: CandidateStatus.PENDING_REVIEW,
+          submission: { surveyorId: 'surv-1' },
+          predictedSignType: { nameVi: 'Biển báo nguy hiểm' },
+        }),
+        update: jest.fn().mockResolvedValue({ affected: 1 }),
+        manager: { query: rawQuery },
+      } as unknown as Repository<UnverifiedSignCandidate>;
+
+      const recaptureRepo = {
+        create: jest.fn((dto) => dto),
+        save: jest.fn(async (dto) => ({ id: 'req-1', ...dto, createdAt: new Date() })),
+      } as any;
+
+      const notifications = {
+        create: jest.fn().mockResolvedValue({ id: 'notif-1' }),
+      } as any;
+
+      const dailyTasks = {
+        recordProgress: jest.fn().mockResolvedValue(undefined),
+      } as any;
+
+      const service = new ReviewsService(
+        candidates,
+        {} as any,
+        {} as any,
+        {} as any,
+        undefined,
+        undefined,
+        dailyTasks,
+        recaptureRepo,
+        notifications,
+      );
+
+      const res = await service.requestRecapture(
+        'rev-1',
+        'cand-1',
+        { reason: 'BLURRY', note: 'Too dark to verify sign' },
+        false,
+      );
+
+      expect(res.success).toBe(true);
+      expect(res.candidateId).toBe('cand-1');
+      expect(res.status).toBe(CandidateStatus.RECAPTURE_REQUESTED);
+      expect(res.surveyorId).toBe('surv-1');
+      expect(res.notificationSent).toBe(true);
+
+      expect(rawQuery).toHaveBeenCalledWith(
+        expect.stringContaining('missing_type_report_id'),
+        ['cand-1', 'rev-1', 'surv-1', 'report-1', 'BLURRY', 'Too dark to verify sign', null],
+      );
+      expect(notifications.create).toHaveBeenCalledWith(
+        'surv-1',
+        'IMAGE_RECAPTURE_REQUESTED',
+        'Yêu cầu chụp lại ảnh biển báo',
+        expect.stringContaining('Biển báo nguy hiểm quá mờ hoặc khó xác định (BLURRY: Too dark to verify sign)'),
+        'candidate',
+        'cand-1',
+      );
+      expect(dailyTasks.recordProgress).toHaveBeenCalledWith('rev-1', 'REVIEW', 1);
+    });
+
+    it('translates the active-request unique constraint into a domain conflict', async () => {
+      const rawQuery = jest.fn()
+        .mockResolvedValueOnce([{ status: CandidateStatus.PENDING_REVIEW }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'report-1', status: 'INCOMPLETE' }])
+        .mockResolvedValueOnce({ rowCount: 1 })
+        .mockRejectedValueOnce({ code: '23505', detail: 'uq_candidate_recapture_requests_one_active' });
+      const candidates = {
+        findOne: jest.fn().mockResolvedValue({ id: 'cand-1', status: CandidateStatus.PENDING_REVIEW, submission: { surveyorId: 'surv-1' } }),
+        manager: { query: rawQuery },
+      } as any;
+      const service = new ReviewsService(candidates, {} as any, {} as any, {} as any);
+      await expect(service.requestRecapture('rev-1', 'cand-1', { reason: 'BLURRY' }))
+        .rejects.toThrow('active recapture request already exists');
+    });
+
+    it('allows recapture request when allowSelfReview is true even if reviewer is surveyor', async () => {
+      const candidates = {
+        findOne: jest.fn().mockResolvedValue({
+          id: 'cand-1',
+          status: CandidateStatus.PENDING_REVIEW,
+          submission: { surveyorId: 'rev-admin' },
+        }),
+        update: jest.fn().mockResolvedValue({ affected: 1 }),
+        manager: { query: jest.fn()
+          .mockResolvedValueOnce([{ status: CandidateStatus.PENDING_REVIEW }])
+          .mockResolvedValueOnce([])
+          .mockResolvedValueOnce([{ id: 'report-admin', status: 'INCOMPLETE' }])
+          .mockResolvedValueOnce({ rowCount: 1 })
+          .mockResolvedValueOnce([{ id: 'req-admin', missing_type_report_id: 'report-admin' }])
+          .mockResolvedValue([]) },
+      } as unknown as Repository<UnverifiedSignCandidate>;
+
+      const recaptureRepo = {
+        create: jest.fn((dto) => dto),
+        save: jest.fn(async (dto) => ({ id: 'req-admin', ...dto })),
+      } as any;
+
+      const service = new ReviewsService(
+        candidates,
+        {} as any,
+        {} as any,
+        {} as any,
+        undefined,
+        undefined,
+        undefined,
+        recaptureRepo,
+        undefined,
+      );
+
+      const res = await service.requestRecapture(
+        'rev-admin',
+        'cand-1',
+        { reason: 'OBSCURED' },
+        true,
+      );
+
+      expect(res.success).toBe(true);
+      expect(candidates.manager.query).toHaveBeenCalledWith(
+        expect.stringContaining("SET status = 'RECAPTURE_REQUESTED'"),
+        ['cand-1'],
+      );
+    });
+
+    it('replays an existing recapture request for the same idempotency key', async () => {
+      const existing = {
+        id: 'req-existing',
+        candidate_id: 'cand-1',
+        surveyor_id: 'surv-1',
+        missing_type_report_id: 'report-1',
+        completed_at: null,
+      };
+      const rawQuery = jest.fn().mockResolvedValue([existing]);
+      const candidates = {
+        findOne: jest.fn().mockResolvedValue({
+          id: 'cand-1',
+          status: CandidateStatus.PENDING_REVIEW,
+          submission: { surveyorId: 'surv-1' },
+        }),
+        manager: { query: rawQuery },
+      } as any;
+      const service = new ReviewsService(candidates, {} as any, {} as any, {} as any);
+
+      const result = await service.requestRecapture(
+        'rev-1',
+        'cand-1',
+        { reason: 'BLURRY', idempotencyKey: 'recapture-retry-1' },
+      );
+
+      expect(result).toMatchObject({
+        success: true,
+        candidateId: 'cand-1',
+        missingTypeReportId: 'report-1',
+      });
+      expect(rawQuery).toHaveBeenCalledWith(
+        expect.stringContaining('idempotency_key = $2'),
+        ['rev-1', 'recapture-retry-1'],
+      );
+    });
+  });
+
+  describe('getRecapturesForCandidate and getMyRecaptures', () => {
+    it('getRecapturesForCandidate queries recaptureRepo when provided', async () => {
+      const recaptureRepo = {
+        find: jest.fn().mockResolvedValue([{ id: 'req-1', reason: 'BLURRY' }]),
+      } as any;
+      const service = new ReviewsService(
+        {} as any,
+        {} as any,
+        {} as any,
+        {} as any,
+        undefined,
+        undefined,
+        undefined,
+        recaptureRepo,
+      );
+
+      const res = await service.getRecapturesForCandidate('cand-1');
+      expect(res).toEqual([{ id: 'req-1', reason: 'BLURRY' }]);
+      expect(recaptureRepo.find).toHaveBeenCalledWith({
+        where: { candidateId: 'cand-1' },
+        order: { createdAt: 'DESC' },
+      });
+    });
+
+    it('getMyRecaptures queries and returns paginated list of surveyor recaptures', async () => {
+      const rawQuery = jest
+        .fn()
+        .mockResolvedValueOnce([{ cnt: 1 }])
+        .mockResolvedValueOnce([
+          {
+            request_id: 'req-1',
+            candidate_id: 'cand-1',
+            reason: 'POOR_LIGHTING',
+            note: 'Night photo',
+            sign_crop_url: 'https://s3/crop.jpg',
+            latitude: 10.7,
+            longitude: 106.6,
+          },
+        ]);
+
+      const candidates = {
+        manager: { query: rawQuery },
+      } as unknown as Repository<UnverifiedSignCandidate>;
+
+      const service = new ReviewsService(candidates, {} as any, {} as any, {} as any);
+
+      const res = await service.getMyRecaptures('surv-1', 1, 10);
+      expect(res.total).toBe(1);
+      expect(res.page).toBe(1);
+      expect(res.pageSize).toBe(10);
+      expect(res.totalPages).toBe(1);
+      expect(res.items).toHaveLength(1);
+      expect(res.items[0].reason).toBe('POOR_LIGHTING');
+      expect(rawQuery).toHaveBeenCalledWith(
+        expect.stringContaining('crr.surveyor_id = $1'),
+        ['surv-1', null, null, 5000, 10, 0],
+      );
+    });
+
+    it('lists nearby open recapture quests using the surveyor GPS', async () => {
+      const rawQuery = jest.fn()
+        .mockResolvedValueOnce([{ cnt: 1 }])
+        .mockResolvedValueOnce([{ request_id: 'open-1', candidate_id: 'cand-1' }]);
+      const service = new ReviewsService(
+        { manager: { query: rawQuery } } as unknown as Repository<UnverifiedSignCandidate>,
+        {} as any,
+        {} as any,
+        {} as any,
+      );
+
+      await service.getMyRecaptures('surv-1', 1, 10, 10.7, 106.6);
+
+      expect(rawQuery).toHaveBeenCalledWith(
+        expect.stringContaining('ST_DistanceSphere'),
+        ['surv-1', 106.6, 10.7, 5000, 10, 0],
+      );
+      expect(rawQuery.mock.calls[1][0]).toContain('crr.surveyor_id IS NULL');
+    });
+
+    it('requires both valid coordinates before listing open quests', async () => {
+      const rawQuery = jest.fn();
+      const service = new ReviewsService(
+        { manager: { query: rawQuery } } as unknown as Repository<UnverifiedSignCandidate>,
+        {} as any,
+        {} as any,
+        {} as any,
+      );
+
+      await expect(service.getMyRecaptures('surv-1', 1, 10, 10.7)).rejects.toThrow(
+        'latitude and longitude must be provided together',
+      );
+      await expect(service.getMyRecaptures('surv-1', 1, 10, 91, 106.6)).rejects.toThrow(
+        'Invalid latitude/longitude',
+      );
+      expect(rawQuery).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('submitRecapture', () => {
+    const image = (name: string): Express.Multer.File => ({
+      fieldname: name,
+      originalname: `${name}.jpg`,
+      encoding: '7bit',
+      mimetype: 'image/jpeg',
+      size: 4,
+      destination: '',
+      filename: `${name}.jpg`,
+      path: '',
+      buffer: Buffer.from([0xff, 0xd8, 0xff, 0xe0]),
+      stream: undefined as any,
+    });
+
+    function buildSubmitService(overrides: any = {}) {
+      const txQuery = jest.fn()
+        .mockResolvedValueOnce([{ status: CandidateStatus.RECAPTURE_REQUESTED, request_id: 'req-1', missing_type_report_id: 'report-1', report_status: 'INCOMPLETE' }])
+        .mockResolvedValueOnce({ rowCount: 1 })
+        .mockResolvedValueOnce({ rowCount: 1 })
+        .mockResolvedValueOnce({ rowCount: 1 })
+        .mockResolvedValueOnce({ rowCount: 1 });
+      const managerQuery = jest.fn()
+        .mockResolvedValueOnce([
+          { id: 'req-1', missing_type_report_id: 'report-1', completed_at: null, surveyor_id: 'surveyor-2' },
+        ])
+        .mockResolvedValue([{ distance_meters: 10 }]);
+      const candidates = {
+        findOne: jest.fn().mockResolvedValue({
+          id: 'cand-1',
+          status: CandidateStatus.RECAPTURE_REQUESTED,
+          submission: { surveyorId: 'original-surveyor' },
+        }),
+        manager: { query: managerQuery },
+      } as any;
+      const storage = {
+        bucketForMediaType: jest.fn().mockReturnValue('stm-sign-crops'),
+        putObject: jest.fn().mockResolvedValue(undefined),
+        removeObjects: jest.fn().mockResolvedValue(undefined),
+      } as any;
+      const dataSource = {
+        transaction: jest.fn(async (callback: any) => callback({ query: txQuery })),
+      } as any;
+      const service = new ReviewsService(candidates, {} as any, {} as any, {} as any, undefined, undefined, undefined, undefined, undefined, dataSource, storage);
+      return { service, candidates, storage, dataSource, txQuery, managerQuery, ...overrides };
+    }
+
+    it('assigns recapture to a new surveyor and updates the report, evidence, and location', async () => {
+      const { service, storage, txQuery } = buildSubmitService();
+      const result = await service.submitRecapture('surveyor-2', 'cand-1', {
+        latitude: 10.77,
+        longitude: 106.7,
+      }, {
+        signCrop: [image('sign-crop')],
+        bestFrame: [image('best-frame')],
+      });
+      expect(result.status).toBe(CandidateStatus.MISSING_TYPE_HOLD);
+      expect(result.missingTypeReportId).toBe('report-1');
+      expect(storage.putObject).toHaveBeenCalledTimes(2);
+      expect(txQuery).toHaveBeenCalledWith(
+        expect.stringContaining('SET sign_crop_url = $1, best_frame_url = $2'),
+        [
+          expect.stringContaining('recaptures/cand-1/req-1/sign-crop-'),
+          expect.stringContaining('recaptures/cand-1/req-1/best-frame-'),
+          'cand-1',
+        ],
+      );
+      expect(txQuery).toHaveBeenCalledWith(
+        expect.stringContaining('SET reporter_id = $1, status = \'PENDING\''),
+        ['surveyor-2', 'report-1', 'cand-1'],
+      );
+      expect(txQuery).toHaveBeenCalledWith(
+        expect.stringContaining('SET sign_location = ST_SetSRID(ST_MakePoint($1, $2), 4326)'),
+        [106.7, 10.77, 'cand-1'],
+      );
+      expect(txQuery).toHaveBeenCalledWith(
+        expect.stringContaining('completed_at = NOW()'),
+        ['req-1', null, 'surveyor-2'],
+      );
+    });
+
+    it('lets a surveyor complete an open nearby quest and assigns it atomically', async () => {
+      const { service, managerQuery, txQuery } = buildSubmitService();
+      managerQuery.mockReset()
+        .mockResolvedValueOnce([{
+          id: 'req-1',
+          missing_type_report_id: 'report-1',
+          completed_at: null,
+          surveyor_id: null,
+        }])
+        .mockResolvedValueOnce([{ distance_meters: 10 }]);
+
+      const result = await service.submitRecapture('surveyor-3', 'cand-1', {
+        latitude: 10.77,
+        longitude: 106.7,
+      }, {
+        signCrop: [image('sign-crop')],
+        bestFrame: [image('best-frame')],
+      });
+
+      expect(result.success).toBe(true);
+      expect(txQuery).toHaveBeenCalledWith(
+        expect.stringContaining('crr.surveyor_id IS NULL'),
+        ['cand-1', 'req-1', 'surveyor-3'],
+      );
+      expect(txQuery).toHaveBeenCalledWith(
+        expect.stringContaining('SET surveyor_id = $3, completed_at = NOW()'),
+        ['req-1', null, 'surveyor-3'],
+      );
+    });
+
+    it('rejects a surveyor who is not assigned to the recapture before storage', async () => {
+      const { service, storage, managerQuery } = buildSubmitService();
+      managerQuery.mockReset().mockResolvedValueOnce([]);
+      await expect(service.submitRecapture('other-surveyor', 'cand-1', { latitude: 10.77, longitude: 106.7 }, {
+        signCrop: [image('sign-crop')], bestFrame: [image('best-frame')],
+      })).rejects.toThrow('does not have exactly one active recapture request assigned to or open for this surveyor');
+      expect(storage.putObject).not.toHaveBeenCalled();
+    });
+
+    it('rejects missing, duplicate, or invalid media safely', async () => {
+      const { service, storage } = buildSubmitService();
+      await expect(service.submitRecapture('surveyor-1', 'cand-1', { latitude: 10.77, longitude: 106.7 }, { signCrop: [image('sign-crop')] })).rejects.toThrow('Both signCrop');
+      await expect(service.submitRecapture('surveyor-1', 'cand-1', { latitude: 10.77, longitude: 106.7 }, {
+        signCrop: [{ ...image('sign-crop'), buffer: Buffer.from('not-image') }], bestFrame: [image('best-frame')],
+      })).rejects.toThrow('does not match any accepted image signature');
+      expect(storage.putObject).not.toHaveBeenCalled();
+    });
+
+    it('cleans newly uploaded objects when persistence fails', async () => {
+      const { service, storage, dataSource } = buildSubmitService();
+      dataSource.transaction.mockRejectedValueOnce(new Error('database unavailable'));
+      await expect(service.submitRecapture('surveyor-1', 'cand-1', { latitude: 10.77, longitude: 106.7 }, {
+        signCrop: [image('sign-crop')], bestFrame: [image('best-frame')],
+      })).rejects.toThrow('database unavailable');
+      expect(storage.removeObjects).toHaveBeenCalledWith(expect.arrayContaining([
+        expect.objectContaining({ bucket: 'stm-sign-crops' }),
+      ]));
+    });
+
+    it('cleans uploaded evidence when the storage provider fails mid-upload', async () => {
+      const { service, storage } = buildSubmitService();
+      storage.putObject.mockRejectedValueOnce(new Error('storage unavailable'));
+      await expect(service.submitRecapture('surveyor-1', 'cand-1', { latitude: 10.77, longitude: 106.7 }, {
+        signCrop: [image('sign-crop')], bestFrame: [image('best-frame')],
+      })).rejects.toThrow('storage unavailable');
+      expect(storage.removeObjects).toHaveBeenCalled();
+    });
+
+    it('rejects a recapture location beyond the 100m geofence before storage', async () => {
+      const { service, storage, managerQuery } = buildSubmitService();
+      managerQuery.mockReset();
+      managerQuery
+        .mockResolvedValueOnce([{ id: 'req-1', missing_type_report_id: 'report-1', completed_at: null }])
+        .mockResolvedValueOnce([{ distance_meters: 100.01 }]);
+      await expect(service.submitRecapture('surveyor-1', 'cand-1', { latitude: 10.77, longitude: 106.7 }, {
+        signCrop: [image('sign-crop')], bestFrame: [image('best-frame')],
+      })).rejects.toThrow('Vị trí chụp lại không trùng khớp với vị trí biển báo gốc');
+      expect(storage.putObject).not.toHaveBeenCalled();
+    });
+
+    it('rejects missing or invalid coordinates before the geofence query', async () => {
+      const { service, storage, managerQuery } = buildSubmitService();
+      await expect(service.submitRecapture('surveyor-1', 'cand-1', { latitude: Number.NaN, longitude: 106.7 }, {
+        signCrop: [image('sign-crop')], bestFrame: [image('best-frame')],
+      })).rejects.toThrow('Invalid latitude/longitude');
+      expect(managerQuery).toHaveBeenCalledTimes(1);
+      expect(storage.putObject).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when the candidate has no original sign location', async () => {
+      const { service, storage, managerQuery } = buildSubmitService();
+      managerQuery.mockReset();
+      managerQuery
+        .mockResolvedValueOnce([{ id: 'req-1', missing_type_report_id: 'report-1', completed_at: null }])
+        .mockResolvedValueOnce([]);
+      await expect(service.submitRecapture('surveyor-1', 'cand-1', { latitude: 10.77, longitude: 106.7 }, {
+        signCrop: [image('sign-crop')], bestFrame: [image('best-frame')],
+      })).rejects.toThrow('no valid original sign location');
+      expect(storage.putObject).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getCandidateDetail & top 5 possible signs', () => {
+    it('returns top 5 possible signs mapped from AI model with catalog metadata and aliases', async () => {
+      const rawCandidate = {
+        id: 'cand-ai-1',
+        signCropUrl: 'stm-sign-crops/crop-1.jpg',
+        confidenceScore: 0.98,
+        predictedSignTypeId: 102,
+        predictedSignType: {
+          id: 102,
+          signCode: 'P.102',
+          nameVi: 'Cấm đi ngược chiều',
+          nameEn: 'No entry',
+        },
+        submissionId: 'sub-1',
+      };
+
+      const aiInferenceService = {
+        classifyEarly: jest.fn().mockResolvedValue({
+          status: 'success',
+          top5: [
+            { classId: 102, standardCode: 'P.102', className: 'P.102', confidence: 0.982, classifyConfidence: 0.982, nameVi: 'Cấm đi ngược chiều' },
+            { classId: 130, standardCode: 'P.130', className: 'P.130', confidence: 0.012, classifyConfidence: 0.012, nameVi: 'Cấm dừng và đỗ xe' },
+            { classId: 131, standardCode: 'P.131a', className: 'P.131a', confidence: 0.003, classifyConfidence: 0.003, nameVi: 'Cấm đỗ xe' },
+            { classId: 123, standardCode: 'P.123a', className: 'P.123a', confidence: 0.002, classifyConfidence: 0.002, nameVi: 'Cấm rẽ trái' },
+            { classId: 124, standardCode: 'P.124a', className: 'P.124a', confidence: 0.001, classifyConfidence: 0.001, nameVi: 'Cấm quay đầu' },
+          ],
+        }),
+      };
+
+      const managerQuery = jest.fn().mockImplementation(async (sql: string, params: any[]) => {
+        if (sql.includes('survey_submissions')) {
+          return [{ surveyor_id: 'surv-1', captured_at: new Date() }];
+        }
+        if (sql.includes('candidate_geo_estimations')) {
+          return [{ lon: '106.68', lat: '10.76', traffic_direction: 90 }];
+        }
+        if (sql.includes('SELECT possible_signs FROM unverified_sign_candidates')) {
+          return [{ possible_signs: null }];
+        }
+        if (sql.includes('traffic_sign_types') && sql.includes('UPPER(t.sign_code) = UPPER($1)')) {
+          const code = params?.[0];
+          return [
+            {
+              id: code === 'P.102' ? 102 : code === 'P.130' ? 130 : code === 'P.131a' ? 131 : code === 'P.123a' ? 123 : 124,
+              sign_code: code,
+              name_vi: `Tên ${code}`,
+              name_en: `Name ${code}`,
+              representative_image: `https://s3.signmap.site/types/${code}.png`,
+            },
+          ];
+        }
+        if (sql.includes('UPDATE unverified_sign_candidates SET possible_signs')) {
+          return [];
+        }
+        return [];
+      });
+
+      const candidates = {
+        findOne: jest.fn().mockResolvedValue(rawCandidate),
+        manager: { query: managerQuery },
+      } as unknown as Repository<UnverifiedSignCandidate>;
+
+      const reviews = {
+        count: jest.fn().mockResolvedValue(2),
+      } as unknown as Repository<CandidateReview>;
+
+      const service = new ReviewsService(
+        candidates,
+        reviews,
+        {} as any,
+        {} as any,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        aiInferenceService as any,
+      );
+
+      const result = await service.getCandidateDetail('cand-ai-1');
+
+      expect(result).toBeDefined();
+      expect(aiInferenceService.classifyEarly).toHaveBeenCalledWith({
+        mediaUrl: 'https://s3.signmap.site/stm-sign-crops/crop-1.jpg',
+        signId: 'cand-ai-1',
+      });
+
+      // Verify 5 possible signs returned
+      expect(result.possibleSigns).toHaveLength(5);
+      expect(result.possibleSigns[0].signCode).toBe('P.102');
+      expect(result.possibleSigns[0].confidence).toBe(0.982);
+      expect(result.possibleSigns[1].signCode).toBe('P.130');
+
+      // Verify aliases on result
+      expect(result.top5).toEqual(result.possibleSigns);
+      expect(result.remedySigns).toEqual(result.possibleSigns);
+      expect(result.predictedSignTypes).toEqual(result.possibleSigns);
+
+      // Verify candidate object has aliases and preserving predictedSignType
+      expect(result.candidate.possibleSigns).toEqual(result.possibleSigns);
+      expect(result.candidate.top5).toEqual(result.possibleSigns);
+      expect(result.candidate.remedySigns).toEqual(result.possibleSigns);
+      expect(result.candidate.predictedSignType).toBeDefined();
+      expect(result.candidate.predictedSignType.signCode).toBe('P.102');
+
+      // Verify persisted to DB
+      expect(managerQuery).toHaveBeenCalledWith(
+        expect.stringContaining('UPDATE unverified_sign_candidates SET possible_signs'),
+        [expect.any(String), 'cand-ai-1'],
+      );
+    });
+
+    it('falls back to 5 catalog-backed signs when AI service fails or returns null', async () => {
+      const rawCandidate = {
+        id: 'cand-fallback-1',
+        signCropUrl: 'https://s3.signmap.site/stm-sign-crops/crop-2.jpg',
+        confidenceScore: 0.95,
+        predictedSignTypeId: 102,
+        predictedSignType: {
+          id: 102,
+          signCode: 'P.102',
+          nameVi: 'Cấm đi ngược chiều',
+          nameEn: 'No entry',
+        },
+        submissionId: 'sub-2',
+      };
+
+      const aiInferenceService = {
+        classifyEarly: jest.fn().mockRejectedValue(new Error('AI server offline')),
+      };
+
+      const managerQuery = jest.fn().mockImplementation(async (sql: string) => {
+        if (sql.includes('SELECT possible_signs FROM unverified_sign_candidates')) {
+          return [{ possible_signs: null }];
+        }
+        if (sql.includes('SELECT image_url FROM sign_type_images')) {
+          return [{ image_url: 'https://s3.signmap.site/types/P102.png' }];
+        }
+        if (sql.includes('SELECT t.id, t.sign_code, t.name_vi, t.name_en')) {
+          return [
+            { id: 130, sign_code: 'P.130', name_vi: 'Cấm dừng và đỗ xe', name_en: 'No stopping', representative_image: 'img1.png' },
+            { id: 131, sign_code: 'P.131a', name_vi: 'Cấm đỗ xe', name_en: 'No parking', representative_image: 'img2.png' },
+            { id: 123, sign_code: 'P.123a', name_vi: 'Cấm rẽ trái', name_en: 'No left turn', representative_image: 'img3.png' },
+            { id: 124, sign_code: 'P.124a', name_vi: 'Cấm quay đầu', name_en: 'No U-turn', representative_image: 'img4.png' },
+          ];
+        }
+        return [];
+      });
+
+      const candidates = {
+        findOne: jest.fn().mockResolvedValue(rawCandidate),
+        manager: { query: managerQuery },
+      } as unknown as Repository<UnverifiedSignCandidate>;
+
+      const service = new ReviewsService(
+        candidates,
+        { count: jest.fn().mockResolvedValue(0) } as any,
+        {} as any,
+        {} as any,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        aiInferenceService as any,
+      );
+
+      const result = await service.getCandidateDetail('cand-fallback-1');
+
+      expect(result.possibleSigns).toHaveLength(5);
+      expect(result.possibleSigns[0].id).toBe(102);
+      expect(result.possibleSigns[0].signCode).toBe('P.102');
+      expect(result.possibleSigns[1].signCode).toBe('P.130');
+      expect(result.top5).toEqual(result.possibleSigns);
+      expect(result.remedySigns).toEqual(result.possibleSigns);
+    });
+
+    it('uses cached possibleSigns without calling AI service', async () => {
+      const cached5 = [
+        { id: 1, signCode: 'S1', nameVi: 'Sign 1', nameEn: 'Sign 1', confidence: 0.9 },
+        { id: 2, signCode: 'S2', nameVi: 'Sign 2', nameEn: 'Sign 2', confidence: 0.05 },
+        { id: 3, signCode: 'S3', nameVi: 'Sign 3', nameEn: 'Sign 3', confidence: 0.02 },
+        { id: 4, signCode: 'S4', nameVi: 'Sign 4', nameEn: 'Sign 4', confidence: 0.02 },
+        { id: 5, signCode: 'S5', nameVi: 'Sign 5', nameEn: 'Sign 5', confidence: 0.01 },
+      ];
+      const rawCandidate = {
+        id: 'cand-cached-1',
+        possibleSigns: cached5,
+        submissionId: 'sub-3',
+      };
+
+      const aiInferenceService = {
+        classifyEarly: jest.fn(),
+      };
+
+      const candidates = {
+        findOne: jest.fn().mockResolvedValue(rawCandidate),
+        manager: { query: jest.fn().mockResolvedValue([]) },
+      } as unknown as Repository<UnverifiedSignCandidate>;
+
+      const service = new ReviewsService(
+        candidates,
+        { count: jest.fn().mockResolvedValue(1) } as any,
+        {} as any,
+        {} as any,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        aiInferenceService as any,
+      );
+
+      const result = await service.getCandidateDetail('cand-cached-1');
+
+      expect(result.possibleSigns).toEqual(cached5);
+      expect(aiInferenceService.classifyEarly).not.toHaveBeenCalled();
+    });
+
+    it('queue attaches 5 possible signs to each queue item', async () => {
+      const candidateItem: any = {
+        id: 'cand-q-1',
+        predictedSignTypeId: 102,
+        predictedSignType: { id: 102, signCode: 'P.102', nameVi: 'Cấm đi ngược chiều', nameEn: 'No entry' },
+      };
+
+      const query = {
+        addOrderBy: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[candidateItem], 1]),
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+      } as unknown as SelectQueryBuilder<UnverifiedSignCandidate>;
+
+      const candidates = {
+        createQueryBuilder: jest.fn().mockReturnValue(query),
+        manager: { query: jest.fn().mockResolvedValue([]) },
+      } as unknown as Repository<UnverifiedSignCandidate>;
+
+      const service = new ReviewsService(
+        candidates,
+        {} as any,
+        {} as any,
+        {} as any,
+      );
+
+      const res = await service.queue('rev-1', 1, 20);
+      expect(res.items).toHaveLength(1);
+      const item = res.items[0];
+      expect(item.possibleSigns).toHaveLength(5);
+      expect(item.top5).toHaveLength(5);
+      expect(item.remedySigns).toHaveLength(5);
+      expect(item.predictedSignTypes).toHaveLength(5);
+      expect(item.possibleSigns[0].signCode).toBe('P.102');
+    });
   });
 });

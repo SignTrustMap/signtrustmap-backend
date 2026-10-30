@@ -208,7 +208,6 @@ describe('VerifiedSignService', () => {
 
       // No recent confirmations found for cooldown
       dataSource.query
-        .mockResolvedValueOnce([]) // ensureTables
         .mockResolvedValueOnce([]) // cooldown check
         .mockResolvedValueOnce([]) // update verified_traffic_signs
         .mockResolvedValueOnce([]) // insert sign_confirmations
@@ -241,7 +240,6 @@ describe('VerifiedSignService', () => {
       repository.findById.mockResolvedValue(targetSign);
 
       dataSource.query
-        .mockResolvedValueOnce([]) // ensureTables
         .mockResolvedValueOnce([{ id: 'recent-conf-id' }]) // cooldown check matches!
         .mockResolvedValueOnce([]) // update verified_traffic_signs
         .mockResolvedValueOnce([]) // insert sign_confirmations
@@ -260,7 +258,6 @@ describe('VerifiedSignService', () => {
       repository.findById.mockResolvedValue(targetSign);
 
       dataSource.query
-        .mockResolvedValueOnce([]) // ensureTables
         .mockResolvedValueOnce([]) // insert sign_confirmations
         .mockResolvedValueOnce([]); // insert sign_lifecycle_events
 

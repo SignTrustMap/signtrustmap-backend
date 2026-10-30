@@ -161,6 +161,24 @@ describe('RouteSignQueryService', () => {
     expect(response.signs).toHaveLength(0);
   });
 
+  it('filters out non-fixed signs when onlyFixedSigns is true', async () => {
+    const fixedSign = sign('fixed-prohibitory', 10.00005, 106.002, 90);
+    fixedSign.signType.category = { id: 1, code: 'P', nameVi: 'Bien cam', nameEn: 'Prohibitory' };
+
+    const tempSign = sign('temp-roadwork', 10.00005, 106.003, 90);
+    tempSign.signType.category = { id: 5, code: 'TEMPORARY', nameVi: 'Bien tam', nameEn: 'Temporary' };
+
+    repository.findActiveAlongRoute.mockResolvedValue([fixedSign, tempSign]);
+
+    const response = await service().findAlongRoute({
+      geometry: route({ latitude: 10, longitude: 106 }, { latitude: 10, longitude: 106.01 }),
+      onlyFixedSigns: true,
+    });
+
+    expect(response.signCount).toBe(1);
+    expect(response.signs[0].sign.id).toBe('fixed-prohibitory');
+  });
+
   it('excludes signs banned for all vehicles when a vehicleType is requested', async () => {
     const bannedSign = sign('banned', 10.00005, 106.002, 90);
     bannedSign.signType.allowedVehicles = []; // e.g. id 3 – Báo nguy hiểm

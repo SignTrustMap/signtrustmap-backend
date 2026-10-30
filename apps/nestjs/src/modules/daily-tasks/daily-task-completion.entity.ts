@@ -1,4 +1,13 @@
-import { Entity, PrimaryGeneratedColumn, Column, ManyToOne, JoinColumn, Unique } from 'typeorm';
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  ManyToOne,
+  JoinColumn,
+  Unique,
+  CreateDateColumn,
+  UpdateDateColumn,
+} from 'typeorm';
 import { DailyTask } from './daily-task.entity';
 
 @Entity('daily_task_completions')
@@ -17,11 +26,23 @@ export class DailyTaskCompletion {
   @Column({ name: 'completion_date', type: 'date' })
   completionDate: string;
 
+  @Column({ type: 'int', default: 0 })
+  progress: number;
+
+  @Column({ name: 'is_completed', type: 'boolean', default: false })
+  isCompleted: boolean;
+
   @Column({ type: 'boolean', default: false })
   claimed: boolean;
 
   @Column({ name: 'claimed_at', type: 'timestamptz', nullable: true })
   claimedAt: Date | null;
+
+  @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
+  createdAt: Date;
+
+  @UpdateDateColumn({ name: 'updated_at', type: 'timestamptz' })
+  updatedAt: Date;
 
   @ManyToOne(() => DailyTask, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'daily_task_id' })

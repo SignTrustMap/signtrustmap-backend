@@ -4,62 +4,152 @@ import json
 import logging
 from typing import Any
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
-from sqlalchemy import text as sa_text
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, WebSocket, WebSocketDisconnect
+from geoalchemy2 import Geography, Geometry
+from sqlalchemy import (
+    BigInteger, Numeric, cast, func, insert, or_, select, update,
+    text as sa_text,
+)
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database import AsyncSessionLocal, get_db
+from app.models.spatial import (
+    NavigationRoutePoint,
+    NavigationSession,
+    NavigationSignAlert,
+    VerifiedTrafficSign,
+)
 from app.schemas.spatial import (
     CreateSessionRequest,
     NavigationAlertMessage,
     NavigationErrorMessage,
     NavigationPointPayload,
     NavigationSignAlertItem,
+    PaginatedSessionsResponse,
     SessionResponse,
     UpdateSessionRequest,
 )
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
-_NEARBY = sa_text(
-    "SELECT id, sign_type_id, ST_X(location::geometry) AS longitude, "
-    "ST_Y(location::geometry) AS latitude, traffic_direction, sign_crop_url "
-    "FROM verified_traffic_signs "
-    "WHERE ST_DWithin(location::geography, "
-    "      ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)::geography, :radius_m) "
-    "  AND status = 'ACTIVE' "
-    "  AND (traffic_direction IS NULL OR "
-    "       ABS(MOD(CAST(traffic_direction - :heading + 180.0 + 360.0 AS numeric), 360.0) - 180.0) <= :heading_threshold)"
-)
-_INS_PT = sa_text(
-    "INSERT INTO navigation_route_points (session_id, sequence_no, location) "
-    "VALUES (:session_id, :sequence_no, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326))"
-)
-_INS_ALERT = sa_text(
-    "INSERT INTO navigation_sign_alerts (session_id, verified_sign_id, alert_type) "
-    "VALUES (:session_id, :sign_id, 'VOICE') ON CONFLICT DO NOTHING"
-)
-_INS_SESSION = sa_text(
-    "INSERT INTO navigation_sessions (driver_id, origin, destination) "
-    "VALUES (:driver_id, "
-    "        ST_SetSRID(ST_MakePoint(:origin_lon, :origin_lat), 4326), "
-    "        ST_SetSRID(ST_MakePoint(:dest_lon, :dest_lat), 4326)) "
-    "RETURNING id, driver_id, status, started_at, ended_at, "
-    "  ST_X(origin::geometry) AS origin_longitude, "
-    "  ST_Y(origin::geometry) AS origin_latitude, "
-    "  ST_X(destination::geometry) AS destination_longitude, "
-    "  ST_Y(destination::geometry) AS destination_latitude"
-)
-_UPDATE_SESSION = sa_text(
-    "UPDATE navigation_sessions "
-    "SET status = CAST(:status AS nav_session_status), ended_at = NOW() "
-    "WHERE id = CAST(:id AS uuid) AND status = 'ACTIVE' "
-    "RETURNING id, driver_id, status, started_at, ended_at, "
-    "  ST_X(origin::geometry) AS origin_longitude, "
-    "  ST_Y(origin::geometry) AS origin_latitude, "
-    "  ST_X(destination::geometry) AS destination_longitude, "
-    "  ST_Y(destination::geometry) AS destination_latitude"
-)
+
+
+def _nearby_signs_stmt(lon: float, lat: float, heading: float, radius_m: int, heading_threshold: float):
+    heading_diff = func.abs(
+        func.mod(
+            cast(VerifiedTrafficSign.traffic_direction - heading + 180.0 + 360.0, Numeric),
+            360.0,
+        )
+        - 180.0
+    )
+    return (
+        select(
+            VerifiedTrafficSign.id,
+            VerifiedTrafficSign.sign_type_id,
+            func.ST_X(cast(VerifiedTrafficSign.location, Geometry)).label("longitude"),
+            func.ST_Y(cast(VerifiedTrafficSign.location, Geometry)).label("latitude"),
+            VerifiedTrafficSign.traffic_direction,
+            VerifiedTrafficSign.sign_crop_url,
+        )
+        .where(
+            func.ST_DWithin(
+                cast(VerifiedTrafficSign.location, Geography),
+                cast(func.ST_SetSRID(func.ST_MakePoint(lon, lat), 4326), Geography),
+                radius_m,
+            ),
+            VerifiedTrafficSign.status == "ACTIVE",
+            or_(
+                VerifiedTrafficSign.traffic_direction.is_(None),
+                heading_diff <= heading_threshold,
+            ),
+        )
+    )
+
+
+def _insert_session_stmt(driver_id: UUID | str, origin_lon: float, origin_lat: float, dest_lon: float, dest_lat: float):
+    return (
+        insert(NavigationSession)
+        .values(
+            driver_id=driver_id,
+            origin=func.ST_SetSRID(func.ST_MakePoint(origin_lon, origin_lat), 4326),
+            destination=func.ST_SetSRID(func.ST_MakePoint(dest_lon, dest_lat), 4326),
+        )
+        .returning(
+            NavigationSession.id,
+            NavigationSession.driver_id,
+            NavigationSession.status,
+            NavigationSession.started_at,
+            NavigationSession.ended_at,
+            func.ST_X(cast(NavigationSession.origin, Geometry)).label("origin_longitude"),
+            func.ST_Y(cast(NavigationSession.origin, Geometry)).label("origin_latitude"),
+            func.ST_X(cast(NavigationSession.destination, Geometry)).label("destination_longitude"),
+            func.ST_Y(cast(NavigationSession.destination, Geometry)).label("destination_latitude"),
+        )
+    )
+
+
+def _update_session_stmt(session_id: UUID, status: str):
+    return (
+        update(NavigationSession)
+        .where(NavigationSession.id == session_id, NavigationSession.status == "ACTIVE")
+        .values(status=status, ended_at=func.now())
+        .returning(
+            NavigationSession.id,
+            NavigationSession.driver_id,
+            NavigationSession.status,
+            NavigationSession.started_at,
+            NavigationSession.ended_at,
+            func.ST_X(cast(NavigationSession.origin, Geometry)).label("origin_longitude"),
+            func.ST_Y(cast(NavigationSession.origin, Geometry)).label("origin_latitude"),
+            func.ST_X(cast(NavigationSession.destination, Geometry)).label("destination_longitude"),
+            func.ST_Y(cast(NavigationSession.destination, Geometry)).label("destination_latitude"),
+        )
+    )
+
+
+def _list_sessions_stmt(driver_id: UUID, limit: int, offset: int):
+    return (
+        select(
+            NavigationSession.id,
+            NavigationSession.driver_id,
+            NavigationSession.status,
+            NavigationSession.started_at,
+            NavigationSession.ended_at,
+            func.ST_X(cast(NavigationSession.origin, Geometry)).label("origin_longitude"),
+            func.ST_Y(cast(NavigationSession.origin, Geometry)).label("origin_latitude"),
+            func.ST_X(cast(NavigationSession.destination, Geometry)).label("destination_longitude"),
+            func.ST_Y(cast(NavigationSession.destination, Geometry)).label("destination_latitude"),
+        )
+        .where(NavigationSession.driver_id == driver_id)
+        .order_by(NavigationSession.started_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+
+
+def _count_sessions_stmt(driver_id: UUID):
+    return select(func.count().label("cnt")).select_from(NavigationSession).where(NavigationSession.driver_id == driver_id)
+
+
+def _get_session_stmt(session_id: UUID):
+    return (
+        select(
+            NavigationSession.id,
+            NavigationSession.driver_id,
+            NavigationSession.status,
+            NavigationSession.started_at,
+            NavigationSession.ended_at,
+            func.ST_X(cast(NavigationSession.origin, Geometry)).label("origin_longitude"),
+            func.ST_Y(cast(NavigationSession.origin, Geometry)).label("origin_latitude"),
+            func.ST_X(cast(NavigationSession.destination, Geometry)).label("destination_longitude"),
+            func.ST_Y(cast(NavigationSession.destination, Geometry)).label("destination_latitude"),
+        )
+        .where(NavigationSession.id == session_id)
+    )
+
+
 def _row_to_session_response(row: Any) -> SessionResponse:
     return SessionResponse(
         id=row["id"],
@@ -78,7 +168,6 @@ def _row_to_session_response(row: Any) -> SessionResponse:
     status_code=201,
     summary="Start a navigation session",
     description="Creates navigation_sessions row with PostGIS Points (SRID 4326). Returned id is used as sessionId in WS ticks.",
-    tags=["Spatial Navigation"],
 )
 async def create_navigation_session(
     body: CreateSessionRequest,
@@ -86,14 +175,13 @@ async def create_navigation_session(
 ) -> SessionResponse:
     try:
         result = await db.execute(
-            _INS_SESSION,
-            {
-                "driver_id": str(body.driver_id),
-                "origin_lon": body.origin_longitude,
-                "origin_lat": body.origin_latitude,
-                "dest_lon": body.destination_longitude,
-                "dest_lat": body.destination_latitude,
-            },
+            _insert_session_stmt(
+                body.driver_id,
+                body.origin_longitude,
+                body.origin_latitude,
+                body.destination_longitude,
+                body.destination_latitude,
+            )
         )
         # Read the row from RETURNING clause BEFORE committing or consuming
         # the cursor again — a CursorResult can only be iterated once.
@@ -107,6 +195,7 @@ async def create_navigation_session(
             tok = _os2.environ.get("INTERNAL_API_TOKEN", "")
             fee = 1
             try:
+                from sqlalchemy import text as sa_text
                 fee_rows = await db.execute(sa_text("SELECT value FROM system_parameters WHERE key = 'navigation_credit_fee' LIMIT 1"))
                 fr = fee_rows.mappings().first()
                 if fr and fr["value"]:
@@ -144,69 +233,91 @@ async def create_navigation_session(
     if row is None:
         raise HTTPException(status_code=500, detail="Session creation returned no row")
     return _row_to_session_response(row)
-_LIST_SESSIONS = sa_text(
-    "SELECT id, driver_id, status, started_at, ended_at, "
-    "  ST_X(origin::geometry) AS origin_longitude, "
-    "  ST_Y(origin::geometry) AS origin_latitude, "
-    "  ST_X(destination::geometry) AS destination_longitude, "
-    "  ST_Y(destination::geometry) AS destination_latitude "
-    "FROM navigation_sessions "
-    "WHERE driver_id = CAST(:driver_id AS uuid) "
-    "ORDER BY started_at DESC LIMIT :limit OFFSET :offset"
-)
-_COUNT_SESSIONS = sa_text("SELECT COUNT(*) AS cnt FROM navigation_sessions WHERE driver_id = CAST(:driver_id AS uuid)")
-_GET_SESSION = sa_text(
-    "SELECT id, driver_id, status, started_at, ended_at, "
-    "  ST_X(origin::geometry) AS origin_longitude, "
-    "  ST_Y(origin::geometry) AS origin_latitude, "
-    "  ST_X(destination::geometry) AS destination_longitude, "
-    "  ST_Y(destination::geometry) AS destination_latitude "
-    "FROM navigation_sessions WHERE id = CAST(:id AS uuid)"
-)
+
+
 @router.get(
     "/navigation/sessions/me",
+    response_model=PaginatedSessionsResponse,
     summary="List my navigation sessions (paginated)",
-    tags=["Spatial Navigation"],
 )
-async def list_my_sessions(driver_id: __import__("uuid").UUID, page: int = 1, pageSize: int = 20, db: AsyncSession = Depends(get_db)) -> dict:
-    p2 = max(1, page); ps2 = min(max(1, pageSize), 100)
-    tr = await db.execute(_COUNT_SESSIONS, {"driver_id": str(driver_id)})
-    tot = tr.mappings().first()
-    total = tot["cnt"] if tot else 0
-    res = await db.execute(_LIST_SESSIONS, {"driver_id": str(driver_id), "limit": ps2, "offset": (p2-1)*ps2})
-    rows = res.mappings().all()
-    items = [_row_to_session_response(r).model_dump() for r in rows]
-    return {"items": items, "total": total, "page": p2, "pageSize": ps2, "totalPages": (total+ps2-1)//ps2 if ps2 else 0}
+async def list_my_sessions(
+    driver_id: UUID = Query(..., description="UUID of the Driver user (users.id)"),
+    page: int = Query(default=1, ge=1, le=2147483647, description="Page number (1-based)"),
+    pageSize: int = Query(default=20, ge=1, le=100, description="Page size (1 to 100)"),
+    db: AsyncSession = Depends(get_db),
+) -> PaginatedSessionsResponse:
+    p2 = max(1, page)
+    ps2 = min(max(1, pageSize), 100)
+    try:
+        tr = await db.execute(_count_sessions_stmt(driver_id))
+        tot = tr.mappings().first()
+        total = tot["cnt"] if tot else 0
+        offset = (p2 - 1) * ps2
+        if total == 0 or offset >= total:
+            rows = []
+        else:
+            res = await db.execute(_list_sessions_stmt(driver_id, ps2, offset))
+            rows = res.mappings().all()
+        items = [_row_to_session_response(r) for r in rows]
+        total_pages = (total + ps2 - 1) // ps2 if ps2 else 0
+        return PaginatedSessionsResponse(
+            items=items,
+            total=total,
+            page=p2,
+            pageSize=ps2,
+            totalPages=total_pages,
+        )
+    except Exception as exc:
+        logger.exception("Failed to list navigation sessions for driver %s", driver_id)
+        raise HTTPException(status_code=400, detail=f"Could not list navigation sessions: {exc}")
+
+
 @router.get(
     "/navigation/sessions/{session_id}",
     response_model=SessionResponse,
     summary="Get a single navigation session by id",
-    tags=["Spatial Navigation"],
 )
-async def get_navigation_session(session_id: __import__("uuid").UUID, db: AsyncSession = Depends(get_db)) -> SessionResponse:
-    res = await db.execute(_GET_SESSION, {"id": str(session_id)})
-    row = res.mappings().first()
-    if row is None:
-        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
-    return _row_to_session_response(row)
+async def get_navigation_session(
+    session_id: UUID = Path(..., description="Navigation session UUID"),
+    db: AsyncSession = Depends(get_db),
+) -> SessionResponse:
+    try:
+        res = await db.execute(_get_session_stmt(session_id))
+        row = res.mappings().first()
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+        return _row_to_session_response(row)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to get session %s", session_id)
+        raise HTTPException(status_code=400, detail=f"Could not get session: {exc}")
+
+
 @router.patch(
     "/navigation/sessions/{session_id}",
     response_model=SessionResponse,
     summary="End a navigation session (COMPLETED or CANCELED)",
     description="Transitions ACTIVE session to terminal state and sets ended_at=NOW(). 404 if not found or already terminal.",
-    tags=["Spatial Navigation"],
 )
 async def update_navigation_session(
-    session_id: UUID,
-    body: UpdateSessionRequest,
+    session_id: UUID = Path(..., description="Navigation session UUID"),
+    body: UpdateSessionRequest = ...,
     db: AsyncSession = Depends(get_db),
 ) -> SessionResponse:
-    result = await db.execute(_UPDATE_SESSION, {"id": str(session_id), "status": body.status})
-    await db.commit()
-    row = result.mappings().first()
-    if row is None:
-        raise HTTPException(status_code=404, detail=f"Session {session_id} not found or already terminal.")
-    return _row_to_session_response(row)
+    try:
+        result = await db.execute(_update_session_stmt(session_id, body.status))
+        await db.commit()
+        row = result.mappings().first()
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Session {session_id} not found or already terminal.")
+        return _row_to_session_response(row)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        await db.rollback()
+        logger.exception("Failed to update session %s", session_id)
+        raise HTTPException(status_code=400, detail=f"Could not update session: {exc}")
 @router.websocket("/navigation/stream")
 
 async def navigation_stream(websocket: WebSocket) -> None:
@@ -222,7 +333,15 @@ async def navigation_stream(websocket: WebSocket) -> None:
         if not route_buffer:
             return
         try:
-            await db.execute(_INS_PT, route_buffer)
+            ins_points = [
+                {
+                    "session_id": item["session_id"],
+                    "sequence_no": item["sequence_no"],
+                    "location": func.ST_SetSRID(func.ST_MakePoint(item["lon"], item["lat"]), 4326),
+                }
+                for item in route_buffer
+            ]
+            await db.execute(insert(NavigationRoutePoint), ins_points)
             await db.commit()
         except Exception:
             await db.rollback()
@@ -254,8 +373,7 @@ async def navigation_stream(websocket: WebSocket) -> None:
                         await flush(db)
                 try:
                     res = await db.execute(
-                        _NEARBY,
-                        {"lat": lat, "lon": lon, "heading": heading, "radius_m": radius_m, "heading_threshold": h_thr},
+                        _nearby_signs_stmt(lon, lat, heading, radius_m, h_thr)
                     )
                     rows = res.mappings().all()
                 except Exception:
@@ -273,7 +391,11 @@ async def navigation_stream(websocket: WebSocket) -> None:
                     new_alerts.append(NavigationSignAlertItem.model_validate(dict(row)))
                     if sid is not None:
                         try:
-                            await db.execute(_INS_ALERT, {"session_id": str(sid), "sign_id": sid_str})
+                            await db.execute(
+                                pg_insert(NavigationSignAlert)
+                                .values(session_id=sid, verified_sign_id=UUID(sid_str), alert_type="VOICE")
+                                .on_conflict_do_nothing()
+                            )
                         except Exception:
                             logger.warning("[WS] Could not persist alert %s", sid_str)
                 if sid is not None and new_alerts:

@@ -9,6 +9,7 @@ export enum CandidateStatus {
   REJECTED = 'REJECTED',
   ESCALATED_MODERATION = 'ESCALATED_MODERATION',
   MISSING_TYPE_HOLD = 'MISSING_TYPE_HOLD',
+  RECAPTURE_REQUESTED = 'RECAPTURE_REQUESTED',
 }
 
 export enum SpatialConfidenceLevel {
@@ -49,6 +50,25 @@ export class UnverifiedSignCandidate {
 
   @Column({ type: 'enum', enum: CandidateStatus, default: CandidateStatus.PENDING_REVIEW })
   status: CandidateStatus;
+
+  @Column({ name: 'possible_signs', type: 'jsonb', nullable: true })
+  possibleSigns?: any;
+
+  @Column({ name: 'selected_sign_type_id', type: 'int', nullable: true })
+  selectedSignTypeId?: number | null;
+
+  @Column({ name: 'selected_by', type: 'uuid', nullable: true })
+  selectedBy?: string | null;
+
+  @Column({ name: 'selected_at', type: 'timestamptz', nullable: true })
+  selectedAt?: Date | null;
+
+  @Column({ name: 'selection_reason', type: 'varchar', length: 500, nullable: true })
+  selectionReason?: string | null;
+
+  top5?: any;
+  remedySigns?: any;
+  predictedSignTypes?: any;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;

@@ -4,7 +4,7 @@ import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagg
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RevalidationService } from '../application/revalidation.service';
-import { SubmitEvidenceDto, EvidenceVoteDto } from './dto/revalidation.dto';
+import { SubmitEvidenceDto, EvidenceVoteDto, EarlyClassifyDto, RequestEvidenceRecaptureDto } from './dto/revalidation.dto';
 
 @ApiTags('Revalidation')
 @Controller()
@@ -19,21 +19,58 @@ export class RevalidationController {
     @Query('status') status?: string, @Query('priority') priority?: string,
     @Query('page') page?: string, @Query('pageSize') pageSize?: string,
   ) {
-    const min_lat = minLat != null ? parseFloat(minLat) : NaN;
-    const min_lon = minLon != null ? parseFloat(minLon) : NaN;
-    const max_lat = maxLat != null ? parseFloat(maxLat) : NaN;
-    const max_lon = maxLon != null ? parseFloat(maxLon) : NaN;
-    if ([min_lat, min_lon, max_lat, max_lon].some(v => Number.isNaN(v))) throw new BadRequestException('min_lat, min_lon, max_lat, max_lon are required and must be numbers');
-    if (min_lat < -90 || max_lat > 90 || min_lon < -180 || max_lon > 180) throw new BadRequestException('bbox out of range');
+    const anyBbox = minLat != null || minLon != null || maxLat != null || maxLon != null;
+    let min_lat: number | undefined;
+    let min_lon: number | undefined;
+    let max_lat: number | undefined;
+    let max_lon: number | undefined;
+
+    if (anyBbox) {
+      if (minLat == null || minLon == null || maxLat == null || maxLon == null) {
+        throw new BadRequestException('min_lat, min_lon, max_lat, max_lon are required and must be numbers');
+      }
+      min_lat = parseFloat(minLat);
+      min_lon = parseFloat(minLon);
+      max_lat = parseFloat(maxLat);
+      max_lon = parseFloat(maxLon);
+      if ([min_lat, min_lon, max_lat, max_lon].some(v => Number.isNaN(v))) throw new BadRequestException('min_lat, min_lon, max_lat, max_lon must be numbers');
+      if (min_lat < -90 || max_lat > 90 || min_lon < -180 || max_lon > 180) throw new BadRequestException('bbox out of range');
+    }
+
     const p = page ? parseInt(page, 10) : 1, ps = pageSize ? parseInt(pageSize, 10) : 20;
-    return this.svc.listTasksInBbox({ minLat: min_lat, minLon: min_lon, maxLat: max_lat, maxLon: max_lon, status, priority, page: Number.isNaN(p) ? 1 : p, pageSize: Number.isNaN(ps) ? 20 : ps });
+    return this.svc.listTasksInBbox({
+      minLat: min_lat,
+      minLon: min_lon,
+      maxLat: max_lat,
+      maxLon: max_lon,
+      status,
+      priority,
+      page: Number.isNaN(p) ? 1 : p,
+      pageSize: Number.isNaN(ps) ? 20 : ps,
+    });
   }
 
-  @ApiOperation({ summary: 'List revalidation tasks', description: 'Paginated list of verification tasks filterable by status and priority' })
+  @ApiOperation({ summary: 'List revalidation tasks', description: 'Paginated list of verification tasks filterable by status, priority, or spatial radius' })
   @Get('revalidation/tasks')
-  listTasks(@Query('page') page?: string, @Query('pageSize') ps?: string, @Query('status') status?: string, @Query('sort') sort?: string) {
+  listTasks(
+    @Query('page') page?: string,
+    @Query('pageSize') ps?: string,
+    @Query('status') status?: string,
+    @Query('sort') sort?: string,
+    @Query('lat') lat?: string,
+    @Query('lon') lon?: string,
+    @Query('radiusMeters') radiusMeters?: string,
+  ) {
     const p = page ? parseInt(page, 10) : 1, n = ps ? parseInt(ps, 10) : 20;
-    return this.svc.listTasks(Number.isNaN(p) ? 1 : p, Number.isNaN(n) ? 20 : n, status, sort);
+    const parsedLat = lat != null ? parseFloat(lat) : undefined;
+    const parsedLon = lon != null ? parseFloat(lon) : undefined;
+    const parsedRadius = radiusMeters != null ? parseFloat(radiusMeters) : 5000;
+    const spatial =
+      parsedLat != null && parsedLon != null && !Number.isNaN(parsedLat) && !Number.isNaN(parsedLon)
+        ? { lat: parsedLat, lon: parsedLon, radiusMeters: Number.isNaN(parsedRadius) ? 5000 : parsedRadius }
+        : undefined;
+
+    return this.svc.listTasks(Number.isNaN(p) ? 1 : p, Number.isNaN(n) ? 20 : n, status, sort, spatial);
   }
 
   @ApiOperation({ summary: 'Get revalidation task detail', description: 'Fetch task coordinates, target sign, and current verification progress' })
@@ -43,6 +80,10 @@ export class RevalidationController {
   @ApiOperation({ summary: 'List evidences for task', description: 'Retrieve surveyor evidence submissions and photos for a task' })
   @Get('revalidation/tasks/:taskId/evidences')
   listEvidences(@Param('taskId', ParseUUIDPipe) taskId: string) { return this.svc.listEvidencesForTask(taskId); }
+
+  @ApiOperation({ summary: 'List evidences for sign', description: 'Retrieve surveyor evidence submissions and photos across all revalidations for a verified sign' })
+  @Get('revalidation/signs/:signId/evidences')
+  listEvidencesForSign(@Param('signId', ParseUUIDPipe) signId: string) { return this.svc.listEvidencesForSign(signId); }
 
   @ApiBearerAuth()
   @Roles('SURVEYOR', 'ADMIN')
@@ -59,6 +100,14 @@ export class RevalidationController {
   @Post('revalidation/tasks/:taskId/finalize')
   @Roles('STAFF', 'ADMIN')
   finalizeTask(@Param('taskId', ParseUUIDPipe) taskId: string, @CurrentUser() user: any) { return this.svc.finalizeTask(taskId, user.id); }
+
+  @ApiBearerAuth()
+  @Roles('STAFF', 'ADMIN', 'REVIEWER')
+  @ApiOperation({ summary: 'Trigger early classification for revalidation task', description: 'Send task evidence photo to AI server for early classification' })
+  @Post('revalidation/tasks/:taskId/early-classify')
+  earlyClassify(@Param('taskId', ParseUUIDPipe) taskId: string, @Body() dto?: EarlyClassifyDto) {
+    return this.svc.triggerEarlyClassification(taskId, dto?.mediaUrl);
+  }
 
   @ApiBearerAuth()
   @Roles('REVIEWER', 'ADMIN')
@@ -80,4 +129,19 @@ export class RevalidationController {
   @ApiOperation({ summary: 'List evidence decisions', description: 'Retrieve history of consensus decisions for a specific evidence item' })
   @Get('revalidation/evidence/:evidenceId/decisions')
   listDecisions(@Param('evidenceId', ParseUUIDPipe) evidenceId: string) { return this.svc.listDecisions(evidenceId); }
+
+  @ApiBearerAuth()
+  @Roles('REVIEWER', 'ADMIN', 'STAFF')
+  @ApiOperation({
+    summary: 'Request recapture on revalidation evidence',
+    description: 'Reviewer or Admin requests surveyor to recapture on-site verification photo when submitted evidence is blurry, obscured, or inconclusive',
+  })
+  @Post('revalidation/evidence/:evidenceId/request-recapture')
+  requestEvidenceRecapture(
+    @Param('evidenceId', ParseUUIDPipe) evidenceId: string,
+    @CurrentUser() user: any,
+    @Body() dto: RequestEvidenceRecaptureDto,
+  ) {
+    return this.svc.requestEvidenceRecapture(evidenceId, user.id, dto);
+  }
 }

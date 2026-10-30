@@ -6,36 +6,22 @@ This directory contains a turn-key, pre-provisioned monitoring stack using **Pro
 
 ## 🏗️ Architecture
 
-```
-                  ┌────────────────────────────────────────────────────────┐
-                  │                 SignTrustMap Services                  │
-                  │                                                        │
-                  │  • NestJS Core API (Coolify: api.signmap.site/api/v1/health/ready)    │
-                  │  • FastAPI Spatial (Coolify: api.signmap.site/api/v1/spatial/...)     │
-                  │  • Jetson Orin AI (Edge: ai.signmap.site)              │
-                  │  • Neon PostgreSQL & Upstash Redis                     │
-                  └───────────────────────────▲────────────────────────────┘
-                                              │
-                                              │ Active HTTPS Probing (every 15s)
-                                              │
-                                 ┌────────────┴────────────┐
-                                 │    Blackbox Exporter    │
-                                 │      (Port 9115)        │
-                                 └────────────┬────────────┘
-                                              │
-                                              │ Scrapes Metrics
-                                              │
-                                 ┌────────────┴────────────┐
-                                 │       Prometheus        │
-                                 │      (Port 9090)        │
-                                 └────────────┬────────────┘
-                                              │
-                                              │ Visualizes & Alerts
-                                              │
-                                 ┌────────────┴────────────┐
-                                 │         Grafana         │
-                                 │      (Port 3001)        │
-                                 └─────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph Targets["SignTrustMap Monitored Services"]
+        CORE["NestJS Core API<br/>(api.signmap.site/api/v1/health/ready)"]
+        SPATIAL["FastAPI Spatial<br/>(api.signmap.site/api/v1/spatial/...)"]
+        AI["Jetson Orin AI<br/>(ai.signmap.site)"]
+        DB["PostgreSQL & Redis"]
+    end
+
+    BLACKBOX["Blackbox Exporter<br/>(Port 9115)"]
+    PROMETHEUS["Prometheus<br/>(Port 9090)"]
+    GRAFANA["Grafana<br/>(Port 3001)"]
+
+    BLACKBOX -->|"Active HTTPS Probing (every 15s)"| Targets
+    PROMETHEUS -->|"Scrapes Metrics"| BLACKBOX
+    GRAFANA -->|"Visualizes & Alerts"| PROMETHEUS
 ```
 
 ---
@@ -66,7 +52,7 @@ docker compose -f infra/monitoring/docker-compose.monitoring.yml down
    - 🟢 **NestJS Core API** (`api.signmap.site/api/v1/health/ready`)
    - 🟢 **FastAPI Spatial GIS** (`api.signmap.site/api/v1/spatial`)
    - 🟢 **Jetson Orin AI Inference** (`ai.signmap.site`)
-   - 🟢 **Neon PostgreSQL Database** (verified via NestJS `/api/v1/health/ready`)
+   - 🟢 **PostgreSQL Database** (verified via NestJS `/api/v1/health/ready`)
 2. **Response Latency (Time-Series)**:
    - Live chart tracking endpoint latency over time with green/yellow/red SLA thresholds.
 3. **24h Availability SLA (%)**:
@@ -104,5 +90,5 @@ If you prefer not to host Docker on your machine or Jetson Orin 24/7:
    - **URL**: `https://api.signmap.site/api/v1/health/ready`
    - **Frequency**: `1m`
    - **Probe Locations**: Choose Singapore, Tokyo, and Frankfurt.
-4. Repeat for `https://api.signmap.site/api/v1/spatial/signs?min_lat=0&min_lon=0&max_lat=0.0001&max_lon=0.0001` and `https://ai.signmap.site/health`.
+4. Repeat for `https://api.signmap.site/api/v1/spatial/health` and `https://ai.signmap.site/health`.
 5. Grafana Cloud will automatically generate uptime dashboards and send alerts when any probe fails.

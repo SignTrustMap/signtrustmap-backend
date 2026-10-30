@@ -24,7 +24,16 @@ describe('RevalidationService', () => {
       save: jest.fn(async (value) => value),
     } as unknown as Repository<RevalidationTask>;
     const query = jest.fn(async (sql: string) => {
-      if (sql.includes('SELECT id, user_id FROM revalidation_evidences')) {
+      if (sql.includes('SELECT verified_sign_id') && sql.includes('FROM revalidation_tasks')) {
+        return [{ verified_sign_id: 'verified-sign-id' }];
+      }
+      if (sql.includes('FROM verified_traffic_signs') && sql.includes('FOR UPDATE')) {
+        return [{ id: 'verified-sign-id' }];
+      }
+      if (sql.includes('FROM revalidation_tasks') && sql.includes('FOR UPDATE')) {
+        return [{ id: 'task-id', verified_sign_id: 'verified-sign-id', reward_credits: 10, status: TaskStatus.OPEN }];
+      }
+      if (sql.includes('FROM revalidation_evidences')) {
         return [{ id: 'evidence-id', user_id: 'surveyor-id' }];
       }
       if (sql.includes('SELECT decision, reviewer_id, evidence_id')) {
@@ -38,6 +47,10 @@ describe('RevalidationService', () => {
       }
       return [];
     });
+    const dataSource = {
+      query,
+      transaction: jest.fn((callback: any) => callback({ query })),
+    } as unknown as DataSource;
     const wallet = {
       resolveRewardAmount: jest.fn().mockResolvedValue(10),
       creditUser: jest.fn().mockResolvedValue(undefined),
@@ -49,7 +62,7 @@ describe('RevalidationService', () => {
       tasks,
       {} as Repository<RevalidationEvidence>,
       {} as Repository<RevalidationDecision>,
-      { query } as unknown as DataSource,
+      dataSource,
       {} as MinioStorageService,
       wallet,
       notifications,
@@ -97,7 +110,7 @@ describe('RevalidationService', () => {
       expect(task.status).toBe('OPEN');
       expect(query).toHaveBeenCalledWith(
         expect.stringContaining('INSERT INTO revalidation_evidences'),
-        expect.arrayContaining(['new-dispute-task-id', 'user-456', 'evidence/dispute.jpg', 106.69, 10.77]),
+        expect.arrayContaining(['new-dispute-task-id', 'user-456', 'https://s3.signmap.site/stm-sign-crops/evidence/dispute.jpg', 106.69, 10.77]),
       );
     });
 
@@ -132,36 +145,124 @@ describe('RevalidationService', () => {
       expect(task.rewardCredits).toBe(15);
       expect(tasks.save).toHaveBeenCalledWith(existingTask);
     });
+
+    it('dispatches missing sign notifications to surveyors when dispute task is created', async () => {
+      const tasks = {
+        findOne: jest.fn().mockResolvedValue(null),
+        create: jest.fn((val) => ({ ...val, id: 'new-dispute-task-id' })),
+        save: jest.fn(async (val) => val),
+      } as unknown as Repository<RevalidationTask>;
+
+      const query = jest.fn().mockImplementation(async (sql: string) => {
+        if (sql.includes('FROM surveyor_profiles')) {
+          return [{ user_id: 'surveyor-1' }, { user_id: 'surveyor-2' }];
+        }
+        return [];
+      });
+      const notifications = {
+        createBulk: jest.fn().mockResolvedValue([]),
+      } as unknown as NotificationsService;
+
+      const service = new RevalidationService(
+        tasks,
+        {} as Repository<RevalidationEvidence>,
+        {} as Repository<RevalidationDecision>,
+        {
+          query,
+          transaction: jest.fn((callback: any) => callback({ query })),
+        } as unknown as DataSource,
+        {} as MinioStorageService,
+        {} as WalletService,
+        notifications,
+      );
+
+      await service.createOrEscalateDisputeTask('sign-missing-123', 'user-456');
+
+      expect(notifications.createBulk).toHaveBeenCalledWith([
+        expect.objectContaining({
+          userId: 'surveyor-1',
+          type: 'SIGN_MISSING_DISPATCH',
+          relatedEntityId: 'new-dispute-task-id',
+        }),
+        expect.objectContaining({
+          userId: 'surveyor-2',
+          type: 'SIGN_MISSING_DISPATCH',
+          relatedEntityId: 'new-dispute-task-id',
+        }),
+      ]);
+    });
   });
 
   describe('submitEvidence (Scenario #3 guardrails)', () => {
-    function proximityHarness(distanceMeters: number, recentCount = 0) {
+    function proximityHarness(
+      distanceMeters: number,
+      recentCount = 0,
+      lockedStatus: TaskStatus = TaskStatus.OPEN,
+    ) {
       const task = { id: 'task-id', verifiedSignId: 'sign-id', status: TaskStatus.OPEN, freshnessRuleId: null } as RevalidationTask;
       const tasks = { findOne: jest.fn().mockResolvedValue(task), save: jest.fn(async (v: any) => v) } as unknown as Repository<RevalidationTask>;
       const query = jest.fn(async (sql: string) => {
         if (sql.includes('ST_DistanceSphere')) return [{ distance_meters: distanceMeters }];
         if (sql.includes('COUNT(*)' )) return [{ cnt: recentCount }];
+        if (sql.includes('FROM revalidation_tasks') && sql.includes('FOR UPDATE')) return [{ status: lockedStatus }];
         return [];
       });
+      const dataSource = {
+        query,
+        transaction: jest.fn((callback: any) => callback({ query })),
+      } as unknown as DataSource;
       const service = new RevalidationService(
         tasks,
         { findOne: jest.fn().mockResolvedValue(null) } as unknown as Repository<RevalidationEvidence>,
         {} as Repository<RevalidationDecision>,
-        { query } as unknown as DataSource,
+        dataSource,
         {} as MinioStorageService,
         {} as WalletService,
         {} as NotificationsService,
       );
-      return { service, tasks, query };
+      return { service, tasks, query, dataSource };
     }
 
     it('accepts evidence within the proximity guardrail and flips the task to EVALUATING', async () => {
-      const { service, tasks, query } = proximityHarness(35.5);
+      const { service, query } = proximityHarness(35.5);
       const result = await service.submitEvidence('task-id', 'surveyor-id', { latitude: 21.02851, longitude: 105.83419, mediaUrl: 'revalidation/task-id/fresh.jpg' });
       expect(result.distanceMeters).toBe(35.5);
       expect(result).toMatchObject({ maxProximityMeters: 50, dailySubmissionLimit: 3, remainingDailySubmissions: 2 });
       expect(query).toHaveBeenCalledWith(expect.stringContaining('ST_SetSRID(ST_MakePoint($1, $2), 4326)'), [105.83419, 21.02851, 'task-id']);
-      expect(tasks.save).toHaveBeenCalledWith(expect.objectContaining({ status: TaskStatus.EVALUATING }));
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining("SET status = 'EVALUATING'"),
+        ['task-id'],
+      );
+    });
+
+    it('accepts evidence within proximity guardrail with evidenceType REMOVED', async () => {
+      const { service, query } = proximityHarness(20);
+      const result = await service.submitEvidence('task-id', 'surveyor-id', {
+        latitude: 21.02851,
+        longitude: 105.83419,
+        mediaUrl: 'revalidation/task-id/removed.jpg',
+        evidenceType: 'REMOVED',
+      });
+      expect(result.evidenceType).toBe('REMOVED');
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining('evidence_type'),
+        expect.arrayContaining(['REMOVED']),
+      );
+    });
+
+    it('accepts evidence within proximity guardrail with evidenceType CHANGED', async () => {
+      const { service, query } = proximityHarness(20);
+      const result = await service.submitEvidence('task-id', 'surveyor-id', {
+        latitude: 21.02851,
+        longitude: 105.83419,
+        mediaUrl: 'revalidation/task-id/changed.jpg',
+        evidenceType: 'CHANGED',
+      });
+      expect(result.evidenceType).toBe('CHANGED');
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining('evidence_type'),
+        expect.arrayContaining(['CHANGED']),
+      );
     });
 
     it('rejects evidence farther than the max proximity', async () => {
@@ -175,17 +276,154 @@ describe('RevalidationService', () => {
       await expect(service.submitEvidence('task-id', 'surveyor-id', { latitude: 21.02851, longitude: 105.83419 }))
         .rejects.toMatchObject({ status: 429 });
     });
+
+    it('rejects evidence when the task closes before the transaction acquires its lock', async () => {
+      const { service, query } = proximityHarness(20, 0, TaskStatus.COMPLETED);
+      await expect(service.submitEvidence('task-id', 'surveyor-id', {
+        latitude: 21.02851,
+        longitude: 105.83419,
+        mediaUrl: 'revalidation/task-id/race.jpg',
+      }))
+        .rejects.toThrow('is not open for new evidence');
+      expect(query).not.toHaveBeenCalledWith(expect.stringContaining('INSERT INTO revalidation_evidences'), expect.anything());
+    });
+
+    it('advances REVALIDATE daily task progress upon submitting evidence', async () => {
+      const { tasks, query } = proximityHarness(20);
+      const mockDailyTasks = { recordProgress: jest.fn().mockResolvedValue([]) } as any;
+      const service = new RevalidationService(
+        tasks,
+        { findOne: jest.fn().mockResolvedValue(null) } as unknown as Repository<RevalidationEvidence>,
+        {} as Repository<RevalidationDecision>,
+        {
+          query,
+          transaction: jest.fn((callback: any) => callback({ query })),
+        } as unknown as DataSource,
+        {} as MinioStorageService,
+        {} as WalletService,
+        {} as NotificationsService,
+        undefined,
+        mockDailyTasks,
+      );
+      await service.submitEvidence('task-id', 'surveyor-id', { latitude: 21.02851, longitude: 105.83419, mediaUrl: 'revalidation/task-id/fresh.jpg' });
+      expect(mockDailyTasks.recordProgress).toHaveBeenCalledWith('surveyor-id', 'REVALIDATE', 1);
+    });
+
+    it('advances REVIEW daily task progress upon voting on evidence', async () => {
+      const mockDailyTasks = { recordProgress: jest.fn().mockResolvedValue([]) } as any;
+      const evidences = { findOne: jest.fn().mockResolvedValue({ id: 'ev-1', taskId: 'task-1', userId: 'author-1' }) } as any;
+      const decisions = { findOne: jest.fn().mockResolvedValue(null), create: jest.fn((d) => d), save: jest.fn(async (d) => d) } as any;
+      const service = new RevalidationService(
+        { findOne: jest.fn().mockResolvedValue({ id: 'task-1', status: TaskStatus.EVALUATING }) } as any,
+        evidences,
+        decisions,
+        {
+          query: jest.fn().mockResolvedValue([]),
+          transaction: jest.fn((callback: any) => callback({
+            query: jest.fn().mockResolvedValue([{ status: TaskStatus.EVALUATING }]),
+            findOne: jest.fn().mockResolvedValue(null),
+            create: jest.fn((_entity: any, value: any) => value),
+            save: jest.fn(async (_entity: any, value: any) => value),
+          })),
+        } as any,
+        {} as MinioStorageService,
+        {} as WalletService,
+        {} as NotificationsService,
+        undefined,
+        mockDailyTasks,
+      );
+      await service.voteOnEvidence('ev-1', 'reviewer-1', { decision: 'STILL_ACTIVE' });
+      expect(mockDailyTasks.recordProgress).toHaveBeenCalledWith('reviewer-1', 'REVIEW', 1);
+    });
+
+    it('rejects votes on a closed task under the task row lock', async () => {
+      const evidences = { findOne: jest.fn().mockResolvedValue({ id: 'ev-1', taskId: 'task-1', userId: 'author-1' }) } as any;
+      const manager = {
+        query: jest.fn().mockResolvedValue([{ status: TaskStatus.COMPLETED }]),
+        findOne: jest.fn(),
+        create: jest.fn(),
+        save: jest.fn(),
+      };
+      const service = new RevalidationService(
+        {} as any,
+        evidences,
+        {} as any,
+        { transaction: jest.fn((callback: any) => callback(manager)) } as any,
+        {} as any,
+        {} as any,
+        {} as any,
+      );
+
+      await expect(service.voteOnEvidence('ev-1', 'reviewer-1', { decision: 'STILL_ACTIVE' }))
+        .rejects.toThrow('Revalidation task is closed to new votes');
+      expect(manager.save).not.toHaveBeenCalled();
+    });
+
+    it('dispatches early classification when submitting evidence of type CHANGED', async () => {
+      const { tasks, query } = proximityHarness(20);
+      const mockAiService = {
+        classifyEarly: jest.fn().mockResolvedValue({
+          status: 'success',
+          className: 'Stop',
+          confidence: 0.99,
+        }),
+      };
+      const service = new RevalidationService(
+        tasks,
+        { findOne: jest.fn().mockResolvedValue(null) } as unknown as Repository<RevalidationEvidence>,
+        {} as Repository<RevalidationDecision>,
+        {
+          query,
+          transaction: jest.fn((callback: any) => callback({
+            query: jest.fn().mockResolvedValue([{ status: TaskStatus.EVALUATING }]),
+            findOne: jest.fn().mockResolvedValue(null),
+            create: jest.fn((_entity: any, value: any) => value),
+            save: jest.fn(async (_entity: any, value: any) => value),
+          })),
+        } as unknown as DataSource,
+        {} as MinioStorageService,
+        {} as WalletService,
+        {} as NotificationsService,
+        undefined,
+        undefined,
+        mockAiService as any,
+      );
+      const result = await service.submitEvidence('task-id', 'surveyor-id', {
+        latitude: 21.02851,
+        longitude: 105.83419,
+        mediaUrl: 'revalidation/task-id/changed-sign.jpg',
+        evidenceType: 'CHANGED',
+      });
+      expect(result.evidenceType).toBe('CHANGED');
+      expect(mockAiService.classifyEarly).toHaveBeenCalledWith({
+        mediaUrl: 'https://s3.signmap.site/stm-sign-crops/revalidation/task-id/changed-sign.jpg',
+        signId: 'sign-id',
+        taskId: 'task-id',
+      });
+    });
   });
 
   describe('evaluateRevalidationConsensus (Scenario #3 auto-finalize)', () => {
-    function consensusHarness(decisionRows: any[]) {
+    function consensusHarness(decisionRows: any[], evidenceRows?: any[], mockAiService?: any) {
       const task = { id: 'task-id', verifiedSignId: 'sign-id', status: TaskStatus.EVALUATING, rewardCredits: 10, freshnessRuleId: null } as RevalidationTask;
       const tasks = { findOne: jest.fn().mockResolvedValue(task), save: jest.fn(async (v: any) => v) } as unknown as Repository<RevalidationTask>;
       const query = jest.fn(async (sql: string) => {
-        if (sql.includes('SELECT id, user_id FROM revalidation_evidences')) return [{ id: 'evidence-id', user_id: 'surveyor-id' }];
+        if (sql.includes('SELECT verified_sign_id') && sql.includes('FROM revalidation_tasks')) return [{ verified_sign_id: 'sign-id' }];
+        if (sql.includes('FROM verified_traffic_signs') && sql.includes('FOR UPDATE')) return [{ id: 'sign-id' }];
+        if (sql.includes('FROM revalidation_tasks') && sql.includes('FOR UPDATE')) {
+          return [{
+            id: 'task-id',
+            verified_sign_id: 'sign-id',
+            freshness_rule_id: null,
+            reward_credits: 10,
+            status: TaskStatus.EVALUATING,
+          }];
+        }
+        if (sql.includes('FROM revalidation_evidences')) return evidenceRows ?? [{ id: 'evidence-id', user_id: 'surveyor-id', evidence_type: 'STILL_ACTIVE' }];
         if (sql.includes('SELECT decision, reviewer_id, evidence_id')) return decisionRows;
         if (sql.includes('min_votes_required')) return [];
         if (/SELECT sign_type_id FROM verified_traffic_signs/.test(sql)) return [{ sign_type_id: 7 }];
+        if (sql.includes('SELECT id FROM traffic_sign_types')) return [{ id: 99 }];
         return [];
       });
       const wallet = {
@@ -197,26 +435,51 @@ describe('RevalidationService', () => {
         tasks,
         {} as Repository<RevalidationEvidence>,
         {} as Repository<RevalidationDecision>,
-        { query } as unknown as DataSource,
+        {
+          query,
+          transaction: jest.fn((callback: any) => callback({ query })),
+        } as unknown as DataSource,
         {} as MinioStorageService,
         wallet,
         notifications,
+        undefined,
+        undefined,
+        mockAiService,
       );
       return { service, tasks, query, wallet };
     }
 
     it('UNCHANGED majority refreshes the sign, rewards the submitter and completes the task', async () => {
-      const { service, tasks, query, wallet } = consensusHarness([
+      const { service, query, wallet } = consensusHarness([
         { decision: 'UNCHANGED', reviewer_id: 'r1', evidence_id: 'evidence-id', suggested_sign_type_id: null },
         { decision: 'UNCHANGED', reviewer_id: 'r2', evidence_id: 'evidence-id', suggested_sign_type_id: null },
         { decision: 'UNCHANGED', reviewer_id: 'r3', evidence_id: 'evidence-id', suggested_sign_type_id: null },
       ]);
       const result = await service.evaluateRevalidationConsensus('task-id');
       expect(result).toMatchObject({ reason: 'CONSENSUS_REACHED', winningDecision: 'UNCHANGED', signAction: 'REFRESHED', creditedSubmitters: 1 });
+      const signLockIndex = query.mock.calls.findIndex(([sql]) =>
+        sql.includes('FROM verified_traffic_signs') && sql.includes('FOR UPDATE'),
+      );
+      const taskLockIndex = query.mock.calls.findIndex(([sql]) =>
+        sql.includes('FROM revalidation_tasks') && sql.includes('FOR UPDATE'),
+      );
+      expect(signLockIndex).toBeGreaterThanOrEqual(0);
+      expect(taskLockIndex).toBeGreaterThan(signLockIndex);
       expect(query).toHaveBeenCalledWith(expect.stringContaining("UPDATE verified_traffic_signs SET status='ACTIVE'"), ['sign-id']);
       expect(query).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO sign_lifecycle_events'), ['sign-id']);
-      expect(tasks.save).toHaveBeenCalledWith(expect.objectContaining({ status: TaskStatus.COMPLETED }));
-      expect(wallet.creditUser).toHaveBeenCalledWith('surveyor-id', 10, TransactionType.REVALIDATION_REWARD, 'revalidation_task', 'task-id', expect.any(String));
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining("SET status = 'COMPLETED'"),
+        ['task-id'],
+      );
+      expect(wallet.creditUser).toHaveBeenCalledWith(
+        'surveyor-id',
+        10,
+        TransactionType.REVALIDATION_REWARD,
+        'revalidation_task',
+        'task-id',
+        expect.any(String),
+        { idempotencyKey: 'revalidation:task-id:REVALIDATION_REWARD:surveyor-id' },
+      );
     });
 
     it('CHANGED majority updates the suggested sign type and records history', async () => {
@@ -224,26 +487,248 @@ describe('RevalidationService', () => {
         { decision: 'CHANGED', reviewer_id: 'r1', evidence_id: 'evidence-id', suggested_sign_type_id: 42 },
         { decision: 'CHANGED', reviewer_id: 'r2', evidence_id: 'evidence-id', suggested_sign_type_id: 42 },
         { decision: 'CHANGED', reviewer_id: 'r3', evidence_id: 'evidence-id', suggested_sign_type_id: 42 },
-      ]);
+      ], [{ id: 'evidence-id', user_id: 'surveyor-id', media_url: 'changed.jpg', evidence_type: 'CHANGED' }]);
       const result = await service.evaluateRevalidationConsensus('task-id');
       expect(result).toMatchObject({ winningDecision: 'CHANGED', signAction: 'UPDATED_TYPE' });
-      expect(query).toHaveBeenCalledWith(expect.stringContaining('SET sign_type_id=$1'), [42, 'sign-id']);
-      expect(query).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO verified_sign_history'), ['sign-id', 7]);
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining('SET sign_type_id = $1'),
+        [42, 'sign-id', 'changed.jpg', null, null],
+      );
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining('INSERT INTO verified_sign_history'),
+        ['sign-id', 7],
+      );
     });
 
-    it('MISSING majority retires the sign', async () => {
-      const { service, query } = consensusHarness([
+    it('uses the newest CHANGED evidence rather than newer evidence of another type', async () => {
+      const changedMediaUrl = 'https://s3.example.com/changed-evidence.jpg';
+      const { service, query } = consensusHarness(
+        [
+          { decision: 'CHANGED', reviewer_id: 'r1', evidence_id: 'changed-evidence', suggested_sign_type_id: 42 },
+          { decision: 'CHANGED', reviewer_id: 'r2', evidence_id: 'changed-evidence', suggested_sign_type_id: 42 },
+        ],
+        [
+          {
+            id: 'newer-active-evidence',
+            user_id: 'active-surveyor',
+            media_url: 'https://s3.example.com/newer-active.jpg',
+            evidence_type: 'STILL_ACTIVE',
+            latitude: 10,
+            longitude: 20,
+          },
+          {
+            id: 'changed-evidence',
+            user_id: 'changed-surveyor',
+            media_url: changedMediaUrl,
+            evidence_type: 'CHANGED',
+            latitude: 11,
+            longitude: 21,
+          },
+        ],
+      );
+
+      const result = await service.evaluateRevalidationConsensus('task-id');
+
+      expect(result).toMatchObject({ winningDecision: 'CHANGED', signAction: 'UPDATED_TYPE' });
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining('SET sign_type_id = $1'),
+        [42, 'sign-id', changedMediaUrl, 21, 11],
+      );
+    });
+
+    it('does not mark a task complete or reward users when sign persistence fails', async () => {
+      const { service, query, wallet } = consensusHarness([
+        { decision: 'UNCHANGED', reviewer_id: 'reviewer-id', evidence_id: 'evidence-id', suggested_sign_type_id: null },
+      ]);
+      const executeQuery = query.getMockImplementation();
+      query.mockImplementation(async (sql: string) => {
+        if (sql.includes('UPDATE verified_traffic_signs')) throw new Error('sign update failed');
+        return executeQuery!(sql);
+      });
+
+      await expect(service.evaluateRevalidationConsensus('task-id')).rejects.toThrow('sign update failed');
+
+      expect(wallet.creditUser).not.toHaveBeenCalled();
+      expect(query).not.toHaveBeenCalledWith(expect.stringContaining("SET status = 'COMPLETED'"), expect.anything());
+    });
+
+    it('uses stable idempotency keys and leaves the task incomplete when rewards fail', async () => {
+      const { service, query, wallet } = consensusHarness([
+        { decision: 'UNCHANGED', reviewer_id: 'reviewer-id', evidence_id: 'evidence-id', suggested_sign_type_id: null },
+      ]);
+      (wallet.creditUser as jest.Mock).mockRejectedValue(new Error('wallet unavailable'));
+
+      await expect(service.evaluateRevalidationConsensus('task-id')).rejects.toThrow('wallet unavailable');
+
+      expect(wallet.creditUser).toHaveBeenCalledWith(
+        'surveyor-id',
+        10,
+        TransactionType.REVALIDATION_REWARD,
+        'revalidation_task',
+        'task-id',
+        expect.any(String),
+        { idempotencyKey: 'revalidation:task-id:REVALIDATION_REWARD:surveyor-id' },
+      );
+      expect(query).not.toHaveBeenCalledWith(expect.stringContaining("SET status = 'COMPLETED'"), expect.anything());
+    });
+
+    it('MISSING / REMOVED majority transitions sign to DECOMMISSIONED and awards SIGN_DECOMMISSION_REWARD', async () => {
+      const { service, query, wallet } = consensusHarness([
         { decision: 'MISSING', reviewer_id: 'r1', evidence_id: 'evidence-id', suggested_sign_type_id: null },
-        { decision: 'MISSING', reviewer_id: 'r2', evidence_id: 'evidence-id', suggested_sign_type_id: null },
+        { decision: 'REMOVED', reviewer_id: 'r2', evidence_id: 'evidence-id', suggested_sign_type_id: null },
         { decision: 'MISSING', reviewer_id: 'r3', evidence_id: 'evidence-id', suggested_sign_type_id: null },
       ]);
       const result = await service.evaluateRevalidationConsensus('task-id');
-      expect(result).toMatchObject({ winningDecision: 'MISSING', signAction: 'RETIRED' });
-      expect(query).toHaveBeenCalledWith(expect.stringContaining("UPDATE verified_traffic_signs SET status='RETIRED'"), ['sign-id']);
+      expect(result).toMatchObject({ winningDecision: 'MISSING', signAction: 'DECOMMISSIONED' });
+      expect(query).toHaveBeenCalledWith(expect.stringContaining("UPDATE verified_traffic_signs SET status='DECOMMISSIONED'"), ['sign-id']);
+      expect(wallet.creditUser).toHaveBeenCalledWith(
+        'surveyor-id',
+        10,
+        TransactionType.SIGN_DECOMMISSION_REWARD,
+        'revalidation_task',
+        'task-id',
+        expect.any(String),
+        { idempotencyKey: 'revalidation:task-id:SIGN_DECOMMISSION_REWARD:surveyor-id' },
+      );
+    });
+
+    it('STILL_ACTIVE majority refreshes the sign and awards REVALIDATION_REWARD', async () => {
+      const { service, query, wallet } = consensusHarness([
+        { decision: 'STILL_ACTIVE', reviewer_id: 'r1', evidence_id: 'evidence-id', suggested_sign_type_id: null },
+        { decision: 'STILL_ACTIVE', reviewer_id: 'r2', evidence_id: 'evidence-id', suggested_sign_type_id: null },
+        { decision: 'UNCHANGED', reviewer_id: 'r3', evidence_id: 'evidence-id', suggested_sign_type_id: null },
+      ]);
+      const result = await service.evaluateRevalidationConsensus('task-id');
+      expect(result).toMatchObject({ winningDecision: 'STILL_ACTIVE', signAction: 'REFRESHED' });
+      expect(query).toHaveBeenCalledWith(expect.stringContaining("UPDATE verified_traffic_signs SET status='ACTIVE'"), ['sign-id']);
+      expect(wallet.creditUser).toHaveBeenCalledWith(
+        'surveyor-id',
+        10,
+        TransactionType.REVALIDATION_REWARD,
+        'revalidation_task',
+        'task-id',
+        expect.any(String),
+        { idempotencyKey: 'revalidation:task-id:REVALIDATION_REWARD:surveyor-id' },
+      );
+    });
+
+    it('updates sign_crop_url with latest evidence media_url when STILL_ACTIVE is confirmed', async () => {
+      const { service, query } = consensusHarness(
+        [
+          { decision: 'STILL_ACTIVE', reviewer_id: 'r1', evidence_id: 'evidence-id', suggestedSignTypeId: null },
+          { decision: 'STILL_ACTIVE', reviewer_id: 'r2', evidence_id: 'evidence-id', suggestedSignTypeId: null },
+        ],
+        [{ id: 'evidence-id', user_id: 'surveyor-id', media_url: 'https://s3.example.com/updated-sign.jpg' }],
+      );
+      const result = await service.evaluateRevalidationConsensus('task-id');
+      expect(result).toMatchObject({ winningDecision: 'STILL_ACTIVE', signAction: 'REFRESHED' });
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining("SET status = 'ACTIVE', freshness_score = 1, sign_crop_url = $2"),
+        ['sign-id', 'https://s3.example.com/updated-sign.jpg', null, null],
+      );
+    });
+
+    it('updates sign_crop_url and sign_type_id when CHANGED is confirmed with evidence media_url', async () => {
+      const { service, query } = consensusHarness(
+        [
+          { decision: 'CHANGED', reviewer_id: 'r1', evidence_id: 'evidence-id', suggested_sign_type_id: 42 },
+          { decision: 'CHANGED', reviewer_id: 'r2', evidence_id: 'evidence-id', suggested_sign_type_id: 42 },
+        ],
+        [{ id: 'evidence-id', user_id: 'surveyor-id', media_url: 'https://s3.example.com/changed-sign.jpg', evidence_type: 'CHANGED' }],
+      );
+      const result = await service.evaluateRevalidationConsensus('task-id');
+      expect(result).toMatchObject({ winningDecision: 'CHANGED', signAction: 'UPDATED_TYPE' });
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining("SET sign_type_id = $1, status = 'ACTIVE', freshness_score = 1, sign_crop_url = $3"),
+        [42, 'sign-id', 'https://s3.example.com/changed-sign.jpg', null, null],
+      );
+    });
+
+    it('sends new changed image to AI server for early classification when CHANGED is confirmed', async () => {
+      const mockAiService = {
+        classifyEarly: jest.fn().mockResolvedValue({
+          status: 'success',
+          classId: 42,
+          className: 'No_entry',
+          standardCode: 'P.102',
+          confidence: 0.98,
+        }),
+      };
+      const { service, query } = consensusHarness(
+        [
+          { decision: 'CHANGED', reviewer_id: 'r1', evidence_id: 'evidence-id', suggested_sign_type_id: 42 },
+          { decision: 'CHANGED', reviewer_id: 'r2', evidence_id: 'evidence-id', suggested_sign_type_id: 42 },
+        ],
+        [{ id: 'evidence-id', user_id: 'surveyor-id', media_url: 'https://s3.example.com/changed-sign.jpg', evidence_type: 'CHANGED' }],
+        mockAiService,
+      );
+      const result = await service.evaluateRevalidationConsensus('task-id');
+      expect(result).toMatchObject({ winningDecision: 'CHANGED', signAction: 'UPDATED_TYPE' });
+      expect(mockAiService.classifyEarly).toHaveBeenCalledWith({
+        mediaUrl: 'https://s3.example.com/changed-sign.jpg',
+        signId: 'sign-id',
+        taskId: 'task-id',
+      });
+      expect(result.earlyClassification).toEqual(expect.objectContaining({
+        standardCode: 'P.102',
+        confidence: 0.98,
+      }));
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining('INSERT INTO sign_lifecycle_events'),
+        expect.arrayContaining(['sign-id', expect.stringContaining('AI early classification: P.102')]),
+      );
+    });
+
+    it('resolves suggestedSignTypeId using AI early classification when reviewers provide none', async () => {
+      const mockAiService = {
+        classifyEarly: jest.fn().mockResolvedValue({
+          status: 'success',
+          classId: 99,
+          className: 'Speed_limit_50',
+          standardCode: 'P.127',
+          confidence: 0.95,
+        }),
+      };
+      const { service, query } = consensusHarness(
+        [
+          { decision: 'CHANGED', reviewer_id: 'r1', evidence_id: 'evidence-id', suggested_sign_type_id: null },
+          { decision: 'CHANGED', reviewer_id: 'r2', evidence_id: 'evidence-id', suggested_sign_type_id: null },
+        ],
+        [{ id: 'evidence-id', user_id: 'surveyor-id', media_url: 'https://s3.example.com/new-speed-limit.jpg', evidence_type: 'CHANGED' }],
+        mockAiService,
+      );
+      const result = await service.evaluateRevalidationConsensus('task-id');
+      expect(result).toMatchObject({ winningDecision: 'CHANGED', signAction: 'UPDATED_TYPE' });
+      expect(mockAiService.classifyEarly).toHaveBeenCalled();
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining('SET sign_type_id = $1'),
+        [99, 'sign-id', 'https://s3.example.com/new-speed-limit.jpg', null, null],
+      );
+      expect(query).toHaveBeenCalledWith(expect.stringContaining("SET status = 'COMPLETED'"), ['task-id']);
+    });
+
+    it('falls back to moderation if reviewers provide no type and AI early classification fails', async () => {
+      const mockAiService = {
+        classifyEarly: jest.fn().mockResolvedValue(null),
+      };
+      const { service, query } = consensusHarness(
+        [
+          { decision: 'CHANGED', reviewer_id: 'r1', evidence_id: 'evidence-id', suggested_sign_type_id: null },
+          { decision: 'CHANGED', reviewer_id: 'r2', evidence_id: 'evidence-id', suggested_sign_type_id: null },
+        ],
+        [{ id: 'evidence-id', user_id: 'surveyor-id', media_url: 'https://s3.example.com/unclear.jpg', evidence_type: 'CHANGED' }],
+        mockAiService,
+      );
+      const result = await service.evaluateRevalidationConsensus('task-id');
+      expect(result).toMatchObject({ reason: 'CHANGED_WITHOUT_TYPE', escalatedToModeration: true });
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining("SET status = 'ESCALATED_MODERATION'"),
+        ['task-id'],
+      );
     });
 
     it('escalates a tie to moderation instead of arbitrarily picking a winner', async () => {
-      const { service, tasks, query } = consensusHarness([
+      const { service, query } = consensusHarness([
         { decision: 'UNCHANGED', reviewer_id: 'r1', evidence_id: 'evidence-id', suggested_sign_type_id: null },
         { decision: 'MISSING', reviewer_id: 'r2', evidence_id: 'evidence-id', suggested_sign_type_id: null },
         { decision: 'CHANGED', reviewer_id: 'r3', evidence_id: 'evidence-id', suggested_sign_type_id: 42 },
@@ -251,7 +736,345 @@ describe('RevalidationService', () => {
       const result = await service.evaluateRevalidationConsensus('task-id');
       expect(result).toMatchObject({ reason: 'CONFLICT', escalatedToModeration: true });
       expect(query).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO moderation_cases'), ['task-id', expect.stringContaining('tie')]);
-      expect(tasks.save).toHaveBeenCalledWith(expect.objectContaining({ status: TaskStatus.ESCALATED_MODERATION }));
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining("SET status = 'ESCALATED_MODERATION'"),
+        ['task-id'],
+      );
+    });
+  });
+
+  describe('Phase 5 Route-Aware Freshness & Spatial Tasks', () => {
+    it('queries revalidation tasks with PostGIS spatial radius filter', async () => {
+      const query = jest.fn().mockImplementation(async (sql: string) => {
+        if (sql.includes('COUNT(*)')) {
+          return [{ cnt: 1 }];
+        }
+        if (sql.includes('SELECT rt.id')) {
+          return [
+            {
+              id: 'task-1',
+              signId: 'sign-1',
+              bounty: 75,
+              rewardCredits: 75,
+              urgency: 0.55,
+              priority: 'MEDIUM',
+              status: 'OPEN',
+              expiresAt: new Date(),
+              createdAt: new Date(),
+              lat: 10.8231,
+              lon: 106.6297,
+              distance_meters: 120,
+            },
+          ];
+        }
+        return [];
+      });
+
+      const service = new RevalidationService(
+        {} as any,
+        {} as any,
+        {} as any,
+        { query } as unknown as DataSource,
+        {} as any,
+        {} as any,
+        {} as any,
+      );
+
+      const result = await service.listTasks(1, 10, 'OPEN', 'urgency', {
+        lat: 10.823,
+        lon: 106.629,
+        radiusMeters: 1000,
+      });
+
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0]).toMatchObject({
+        id: 'task-1',
+        signId: 'sign-1',
+        bounty: 75,
+        urgency: 0.55,
+        location: { lat: 10.8231, lon: 106.6297 },
+      });
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining('ST_DWithin(vts.location::geography'),
+        expect.arrayContaining([106.629, 10.823, 1000]),
+      );
+    });
+
+    it('queries non-spatial revalidation tasks with sign metadata and status filter', async () => {
+      const query = jest.fn().mockImplementation(async (sql: string) => {
+        if (sql.includes('COUNT(*)')) {
+          return [{ cnt: 1 }];
+        }
+        if (sql.includes('FROM revalidation_tasks rt')) {
+          return [
+            {
+              id: 'task-non-spatial',
+              verified_sign_id: 'sign-1',
+              reward_credits: 50,
+              urgency: 0.8,
+              status: 'OPEN',
+              sign_code: 'P.102',
+              name_en: 'No Entry',
+              name_vi: 'Cấm đi ngược chiều',
+              longitude: 106.7,
+              latitude: 10.77,
+            },
+          ];
+        }
+        return [];
+      });
+
+      const service = new RevalidationService(
+        {} as any,
+        {} as any,
+        {} as any,
+        { query } as unknown as DataSource,
+        {} as any,
+        {} as any,
+        {} as any,
+      );
+
+      const result = await service.listTasks(1, 20, 'OPEN', 'reward');
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0]).toMatchObject({
+        id: 'task-non-spatial',
+        sign_code: 'P.102',
+        name_en: 'No Entry',
+      });
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining('JOIN verified_traffic_signs vts'),
+        expect.arrayContaining(['OPEN', 20, 0]),
+      );
+    });
+
+    it('queries tasks in bbox without ST_Within when coordinates are omitted', async () => {
+      const query = jest.fn().mockImplementation(async (sql: string) => {
+        if (sql.includes('COUNT(*)')) return [{ cnt: 0 }];
+        return [];
+      });
+
+      const service = new RevalidationService(
+        {} as any,
+        {} as any,
+        {} as any,
+        { query } as unknown as DataSource,
+        {} as any,
+        {} as any,
+        {} as any,
+      );
+
+      const result = await service.listTasksInBbox({ status: 'OPEN' });
+      expect(result.items).toEqual([]);
+      expect(query).toHaveBeenCalledWith(
+        expect.not.stringContaining('ST_Within'),
+        expect.arrayContaining(['OPEN', 20, 0]),
+      );
+    });
+
+    it('attaches location and bounty to getTask response', async () => {
+      const task = {
+        id: 'task-1',
+        verifiedSignId: 'sign-1',
+        rewardCredits: 90,
+        urgency: 0.7,
+        status: TaskStatus.OPEN,
+      } as RevalidationTask;
+      const tasks = {
+        findOne: jest.fn().mockResolvedValue(task),
+      } as unknown as Repository<RevalidationTask>;
+      const query = jest.fn().mockImplementation(async (sql: string) => {
+        if (sql.includes('FROM revalidation_evidences')) return [];
+        if (sql.includes('FROM verified_traffic_signs')) {
+          return [{ lat: 10.772, lon: 106.698 }];
+        }
+        return [];
+      });
+
+      const service = new RevalidationService(
+        tasks,
+        {} as any,
+        {} as any,
+        { query } as unknown as DataSource,
+        {} as any,
+        {} as any,
+        {} as any,
+      );
+
+      const result = await service.getTask('task-1');
+      expect(result.bounty).toBe(90);
+      expect(result.location).toEqual({ lat: 10.772, lon: 106.698 });
+    });
+  });
+
+  describe('triggerEarlyClassification', () => {
+    it('fetches latest evidence and triggers early classification', async () => {
+      const task = { id: 'task-1', verifiedSignId: 'sign-1', status: TaskStatus.OPEN } as RevalidationTask;
+      const tasks = { findOne: jest.fn().mockResolvedValue(task) } as unknown as Repository<RevalidationTask>;
+      const query = jest.fn(async (sql: string) => {
+        if (sql.includes('FROM revalidation_evidences')) {
+          return [{ media_url: 'https://s3.example.com/crop.jpg', evidence_type: 'CHANGED' }];
+        }
+        if (sql.includes('FROM traffic_sign_types')) {
+          return [{ id: 101 }];
+        }
+        return [];
+      });
+      const mockAiService = {
+        classifyEarly: jest.fn().mockResolvedValue({
+          status: 'success',
+          standardCode: 'P.102',
+          className: 'No_entry',
+          confidence: 0.98,
+        }),
+      };
+      const service = new RevalidationService(
+        tasks,
+        {} as any,
+        {} as any,
+        { query } as unknown as DataSource,
+        {} as any,
+        {} as any,
+        {} as any,
+        undefined,
+        undefined,
+        mockAiService as any,
+      );
+
+      const res = await service.triggerEarlyClassification('task-1');
+      expect(res.taskId).toBe('task-1');
+      expect(res.signId).toBe('sign-1');
+      expect(res.resolvedSignTypeId).toBe(101);
+      expect(mockAiService.classifyEarly).toHaveBeenCalledWith({
+        mediaUrl: 'https://s3.example.com/crop.jpg',
+        signId: 'sign-1',
+        taskId: 'task-1',
+      });
+    });
+  });
+
+  describe('requestEvidenceRecapture', () => {
+    it('throws NotFoundException when evidence does not exist', async () => {
+      const evidences = {
+        findOne: jest.fn().mockResolvedValue(null),
+      } as unknown as Repository<RevalidationEvidence>;
+      const service = new RevalidationService(
+        { findOne: jest.fn().mockResolvedValue({ id: 'task-1', status: TaskStatus.OPEN }) } as any,
+        evidences,
+        {} as any,
+        {} as any,
+        {} as any,
+        {} as any,
+        {} as any,
+      );
+
+      await expect(
+        service.requestEvidenceRecapture('non-existent', 'rev-1', { reason: 'BLURRY' }),
+      ).rejects.toThrow('RevalidationEvidence non-existent not found');
+    });
+
+    it('throws ForbiddenException when reviewer is the submitter of the evidence', async () => {
+      const evidences = {
+        findOne: jest.fn().mockResolvedValue({ id: 'ev-1', userId: 'user-1' }),
+      } as unknown as Repository<RevalidationEvidence>;
+      const service = new RevalidationService(
+        { findOne: jest.fn().mockResolvedValue({ id: 'task-1', status: TaskStatus.OPEN }) } as any,
+        evidences,
+        {} as any,
+        {} as any,
+        {} as any,
+        {} as any,
+        {} as any,
+      );
+
+      await expect(
+        service.requestEvidenceRecapture('ev-1', 'user-1', { reason: 'BLURRY' }),
+      ).rejects.toThrow('You cannot request recapture on your own submitted evidence');
+    });
+
+    it('creates UNCLEAR decision, dispatches notification, and records daily task progress', async () => {
+      const evidences = {
+        findOne: jest.fn().mockResolvedValue({ id: 'ev-1', userId: 'surv-1', taskId: 'task-uuid-1234' }),
+      } as unknown as Repository<RevalidationEvidence>;
+      const decisions = {
+        findOne: jest.fn().mockResolvedValue(null),
+        create: jest.fn((val) => val),
+        save: jest.fn(async (val) => val),
+      } as unknown as Repository<RevalidationDecision>;
+      const notifications = {
+        create: jest.fn().mockResolvedValue({ id: 'notif-1' }),
+      } as unknown as NotificationsService;
+      const dailyTasks = {
+        recordProgress: jest.fn().mockResolvedValue(undefined),
+      };
+      const manager = {
+        query: jest.fn().mockResolvedValue([{ status: TaskStatus.OPEN }]),
+        findOne: jest.fn().mockResolvedValue(null),
+        create: jest.fn((_entity: any, value: any) => value),
+        save: jest.fn(async (_entity: any, value: any) => value),
+      };
+
+      const service = new RevalidationService(
+        {} as any,
+        evidences,
+        decisions,
+        { transaction: jest.fn((callback: any) => callback(manager)) } as any,
+        {} as any,
+        {} as any,
+        notifications,
+        undefined,
+        dailyTasks as any,
+      );
+
+      const res = await service.requestEvidenceRecapture('ev-1', 'rev-1', {
+        reason: 'BLURRY',
+        note: 'Tree branch covering sign',
+      });
+
+      expect(res.success).toBe(true);
+      expect(res.evidenceId).toBe('ev-1');
+      expect(res.surveyorId).toBe('surv-1');
+      expect(res.notificationSent).toBe(true);
+      expect(manager.save).toHaveBeenCalledWith(
+        RevalidationDecision,
+        expect.objectContaining({
+          evidenceId: 'ev-1',
+          reviewerId: 'rev-1',
+          decision: 'UNCLEAR',
+          note: 'Recapture requested: BLURRY - Tree branch covering sign',
+        }),
+      );
+      expect(notifications.create).toHaveBeenCalledWith(
+        'surv-1',
+        'REVALIDATION_RECAPTURE_REQUESTED',
+        'Yêu cầu chụp lại ảnh xác thực biển báo',
+        expect.stringContaining('BLURRY: Tree branch covering sign'),
+        'revalidation_evidence',
+        'ev-1',
+      );
+      expect(dailyTasks.recordProgress).toHaveBeenCalledWith('rev-1', 'REVIEW', 1);
+    });
+
+    it('rejects recapture requests when the locked task is closed', async () => {
+      const evidences = {
+        findOne: jest.fn().mockResolvedValue({ id: 'ev-1', userId: 'surv-1', taskId: 'task-uuid-1234' }),
+      } as unknown as Repository<RevalidationEvidence>;
+      const manager = {
+        query: jest.fn().mockResolvedValue([{ status: TaskStatus.COMPLETED }]),
+      };
+      const service = new RevalidationService(
+        {} as any,
+        evidences,
+        {} as any,
+        { transaction: jest.fn((callback: any) => callback(manager)) } as any,
+        {} as any,
+        {} as any,
+        {} as any,
+      );
+
+      await expect(
+        service.requestEvidenceRecapture('ev-1', 'reviewer-id', { reason: 'BLURRY' }),
+      ).rejects.toThrow('Revalidation task is closed to recapture requests');
+      expect(manager.query).toHaveBeenCalledWith(expect.stringContaining('FOR UPDATE OF rt'), ['ev-1']);
     });
   });
 });

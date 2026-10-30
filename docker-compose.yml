@@ -184,6 +184,7 @@ services:
       ROUTING_PROVIDER: ${ROUTING_PROVIDER:-OSRM}
       ROUTING_OSRM_BASE_URL: ${ROUTING_OSRM_BASE_URL:-https://router.project-osrm.org}
       ROUTING_OSRM_PROFILE: ${ROUTING_OSRM_PROFILE:-driving}
+      ROUTING_OSRM_MOTORCYCLE_PROFILE: ${ROUTING_OSRM_MOTORCYCLE_PROFILE:-motorcycle}
       ROUTING_OSRM_TIMEOUT: ${ROUTING_OSRM_TIMEOUT:-5s}
       NAVIGATION_SIGN_CORRIDOR_WIDTH_METERS: ${NAVIGATION_SIGN_CORRIDOR_WIDTH_METERS:-30}
       NAVIGATION_SIGN_HEADING_TOLERANCE_DEGREES: ${NAVIGATION_SIGN_HEADING_TOLERANCE_DEGREES:-45}
@@ -223,6 +224,8 @@ services:
       MINIO_SECURE: "false"
       INTERNAL_API_TOKEN: ${INTERNAL_TOKEN:-stm_internal_secret_dev}
       NESTJS_INTERNAL_URL: http://api-nestjs:3000
+    volumes:
+      - ../pmtiles:/data/pmtiles:ro
     ports: ["${FASTAPI_PORT:-8088}:8000"]
     depends_on:
       postgres-migrate: { condition: service_completed_successfully }
@@ -305,28 +308,103 @@ services:
       postgres: { condition: service_healthy }
     networks: [stm-network]
 
-  cloudbeaver:
-    image: dbeaver/cloudbeaver:latest
-    container_name: stm-cloudbeaver
+  dbeaver-desktop:
+    build:
+      context: ./infra/dbeaver-desktop
+      dockerfile: Dockerfile
+    container_name: stm-dbeaver-desktop
     restart: unless-stopped
     ports:
-      - "${CLOUDBEAVER_PORT:-8978}:8978"
+      - "${DBEAVER_WEB_PORT:-8978}:3000"
+      - "${DBEAVER_TUNNEL_PORT:-8976}:3000"
     environment:
-      CB_SERVER_NAME: "SignTrustMap Database"
-      CB_SERVER_URL: "https://${CLOUDBEAVER_DOMAIN:-db.signmap.site}"
-      CLOUDBEAVER_APP_FORWARD_PROXY: "true"
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Ho_Chi_Minh
+      - CUSTOM_USER=${DBEAVER_WEB_USER:-admin}
+      - PASSWORD=${DBEAVER_WEB_PASSWORD:-stm_secure_pass}
     volumes:
-      - cloudbeaver_data:/opt/cloudbeaver/workspace
+      - dbeaver_desktop_data:/config
     depends_on:
       postgres: { condition: service_healthy }
     networks: [stm-network]
+    labels:
+      - "coolify.managed=true"
+      - "traefik.enable=true"
+      - "traefik.docker.network=stm-network"
+      - "traefik.http.routers.stm-dbeaver-desktop.rule=Host(`${CLOUDBEAVER_DOMAIN:-db.signmap.site}`)"
+      - "traefik.http.routers.stm-dbeaver-desktop.entrypoints=http,https"
+      - "traefik.http.routers.stm-dbeaver-desktop.tls=true"
+      - "traefik.http.routers.stm-dbeaver-desktop.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.stm-dbeaver-desktop.service=stm-dbeaver-desktop"
+      - "traefik.http.services.stm-dbeaver-desktop.loadbalancer.server.port=3000"
+
+  # ---------------------------------------------------------------------------
+  # LOCAL OSRM ROUTING ENGINE (Internal Vehicle & Corridor Routing)
+  # ---------------------------------------------------------------------------
+  osrm-routed:
+    image: ghcr.io/project-osrm/osrm-backend:v5.27.1
+    container_name: stm-osrm
+    restart: unless-stopped
+    command: osrm-routed --algorithm mld /data/vietnam-latest.osrm --max-matching-size 1000 --max-table-size 1000
+    volumes:
+      - ../pmtiles/osrm-data:/data:ro
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 1536M
+        reservations:
+          memory: 1024M
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f 'http://localhost:5000/route/v1/driving/106.7,10.7;106.8,10.8?overview=false' || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - stm-network
+
+  # ---------------------------------------------------------------------------
+  # LOCAL TILE SERVER (Martin Rust Vector & Raster Tile Service)
+  # ---------------------------------------------------------------------------
+  tile-server:
+    image: ghcr.io/maplibre/martin:v0.13.0
+    container_name: stm-tiles
+    restart: unless-stopped
+    command: /data/osm.pmtiles --listen-addresses 0.0.0.0:8085
+    volumes:
+      - ../pmtiles:/data:ro
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          memory: 128M
+    ports:
+      - "8085:8085"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f 'http://localhost:8085/catalog' || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+    networks:
+      - stm-network
+    labels:
+      - "coolify.managed=true"
+      - "traefik.enable=true"
+      - "traefik.http.routers.stm-tiles.rule=Host(`tiles.${API_DOMAIN:-signmap.site}`)"
+      - "traefik.http.routers.stm-tiles.entrypoints=websecure"
+      - "traefik.http.routers.stm-tiles.tls.certresolver=letsencrypt"
+      - "traefik.http.services.stm-tiles.loadbalancer.server.port=8085"
 
 volumes:
   postgres_data: { name: stm_postgres_data }
   redis_data:    { name: stm_redis_data }
   minio_data:    { name: stm_minio_data }
   pgadmin_data:  { name: stm_pgadmin_data }
-  cloudbeaver_data: { name: stm_cloudbeaver_data }
+  dbeaver_desktop_data: { name: stm_dbeaver_desktop_data }
 
 networks:
   stm-network:

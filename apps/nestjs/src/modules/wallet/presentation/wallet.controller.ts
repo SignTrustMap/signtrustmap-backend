@@ -1,7 +1,14 @@
 import { Controller, Get, Post, Delete, Body, Param, Query, ParseUUIDPipe, BadRequestException, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { WalletService } from '../application/wallet.service';
-import { TopUpDto, CustomTopUpDto, CreatePaymentMethodDto } from './dto/wallet.dto';
+import {
+  TopUpDto,
+  CustomTopUpDto,
+  CreatePaymentMethodDto,
+  InternalCreditDto,
+  InternalDeductDto,
+  ListTransactionsQueryDto,
+} from './dto/wallet.dto';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { Public } from '../../../common/decorators/public.decorator';
 import { InternalTokenGuard } from '../../../common/guards/internal-token.guard';
@@ -22,15 +29,39 @@ export class WalletController {
   @Get('transactions')
   async listTransactions(
     @CurrentUser() user: any,
-    @Query('page') page?: string,
-    @Query('pageSize') pageSize?: string,
-    @Query('type') type?: string,
-    @Query('from') from?: string,
-    @Query('to') to?: string,
+    @Query() query?: ListTransactionsQueryDto | any,
+    @Query('pageSize') legacyPageSize?: string,
+    @Query('type') legacyType?: string,
+    @Query('from') legacyFrom?: string,
+    @Query('to') legacyTo?: string,
   ) {
-    const p = page ? parseInt(page, 10) : 1;
-    const ps = pageSize ? parseInt(pageSize, 10) : 20;
-    return this.walletService.listTransactions(user.id, { page: Number.isNaN(p) ? 1 : p, pageSize: Number.isNaN(ps) ? 20 : ps, type, from, to });
+    let p = 1;
+    let ps = 20;
+    let type: string | undefined;
+    let from: string | undefined;
+    let to: string | undefined;
+
+    if (typeof query === 'string' || typeof query === 'number') {
+      p = parseInt(String(query), 10);
+      ps = legacyPageSize ? parseInt(legacyPageSize, 10) : 20;
+      type = legacyType;
+      from = legacyFrom;
+      to = legacyTo;
+    } else if (query && typeof query === 'object') {
+      p = query.page ? Number(query.page) : (legacyPageSize ? parseInt(legacyPageSize, 10) : 1);
+      ps = query.pageSize ? Number(query.pageSize) : 20;
+      type = query.type ?? legacyType;
+      from = query.from ?? legacyFrom;
+      to = query.to ?? legacyTo;
+    }
+
+    return this.walletService.listTransactions(user.id, {
+      page: Number.isNaN(Number(p)) ? 1 : Number(p),
+      pageSize: Number.isNaN(Number(ps)) ? 20 : Number(ps),
+      type,
+      from,
+      to,
+    });
   }
 
   @Public()
@@ -75,8 +106,34 @@ export class WalletController {
   @UseGuards(InternalTokenGuard)
   @ApiOperation({ summary: 'Internal deduct credits', description: 'Service-to-service endpoint to deduct credits (e.g. navigation fee)' })
   @Post('internal/deduct')
-  async internalDeduct(@Body() body: { userId: string; amount: number; referenceType?: string; referenceId?: string; description?: string }) {
+  async internalDeduct(@Body() body: InternalDeductDto) {
     if (!body.userId || !body.amount) throw new BadRequestException('userId and amount are required');
-    return this.walletService.deductUser(body.userId, Math.abs(Number(body.amount)), TransactionType.NAVIGATION_FEE, body.referenceType ?? 'navigation_session', body.referenceId ?? null, body.description ?? 'Navigation session fee');
+    return this.walletService.deductUser(
+      body.userId,
+      Math.abs(Number(body.amount)),
+      TransactionType.NAVIGATION_FEE,
+      body.referenceType ?? 'navigation_session',
+      body.referenceId ?? null,
+      body.description ?? 'Navigation session fee',
+      { idempotencyKey: body.idempotencyKey },
+    );
+  }
+
+  @Public()
+  @UseGuards(InternalTokenGuard)
+  @ApiOperation({ summary: 'Internal credit rewards', description: 'Service-to-service endpoint to credit user rewards' })
+  @Post('internal/credit')
+  async internalCredit(@Body() body: InternalCreditDto) {
+    if (!body.userId || !body.amount) throw new BadRequestException('userId and amount are required');
+    return this.walletService.creditUser(
+      body.userId,
+      Math.abs(Number(body.amount)),
+      (body.type as TransactionType) ?? TransactionType.SURVEY_REWARD,
+      body.referenceType ?? null,
+      body.referenceId ?? null,
+      body.description ?? 'Reward credit',
+      { idempotencyKey: body.idempotencyKey },
+    );
   }
 }
+

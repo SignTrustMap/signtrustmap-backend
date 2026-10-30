@@ -9,8 +9,11 @@ import {
   Post,
   Put,
   Query,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CatalogService } from './catalog.service';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -19,6 +22,7 @@ import {
   CreateSignTypeDto,
   CreateSupportShotDto,
   ListSignTypesQueryDto,
+  ReprocessCandidatesDto,
   SetSupportShotPinDto,
   UpdateSignCategoryDto,
   UpdateSignTypeDto,
@@ -56,6 +60,12 @@ export class CatalogController {
   deleteCategory(@Param('id', ParseIntPipe) id: number) { return this.svc.deleteCategory(id); }
 
   // Traffic sign types: authenticated read, ADMIN write.
+  @ApiOperation({ summary: 'Check sign code availability', description: 'Validate a catalog sign code and check whether it is already in use' })
+  @Get('catalog/signs/check-code')
+  checkSignCode(@Query('code') code: string) {
+    return this.svc.checkSignCodeAvailability(code);
+  }
+
   @ApiOperation({ summary: 'List sign types', description: 'Search and filter catalog traffic signs by category, status, and code' })
   @Get('catalog/sign-types')
   listSignTypes(@Query() query: ListSignTypesQueryDto) {
@@ -74,13 +84,50 @@ export class CatalogController {
 
   @Roles('ADMIN')
   @ApiOperation({ summary: 'Create sign type', description: 'Admin operation to define a new traffic sign in the catalog' })
+  @ApiConsumes('multipart/form-data', 'application/json')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 20 * 1024 * 1024 } }))
   @Post('catalog/sign-types')
-  createSignType(@Body() dto: CreateSignTypeDto) { return this.svc.createSignType(dto); }
+  async createSignType(
+    @Body() dto: CreateSignTypeDto,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
+    if (file) {
+      dto.representativeImageKey = await this.svc.uploadRepresentativeImage(file, dto.signCode);
+    }
+    return this.svc.createSignType(dto);
+  }
 
   @Roles('ADMIN')
   @ApiOperation({ summary: 'Update sign type', description: 'Admin operation to modify sign code, standard name, or shape' })
+  @ApiConsumes('multipart/form-data', 'application/json')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 20 * 1024 * 1024 } }))
   @Patch('catalog/sign-types/:id')
-  updateSignType(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateSignTypeDto) { return this.svc.updateSignType(id, dto); }
+  async updateSignType(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateSignTypeDto,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
+    if (file) {
+      dto.representativeImageKey = await this.svc.uploadRepresentativeImage(file, dto.signCode);
+    }
+    return this.svc.updateSignType(id, dto);
+  }
+
+  @Roles('ADMIN')
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({ schema: { type: 'object', properties: { file: { type: 'string', format: 'binary' } }, required: ['file'] } })
+  @ApiOperation({
+    summary: 'Upload representative image for sign type',
+    description: 'Admin-only multipart upload that replaces the primary representative image while retaining prior stored objects.',
+  })
+  @Post('catalog/sign-types/:id/representative-image')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 50 * 1024 * 1024 } }))
+  uploadRepresentativeImage(
+    @Param('id', ParseIntPipe) id: number,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    return this.svc.uploadRepresentativeImage(id, file);
+  }
 
   @Roles('ADMIN')
   @ApiOperation({ summary: 'Delete sign type', description: 'Admin operation to soft-delete or remove a sign type' })
@@ -141,5 +188,17 @@ export class CatalogController {
   rebuildPrototypes() {
     return this.svc.triggerPrototypeRebuild();
   }
-}
 
+  @Roles('ADMIN')
+  @ApiOperation({
+    summary: 'Reprocess unresolved candidates against sign type',
+    description: 'Scans historical candidates marked unknown or low confidence and upgrades matching instances',
+  })
+  @Post('catalog/sign-types/:id/reprocess-candidates')
+  reprocessCandidates(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body?: ReprocessCandidatesDto,
+  ) {
+    return this.svc.reprocessUnknownCandidates(id, body?.similarityThreshold);
+  }
+}

@@ -52,10 +52,12 @@ services:
       JWT_SECRET: ${JWT_SECRET:-dev_jwt_secret_change_me_super_secret_32_chars}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
       INTERNAL_TOKEN: ${INTERNAL_TOKEN:-stm_internal_secret_dev}
+      AI_INFERENCE_URL: ${AI_INFERENCE_URL:-https://ai.signmap.site}
+      AI_INFERENCE_TIMEOUT_MS: ${AI_INFERENCE_TIMEOUT_MS:-30000}
       ROUTING_PROVIDER: ${ROUTING_PROVIDER:-OSRM}
-      ROUTING_OSRM_BASE_URL: ${ROUTING_OSRM_BASE_URL:-https://router.project-osrm.org}
+      ROUTING_OSRM_BASE_URL: ${ROUTING_OSRM_BASE_URL:-http://osrm-routed:5000}
       ROUTING_OSRM_PROFILE: ${ROUTING_OSRM_PROFILE:-driving}
-      ROUTING_OSRM_TIMEOUT: ${ROUTING_OSRM_TIMEOUT:-5s}
+      ROUTING_OSRM_TIMEOUT: ${ROUTING_OSRM_TIMEOUT:-3s}
       NAVIGATION_SIGN_CORRIDOR_WIDTH_METERS: ${NAVIGATION_SIGN_CORRIDOR_WIDTH_METERS:-30}
       NAVIGATION_SIGN_HEADING_TOLERANCE_DEGREES: ${NAVIGATION_SIGN_HEADING_TOLERANCE_DEGREES:-45}
     ports:
@@ -97,6 +99,8 @@ services:
       MINIO_REGION: ${MINIO_REGION:-}
       INTERNAL_API_TOKEN: ${INTERNAL_TOKEN:-stm_internal_secret_dev}
       NESTJS_INTERNAL_URL: http://api-nestjs:3000
+    volumes:
+      - ${PMTILES_DIR:-/home/ubuntu/pmtiles}:/data/pmtiles:ro
     ports:
       - "${FASTAPI_PORT:-8088}:8000"
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
@@ -162,6 +166,39 @@ services:
         aliases:
           - celery-beat
           - stm-celery-beat
+
+  # ---------------------------------------------------------------------------
+  # AUTOMATED ENDPOINT FAILURE SENTINEL (Schemathesis)
+  # ---------------------------------------------------------------------------
+  schemathesis:
+    build:
+      context: ./infra/schemathesis
+      dockerfile: Dockerfile
+    container_name: stm-schemathesis
+    restart: unless-stopped
+    depends_on:
+      api-nestjs: { condition: service_healthy }
+      api-fastapi: { condition: service_healthy }
+    volumes:
+      - schemathesis_reports:/reports
+    environment:
+      NESTJS_HOST: http://api-nestjs:3000
+      FASTAPI_HOST: http://api-fastapi:8000
+      MAX_EXAMPLES: ${SCHEMATHESIS_MAX_EXAMPLES:-30}
+      SCAN_INTERVAL_SECONDS: ${SCHEMATHESIS_INTERVAL:-3600}
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
+      NOTIFY_ON_SUCCESS: ${SCHEMATHESIS_NOTIFY_SUCCESS:-false}
+      TEST_USER_EMAIL: ${SCHEMATHESIS_TEST_EMAIL:-}
+      TEST_USER_PASSWORD: ${SCHEMATHESIS_TEST_PASSWORD:-}
+    networks:
+      stm-network:
+        aliases:
+          - schemathesis
+          - stm-schemathesis
+
+volumes:
+  schemathesis_reports:
+    name: stm_schemathesis_reports
 
 networks:
   stm-network:

@@ -14,7 +14,7 @@ describe('CatalogService', () => {
   const aiPrompts = repository<SignTypeAiPrompt>();
   const osmMappings = repository<SignTypeOsmMapping>();
   const images = repository<SignTypeImage>();
-  const dataSource = { transaction: jest.fn() } as unknown as DataSource;
+  const dataSource = { transaction: jest.fn(), query: jest.fn() } as unknown as DataSource;
   const service = new CatalogService(
     categories,
     signTypes,
@@ -25,7 +25,38 @@ describe('CatalogService', () => {
     dataSource,
   );
 
-  beforeEach(() => jest.resetAllMocks());
+  beforeEach(() => {
+    jest.resetAllMocks();
+    dataSource.query = jest.fn().mockResolvedValue([{ prefix: 'P' }]) as any;
+  });
+
+  it('normalizes and checks a sign code against known prefixes and duplicates', async () => {
+    dataSource.query = jest.fn().mockResolvedValue([{ prefix: 'P' }]) as any;
+    signTypes.findOne.mockResolvedValue(null);
+
+    await expect(service.checkSignCodeAvailability(' p. 110 ')).resolves.toEqual({
+      signCode: 'P.110',
+      available: true,
+    });
+    expect(signTypes.findOne).toHaveBeenCalledWith({
+      where: { signCode: expect.anything() },
+    });
+
+    signTypes.findOne.mockResolvedValue(trafficSignType());
+    await expect(service.checkSignCodeAvailability('P.110')).resolves.toEqual({
+      signCode: 'P.110',
+      available: false,
+    });
+  });
+
+  it('rejects sign codes with prefixes outside the catalog', async () => {
+    dataSource.query = jest.fn().mockResolvedValue([{ prefix: 'P' }]) as any;
+
+    await expect(service.checkSignCodeAvailability('Z.110')).rejects.toThrow(
+      'sign_code prefix must match an existing catalog prefix',
+    );
+    expect(signTypes.findOne).not.toHaveBeenCalled();
+  });
 
   it('returns a zero-based page enriched with the Spring catalog fields', async () => {
     const type = trafficSignType();
@@ -150,7 +181,7 @@ describe('CatalogService', () => {
 
     const created = await service.createSignType({
       categoryId: 2,
-      signCode: ' p.101 ',
+      signCode: ' p. 101A ',
       nameVi: ' Dung lai ',
       nameEn: ' Stop ',
       aiLabelPrompt: ' stop prompt ',
@@ -159,7 +190,7 @@ describe('CatalogService', () => {
     });
 
     expect(typeRepository.create).toHaveBeenCalledWith(
-      expect.objectContaining({ signCode: 'P.101', nameVi: 'Dung lai', nameEn: 'Stop' }),
+      expect.objectContaining({ signCode: 'P.101a', nameVi: 'Dung lai', nameEn: 'Stop' }),
     );
     expect(promptRepository.save).toHaveBeenCalledWith(
       expect.objectContaining({ promptText: 'stop prompt', version: 1, isActive: true }),
@@ -178,6 +209,112 @@ describe('CatalogService', () => {
         representativeImageKey: 'catalog/stop.png',
       }),
     );
+  });
+
+  it('allows creating special test sign code T.xxx', async () => {
+    const typeRepository = repository<TrafficSignType>();
+    const categoryRepository = repository<SignCategory>();
+    const promptRepository = repository<SignTypeAiPrompt>();
+    const mappingRepository = repository<SignTypeOsmMapping>();
+    const imageRepository = repository<SignTypeImage>();
+    const manager = {
+      getRepository: jest.fn((target) => {
+        if (target === SignCategory) return categoryRepository;
+        if (target === TrafficSignType) return typeRepository;
+        if (target === SignTypeAiPrompt) return promptRepository;
+        if (target === SignTypeOsmMapping) return mappingRepository;
+        if (target === SignTypeImage) return imageRepository;
+        return repository<any>();
+      }),
+    } as unknown as EntityManager;
+    categoryRepository.findOne.mockResolvedValue(entity<SignCategory>({ id: 2 }));
+    typeRepository.findOne.mockResolvedValue(null);
+    typeRepository.create.mockImplementation((value) => value as TrafficSignType);
+    typeRepository.save.mockImplementation(async (value) => ({
+      ...(value as TrafficSignType),
+      id: 99,
+    }));
+    typeRepository.find.mockResolvedValue([]);
+    promptRepository.find.mockResolvedValue([]);
+    mappingRepository.find.mockResolvedValue([]);
+    imageRepository.find.mockResolvedValue([]);
+    (dataSource.transaction as jest.Mock).mockImplementation(
+      (callback: (transactionManager: EntityManager) => unknown) => callback(manager),
+    );
+
+    const created = await service.createSignType({
+      categoryId: 2,
+      signCode: ' t.xxx ',
+      nameVi: 'Biển test T.xxx',
+      nameEn: 'Test Sign T.xxx',
+      representativeImageKey: 'catalog/test.png',
+    });
+
+    expect(typeRepository.create).toHaveBeenCalledWith(
+      expect.objectContaining({ signCode: 'T.xxx', nameVi: 'Biển test T.xxx' }),
+    );
+    expect(created).toEqual(expect.objectContaining({ id: 99 }));
+  });
+
+  it('rejects a sign code that is not abbreviation.number with an optional alphanumeric suffix', async () => {
+    const typeRepository = repository<TrafficSignType>();
+    const categoryRepository = repository<SignCategory>();
+    const manager = {
+      getRepository: jest.fn((target) => {
+        if (target === SignCategory) return categoryRepository;
+        if (target === TrafficSignType) return typeRepository;
+        return repository<any>();
+      }),
+    } as unknown as EntityManager;
+    categoryRepository.findOne.mockResolvedValue(entity<SignCategory>({ id: 2 }));
+    typeRepository.create.mockImplementation((value) => value as TrafficSignType);
+    typeRepository.save.mockImplementation(async (value) => ({
+      ...(value as TrafficSignType),
+      id: 12,
+    }));
+    typeRepository.find.mockResolvedValue([]);
+    (dataSource.transaction as jest.Mock).mockImplementation(
+      (callback: (transactionManager: EntityManager) => unknown) => callback(manager),
+    );
+
+    await expect(service.createSignType({
+      categoryId: 2,
+      signCode: 'P.127-40',
+      nameVi: 'Tốc độ',
+      nameEn: 'Speed',
+      representativeImageKey: 'existing-image.png',
+    })).rejects.toThrow('sign_code must match');
+    expect(typeRepository.findOne).not.toHaveBeenCalled();
+  });
+
+  it('maps a database unique violation to a conflict during concurrent sign creation', async () => {
+    const typeRepository = repository<TrafficSignType>();
+    const categoryRepository = repository<SignCategory>();
+    const manager = {
+      getRepository: jest.fn((target) => {
+        if (target === SignCategory) return categoryRepository;
+        if (target === TrafficSignType) return typeRepository;
+        return repository<any>();
+      }),
+    } as unknown as EntityManager;
+    categoryRepository.findOne.mockResolvedValue(entity<SignCategory>({ id: 2 }));
+    typeRepository.findOne.mockResolvedValue(null);
+    typeRepository.create.mockImplementation((value) => value as TrafficSignType);
+    typeRepository.save.mockRejectedValue(Object.assign(new Error('duplicate key'), {
+      code: '23505',
+      constraint: 'UQ_traffic_sign_types_sign_code',
+    }));
+    (dataSource.transaction as jest.Mock).mockImplementation(
+      (callback: (transactionManager: EntityManager) => unknown) => callback(manager),
+    );
+
+    await expect(service.createSignType({
+      categoryId: 2,
+      signCode: 'P.999',
+      nameVi: 'Tốc độ',
+      nameEn: 'Speed',
+      representativeImageKey: 'existing-image.png',
+    })).rejects.toThrow('sign_code "P.999" exists');
   });
 
   it('rejects malformed OSM mappings before replacing stored mappings', async () => {
@@ -204,6 +341,90 @@ describe('CatalogService', () => {
       'OSM mapping must use key=value entries separated by semicolons',
     );
     expect(mappingRepository.delete).not.toHaveBeenCalled();
+  });
+
+  it('rejects creation when representative image is missing or empty', async () => {
+    await expect(
+      service.createSignType({
+        categoryId: 2,
+        signCode: 'P.102',
+        nameVi: 'Cam vao',
+        nameEn: 'No Entry',
+        representativeImageKey: '   ',
+      }),
+    ).rejects.toThrow('Representative image is required for traffic sign types');
+
+    await expect(
+      service.createSignType({
+        categoryId: 2,
+        signCode: 'P.102',
+        nameVi: 'Cam vao',
+        nameEn: 'No Entry',
+        representativeImageKey: undefined as any,
+      }),
+    ).rejects.toThrow('Representative image is required for traffic sign types');
+  });
+
+  it('rejects updating representative image to empty or whitespace', async () => {
+    await expect(
+      service.updateSignType(12, {
+        representativeImageKey: '   ',
+      }),
+    ).rejects.toThrow('Representative image cannot be null or empty');
+  });
+
+  it('allows updating representative image to a valid non-empty URL', async () => {
+    const typeRepository = repository<TrafficSignType>();
+    const imageRepository = repository<SignTypeImage>();
+    const promptRepository = repository<SignTypeAiPrompt>();
+    const mappingRepository = repository<SignTypeOsmMapping>();
+    const manager = {
+      getRepository: jest.fn((target) => {
+        if (target === TrafficSignType) return typeRepository;
+        if (target === SignTypeImage) return imageRepository;
+        if (target === SignCategory) return repository<SignCategory>();
+        if (target === SignTypeAiPrompt) return promptRepository;
+        if (target === SignTypeOsmMapping) return mappingRepository;
+        throw new Error('Unexpected repository');
+      }),
+    } as unknown as EntityManager;
+    const type = trafficSignType();
+    typeRepository.findOne.mockResolvedValue(type);
+    typeRepository.save.mockResolvedValue(type);
+    promptRepository.find.mockResolvedValue([]);
+    mappingRepository.find.mockResolvedValue([]);
+    imageRepository.create.mockImplementation((value) => value as SignTypeImage);
+    imageRepository.find.mockResolvedValue([
+      entity<SignTypeImage>({
+        signTypeId: type.id,
+        imageUrl: 'https://s3.signmap.site/stm-sign-crops/representative/new.png',
+        imageType: 'REPRESENTATIVE',
+        isPrimary: true,
+      }),
+    ]);
+    (dataSource.transaction as jest.Mock).mockImplementation(
+      (callback: (transactionManager: EntityManager) => unknown) => callback(manager),
+    );
+
+    const updated = await service.updateSignType(type.id, {
+      representativeImageKey: 'https://s3.signmap.site/stm-sign-crops/representative/new.png',
+    });
+
+    expect(imageRepository.update).toHaveBeenCalledWith(
+      { signTypeId: type.id, imageType: 'REPRESENTATIVE', isPrimary: true },
+      { isPrimary: false },
+    );
+    expect(imageRepository.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        signTypeId: type.id,
+        imageUrl: 'https://s3.signmap.site/stm-sign-crops/representative/new.png',
+        imageType: 'REPRESENTATIVE',
+        isPrimary: true,
+      }),
+    );
+    expect(updated.representativeImageKey).toBe(
+      'https://s3.signmap.site/stm-sign-crops/representative/new.png',
+    );
   });
 
   function trafficSignType(): TrafficSignType {
@@ -252,6 +473,133 @@ describe('CatalogService', () => {
     return query as unknown as jest.Mocked<SelectQueryBuilder<TrafficSignType>>;
   }
 
+  describe('Support Shots & Active Learning', () => {
+    it('listSupportShots throws NotFoundException if signType not found', async () => {
+      signTypes.findOne.mockResolvedValueOnce(null);
+      await expect(service.listSupportShots(999)).rejects.toThrow();
+    });
+
+    it('listSupportShots returns ordered shots list', async () => {
+      signTypes.findOne.mockResolvedValueOnce(entity<TrafficSignType>({ id: 1, signCode: 'P.101', nameVi: 'Cam' }));
+      images.find.mockResolvedValueOnce([
+        entity<SignTypeImage>({
+          id: 'img-1',
+          imageUrl: 's3/img1.jpg',
+          imageType: 'REAL_PHOTO',
+          role: 'MEDOID',
+          isPrimary: true,
+          isPinned: true,
+          sharpness: 95.0,
+          uploadedAt: new Date(),
+        }),
+      ]);
+
+      const res = await service.listSupportShots(1);
+      expect(res.signTypeId).toBe(1);
+      expect(res.totalShots).toBe(1);
+      expect(res.shots[0].id).toBe('img-1');
+      expect(res.shots[0].isPinned).toBe(true);
+    });
+
+    it('addSupportShot unsets previous primary if isPrimary is true', async () => {
+      signTypes.findOne.mockResolvedValueOnce(entity<TrafficSignType>({ id: 1 }));
+      images.create.mockReturnValue(entity<SignTypeImage>({ id: 'img-2', imageUrl: 's3/img2.jpg', isPrimary: true }));
+      images.save.mockResolvedValue(entity<SignTypeImage>({ id: 'img-2', imageUrl: 's3/img2.jpg', isPrimary: true }));
+
+      const res = await service.addSupportShot(1, { imageUrl: 's3/img2.jpg', isPrimary: true });
+      expect(images.update).toHaveBeenCalledWith({ signTypeId: 1 }, { isPrimary: false });
+      expect(res.id).toBe('img-2');
+    });
+
+    it('deleteSupportShot checks existence and removes shot', async () => {
+      images.findOne.mockResolvedValueOnce(null);
+      await expect(service.deleteSupportShot(1, 'img-missing')).rejects.toThrow();
+
+      const shot = entity<SignTypeImage>({ id: 'img-1', signTypeId: 1 });
+      images.findOne.mockResolvedValueOnce(shot);
+      images.remove.mockResolvedValueOnce(shot);
+
+      const res = await service.deleteSupportShot(1, 'img-1');
+      expect(res).toEqual({ deleted: true, imageId: 'img-1', signTypeId: 1 });
+      expect(images.remove).toHaveBeenCalledWith(shot);
+    });
+
+    it('setSupportShotPinned updates pin status', async () => {
+      images.findOne.mockResolvedValueOnce(null);
+      await expect(service.setSupportShotPinned(1, 'img-missing', true)).rejects.toThrow();
+
+      const shot = entity<SignTypeImage>({ id: 'img-1', signTypeId: 1, isPinned: false });
+      images.findOne.mockResolvedValueOnce(shot);
+      images.save.mockImplementation(async (s: any) => s);
+
+      const res = await service.setSupportShotPinned(1, 'img-1', true);
+      expect(res).toEqual({ updated: true, imageId: 'img-1', isPinned: true });
+    });
+
+    it('triggerPrototypeRebuild throws if catalogSyncService is missing', async () => {
+      await expect(service.triggerPrototypeRebuild()).rejects.toThrow();
+    });
+  });
+
+  describe('Representative image upload', () => {
+    it('rejects an unsupported MIME type before touching storage', async () => {
+      const storage = {
+        putObject: jest.fn(),
+        removeObject: jest.fn(),
+      } as any;
+      const uploadService = new CatalogService(
+        categories,
+        signTypes,
+        parameters,
+        aiPrompts,
+        osmMappings,
+        images,
+        dataSource,
+        undefined,
+        storage,
+      );
+      signTypes.findOne.mockResolvedValue(entity<TrafficSignType>({ id: 12 }));
+
+      await expect(uploadService.uploadRepresentativeImage(12, {
+        buffer: Buffer.from('not-an-image'),
+        size: 12,
+        mimetype: 'application/pdf',
+      } as Express.Multer.File)).rejects.toThrow('must be JPEG');
+      expect(storage.putObject).not.toHaveBeenCalled();
+    });
+
+    it('removes only the newly uploaded object when database persistence fails', async () => {
+      const storage = {
+        putObject: jest.fn().mockResolvedValue(undefined),
+        removeObject: jest.fn().mockResolvedValue(undefined),
+        getPublicUrl: jest.fn().mockReturnValue('https://s3.test/new.jpg'),
+      } as any;
+      const uploadDataSource = { transaction: jest.fn().mockRejectedValue(new Error('db down')) } as any;
+      const uploadService = new CatalogService(
+        categories,
+        signTypes,
+        parameters,
+        aiPrompts,
+        osmMappings,
+        images,
+        uploadDataSource,
+        undefined,
+        storage,
+      );
+      signTypes.findOne.mockResolvedValue(entity<TrafficSignType>({ id: 12 }));
+      const file = {
+        buffer: Buffer.from([0xff, 0xd8, 0xff, 0x00]),
+        size: 4,
+        mimetype: 'image/jpeg',
+      } as Express.Multer.File;
+
+      await expect(uploadService.uploadRepresentativeImage(12, file)).rejects.toThrow('db down');
+      expect(storage.putObject).toHaveBeenCalledTimes(1);
+      expect(storage.removeObject).toHaveBeenCalledTimes(1);
+      expect(storage.removeObject.mock.calls[0][0].bucket).toBe('stm-sign-crops');
+    });
+  });
+
   function repository<T>(): jest.Mocked<Repository<T>> {
     return {
       find: jest.fn(),
@@ -260,6 +608,7 @@ describe('CatalogService', () => {
       save: jest.fn(),
       update: jest.fn(),
       delete: jest.fn(),
+      remove: jest.fn(),
       count: jest.fn(),
       createQueryBuilder: jest.fn(),
     } as unknown as jest.Mocked<Repository<T>>;

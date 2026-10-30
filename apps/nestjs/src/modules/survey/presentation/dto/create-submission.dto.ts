@@ -21,6 +21,11 @@ export class CreateSubmissionDto {
   note?: string;
 
   @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  idempotencyKey?: string;
+
+  @IsOptional()
   @IsNumber()
   @Min(-90)
   @Max(90)

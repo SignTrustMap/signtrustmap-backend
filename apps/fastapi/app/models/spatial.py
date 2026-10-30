@@ -37,7 +37,7 @@ class Base(DeclarativeBase):
     Alembic/``Base.metadata`` introspection stay scoped to the app.
     """
 
-    pass
+    __table_args__ = {"extend_existing": True}
 
 
 # ── Verified traffic signs (Flow 6: interactive GIS map) ───────────────────
@@ -55,6 +55,8 @@ class VerifiedTrafficSign(Base):
     sign_crop_url: Mapped[str] = mapped_column(String(500))
     status: Mapped[str] = mapped_column(String(30), default="ACTIVE")
     freshness_score: Mapped[float] = mapped_column(default=1.0)
+    route_classification_id: Mapped[int | None] = mapped_column(nullable=True)
+    road_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     last_verified_at: Mapped[datetime] = mapped_column(server_default=func.now())
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())

@@ -6,7 +6,7 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 
-export enum MissingTypeStatus {
+export enum NewSignReportStatus {
   PENDING = 'PENDING',
   MERGED = 'MERGED',
   ESCALATED_ADMIN = 'ESCALATED_ADMIN',
@@ -16,12 +16,15 @@ export enum MissingTypeStatus {
 }
 
 @Entity('missing_sign_type_reports')
-export class MissingSignTypeReport {
+export class NewSignTypeReport {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
   @Column({ name: 'reporter_id', type: 'uuid' })
   reporterId: string;
+
+  @Column({ name: 'original_reporter_id', type: 'uuid' })
+  originalReporterId: string;
 
   @Column({ name: 'candidate_id', type: 'uuid', nullable: true })
   candidateId: string | null;
@@ -29,8 +32,8 @@ export class MissingSignTypeReport {
   @Column({ name: 'proposed_category_id', type: 'int', nullable: true })
   proposedCategoryId: number | null;
 
-  @Column({ name: 'proposed_name', type: 'varchar', length: 255 })
-  proposedName: string;
+  @Column({ name: 'proposed_name', type: 'varchar', length: 255, nullable: true })
+  proposedName: string | null;
 
   @Column({ type: 'text', nullable: true })
   description: string | null;
@@ -41,8 +44,8 @@ export class MissingSignTypeReport {
   @Column({ name: 'suggested_color_scheme', type: 'varchar', length: 30, nullable: true })
   suggestedColorScheme: string | null;
 
-  @Column({ type: 'enum', enum: MissingTypeStatus, default: MissingTypeStatus.PENDING })
-  status: MissingTypeStatus;
+  @Column({ type: 'enum', enum: NewSignReportStatus, default: NewSignReportStatus.PENDING })
+  status: NewSignReportStatus;
 
   @Column({ name: 'merged_into_sign_type_id', type: 'int', nullable: true })
   mergedIntoSignTypeId: number | null;
@@ -59,3 +62,8 @@ export class MissingSignTypeReport {
   @UpdateDateColumn({ name: 'updated_at', type: 'timestamptz' })
   updatedAt: Date;
 }
+
+export {
+  NewSignReportStatus as MissingTypeStatus,
+  NewSignTypeReport as MissingSignTypeReport,
+};

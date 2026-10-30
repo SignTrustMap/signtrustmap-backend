@@ -19,6 +19,8 @@ interface VerifiedSignRow {
   latitude: number | string;
   traffic_direction: number | string | null;
   sign_crop_url: string;
+  scene_photo_url?: string | null;
+  best_frame_url?: string | null;
   status: string;
   freshness_score: number | string;
   confirmation_count?: number | string | null;
@@ -53,6 +55,7 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
          ST_Y(sign.location::geometry) AS latitude,
          sign.traffic_direction,
          sign.sign_crop_url,
+         candidate.best_frame_url AS best_frame_url,
          sign.status,
          sign.freshness_score,
          COALESCE(sign.confirmation_count, 0) AS confirmation_count,
@@ -80,6 +83,12 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
            ORDER BY mapping.id
            LIMIT 1
          ) AS navigation_value,
+         (
+           SELECT cand.best_frame_url
+           FROM unverified_sign_candidates cand
+           WHERE cand.id = sign.origin_candidate_id
+           LIMIT 1
+         ) AS scene_photo_url,
          category.code AS category_code,
          category.name_vi AS category_name_vi,
          category.name_en AS category_name_en`;
@@ -87,7 +96,8 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
   private static readonly FROM_JOIN_SIGN = `
        FROM verified_traffic_signs sign
        JOIN traffic_sign_types sign_type ON sign_type.id = sign.sign_type_id
-       JOIN sign_categories category ON category.id = sign_type.category_id`;
+       JOIN sign_categories category ON category.id = sign_type.category_id
+       LEFT JOIN unverified_sign_candidates candidate ON candidate.id = sign.origin_candidate_id`;
 
   private static readonly SELECT_SIGN = `SELECT ${TypeOrmVerifiedSignRepository.SELECT_COLUMNS} ${TypeOrmVerifiedSignRepository.FROM_JOIN_SIGN}`;
 
@@ -97,45 +107,7 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
   ) {}
 
   private async queryWithHealing<T>(sql: string, parameters?: unknown[]): Promise<T> {
-    try {
-      return (await this.repository.query(sql, parameters)) as T;
-    } catch (error: any) {
-      if (
-        error?.code === '42703' &&
-        (String(error?.message).includes('allowed_vehicles') ||
-          String(error?.message).includes('column sign_type.allowed_vehicles does not exist'))
-      ) {
-        try {
-          await this.repository.query(`
-            ALTER TABLE "traffic_sign_types"
-              ADD COLUMN IF NOT EXISTS "allowed_vehicles" text[]
-                NOT NULL DEFAULT ARRAY['CAR','MOTORCYCLE','TRUCK','BUS','BICYCLE','PEDESTRIAN']::text[];
-          `);
-          return (await this.repository.query(sql, parameters)) as T;
-        } catch {
-          throw error;
-        }
-      }
-      if (
-        error?.code === '42703' &&
-        (String(error?.message).includes('commune_code') ||
-          String(error?.message).includes('road_name') ||
-          String(error?.message).includes('display_address'))
-      ) {
-        try {
-          await this.repository.query(`
-            ALTER TABLE "verified_traffic_signs"
-              ADD COLUMN IF NOT EXISTS "commune_code" VARCHAR(5),
-              ADD COLUMN IF NOT EXISTS "road_name" VARCHAR(255),
-              ADD COLUMN IF NOT EXISTS "display_address" TEXT;
-          `);
-          return (await this.repository.query(sql, parameters)) as T;
-        } catch {
-          throw error;
-        }
-      }
-      throw error;
-    }
+    return (await this.repository.query(sql, parameters)) as T;
   }
 
   async findById(id: string): Promise<VerifiedSign | null> {
@@ -188,7 +160,8 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
         sign.displayAddress ?? null,
       ],
     )) as Array<{ id: string }>;
-    const created = rows[0] && (await this.findById(String(rows[0].id)));
+    const createdRow = Array.isArray(rows[0]) ? rows[0][0] : rows[0];
+    const created = createdRow?.id && (await this.findById(String(createdRow.id)));
     if (!created) throw new Error('Created verified sign could not be loaded');
     return created;
   }
@@ -241,8 +214,9 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
        RETURNING id`,
       parameters,
     )) as Array<{ id: string }>;
-    if (!rows[0]) return null;
-    return this.findById(String(rows[0].id));
+    const updatedRow = Array.isArray(rows[0]) ? rows[0][0] : rows[0];
+    if (!updatedRow?.id) return null;
+    return this.findById(String(updatedRow.id));
   }
 
   async findActiveAlongRoute(
@@ -348,6 +322,9 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
       trafficDirection:
         row.traffic_direction == null ? null : Number(row.traffic_direction),
       signCropUrl: row.sign_crop_url,
+      scenePhotoUrl: row.scene_photo_url ?? null,
+      frameUrl: row.best_frame_url ?? row.scene_photo_url ?? null,
+      bestFrameUrl: row.best_frame_url ?? row.scene_photo_url ?? null,
       status: row.status,
       freshnessScore: Number(row.freshness_score),
       confirmationCount: Number(row.confirmation_count ?? 0),

@@ -1,0 +1,22 @@
+sequenceDiagram
+  participant C as Client
+  participant API as AuthController
+  participant S as AuthService
+  participant G as Google
+  participant DB as PostgreSQL
+
+  C->>API: Google ID token / OAuth callback
+  API->>G: Verify Google identity
+  G-->>API: Verified email and profile
+  API->>S: googleLogin(profile)
+  S->>DB: Find user by email
+  alt User does not exist
+    S->>DB: Create ACTIVE user and OAuth account
+    S-->>API: Sign JWT access token
+  else User exists and is ACTIVE
+    S->>DB: Link OAuth account if needed
+    S-->>API: Sign JWT access token
+  else User is SUSPENDED or BANNED
+    S-->>API: Reject with HTTP 401
+  end
+  API-->>C: Access token or authentication error

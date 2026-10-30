@@ -57,6 +57,8 @@ export class RoutePreviewService {
       ...(signIdentity.value === undefined ? {} : { value: signIdentity.value }),
       lat: sign.latitude,
       lon: sign.longitude,
+      actualCropUrl: sign.signCropUrl ?? undefined,
+      scenePhotoUrl: sign.scenePhotoUrl ?? undefined,
       routeOffsetMeters: Math.round(upcoming.distanceAlongRouteMeters),
     };
   }

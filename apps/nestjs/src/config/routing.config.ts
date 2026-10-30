@@ -6,7 +6,14 @@ export default registerAs('routing', () => ({
   osrm: {
     baseUrl: process.env.ROUTING_OSRM_BASE_URL || 'https://router.project-osrm.org',
     profile: process.env.ROUTING_OSRM_PROFILE || 'driving',
+    motorcycleProfile: process.env.ROUTING_OSRM_MOTORCYCLE_PROFILE || 'motorcycle',
     timeoutMs: durationMilliseconds(process.env.ROUTING_OSRM_TIMEOUT, 5_000),
+    motorcycleDurationFactor: numberInRange(
+      process.env.ROUTING_OSRM_MOTORCYCLE_FACTOR,
+      0.95,
+      0.1,
+      2.0,
+    ),
   },
   routeSigns: {
     corridorWidthMeters: numberInRange(

@@ -90,6 +90,10 @@ Base: `http://localhost:3000/api/v1`
 | `GET` | `/wallet/payment-methods` | JWT | Danh sách thẻ đã lưu. Màn Payment Methods. |
 | `POST` | `/wallet/payment-methods` | JWT | Thêm thẻ mới. Body `{cardHolderName, cardLast4, cardBrand, expiryMonth, expiryYear, isDefault}`. Màn Add New Card. |
 | `DELETE` | `/wallet/payment-methods/:id` | JWT | Xóa thẻ đã lưu. |
+| `POST` | `/payments/momo/create` | JWT | Khởi tạo phiên thanh toán MoMo Sandbox. Body `{packageId?, customAmount?, redirectUrl?, extraData?}` → trả về `payUrl` (trang thanh toán), `qrCodeUrl` (QR code), `deeplink` (mở MoMo app). |
+| `POST` | `/payments/momo/ipn` | Public | Instant Payment Notification (IPN) webhook từ MoMo Sandbox. Xác thực HMAC-SHA256, ghi log `payment_callbacks`, và cộng credit vào ví khi thanh toán thành công. |
+| `GET` | `/payments/momo/query/:orderCode` | JWT | Truy vấn trạng thái giao dịch thời gian thực từ MoMo Sandbox API (`/v2/gateway/api/query`). |
+| `POST` | `/payments/webhook` | Public | Webhook thanh toán tổng quát với HMAC-SHA256 signature (`x-webhook-signature` hoặc `stripe-signature`). |
 
 ### 3.3 Survey Submission (`/submissions`)
 
@@ -111,8 +115,8 @@ Base: `http://localhost:3000/api/v1`
 
 | Method | Path | Auth | Mô tả chức năng |
 |---|---|---|---|
-| `GET` | `/reviews/queue` | JWT (Reviewer) | Hàng đợi candidate chờ duyệt (`status=PENDING_REVIEW`), sắp theo `active_learning_priority DESC` (uncertainty cao trước), kèm `predictedSignType`. |
-| `GET` | `/reviews/candidates/:candidateId` | JWT (Reviewer) | Chi tiết 1 candidate (ảnh crop, vị trí, nhãn AI dự đoán) cho màn Review Approval. |
+| `GET` | `/reviews/queue` | JWT (Reviewer) | Hàng đợi candidate chờ duyệt (`status=PENDING_REVIEW`), sắp theo `active_learning_priority DESC` (uncertainty cao trước), kèm top 5 biển báo dự đoán (`possibleSigns`, `top5`, `remedySigns`, `predictedSignTypes`) và `predictedSignType` (top 1). |
+| `GET` | `/reviews/candidates/:candidateId` | JWT (Reviewer) | Chi tiết 1 candidate (ảnh crop, vị trí, ngữ cảnh bản đồ) kèm top 5 biển báo có khả năng cao nhất từ mô hình AI (`possibleSigns`, `top5`, `remedySigns`, `predictedSignTypes`: gồm `id`, `signCode`, `nameVi`, `nameEn`, `imageUrl`, `confidence`, `classifyConfidence`, `standardCode`). |
 | `POST` | `/reviews/:candidateId/vote` | JWT (Reviewer) | Bỏ phiếu. Body `{vote: 1\|-1, suggestedSignTypeId?, declineReason?, declineNote?}`. approve → tiến tới consensus; reject → ghi `declineReason` (Poor Image Quality / Incorrect Location / Sign Not Found / Duplicate Submission / Other) + `declineNote`. |
 | `DELETE` | `/reviews/:candidateId/vote` | JWT (Reviewer) | Undo (thu hồi) lượt bỏ phiếu gần nhất. |
 | `POST` | `/reviews/candidates/:candidateId/report` | JWT (Reviewer) | Báo cáo ứng viên bất thường → tạo `moderation_case` loại `REVIEW_CONFLICT`. Màn Report Submission Reason. |
@@ -120,6 +124,8 @@ Base: `http://localhost:3000/api/v1`
 | `GET` | `/reviews/me/history` | JWT (Reviewer) | Lịch sử duyệt của tôi. Query: `status` (approved/rejected), `search` (tên biển báo), `surveyorId`. Màn Review History. |
 | `GET` | `/reviews/me/stats` | JWT (Reviewer) | Thống kê reviewer (Reliability Score, số lượt duyệt) cho Reviewer Home. |
 | `POST` | `/reviews/missing-type` | JWT | Báo biển báo thiếu loại chưa có trong catalog (Flow 10 Missing Type Reports). |
+| `POST` | `/reviews/candidates/:candidateId/request-recapture` | REVIEWER/ADMIN/STAFF | Request replacement evidence; the candidate must have exactly one `INCOMPLETE` Missing Type Report. |
+| `POST` | `/reviews/candidates/:candidateId/recapture` | SURVEYOR | Multipart upload with required `signCrop`, `bestFrame`, numeric `latitude`, and numeric `longitude`; coordinates must be within 100m of the original sign location before evidence is stored and the associated report is reopened as `PENDING`. |
 
 ### 3.5 Revalidation (`/revalidation`)
 
@@ -133,6 +139,16 @@ Base: `http://localhost:3000/api/v1`
 | `POST` | `/revalidation/tasks/:taskId/finalize` | JWT (Surveyor) | Hoàn tất / đóng task revalidation. |
 | `POST` | `/revalidation/evidence/:evidenceId/vote` | JWT (Reviewer) | Bỏ phiếu cho bằng chứng revalidation. |
 | `GET` | `/revalidation/evidence/:evidenceId/decisions` | JWT | Xem các quyết định trên 1 bằng chứng. |
+
+### 3.5 Map Hazard Reports (`/hazards`)
+
+| Method | Route | Auth | Description |
+|---|---|---|---|
+| `POST` | `/hazards/report` | JWT (DRIVER/SURVEYOR/REVIEWER/STAFF/ADMIN) | Create a point hazard report with optional title, category, severity, and description. Existing 300m deduplication and hazard confirmation workflow apply. |
+| `POST` | `/hazards/:id/evidence` | JWT (report owner) | Upload one validated image or video (`multipart/form-data`: `file`, `mediaType`) using MinIO storage. |
+| `GET` | `/hazards` | JWT | List eligible active reports using radius or bounding-box filters and pagination. |
+| `GET` | `/hazards/:id` | JWT | Retrieve report coordinates, verification status, and attached evidence metadata/URLs. |
+| `POST` | `/hazards/:id/confirm` | JWT (DRIVER/SURVEYOR/REVIEWER/STAFF/ADMIN) | Confirm or dismiss a report through the existing consensus workflow. |
 
 ### 3.6 Daily Tasks / Gamification (`/daily-tasks`)
 
