@@ -569,13 +569,13 @@ export class CatalogService {
   }
 
   private async validateSignCodePrefix(signCode: string): Promise<void> {
+    const prefix = signCode.split('.')[0];
     const prefixes: Array<{ prefix: string }> = await this.dataSource.query(
       `SELECT DISTINCT split_part(upper(sign_code), '.', 1) AS prefix
        FROM traffic_sign_types
        WHERE upper(sign_code) ~ '^[A-Z]+\\.[0-9]+[A-Z0-9]*$'
        ORDER BY prefix`,
     );
-    const prefix = signCode.split('.')[0];
     const canonicalPrefixes = new Set(['P', 'W', 'R', 'I', 'E', 'IE', 'S']);
     const knownPrefixes = prefixes.map((row) => row.prefix).filter((value) => canonicalPrefixes.has(value));
     if (!canonicalPrefixes.has(prefix) || !knownPrefixes.includes(prefix)) {

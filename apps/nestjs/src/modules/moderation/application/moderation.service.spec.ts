@@ -97,31 +97,21 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     expect(result.id).toBe('report-1');
   });
 
-  it('rejects a report without a candidate or legacy proposed name', async () => {
+  it('rejects a report without a candidate', async () => {
     const { service, dataSource } = buildService();
 
     await expect(service.reportMissingType('U1', {} as any)).rejects.toThrow(
-      'candidateId is required when no proposedName is provided',
+      'candidateId is required',
     );
 
     expect(dataSource.transaction).not.toHaveBeenCalled();
   });
 
-  it('preserves legacy reports that provide a proposed name without a candidate', async () => {
+  it('rejects a name-only report without a candidate', async () => {
     const { service, dataSource } = buildService();
-    const manager = {
-      create: jest.fn((_e: any, d: any) => ({ ...d })),
-      save: jest.fn(async (r: any) => ({ ...r, id: 'legacy-report' })),
-    };
-    dataSource.transaction.mockImplementation((fn: (m: any) => any) => fn(manager));
-
-    const result = await service.reportMissingType('U1', { proposedName: 'No Horn' });
-
-    expect(manager.create).toHaveBeenCalledWith(MissingSignTypeReport, expect.objectContaining({
-      candidateId: null,
-      proposedName: 'No Horn',
-    }));
-    expect(result.id).toBe('legacy-report');
+    await expect(service.reportMissingType('U1', { proposedName: 'No Horn' } as any))
+      .rejects.toThrow('candidateId is required');
+    expect(dataSource.transaction).not.toHaveBeenCalled();
   });
 
   it('rejects duplicate active reports for a candidate', async () => {

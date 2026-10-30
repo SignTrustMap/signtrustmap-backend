@@ -1292,7 +1292,6 @@ export class ModerationService {
         throw new ConflictException('An active recapture request already exists for candidate ' + candidate.id);
       }
       // Open quest; eligible Surveyors discover nearby requests through GET /reviews/me/recaptures.
-      const surveyorId: string | null = null;
 
       let updateReportAffected = 0;
       if (typeof manager.getRepository === 'function') {
@@ -1349,7 +1348,6 @@ export class ModerationService {
           await recRepo.save(recRepo.create({
             candidateId: candidate.id,
             reviewerId: staffId,
-            surveyorId,
             missingTypeReportId: reportId,
             reason: 'MISSING_TYPE_RECAPTURE_REQUESTED',
             note,
@@ -1357,9 +1355,9 @@ export class ModerationService {
         } else if (typeof manager.query === 'function') {
           await manager.query(
             `INSERT INTO candidate_recapture_requests
-               (candidate_id, reviewer_id, surveyor_id, missing_type_report_id, reason, note)
-             VALUES ($1, $2, $3, $4, 'MISSING_TYPE_RECAPTURE_REQUESTED', $5)`,
-            [candidate.id, staffId, surveyorId, reportId, note],
+               (candidate_id, reviewer_id, missing_type_report_id, reason, note)
+             VALUES ($1, $2, $3, 'MISSING_TYPE_RECAPTURE_REQUESTED', $4)`,
+            [candidate.id, staffId, reportId, note],
           );
         }
       } catch (error: any) {
@@ -1717,7 +1715,6 @@ export class ModerationService {
         );
       }
       // Open quest; the first eligible nearby Surveyor claims it on submission.
-      const surveyorId: string | null = null;
 
       let updateCandAffected = 0;
       if (typeof manager.getRepository === 'function') {
@@ -1748,7 +1745,6 @@ export class ModerationService {
           await recRepo.save(recRepo.create({
             candidateId: candidate.id,
             reviewerId: staffId,
-            surveyorId,
             missingTypeReportId: reportRows[0].id,
             reason: 'MODERATION_RECAPTURE_REQUESTED',
             note: dto.resolutionNote ?? null,
@@ -1756,9 +1752,9 @@ export class ModerationService {
         } else if (typeof manager.query === 'function') {
           await manager.query(
             `INSERT INTO candidate_recapture_requests
-               (candidate_id, reviewer_id, surveyor_id, missing_type_report_id, reason, note)
-             VALUES ($1, $2, $3, $4, 'MODERATION_RECAPTURE_REQUESTED', $5)`,
-            [candidate.id, staffId, surveyorId, reportRows[0].id, dto.resolutionNote ?? null],
+               (candidate_id, reviewer_id, missing_type_report_id, reason, note)
+             VALUES ($1, $2, $3, 'MODERATION_RECAPTURE_REQUESTED', $4)`,
+            [candidate.id, staffId, reportRows[0].id, dto.resolutionNote ?? null],
           );
         }
       } catch (error: any) {
