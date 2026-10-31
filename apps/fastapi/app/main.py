@@ -12,8 +12,11 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import ValidationError
 
 from app.api.v1.router import api_v1_router
 from app.config import settings
@@ -39,6 +42,14 @@ app = FastAPI(
     ),
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(ValidationError)
+async def pydantic_validation_exception_handler(request: Request, exc: ValidationError):
+    """Ensure any Pydantic model_validator returns 422 Unprocessable Entity instead of 500."""
+    return await request_validation_exception_handler(
+        request, RequestValidationError(exc.errors())
+    )
 
 # ---------------------------------------------------------------------------
 # Global middleware
