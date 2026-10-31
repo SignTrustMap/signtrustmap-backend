@@ -28,6 +28,9 @@ export interface EarlyClassificationResult {
   confidence?: number;
   detectConfidence?: number | null;
   classifyConfidence?: number | null;
+  top1?: any;
+  top5?: any[];
+  allPredictions?: any[];
   category?: string | null;
   nameVi?: string | null;
   nameEn?: string | null;
@@ -119,6 +122,9 @@ export class AiInferenceService {
           confidence: data.confidence,
           detectConfidence: data.detect_confidence,
           classifyConfidence: data.classify_confidence,
+          top1: data.top1,
+          top5: data.top5,
+          allPredictions: data.all_predictions ?? data.allPredictions ?? [],
           category: data.category,
           nameVi: data.name_vi,
           nameEn: data.name_en,
