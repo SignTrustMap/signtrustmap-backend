@@ -1016,7 +1016,7 @@ def task_reprocess_unresolved_candidates(
 def task_trigger_model_retraining(
     self,
     job_id: str,
-    model_type: str = "YOLO12",
+    model_type: str = "YOLO26",
     split_ratio: float = 0.8,
 ) -> dict[str, Any]:
     """Execute background retraining job for detection/classification models."""

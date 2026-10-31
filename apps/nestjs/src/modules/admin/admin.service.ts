@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, Repository, In } from 'typeorm';
 import { User } from '../auth/infrastructure/persistence/user.entity';
 import { UserRole } from '../auth/infrastructure/persistence/user-role.entity';
 import { Role } from '../auth/infrastructure/persistence/role.entity';
@@ -639,8 +639,14 @@ export class AdminService {
       );
     }
 
-    const rawType = dto.modelType ?? (dto.modelName?.includes('CLIP') ? 'CLIP' : 'YOLO12');
-    const modelType = ['YOLO12', 'CLIP', 'BOTSORT'].includes(rawType) ? rawType : 'YOLO12';
+    const normalizeType = (t?: string): string => {
+      const upper = (t || '').toUpperCase();
+      if (upper === 'TRACKER' || upper === 'TRACKTRACK' || upper === 'BOTSORT') return 'TRACKER';
+      if (upper === 'CLIP') return 'CLIP';
+      return 'YOLO26';
+    };
+    const rawType = normalizeType(dto.modelType ?? (dto.modelName?.toUpperCase().includes('CLIP') ? 'CLIP' : (dto.modelName?.toUpperCase().includes('TRACK') ? 'TRACKER' : 'YOLO26')));
+    const modelType = ['YOLO26', 'CLIP', 'TRACKER'].includes(rawType) ? rawType : 'YOLO26';
     const splitRatio = dto.datasetSplitRatio ?? 0.8;
     const notes = dto.notes || `Triggered by admin (${modelType} split ${splitRatio})`;
 
@@ -662,7 +668,9 @@ export class AdminService {
     return {
       id: job.id,
       jobId: job.id,
-      modelName: modelType === 'CLIP' ? 'CLIP-ZeroShot-Classifier' : 'YOLO12-Detector',
+      modelName: modelType === 'CLIP'
+        ? 'CLIP-ZeroShot-Classifier'
+        : (modelType === 'TRACKER' ? 'TrackTrack' : 'YOLO26-Detector'),
       version: `${modelType.toLowerCase()}-stm-candidate`,
       triggeredBy: adminUserId,
       startedAt: job.started_at,
@@ -701,7 +709,9 @@ export class AdminService {
     const items = rows.map((r: any) => ({
       id: r.id,
       modelType: r.model_type,
-      modelName: r.model_type === 'CLIP' ? 'CLIP-ZeroShot-Classifier' : 'YOLO12-Detector',
+      modelName: r.model_type === 'CLIP'
+        ? 'CLIP-ZeroShot-Classifier'
+        : (r.model_type === 'TRACKER' ? 'TrackTrack' : 'YOLO26-Detector'),
       version: r.version_tag || `${String(r.model_type || '').toLowerCase()}-candidate`,
       triggeredBy: r.triggered_by_name || 'System Admin',
       startedAt: r.started_at,
@@ -745,7 +755,9 @@ export class AdminService {
     return {
       id: r.id,
       modelType: r.model_type,
-      modelName: r.model_type === 'CLIP' ? 'CLIP-ZeroShot-Classifier' : 'YOLO12-Detector',
+      modelName: r.model_type === 'CLIP'
+        ? 'CLIP-ZeroShot-Classifier'
+        : (r.model_type === 'TRACKER' ? 'TrackTrack' : 'YOLO26-Detector'),
       version: r.version_tag || `${String(r.model_type || '').toLowerCase()}-candidate`,
       triggeredBy: r.triggered_by_name || 'System Admin',
       startedAt: r.started_at,
@@ -939,7 +951,7 @@ export class AdminService {
   async getPipelineStatus() {
     if (this.aiModelVersionRepo && this.modelTrainingJobRepo) {
       const yolo = await this.aiModelVersionRepo.findOne({
-        where: { modelType: 'YOLO12' as any, isActive: true },
+        where: { modelType: In(['YOLO26', 'YOLO12']) as any, isActive: true },
         select: ['versionTag'],
       });
       const clip = await this.aiModelVersionRepo.findOne({
@@ -958,7 +970,7 @@ export class AdminService {
 
       return {
         status: 'HEALTHY',
-        activeDetector: yolo?.versionTag ?? 'YOLOv12x-v2.3',
+        activeDetector: yolo?.versionTag ?? 'yolo26n-v2.3',
         activeClassifier: clip?.versionTag ?? 'CLIP-ViT-B-32-v1.0',
         pendingJobsCount,
         lastRetrainedAt: lastCompleted?.completedAt ?? null,
@@ -966,7 +978,7 @@ export class AdminService {
     }
 
     const yoloRows = await this.dataSource.query(
-      `SELECT version_tag FROM ai_model_versions WHERE model_type = 'YOLO12' AND is_active = true LIMIT 1`,
+      `SELECT version_tag FROM ai_model_versions WHERE model_type IN ('YOLO26', 'YOLO12') AND is_active = true LIMIT 1`,
     );
     const clipRows = await this.dataSource.query(
       `SELECT version_tag FROM ai_model_versions WHERE model_type = 'CLIP' AND is_active = true LIMIT 1`,
@@ -980,7 +992,7 @@ export class AdminService {
 
     return {
       status: 'HEALTHY',
-      activeDetector: yoloRows[0]?.version_tag ?? 'YOLOv12x-v2.3',
+      activeDetector: yoloRows[0]?.version_tag ?? 'yolo26n-v2.3',
       activeClassifier: clipRows[0]?.version_tag ?? 'CLIP-ViT-B-32-v1.0',
       pendingJobsCount: pendingRows[0]?.cnt ?? 0,
       lastRetrainedAt: lastCompletedRows[0]?.completed_at ?? null,

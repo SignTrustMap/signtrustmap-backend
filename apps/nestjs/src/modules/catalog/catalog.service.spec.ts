@@ -211,7 +211,7 @@ describe('CatalogService', () => {
     );
   });
 
-  it('allows creating special test sign code T.xxx', async () => {
+  it('creates a sign type with a canonical catalog sign code prefix', async () => {
     const typeRepository = repository<TrafficSignType>();
     const categoryRepository = repository<SignCategory>();
     const promptRepository = repository<SignTypeAiPrompt>();
@@ -244,14 +244,14 @@ describe('CatalogService', () => {
 
     const created = await service.createSignType({
       categoryId: 2,
-      signCode: ' t.xxx ',
+      signCode: ' p. 110 ',
       nameVi: 'Biển test T.xxx',
       nameEn: 'Test Sign T.xxx',
       representativeImageKey: 'catalog/test.png',
     });
 
     expect(typeRepository.create).toHaveBeenCalledWith(
-      expect.objectContaining({ signCode: 'T.xxx', nameVi: 'Biển test T.xxx' }),
+      expect.objectContaining({ signCode: 'P.110', nameVi: 'Biển test T.xxx' }),
     );
     expect(created).toEqual(expect.objectContaining({ id: 99 }));
   });

@@ -12,17 +12,47 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # ── Bounding box (Flow 6: interactive GIS map) ──────────────────────────────
 class BoundingBoxParams(BaseModel):
-    min_lat: float = Field(ge=-90.0, le=90.0, description="South boundary (degrees).")
-    min_lon: float = Field(ge=-180.0, le=180.0, description="West boundary.")
-    max_lat: float = Field(ge=-90.0, le=90.0, description="North boundary.")
-    max_lon: float = Field(ge=-180.0, le=180.0, description="East boundary.")
+    """Geographic viewport. Zero-area boxes (min == max) are rejected.
+
+    Latitude/longitude of 0 is valid (e.g. boxes that cross the equator or
+    prime meridian). The box itself must have positive area so PostGIS
+    ``ST_MakeEnvelope`` receives a non-degenerate polygon.
+    """
+    model_config = ConfigDict(extra="ignore")
+
+    min_lat: float = Field(
+        ge=-90.0,
+        le=90.0,
+        description="South boundary (degrees). 0 is a valid latitude.",
+        examples=[10.75],
+    )
+    min_lon: float = Field(
+        ge=-180.0,
+        le=180.0,
+        description="West boundary (degrees). 0 is a valid longitude.",
+        examples=[106.65],
+    )
+    max_lat: float = Field(
+        ge=-90.0,
+        le=90.0,
+        description="North boundary (degrees).",
+        examples=[10.82],
+    )
+    max_lon: float = Field(
+        ge=-180.0,
+        le=180.0,
+        description="East boundary (degrees).",
+        examples=[106.75],
+    )
 
     @model_validator(mode="after")
-    def _check_bbox_order(self) -> "BoundingBoxParams":
-        if self.min_lat > self.max_lat:
-            raise ValueError("min_lat must be <= max_lat")
-        if self.min_lon > self.max_lon:
-            raise ValueError("min_lon must be <= max_lon")
+    def _check_bbox_area(self) -> "BoundingBoxParams":
+        # Align with NestJS verified-sign bbox: require strict inequality so
+        # ST_MakeEnvelope never receives a degenerate zero-area envelope.
+        if self.min_lat >= self.max_lat:
+            raise ValueError("min_lat must be less than max_lat (zero-area bounding boxes are not allowed)")
+        if self.min_lon >= self.max_lon:
+            raise ValueError("min_lon must be less than max_lon (zero-area bounding boxes are not allowed)")
         return self
 
 

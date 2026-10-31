@@ -31,7 +31,7 @@ describe('ModelRetrainingSpec (MLOps Flow 14 & Req 1.5)', () => {
       .mockResolvedValueOnce([
         {
           id: 'job-uuid-123',
-          model_type: 'YOLO12',
+          model_type: 'YOLO26',
           status: 'QUEUED',
           started_at: new Date('2026-10-02T10:00:00Z'),
         },
@@ -39,7 +39,7 @@ describe('ModelRetrainingSpec (MLOps Flow 14 & Req 1.5)', () => {
       .mockResolvedValueOnce([]); // insert audit_logs
 
     const dto: TriggerRetrainDto = {
-      modelType: 'YOLO12',
+      modelType: 'YOLO26',
       datasetSplitRatio: 0.8,
       notes: 'Active learning cycle 4',
     };
@@ -48,12 +48,12 @@ describe('ModelRetrainingSpec (MLOps Flow 14 & Req 1.5)', () => {
 
     expect(res).toBeDefined();
     expect(res.id).toBe('job-uuid-123');
-    expect(res.modelName).toBe('YOLO12-Detector');
+    expect(res.modelName).toBe('YOLO26-Detector');
     expect(res.trainingSamplesCount).toBe(120);
     expect(res.status).toBe('Ready for Deployment');
     expect(mockDataSource.query).toHaveBeenCalledWith(
       expect.stringContaining('INSERT INTO model_training_jobs'),
-      expect.arrayContaining(['YOLO12', 'admin-uuid-1']),
+      expect.arrayContaining(['YOLO26', 'admin-uuid-1']),
     );
   });
 
@@ -61,7 +61,7 @@ describe('ModelRetrainingSpec (MLOps Flow 14 & Req 1.5)', () => {
     mockDataSource.query.mockResolvedValueOnce([{ cnt: 12 }]); // only 12 verified signs
 
     const dto: TriggerRetrainDto = {
-      modelType: 'YOLO12',
+      modelType: 'YOLO26',
       minSampleThreshold: 50,
     };
 
@@ -81,9 +81,9 @@ describe('ModelRetrainingSpec (MLOps Flow 14 & Req 1.5)', () => {
       .mockResolvedValueOnce([
         {
           id: 'job-1',
-          model_type: 'YOLO12',
+          model_type: 'YOLO26',
           triggered_by_name: 'Admin User',
-          version_tag: 'yolo12-stm-v2.3',
+          version_tag: 'yolo26-stm-v2.3',
           started_at: '2026-10-01T02:00:00Z',
           completed_at: '2026-10-01T04:30:00Z',
           status: 'COMPLETED',
@@ -97,23 +97,33 @@ describe('ModelRetrainingSpec (MLOps Flow 14 & Req 1.5)', () => {
           completed_at: null,
           status: 'RUNNING',
         },
+        {
+          id: 'job-3',
+          model_type: 'TRACKER',
+          triggered_by_name: 'Admin User',
+          version_tag: 'tracktrack-v1.0',
+          started_at: '2026-10-02T02:00:00Z',
+          completed_at: '2026-10-02T03:00:00Z',
+          status: 'COMPLETED',
+        },
       ]); // items
 
     const res = await adminService.listTrainingJobs({ page: 1, pageSize: 10 });
 
     expect(res.total).toBe(2);
-    expect(res.items).toHaveLength(2);
-    expect(res.items[0].modelName).toBe('YOLO12-Detector');
+    expect(res.items).toHaveLength(3);
+    expect(res.items[0].modelName).toBe('YOLO26-Detector');
     expect(res.items[0].status).toBe('Active Deployed');
     expect(res.items[0].duration).toBe('150m');
     expect(res.items[1].modelName).toBe('CLIP-ZeroShot-Classifier');
     expect(res.items[1].status).toBe('Evaluating');
+    expect(res.items[2].modelName).toBe('TrackTrack');
   });
 
   it('ML-004: should govern candidate promotion by deactivating old active version and activating target', async () => {
     mockDataSource.query
       .mockResolvedValueOnce([
-        { id: 42, model_type: 'YOLO12', version_tag: 'yolo12-v2.4-retrained' },
+        { id: 42, model_type: 'YOLO26', version_tag: 'yolo26-v2.4-retrained' },
       ]) // find version
       .mockResolvedValueOnce([]) // deactivate previous
       .mockResolvedValueOnce([]) // activate target
@@ -124,11 +134,11 @@ describe('ModelRetrainingSpec (MLOps Flow 14 & Req 1.5)', () => {
     expect(res).toBeDefined();
     expect(res.versionId).toBe(42);
     expect(res.isActive).toBe(true);
-    expect(res.versionTag).toBe('yolo12-v2.4-retrained');
+    expect(res.versionTag).toBe('yolo26-v2.4-retrained');
 
     expect(mockDataSource.query).toHaveBeenCalledWith(
       expect.stringContaining('UPDATE ai_model_versions SET is_active = false WHERE model_type = $1'),
-      ['YOLO12'],
+      ['YOLO26'],
     );
     expect(mockDataSource.query).toHaveBeenCalledWith(
       expect.stringContaining('UPDATE ai_model_versions SET is_active = true WHERE id = $1'),
@@ -147,10 +157,10 @@ describe('ModelRetrainingSpec (MLOps Flow 14 & Req 1.5)', () => {
   it('ML-006: should rollback active model version and reactivate previous', async () => {
     mockDataSource.query
       .mockResolvedValueOnce([
-        { id: 42, model_type: 'YOLO12', version_tag: 'yolo12-v2.4', is_active: true },
+        { id: 42, model_type: 'YOLO26', version_tag: 'yolo26-v2.4', is_active: true },
       ]) // target
       .mockResolvedValueOnce([]) // deactivate target
-      .mockResolvedValueOnce([{ id: 41, version_tag: 'yolo12-v2.3' }]) // find prev
+      .mockResolvedValueOnce([{ id: 41, version_tag: 'yolo26-v2.3' }]) // find prev
       .mockResolvedValueOnce([]) // reactivate prev
       .mockResolvedValueOnce([]); // audit log
 
@@ -158,12 +168,12 @@ describe('ModelRetrainingSpec (MLOps Flow 14 & Req 1.5)', () => {
 
     expect(res.versionId).toBe(42);
     expect(res.rolledBack).toBe(true);
-    expect(res.reactivatedVersion).toBe('yolo12-v2.3');
+    expect(res.reactivatedVersion).toBe('yolo26-v2.3');
   });
 
   it('ML-007: should return pipeline status with active detectors and classifiers', async () => {
     mockDataSource.query
-      .mockResolvedValueOnce([{ version_tag: 'YOLOv12x-v2.3' }]) // yolo
+      .mockResolvedValueOnce([{ version_tag: 'yolo26n-v2.3' }]) // yolo
       .mockResolvedValueOnce([{ version_tag: 'CLIP-ViT-B-32-v1.0' }]) // clip
       .mockResolvedValueOnce([{ cnt: 1 }]) // pending
       .mockResolvedValueOnce([{ completed_at: new Date('2026-10-01T12:00:00Z') }]); // last completed
@@ -171,7 +181,7 @@ describe('ModelRetrainingSpec (MLOps Flow 14 & Req 1.5)', () => {
     const res = await adminService.getPipelineStatus();
 
     expect(res.status).toBe('HEALTHY');
-    expect(res.activeDetector).toBe('YOLOv12x-v2.3');
+    expect(res.activeDetector).toBe('yolo26n-v2.3');
     expect(res.activeClassifier).toBe('CLIP-ViT-B-32-v1.0');
     expect(res.pendingJobsCount).toBe(1);
   });
@@ -215,11 +225,11 @@ describe('ModelRetrainingSpec (MLOps Flow 14 & Req 1.5)', () => {
   it('ML-009: AdminController & MlopsController endpoints integration', async () => {
     mockDataSource.query
       .mockResolvedValueOnce([{ cnt: 60 }]) // count check
-      .mockResolvedValueOnce([{ id: 'job-99', model_type: 'YOLO12', started_at: new Date() }])
+      .mockResolvedValueOnce([{ id: 'job-99', model_type: 'YOLO26', started_at: new Date() }])
       .mockResolvedValueOnce([]);
 
     const adminRes = await adminController.triggerModelRetraining(
-      { modelType: 'YOLO12' },
+      { modelType: 'YOLO26' },
       { id: 'admin-1' },
     );
     expect(adminRes.id).toBe('job-99');

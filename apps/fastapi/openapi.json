@@ -1,0 +1,1241 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "SignTrustMap \u2014 FastAPI (Phase 3: Spatial GIS & Smart Navigation)",
+    "description": "Phase 3 spatial services for SignTrustMap.  Flow 6: interactive GIS map (bounding-box sign queries as GeoJSON).  Flow 7: smart-navigation WebSocket stream (proximity + heading-filtered sign alerts, route-point buffering, and alert deduplication).",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/api/v1/spatial/health": {
+      "get": {
+        "tags": [
+          "Spatial GIS",
+          "Health"
+        ],
+        "summary": "Spatial GIS health check",
+        "operationId": "spatial_health_api_v1_spatial_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/spatial/signs": {
+      "get": {
+        "tags": [
+          "Spatial GIS",
+          "Spatial GIS"
+        ],
+        "summary": "Get verified signs in a bounding box (GeoJSON)",
+        "description": "ST_Within + ST_MakeEnvelope query (GIST index). Returns ACTIVE signs as GeoJSON FeatureCollection. Optionally filter by sign_type_id or category_id.",
+        "operationId": "get_signs_in_viewport_api_v1_spatial_signs_get",
+        "parameters": [
+          {
+            "name": "min_lat",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "number",
+              "maximum": 90.0,
+              "minimum": -90.0,
+              "description": "South boundary",
+              "title": "Min Lat"
+            },
+            "description": "South boundary"
+          },
+          {
+            "name": "min_lon",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "number",
+              "maximum": 180.0,
+              "minimum": -180.0,
+              "description": "West boundary",
+              "title": "Min Lon"
+            },
+            "description": "West boundary"
+          },
+          {
+            "name": "max_lat",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "number",
+              "maximum": 90.0,
+              "minimum": -90.0,
+              "description": "North boundary",
+              "title": "Max Lat"
+            },
+            "description": "North boundary"
+          },
+          {
+            "name": "max_lon",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "number",
+              "maximum": 180.0,
+              "minimum": -180.0,
+              "description": "East boundary",
+              "title": "Max Lon"
+            },
+            "description": "East boundary"
+          },
+          {
+            "name": "sign_type_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "maximum": 2147483647,
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by traffic_sign_types.id",
+              "title": "Sign Type Id"
+            },
+            "description": "Filter by traffic_sign_types.id"
+          },
+          {
+            "name": "category_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "maximum": 2147483647,
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by sign_categories.id",
+              "title": "Category Id"
+            },
+            "description": "Filter by sign_categories.id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeoJSONFeatureCollection"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/spatial/signs/{sign_id}": {
+      "get": {
+        "tags": [
+          "Spatial GIS",
+          "Spatial GIS"
+        ],
+        "summary": "Get full details of a single verified sign",
+        "description": "Returns all sign fields plus joined traffic_sign_type metadata (name_vi, name_en, sign_code, category_id). 404 if not found.",
+        "operationId": "get_sign_detail_api_v1_spatial_signs__sign_id__get",
+        "parameters": [
+          {
+            "name": "sign_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Sign Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignDetailResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/spatial/navigation/sessions": {
+      "post": {
+        "tags": [
+          "Spatial Navigation"
+        ],
+        "summary": "Start a navigation session",
+        "description": "Creates navigation_sessions row with PostGIS Points (SRID 4326). Returned id is used as sessionId in WS ticks.",
+        "operationId": "create_navigation_session_api_v1_spatial_navigation_sessions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/spatial/navigation/sessions/me": {
+      "get": {
+        "tags": [
+          "Spatial Navigation"
+        ],
+        "summary": "List my navigation sessions (paginated)",
+        "operationId": "list_my_sessions_api_v1_spatial_navigation_sessions_me_get",
+        "parameters": [
+          {
+            "name": "driver_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "UUID of the Driver user (users.id)",
+              "title": "Driver Id"
+            },
+            "description": "UUID of the Driver user (users.id)"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 2147483647,
+              "minimum": 1,
+              "description": "Page number (1-based)",
+              "default": 1,
+              "title": "Page"
+            },
+            "description": "Page number (1-based)"
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "description": "Page size (1 to 100)",
+              "default": 20,
+              "title": "Pagesize"
+            },
+            "description": "Page size (1 to 100)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedSessionsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/spatial/navigation/sessions/{session_id}": {
+      "get": {
+        "tags": [
+          "Spatial Navigation"
+        ],
+        "summary": "Get a single navigation session by id",
+        "operationId": "get_navigation_session_api_v1_spatial_navigation_sessions__session_id__get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Navigation session UUID",
+              "title": "Session Id"
+            },
+            "description": "Navigation session UUID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Spatial Navigation"
+        ],
+        "summary": "End a navigation session (COMPLETED or CANCELED)",
+        "description": "Transitions ACTIVE session to terminal state and sets ended_at=NOW(). 404 if not found or already terminal.",
+        "operationId": "update_navigation_session_api_v1_spatial_navigation_sessions__session_id__patch",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Navigation session UUID",
+              "title": "Session Id"
+            },
+            "description": "Navigation session UUID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateSessionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/spatial/tiles/offline/packs": {
+      "get": {
+        "tags": [
+          "Offline Maps",
+          "Offline Maps"
+        ],
+        "summary": "List available offline PMTiles map packs",
+        "description": "Return catalog of downloadable offline PMTiles archives with size and boundaries.",
+        "operationId": "list_offline_map_packs_api_v1_spatial_tiles_offline_packs_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OfflineMapPacksResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/spatial/tiles/offline/download/{pack_id}": {
+      "get": {
+        "tags": [
+          "Offline Maps",
+          "Offline Maps"
+        ],
+        "summary": "Download or stream an offline PMTiles map pack archive",
+        "operationId": "download_offline_map_pack_api_v1_spatial_tiles_offline_download__pack_id__get",
+        "parameters": [
+          {
+            "name": "pack_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Map pack identifier",
+              "examples": [
+                "vietnam-osm"
+              ],
+              "title": "Pack Id"
+            },
+            "description": "Map pack identifier"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/spatial/tiles/offline/{pack_id}.pmtiles": {
+      "get": {
+        "tags": [
+          "Offline Maps",
+          "Offline Maps"
+        ],
+        "summary": "Stream PMTiles file directly with .pmtiles extension",
+        "operationId": "get_offline_pmtiles_file_api_v1_spatial_tiles_offline__pack_id__pmtiles_get",
+        "parameters": [
+          {
+            "name": "pack_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Map pack identifier",
+              "examples": [
+                "vietnam-osm"
+              ],
+              "title": "Pack Id"
+            },
+            "description": "Map pack identifier"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/catalog/sync": {
+      "post": {
+        "tags": [
+          "Catalog Sync",
+          "Catalog Sync"
+        ],
+        "summary": "Rebuild CLIP label cache",
+        "description": "Dispatch a Celery task that reloads traffic_sign_types + CLIP prompts into Redis.",
+        "operationId": "catalog_sync_api_v1_catalog_sync_post",
+        "parameters": [
+          {
+            "name": "X-Internal-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Catalog Sync Api V1 Catalog Sync Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/catalog/labels": {
+      "get": {
+        "tags": [
+          "Catalog Sync",
+          "Catalog Sync"
+        ],
+        "summary": "Read current CLIP label map",
+        "description": "Return the label map from cache when possible; otherwise read the DB directly.",
+        "operationId": "catalog_labels_api_v1_catalog_labels_get",
+        "parameters": [
+          {
+            "name": "X-Internal-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Catalog Labels Api V1 Catalog Labels Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "Liveness probe",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "Liveness probe (version-prefixed)",
+        "operationId": "health_v1_api_v1_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CreateSessionRequest": {
+        "properties": {
+          "driver_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Driver Id",
+            "description": "UUID of the Driver user (users.id)."
+          },
+          "origin_latitude": {
+            "type": "number",
+            "maximum": 90.0,
+            "minimum": -90.0,
+            "title": "Origin Latitude"
+          },
+          "origin_longitude": {
+            "type": "number",
+            "maximum": 180.0,
+            "minimum": -180.0,
+            "title": "Origin Longitude"
+          },
+          "destination_latitude": {
+            "type": "number",
+            "maximum": 90.0,
+            "minimum": -90.0,
+            "title": "Destination Latitude"
+          },
+          "destination_longitude": {
+            "type": "number",
+            "maximum": 180.0,
+            "minimum": -180.0,
+            "title": "Destination Longitude"
+          }
+        },
+        "type": "object",
+        "required": [
+          "driver_id",
+          "origin_latitude",
+          "origin_longitude",
+          "destination_latitude",
+          "destination_longitude"
+        ],
+        "title": "CreateSessionRequest",
+        "description": "Body for POST /navigation/sessions."
+      },
+      "GeoJSONFeature": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "Feature",
+            "title": "Type",
+            "default": "Feature"
+          },
+          "geometry": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Geometry"
+          },
+          "properties": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Properties"
+          }
+        },
+        "type": "object",
+        "required": [
+          "geometry",
+          "properties"
+        ],
+        "title": "GeoJSONFeature"
+      },
+      "GeoJSONFeatureCollection": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "FeatureCollection",
+            "title": "Type",
+            "default": "FeatureCollection"
+          },
+          "features": {
+            "items": {
+              "$ref": "#/components/schemas/GeoJSONFeature"
+            },
+            "type": "array",
+            "title": "Features"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "description": "Total number of features returned."
+          }
+        },
+        "type": "object",
+        "required": [
+          "features",
+          "total"
+        ],
+        "title": "GeoJSONFeatureCollection"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HealthResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "ok",
+            "title": "Status",
+            "default": "ok"
+          },
+          "service": {
+            "type": "string",
+            "title": "Service",
+            "default": "stm-fastapi"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version",
+            "default": "1.0.0"
+          },
+          "env": {
+            "type": "string",
+            "title": "Env"
+          }
+        },
+        "type": "object",
+        "required": [
+          "env"
+        ],
+        "title": "HealthResponse"
+      },
+      "OfflineMapPack": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "region": {
+            "type": "string",
+            "title": "Region"
+          },
+          "countryCode": {
+            "type": "string",
+            "title": "Countrycode",
+            "default": "VN"
+          },
+          "format": {
+            "type": "string",
+            "title": "Format",
+            "default": "pmtiles"
+          },
+          "fileName": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "sizeBytes": {
+            "type": "integer",
+            "title": "Sizebytes"
+          },
+          "sizeMb": {
+            "type": "number",
+            "title": "Sizemb"
+          },
+          "minZoom": {
+            "type": "integer",
+            "title": "Minzoom",
+            "default": 0
+          },
+          "maxZoom": {
+            "type": "integer",
+            "title": "Maxzoom",
+            "default": 15
+          },
+          "bounds": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "title": "Bounds"
+          },
+          "isAvailable": {
+            "type": "boolean",
+            "title": "Isavailable",
+            "default": true
+          },
+          "lastModified": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lastmodified"
+          },
+          "downloadUrl": {
+            "type": "string",
+            "title": "Downloadurl"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "description",
+          "region",
+          "fileName",
+          "sizeBytes",
+          "sizeMb",
+          "bounds",
+          "downloadUrl"
+        ],
+        "title": "OfflineMapPack"
+      },
+      "OfflineMapPacksResponse": {
+        "properties": {
+          "packs": {
+            "items": {
+              "$ref": "#/components/schemas/OfflineMapPack"
+            },
+            "type": "array",
+            "title": "Packs"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "packs",
+          "total"
+        ],
+        "title": "OfflineMapPacksResponse"
+      },
+      "PaginatedSessionsResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SessionResponse"
+            },
+            "type": "array",
+            "title": "Items",
+            "description": "List of navigation sessions"
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Total",
+            "description": "Total count of sessions for this driver"
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Page",
+            "description": "Current page number"
+          },
+          "pageSize": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Pagesize",
+            "description": "Page size"
+          },
+          "totalPages": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Totalpages",
+            "description": "Total number of pages"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "page",
+          "pageSize",
+          "totalPages"
+        ],
+        "title": "PaginatedSessionsResponse"
+      },
+      "SessionResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "driver_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Driver Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Started At"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "origin_latitude": {
+            "type": "number",
+            "title": "Origin Latitude"
+          },
+          "origin_longitude": {
+            "type": "number",
+            "title": "Origin Longitude"
+          },
+          "destination_latitude": {
+            "type": "number",
+            "title": "Destination Latitude"
+          },
+          "destination_longitude": {
+            "type": "number",
+            "title": "Destination Longitude"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "driver_id",
+          "status",
+          "started_at",
+          "origin_latitude",
+          "origin_longitude",
+          "destination_latitude",
+          "destination_longitude"
+        ],
+        "title": "SessionResponse"
+      },
+      "SignDetailResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "sign_type_id": {
+            "type": "integer",
+            "title": "Sign Type Id"
+          },
+          "category_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category Id"
+          },
+          "sign_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sign Code"
+          },
+          "name_vi": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name Vi"
+          },
+          "name_en": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name En"
+          },
+          "longitude": {
+            "type": "number",
+            "title": "Longitude"
+          },
+          "latitude": {
+            "type": "number",
+            "title": "Latitude"
+          },
+          "traffic_direction": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Traffic Direction"
+          },
+          "sign_crop_url": {
+            "type": "string",
+            "title": "Sign Crop Url"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "freshness_score": {
+            "type": "number",
+            "title": "Freshness Score"
+          },
+          "last_verified_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Verified At"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "sign_type_id",
+          "longitude",
+          "latitude",
+          "sign_crop_url",
+          "status",
+          "freshness_score"
+        ],
+        "title": "SignDetailResponse"
+      },
+      "UpdateSessionRequest": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "COMPLETED",
+              "CANCELED"
+            ],
+            "title": "Status",
+            "description": "Terminal status. Only ACTIVE sessions can be transitioned."
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "UpdateSessionRequest",
+        "description": "Body for PATCH /navigation/sessions/{id}."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}

@@ -1375,7 +1375,7 @@ export class ReviewsService {
       const manager: any = this.candidateRepo.manager;
       const persist = async (tx: any) => {
         const locked = await tx.query(
-          `SELECT c.status, crr.id AS request_id, crr.missing_type_report_id, r.status AS report_status
+          `SELECT c.status, c.submission_id, crr.id AS request_id, crr.missing_type_report_id, r.status AS report_status
            FROM unverified_sign_candidates c
            JOIN candidate_recapture_requests crr ON crr.candidate_id = c.id
            JOIN missing_sign_type_reports r ON r.id = crr.missing_type_report_id
@@ -1394,6 +1394,16 @@ export class ReviewsService {
           [`${uploaded[0].bucket}/${uploaded[0].objectName}`, `${uploaded[1].bucket}/${uploaded[1].objectName}`, candidateId],
         );
         if (getAffectedRowCount(updated) !== 1) throw new BadRequestException('Candidate recapture state changed before persistence');
+        const submissionOwner = await tx.query(
+          `UPDATE survey_submissions
+           SET surveyor_id = $1
+           WHERE id = $2
+           RETURNING id`,
+          [surveyorId, locked[0].submission_id],
+        );
+        if (getAffectedRowCount(submissionOwner) !== 1) {
+          throw new BadRequestException('Candidate submission owner changed before recapture persistence');
+        }
         const report = await tx.query(
           `UPDATE missing_sign_type_reports
            SET reporter_id = $1, status = 'PENDING', updated_at = NOW()
@@ -1483,46 +1493,6 @@ export class ReviewsService {
 
     let total = 0;
     let items: any[] = [];
-
-    if (this.recaptureRepo && typeof this.recaptureRepo.createQueryBuilder === 'function') {
-      try {
-        const qb = this.recaptureRepo.createQueryBuilder('crr')
-          .select([
-            'crr.id AS request_id',
-            'crr.candidate_id AS candidate_id',
-            'crr.reason AS reason',
-            'crr.note AS note',
-            'crr.missing_type_report_id AS missing_type_report_id',
-            'crr.completed_at AS completed_at',
-            'crr.created_at AS requested_at',
-            'c.sign_crop_url AS sign_crop_url',
-            'c.best_frame_url AS best_frame_url',
-            'c.confidence_score AS confidence_score',
-            'tst.sign_code AS sign_code',
-            'tst.name_vi AS name_vi',
-            'tst.name_en AS name_en',
-            'ST_X(cge.sign_location::geometry) AS longitude',
-            'ST_Y(cge.sign_location::geometry) AS latitude',
-          ])
-          .innerJoin('unverified_sign_candidates', 'c', 'c.id = crr.candidate_id')
-          .leftJoin('traffic_sign_types', 'tst', 'tst.id = c.predicted_sign_type_id')
-          .leftJoin('candidate_geo_estimations', 'cge', 'cge.candidate_id = c.id')
-          .where('crr.surveyor_id = :surveyorId', { surveyorId })
-          .andWhere('crr.completed_at IS NULL')
-          .orderBy('crr.created_at', 'DESC')
-          .skip((p - 1) * ps)
-          .take(ps);
-
-        total = await this.recaptureRepo
-          .createQueryBuilder('crr')
-          .where('crr.surveyor_id = :surveyorId', { surveyorId })
-          .andWhere('crr.completed_at IS NULL')
-          .getCount();
-
-        items = await qb.getRawMany();
-        return { items, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
-      } catch {}
-    }
 
     const countRows = await (this.candidateRepo.manager as any).query(
       `SELECT COUNT(*)::int AS cnt

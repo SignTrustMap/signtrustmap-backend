@@ -1,4 +1,10 @@
-import { BadGatewayException, BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  BadGatewayException,
+  BadRequestException,
+  GatewayTimeoutException,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { RouteDirectionsRequestDto } from '../presentation/dto/routing.dto';
 import { OsrmRoutingClient } from './osrm-routing.client';
@@ -305,5 +311,77 @@ describe('OsrmRoutingClient', () => {
     expect(url).toContain('/route/v1/motorcycle/');
     expect(response.shortestPath.recommendation).toBe('Shortest route (Motorcycle)');
     expect(response.shortestPath.durationSeconds).toBe(152);
+  });
+
+  it('maps OSRM connection failures to 503 Service Unavailable', async () => {
+    jest.spyOn(global, 'fetch').mockRejectedValue(new TypeError('fetch failed'));
+
+    await expect(client().findDirections(request, 25, 3)).rejects.toEqual(
+      new ServiceUnavailableException('OSRM routing service is unavailable'),
+    );
+  });
+
+  it('retries once on transient connection failure then succeeds', async () => {
+    const fetchMock = jest
+      .spyOn(global, 'fetch')
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => fixture,
+      } as Response);
+
+    const response = await client().findDirections(request, 25, 3);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(response.shortestPath.distanceMeters).toBe(1000);
+  });
+
+  it('maps aborted/timeout requests to 504 Gateway Timeout', async () => {
+    jest.spyOn(global, 'fetch').mockImplementation((_url, init) => {
+      return new Promise((_resolve, reject) => {
+        const signal = init?.signal;
+        if (signal?.aborted) {
+          reject(new DOMException('Aborted', 'AbortError'));
+          return;
+        }
+        signal?.addEventListener('abort', () => {
+          reject(new DOMException('Aborted', 'AbortError'));
+        });
+      });
+    });
+
+    const shortTimeoutClient = new OsrmRoutingClient(
+      new ConfigService({
+        routing: {
+          osrm: {
+            baseUrl: 'https://osrm.test/',
+            profile: 'driving',
+            motorcycleProfile: 'motorcycle',
+            timeoutMs: 20,
+          },
+        },
+      }),
+    );
+
+    await expect(shortTimeoutClient.findDirections(request, 25, 3)).rejects.toEqual(
+      new GatewayTimeoutException('OSRM routing request was interrupted'),
+    );
+  });
+
+  it('maps malformed OSRM JSON to BadGatewayException', () => {
+    expect(() => client().parseResponse(request, 25, 3, 'not-json')).toThrow(
+      new BadGatewayException('OSRM routing service returned an invalid response'),
+    );
+  });
+
+  it('maps OSRM code != Ok to NotFoundException (no-route)', () => {
+    expect(() =>
+      client().parseResponse(
+        request,
+        25,
+        3,
+        JSON.stringify({ code: 'NoRoute', message: 'No route found' }),
+      ),
+    ).toThrow(new NotFoundException('OSRM routing failed: No route found'));
   });
 });

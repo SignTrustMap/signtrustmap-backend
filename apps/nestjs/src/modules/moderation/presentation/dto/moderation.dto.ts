@@ -3,7 +3,7 @@ import { Transform } from 'class-transformer';
 import { ArrayMinSize, IsArray, IsString, IsOptional, IsUUID, IsInt, IsIn, Matches, MaxLength, MinLength } from 'class-validator';
 import { VEHICLE_TYPES, VehicleType } from '../../../../common/vehicle-types';
 export class CreateNewSignTypeReportDto {
-  @IsOptional() @IsUUID() candidateId?: string;
+  @IsUUID() candidateId: string;
   @IsOptional() @IsInt() proposedCategoryId?: number;
   @IsOptional() @IsString() @MaxLength(255) proposedName?: string;
   @IsOptional() @IsString() description?: string;
@@ -34,13 +34,13 @@ export class ApproveAndCreateTypeDto {
   @IsOptional() @IsInt() proposedCategoryId?: number;
 
   @ApiProperty({
-    description: 'Traffic sign code (e.g. P.102, W.201a, or T.xxx for testing)',
-    pattern: '^(?:[A-Za-z]+\\.\\s*\\d+[A-Za-z0-9]*|T\\.[A-Za-z0-9._-]+)$',
-    example: 'T.xxx',
+    description: 'Traffic sign code using a catalog category prefix (e.g. P.110, E.404a, IE.450a)',
+    pattern: '^(?:P|W|R|I|E|IE|S)\\.\\s*\\d+[A-Za-z0-9]*$',
+    example: 'P.110',
   })
   @IsString()
-  @Matches(/^(?:[A-Za-z]+\.\s*\d+[A-Za-z0-9]*|T\.[A-Za-z0-9._-]+)$/i, {
-    message: 'signCode must match PREFIX.number (e.g. P.102) or T.xxx for testing',
+  @Matches(/^(?:P|W|R|I|E|IE|S)\.\s*\d+[A-Za-z0-9]*$/i, {
+    message: 'signCode must use a catalog category prefix and match PREFIX.number with an optional suffix',
   })
   @MaxLength(50)
   signCode: string;
