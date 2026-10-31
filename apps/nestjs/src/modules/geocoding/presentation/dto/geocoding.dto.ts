@@ -12,7 +12,14 @@ import {
 } from 'class-validator';
 
 export class GeocodingSearchQueryDto {
-  @ApiProperty({ description: 'Search query address or location', example: 'Ben Thanh Market' })
+  @ApiProperty({
+    description: 'Search query address or location',
+    example: 'Ben Thanh Market',
+    // Clean pattern without JS RegExp literal slashes (Schemathesis / OpenAPI).
+    pattern: '\\S',
+    minLength: 2,
+    maxLength: 200,
+  })
   @IsString()
   @Length(2, 200)
   @Matches(/\S/, { message: 'q must not be blank' })

@@ -10,6 +10,7 @@ import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.exceptions import RequestValidationError
 from geoalchemy2 import Geometry
 from sqlalchemy import cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +28,40 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _validate_bbox_area(
+    min_lat: float,
+    min_lon: float,
+    max_lat: float,
+    max_lon: float,
+) -> None:
+    """Reject zero-area / inverted bounding boxes before PostGIS is invoked.
+
+    Coordinates of 0.0 are geographically valid; a box with min == max is not.
+    Matches NestJS verified-sign behaviour and BoundingBoxParams.
+    """
+    errors: list[dict] = []
+    if min_lat >= max_lat:
+        errors.append(
+            {
+                "type": "value_error",
+                "loc": ("query", "min_lat"),
+                "msg": "min_lat must be less than max_lat (zero-area bounding boxes are not allowed)",
+                "input": min_lat,
+            }
+        )
+    if min_lon >= max_lon:
+        errors.append(
+            {
+                "type": "value_error",
+                "loc": ("query", "min_lon"),
+                "msg": "min_lon must be less than max_lon (zero-area bounding boxes are not allowed)",
+                "input": min_lon,
+            }
+        )
+    if errors:
+        raise RequestValidationError(errors)
 
 
 @router.get(
@@ -123,23 +158,62 @@ def _sign_by_id_query(sign_id: UUID):
     description=(
         "ST_Within + ST_MakeEnvelope query (GIST index). "
         "Returns ACTIVE signs as GeoJSON FeatureCollection. "
-        "Optionally filter by sign_type_id or category_id."
+        "Optionally filter by sign_type_id or category_id. "
+        "Requires a positive-area bounding box (min_lat < max_lat and min_lon < max_lon). "
+        "Latitude/longitude of 0 is valid when the box still has area. "
+        "Unknown query parameters are ignored."
     ),
     tags=["Spatial GIS"],
+    responses={
+        422: {"description": "Validation error (range, type, or zero-area / inverted bbox)"},
+    },
 )
 async def get_signs_in_viewport(
-    min_lat: float = Query(..., ge=-90.0, le=90.0, description="South boundary"),
-    min_lon: float = Query(..., ge=-180.0, le=180.0, description="West boundary"),
-    max_lat: float = Query(..., ge=-90.0, le=90.0, description="North boundary"),
-    max_lon: float = Query(..., ge=-180.0, le=180.0, description="East boundary"),
-    sign_type_id: int | None = Query(default=None, ge=1, le=2147483647, description="Filter by traffic_sign_types.id"),
-    category_id: int | None = Query(default=None, ge=1, le=2147483647, description="Filter by sign_categories.id"),
+    min_lat: float = Query(
+        ...,
+        ge=-90.0,
+        le=90.0,
+        description="South boundary (degrees). 0 is a valid latitude.",
+        examples=[10.75],
+    ),
+    min_lon: float = Query(
+        ...,
+        ge=-180.0,
+        le=180.0,
+        description="West boundary (degrees). 0 is a valid longitude.",
+        examples=[106.65],
+    ),
+    max_lat: float = Query(
+        ...,
+        ge=-90.0,
+        le=90.0,
+        description="North boundary (degrees).",
+        examples=[10.82],
+    ),
+    max_lon: float = Query(
+        ...,
+        ge=-180.0,
+        le=180.0,
+        description="East boundary (degrees).",
+        examples=[106.75],
+    ),
+    sign_type_id: int | None = Query(
+        default=None,
+        ge=1,
+        le=2147483647,
+        description="Filter by traffic_sign_types.id",
+        examples=[1],
+    ),
+    category_id: int | None = Query(
+        default=None,
+        ge=1,
+        le=2147483647,
+        description="Filter by sign_categories.id",
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> GeoJSONFeatureCollection:
-    if min_lat > max_lat:
-        min_lat, max_lat = max_lat, min_lat
-    if min_lon > max_lon:
-        min_lon, max_lon = max_lon, min_lon
+    # Contract: positive-area bbox (same rule as BoundingBoxParams / NestJS).
+    _validate_bbox_area(min_lat, min_lon, max_lat, max_lon)
     stmt = _signs_in_bbox_query(min_lon, min_lat, max_lon, max_lat, sign_type_id, category_id)
     result = await db.execute(stmt)
     rows = result.mappings().all()
@@ -161,7 +235,9 @@ async def get_signs_in_viewport(
                 "frameUrl": r["best_frame_url"],
                 "bestFrameUrl": r["best_frame_url"],
                 "status": r["status"],
-                "freshnessScore": float(r["freshness_score"]),
+                "freshnessScore": (
+                    float(r["freshness_score"]) if r["freshness_score"] is not None else 0.0
+                ),
                 "lastVerifiedAt": (
                     r["last_verified_at"].isoformat() if r["last_verified_at"] else None
                 ),

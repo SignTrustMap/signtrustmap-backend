@@ -166,8 +166,25 @@ def _row_to_session_response(row: Any) -> SessionResponse:
     "/navigation/sessions",
     response_model=SessionResponse,
     status_code=201,
+    operation_id="create_navigation_session",
     summary="Start a navigation session",
     description="Creates navigation_sessions row with PostGIS Points (SRID 4326). Returned id is used as sessionId in WS ticks.",
+    responses={
+        201: {
+            "description": "Session created",
+            "links": {
+                "GetSessionById": {
+                    "operationId": "get_navigation_session",
+                    "parameters": {"session_id": "$response.body#/id"},
+                },
+                "UpdateSessionById": {
+                    "operationId": "update_navigation_session",
+                    "parameters": {"session_id": "$response.body#/id"},
+                },
+            },
+        },
+        422: {"description": "Validation error or Driver not found"},
+    },
 )
 async def create_navigation_session(
     body: CreateSessionRequest,
@@ -275,6 +292,7 @@ async def list_my_sessions(
 @router.get(
     "/navigation/sessions/{session_id}",
     response_model=SessionResponse,
+    operation_id="get_navigation_session",
     summary="Get a single navigation session by id",
 )
 async def get_navigation_session(
@@ -297,6 +315,7 @@ async def get_navigation_session(
 @router.patch(
     "/navigation/sessions/{session_id}",
     response_model=SessionResponse,
+    operation_id="update_navigation_session",
     summary="End a navigation session (COMPLETED or CANCELED)",
     description="Transitions ACTIVE session to terminal state and sets ended_at=NOW(). 404 if not found or already terminal.",
 )

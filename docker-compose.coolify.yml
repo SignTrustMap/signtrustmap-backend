@@ -190,6 +190,7 @@ services:
       NOTIFY_ON_SUCCESS: ${SCHEMATHESIS_NOTIFY_SUCCESS:-false}
       TEST_USER_EMAIL: ${SCHEMATHESIS_TEST_EMAIL:-}
       TEST_USER_PASSWORD: ${SCHEMATHESIS_TEST_PASSWORD:-}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-}
     networks:
       stm-network:
         aliases:
