@@ -41,32 +41,32 @@ export class RouteDirectionsRequestDto implements RouteDirectionsRequest {
   @IsString({ each: true })
   enabledCategoryCodes?: string[];
 
-  @ApiProperty({ description: 'Origin latitude coordinate', example: 10.7949, minimum: -90, maximum: 90 })
+  @ApiProperty({ description: 'Origin latitude coordinate (Vietnam)', example: 10.7949, minimum: 8.0, maximum: 24.0 })
   @ToNumber()
   @IsNumber()
-  @Min(-90)
-  @Max(90)
+  @Min(8.0)
+  @Max(24.0)
   originLatitude: number;
 
-  @ApiProperty({ description: 'Origin longitude coordinate', example: 106.7218, minimum: -180, maximum: 180 })
+  @ApiProperty({ description: 'Origin longitude coordinate (Vietnam)', example: 106.7218, minimum: 102.0, maximum: 110.0 })
   @ToNumber()
   @IsNumber()
-  @Min(-180)
-  @Max(180)
+  @Min(102.0)
+  @Max(110.0)
   originLongitude: number;
 
-  @ApiProperty({ description: 'Destination latitude coordinate', example: 10.7725, minimum: -90, maximum: 90 })
+  @ApiProperty({ description: 'Destination latitude coordinate (Vietnam)', example: 10.7725, minimum: 8.0, maximum: 24.0 })
   @ToNumber()
   @IsNumber()
-  @Min(-90)
-  @Max(90)
+  @Min(8.0)
+  @Max(24.0)
   destinationLatitude: number;
 
-  @ApiProperty({ description: 'Destination longitude coordinate', example: 106.6980, minimum: -180, maximum: 180 })
+  @ApiProperty({ description: 'Destination longitude coordinate (Vietnam)', example: 106.6980, minimum: 102.0, maximum: 110.0 })
   @ToNumber()
   @IsNumber()
-  @Min(-180)
-  @Max(180)
+  @Min(102.0)
+  @Max(110.0)
   destinationLongitude: number;
 
   @ApiPropertyOptional({ description: 'Alternative route threshold percent', minimum: 0, maximum: 100, example: 0 })

@@ -1,4 +1,12 @@
-import { BadGatewayException, BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadGatewayException,
+  BadRequestException,
+  GatewayTimeoutException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { VehicleType } from '../../../common/vehicle-types';
 import {
@@ -22,7 +30,10 @@ type JsonObject = Record<string, unknown>;
 
 @Injectable()
 export class OsrmRoutingClient {
+  private readonly logger = new Logger(OsrmRoutingClient.name);
   private static readonly SAME_POINT_TOLERANCE_METERS = 0.01;
+  /** Single bounded retry for transient connectivity failures only. */
+  private static readonly TRANSIENT_RETRY_LIMIT = 1;
 
   // Typical speeds in m/s:
   // Walking: ~4.8 km/h = 1.33 m/s
@@ -172,6 +183,24 @@ export class OsrmRoutingClient {
   }
 
   private async fetchResponse(url: URL): Promise<string> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= OsrmRoutingClient.TRANSIENT_RETRY_LIMIT; attempt++) {
+      try {
+        return await this.fetchOnce(url);
+      } catch (error) {
+        lastError = error;
+        // Retry only genuine transient connectivity failures — never timeouts,
+        // HTTP mapped errors, or parse failures (avoids request storms).
+        if (!(error instanceof ServiceUnavailableException) || attempt >= OsrmRoutingClient.TRANSIENT_RETRY_LIMIT) {
+          throw error;
+        }
+        this.logger.warn(`OSRM transient failure; retrying once (attempt ${attempt + 1})`);
+      }
+    }
+    throw lastError;
+  }
+
+  private async fetchOnce(url: URL): Promise<string> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
@@ -182,12 +211,16 @@ export class OsrmRoutingClient {
           try {
             const errorPayload: any = await response.json();
             if (errorPayload?.message) detail = `: ${errorPayload.message}`;
-          } catch {}
+          } catch {
+            /* ignore non-JSON error bodies */
+          }
           throw new BadRequestException(`OSRM routing service returned HTTP 400${detail}`);
         }
         if (response.status === 404) {
           throw new NotFoundException('No route found between the specified coordinates');
         }
+        // Upstream returned an unexpected status — treat as bad gateway.
+        this.logger.warn(`OSRM upstream HTTP ${response.status}`);
         throw new BadGatewayException(`OSRM routing service returned HTTP ${response.status}`);
       }
       return await response.text();
@@ -195,14 +228,21 @@ export class OsrmRoutingClient {
       if (
         error instanceof BadRequestException ||
         error instanceof NotFoundException ||
-        error instanceof BadGatewayException
+        error instanceof BadGatewayException ||
+        error instanceof GatewayTimeoutException ||
+        error instanceof ServiceUnavailableException
       ) {
         throw error;
       }
       if (controller.signal.aborted) {
-        throw new BadGatewayException('OSRM routing request was interrupted');
+        // Preserve historical message text for Coolify Sentinel correlation while
+        // classifying timeouts as 504 Gateway Timeout.
+        this.logger.warn(`OSRM request interrupted after ${this.timeoutMs}ms`);
+        throw new GatewayTimeoutException('OSRM routing request was interrupted');
       }
-      throw new BadGatewayException('OSRM routing service is unavailable');
+      const cause = error instanceof Error ? error.name : 'unknown';
+      this.logger.warn(`OSRM routing unavailable (${cause})`);
+      throw new ServiceUnavailableException('OSRM routing service is unavailable');
     } finally {
       clearTimeout(timeout);
     }

@@ -49,6 +49,65 @@ describe('RouteDirectionsRequestDto validation', () => {
     expect(originError?.constraints).toHaveProperty('isNumber');
   });
 
+  it('rejects boolean false on originLongitude (Schemathesis case 2)', async () => {
+    const dto = plainToInstance(RouteDirectionsRequestDto, {
+      vehicleMode: 'DRIVING',
+      _vehicleMode: 'DRIVING',
+      vehicleType: 'CAR',
+      enabledCategoryCodes: ['SPEED_LIMIT', 'WARNING'],
+      originLatitude: 10.7949,
+      originLongitude: false,
+      destinationLatitude: 10.7725,
+      destinationLongitude: 106.698,
+      alternativeThresholdPercent: 0,
+      maxAlternatives: 0,
+      snapRadiusMeters: 100,
+    });
+    const errors = await validate(dto);
+    const lonError = errors.find((e) => e.property === 'originLongitude');
+    expect(lonError).toBeDefined();
+    expect(lonError?.constraints).toHaveProperty('isNumber');
+  });
+
+  it('rejects out-of-range coordinates', async () => {
+    const dto = plainToInstance(RouteDirectionsRequestDto, {
+      originLatitude: 91,
+      originLongitude: 106.7218,
+      destinationLatitude: 10.7725,
+      destinationLongitude: 106.698,
+    });
+    const errors = await validate(dto);
+    expect(errors.find((e) => e.property === 'originLatitude')).toBeDefined();
+  });
+
+  it('rejects invalid vehicleMode enum', async () => {
+    const dto = plainToInstance(RouteDirectionsRequestDto, {
+      vehicleMode: 'HOVERCRAFT',
+      originLatitude: 10.7949,
+      originLongitude: 106.7218,
+      destinationLatitude: 10.7725,
+      destinationLongitude: 106.698,
+    });
+    const errors = await validate(dto);
+    expect(errors.find((e) => e.property === 'vehicleMode')).toBeDefined();
+  });
+
+  it('rejects missing required coordinate fields', async () => {
+    const dto = plainToInstance(RouteDirectionsRequestDto, {
+      vehicleMode: 'DRIVING',
+    });
+    const errors = await validate(dto);
+    const props = errors.map((e) => e.property);
+    expect(props).toEqual(
+      expect.arrayContaining([
+        'originLatitude',
+        'originLongitude',
+        'destinationLatitude',
+        'destinationLongitude',
+      ]),
+    );
+  });
+
   it('rejects non-numeric string coordinates', async () => {
     const dto = plainToInstance(RouteDirectionsRequestDto, {
       originLatitude: 'not-a-number',

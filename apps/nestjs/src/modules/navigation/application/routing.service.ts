@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { RouteDirectionsRequest } from '../domain/routing.types';
 import { OsrmRoutingClient } from '../infrastructure/osrm-routing.client';
 
@@ -11,12 +11,27 @@ export class RoutingService {
 
   findDirections(request: RouteDirectionsRequest) {
     this.normalizeVehicle(request);
+    this.validateCoverage(request);
     return this.osrm.findDirections(
       request,
       request.alternativeThresholdPercent ??
         RoutingService.DEFAULT_ALTERNATIVE_THRESHOLD_PERCENT,
       request.maxAlternatives ?? RoutingService.DEFAULT_MAX_ALTERNATIVES,
     );
+  }
+
+  validateCoverage(request: RouteDirectionsRequest): void {
+    const isWithinBounds = (lat: number, lon: number) =>
+      lat >= 8.0 && lat <= 24.0 && lon >= 102.0 && lon <= 110.0;
+
+    if (
+      !isWithinBounds(request.originLatitude, request.originLongitude) ||
+      !isWithinBounds(request.destinationLatitude, request.destinationLongitude)
+    ) {
+      throw new BadRequestException(
+        'Coordinates are outside supported navigation coverage area (Vietnam: lat [8.0, 24.0], lon [102.0, 110.0])',
+      );
+    }
   }
 
   normalizeVehicle(request: RouteDirectionsRequest): void {
