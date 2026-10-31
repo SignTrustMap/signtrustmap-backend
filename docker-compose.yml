@@ -188,6 +188,10 @@ services:
       ROUTING_OSRM_TIMEOUT: ${ROUTING_OSRM_TIMEOUT:-5s}
       NAVIGATION_SIGN_CORRIDOR_WIDTH_METERS: ${NAVIGATION_SIGN_CORRIDOR_WIDTH_METERS:-30}
       NAVIGATION_SIGN_HEADING_TOLERANCE_DEGREES: ${NAVIGATION_SIGN_HEADING_TOLERANCE_DEGREES:-45}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-1083643481969-a1rnqdalbve66dslohq8f5o0cdujs9r4.apps.googleusercontent.com}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-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}
+      GOOGLE_CALLBACK_URL: ${GOOGLE_CALLBACK_URL:-https://api.signmap.site/api/v1/auth/google/callback}
+      WEB_URL: ${WEB_URL:-https://signmap.site}
     ports: ["${NESTJS_PORT:-3000}:3000"]
     depends_on:
       postgres-migrate: { condition: service_completed_successfully }

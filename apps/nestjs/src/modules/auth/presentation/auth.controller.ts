@@ -1,4 +1,4 @@
-import { Controller, Post, Get, Patch, Body, UseGuards, Req } from '@nestjs/common';
+import { Controller, Post, Get, Patch, Body, UseGuards, Req, Res } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthService } from '../application/auth.service';
@@ -74,9 +74,14 @@ export class AuthController {
   @ApiOperation({ summary: 'Google OAuth2 callback', description: 'Callback endpoint handling Google OAuth2 response' })
   @Get('google/callback')
   @UseGuards(AuthGuard('google'))
-  async googleCallback(@Req() req: any) {
+  async googleCallback(@Req() req: any, @Res({ passthrough: true }) res?: any) {
     // req.user is set by GoogleStrategy.validate
-    return this.authService.googleLogin(req.user);
+    const authResult = await this.authService.googleLogin(req.user);
+    const frontendUrl = process.env.WEB_URL || process.env.FRONTEND_URL || 'https://signmap.site';
+    if (res && typeof res.redirect === 'function' && !req?.headers?.accept?.includes('application/json')) {
+      return res.redirect(`${frontendUrl}/login?token=${authResult.accessToken}`);
+    }
+    return authResult;
   }
 
   @ApiBearerAuth()
