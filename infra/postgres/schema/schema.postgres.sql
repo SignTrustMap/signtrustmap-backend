@@ -130,9 +130,9 @@ CREATE TYPE "image_type" AS ENUM (
 );
 
 CREATE TYPE "ai_model_type" AS ENUM (
-  'YOLO12',
+  'YOLO26',
   'CLIP',
-  'BOTSORT'
+  'TRACKER'
 );
 
 CREATE TYPE "training_job_status" AS ENUM (
