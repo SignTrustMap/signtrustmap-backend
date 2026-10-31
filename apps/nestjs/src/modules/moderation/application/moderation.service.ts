@@ -2009,33 +2009,41 @@ export class ModerationService {
     const byId = new Map<string, CandidateEnriched>();
     if (ids.length > 0) {
       let rows: any[] = [];
-      if (this.candRepo && typeof this.candRepo.createQueryBuilder === 'function') {
-        rows = await this.candRepo
-          .createQueryBuilder('c')
-          .leftJoin(CandidateGeoEstimation, 'ge', 'ge.candidateId = c.id')
-          .select([
-            'c.id AS id',
-            'c.predictedSignTypeId AS predicted_sign_type_id',
-            'c.confidenceScore AS confidence_score',
-            'c.bestFrameUrl AS best_frame_url',
-            'c.signCropUrl AS sign_crop_url',
-            'c.status AS status',
-            'ST_X(ge.signLocation::geometry) AS longitude',
-            'ST_Y(ge.signLocation::geometry) AS latitude',
-          ])
-          .where('c.id IN (:...ids)', { ids })
-          .getRawMany();
+      try {
+        if (this.candRepo && typeof this.candRepo.createQueryBuilder === 'function') {
+          rows = await this.candRepo
+            .createQueryBuilder('c')
+            .leftJoin(CandidateGeoEstimation, 'ge', 'ge.candidateId = c.id')
+            .select([
+              'c.id AS id',
+              'c.predictedSignTypeId AS predicted_sign_type_id',
+              'c.confidenceScore AS confidence_score',
+              'c.bestFrameUrl AS best_frame_url',
+              'c.signCropUrl AS sign_crop_url',
+              'c.status AS status',
+              'ST_X(ge.sign_location::geometry) AS longitude',
+              'ST_Y(ge.sign_location::geometry) AS latitude',
+            ])
+            .where('c.id IN (:...ids)', { ids })
+            .getRawMany();
+        }
+      } catch (err) {
+        this.logger.warn('Failed to enrich candidates via query builder: ' + (err as any)?.message);
       }
       if (rows.length === 0 && typeof this.dataSource?.query === 'function') {
-        rows = await this.dataSource.query(
-          `SELECT c.id, c.predicted_sign_type_id, c.confidence_score, c.best_frame_url, c.sign_crop_url, c.status,
-                  ST_X(ge.sign_location::geometry) AS longitude,
-                  ST_Y(ge.sign_location::geometry) AS latitude
-           FROM unverified_sign_candidates c
-           LEFT JOIN candidate_geo_estimations ge ON ge.candidate_id = c.id
-           WHERE c.id = ANY($1)`,
-          [ids],
-        );
+        try {
+          rows = await this.dataSource.query(
+            `SELECT c.id, c.predicted_sign_type_id, c.confidence_score, c.best_frame_url, c.sign_crop_url, c.status,
+                    ST_X(ge.sign_location::geometry) AS longitude,
+                    ST_Y(ge.sign_location::geometry) AS latitude
+             FROM unverified_sign_candidates c
+             LEFT JOIN candidate_geo_estimations ge ON ge.candidate_id = c.id
+             WHERE c.id = ANY($1::uuid[])`,
+            [ids],
+          );
+        } catch (err) {
+          this.logger.warn('Failed to enrich candidates via raw query: ' + (err as any)?.message);
+        }
       }
       for (const row of rows) {
         byId.set(row.id, {

@@ -232,8 +232,8 @@ export class ConsensusService {
       if (this.geoEstimationRepo && typeof this.geoEstimationRepo.createQueryBuilder === 'function') {
         geoRow = await this.geoEstimationRepo
           .createQueryBuilder('g')
-          .select('ST_AsText(g.signLocation)', 'sign_wkt')
-          .addSelect('ST_AsText(g.vehicleLocation)', 'vehicle_wkt')
+          .select('ST_AsText(g.sign_location)', 'sign_wkt')
+          .addSelect('ST_AsText(g.vehicle_location)', 'vehicle_wkt')
           .addSelect('g.trafficDirection', 'traffic_direction')
           .where('g.candidateId = :cid', { cid: candidate.id })
           .getRawOne();
