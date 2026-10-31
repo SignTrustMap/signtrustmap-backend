@@ -27,28 +27,33 @@ export class CreateSignCategoryDto {
   @Matches(/^[A-Za-z0-9_-]+$/)
   code: string;
 
+  @ApiProperty({ description: 'Vietnamese category name', minLength: 1, maxLength: 100, example: 'Biển báo cấm' })
   @Transform(trim)
   @IsString()
   @MinLength(1)
   @MaxLength(100)
   nameVi: string;
 
+  @ApiProperty({ description: 'English category name', minLength: 1, maxLength: 100, example: 'Regulatory' })
   @Transform(trim)
   @IsString()
   @MinLength(1)
   @MaxLength(100)
   nameEn: string;
 
+  @ApiPropertyOptional({ description: 'Optional description', maxLength: 1000 })
   @IsOptional()
   @IsString()
   @MaxLength(1000)
   description?: string;
 
+  @ApiPropertyOptional({ description: 'Icon URL', maxLength: 500 })
   @IsOptional()
   @IsString()
   @MaxLength(500)
   iconUrl?: string;
 
+  @ApiPropertyOptional({ description: 'Sort order index', example: 1 })
   @IsOptional()
   @IsInt()
   sortOrder?: number;
@@ -93,6 +98,7 @@ export class UpdateSignCategoryDto {
 }
 
 export class CreateSignTypeDto {
+  @ApiProperty({ description: 'Category ID', minimum: 1, example: 1 })
   @Type(() => Number)
   @IsInt()
   @Min(1)
@@ -106,18 +112,21 @@ export class CreateSignTypeDto {
   @Matches(/^[A-Za-z0-9._-]+$/)
   signCode: string;
 
+  @ApiPropertyOptional({ description: 'Slug', maxLength: 100 })
   @IsOptional()
   @Transform(trim)
   @IsString()
   @MaxLength(100)
   slug?: string;
 
+  @ApiProperty({ description: 'Vietnamese sign name', minLength: 1, maxLength: 255, example: 'Chỗ ngoặt nguy hiểm' })
   @Transform(trim)
   @IsString()
   @MinLength(1)
   @MaxLength(255)
   nameVi: string;
 
+  @ApiProperty({ description: 'English sign name', minLength: 1, maxLength: 255, example: 'Dangerous bend' })
   @Transform(trim)
   @IsString()
   @MinLength(1)

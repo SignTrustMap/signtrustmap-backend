@@ -6,10 +6,12 @@ import {
   API_REFERENCE_PATH,
   buildOpenApiConfig,
   OPENAPI_JSON_PATH,
+  sanitizeOpenApiDocument,
 } from './swagger.config';
 
 export function setupApiReference(app: INestApplication): void {
-  const document = SwaggerModule.createDocument(app, buildOpenApiConfig());
+  let document = SwaggerModule.createDocument(app, buildOpenApiConfig());
+  document = sanitizeOpenApiDocument(document);
 
   SwaggerModule.setup(API_REFERENCE_PATH, app, document, {
     jsonDocumentUrl: OPENAPI_JSON_PATH,

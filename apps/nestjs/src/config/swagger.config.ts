@@ -115,3 +115,21 @@ export function buildOpenApiConfig(): Omit<OpenAPIObject, 'paths'> {
 
   return builder.build();
 }
+
+/**
+ * Post-processes the OpenAPI document to set additionalProperties: false on object schemas
+ * if not otherwise configured. This aligns OpenAPI definitions with NestJS ValidationPipe's
+ * `forbidNonWhitelisted: true` to prevent schema validation mismatch errors in Schemathesis.
+ */
+export function sanitizeOpenApiDocument(doc: OpenAPIObject): OpenAPIObject {
+  if (doc.components?.schemas) {
+    for (const schema of Object.values(doc.components.schemas) as any[]) {
+      if (schema && typeof schema === 'object' && schema.type === 'object') {
+        if (schema.additionalProperties === undefined) {
+          schema.additionalProperties = false;
+        }
+      }
+    }
+  }
+  return doc;
+}
