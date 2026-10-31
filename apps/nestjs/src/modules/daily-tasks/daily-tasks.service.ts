@@ -748,7 +748,7 @@ export class DailyTasksService {
         TransactionType.DAILY_TASK_REWARD,
         'daily_task',
         String(completion.id),
-        `Daily task reward: ${task.taskCode} (${task.name})`,
+        `Thưởng thử thách hằng ngày: ${task.taskCode} (${task.name})`,
         { idempotencyKey },
       );
 

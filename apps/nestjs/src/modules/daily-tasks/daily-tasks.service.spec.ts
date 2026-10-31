@@ -79,8 +79,8 @@ describe('DailyTasksService (Phase 3 Daily Task Engine & Redlock Mutex)', () => 
   describe('listTasksWithProgress', () => {
     it('returns tasks joined with user progress and claimability indicators', async () => {
       const mockTasks = [
-        { id: 1, taskCode: 'SURVEY_3', name: 'Survey 3 Signs', targetCount: 3, rewardCredits: 30, activityType: 'SURVEY' },
-        { id: 2, taskCode: 'REVIEW_5', name: 'Review 5 Candidates', targetCount: 5, rewardCredits: 25, activityType: 'REVIEW' },
+        { id: 1, taskCode: 'SURVEY_3', name: 'Khảo sát 3 biển báo', targetCount: 3, rewardCredits: 30, activityType: 'SURVEY' },
+        { id: 2, taskCode: 'REVIEW_5', name: 'Xác minh 5 biển báo ứng viên', targetCount: 5, rewardCredits: 25, activityType: 'REVIEW' },
       ];
       taskRepo.find.mockResolvedValue(mockTasks);
 

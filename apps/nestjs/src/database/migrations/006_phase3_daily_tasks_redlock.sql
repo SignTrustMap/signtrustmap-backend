@@ -20,10 +20,10 @@ ON daily_task_completions(user_id, daily_task_id, completion_date);
 -- 3. Seed / upsert standard daily task challenges
 INSERT INTO daily_tasks (task_code, name, description, target_count, reward_credits, activity_type, is_active)
 VALUES
-    ('SURVEY_3', 'Survey 3 Signs', 'Contribute and upload 3 traffic sign recordings or photos', 3, 30, 'SURVEY', TRUE),
-    ('REVIEW_5', 'Verify 5 Candidates', 'Participate in peer consensus by reviewing 5 sign candidates', 5, 25, 'REVIEW', TRUE),
-    ('HAZARD_1', 'Report Road Hazard', 'Alert the community to a temporary roadside hazard', 1, 15, 'HAZARD', TRUE),
-    ('REVALIDATE_2', 'Revalidate 2 Signs', 'Complete revalidation evidence on 2 aging signs', 2, 20, 'REVALIDATE', TRUE)
+    ('SURVEY_3', 'Khảo sát 3 biển báo', 'Đóng góp và tải lên 3 bản ghi hoặc hình ảnh biển báo giao thông', 3, 30, 'SURVEY', TRUE),
+    ('REVIEW_5', 'Xác minh 5 biển báo ứng viên', 'Tham gia đồng thuận cộng đồng bằng cách duyệt 5 biển báo ứng viên', 5, 25, 'REVIEW', TRUE),
+    ('HAZARD_1', 'Báo cáo sự cố đường bộ', 'Cảnh báo cộng đồng về mối nguy hiểm hoặc sự cố tạm thời ven đường', 1, 15, 'HAZARD', TRUE),
+    ('REVALIDATE_2', 'Tái xác thực 2 biển báo', 'Hoàn thành minh chứng tái xác thực cho 2 biển báo sắp hết hạn', 2, 20, 'REVALIDATE', TRUE)
 ON CONFLICT (task_code) DO UPDATE SET
     name = EXCLUDED.name,
     description = EXCLUDED.description,
