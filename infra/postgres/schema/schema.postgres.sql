@@ -501,6 +501,7 @@ CREATE TABLE "candidate_recapture_requests" (
   "reviewer_id" uuid NOT NULL,
   "surveyor_id" uuid,
   "new_sign_type_report_id" uuid,
+  "missing_type_report_id" uuid,
   "reason" varchar(100) NOT NULL,
   "note" text,
   "idempotency_key" varchar(128),

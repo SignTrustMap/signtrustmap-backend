@@ -2,13 +2,13 @@ import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn } from 'typeor
 
 @Entity('review_flags')
 export class ReviewFlag {
-  @PrimaryGeneratedColumn('uuid')
+  @PrimaryGeneratedColumn({ type: 'bigint' })
   id: string;
 
   @Column({ name: 'review_id', type: 'uuid' })
   reviewId: string;
 
-  @Column({ type: 'enum', enum: ['BLURRY', 'CORRECTED_LABEL', 'NEW_SIGN_TYPE', 'MISSING_TYPE', 'DUPLICATE', 'FRAUD'] as any })
+  @Column({ name: 'flag_reason', type: 'enum', enum: ['BLURRY', 'CORRECTED_LABEL', 'NEW_SIGN_TYPE', 'MISSING_TYPE', 'DUPLICATE', 'FRAUD'] as any })
   reason: string;
 
   @Column({ type: 'text', nullable: true })

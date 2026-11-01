@@ -15,14 +15,14 @@ export class CandidateRecaptureRequest {
   @Column({ name: 'surveyor_id', type: 'uuid', nullable: true })
   surveyorId: string | null;
 
-  @Column({ name: 'missing_type_report_id', type: 'uuid', nullable: true })
-  missingTypeReportId: string | null;
+  @Column({ name: 'new_sign_type_report_id', type: 'uuid', nullable: true })
+  newSignTypeReportId: string | null;
 
-  get newSignTypeReportId(): string | null {
-    return this.missingTypeReportId;
+  get missingTypeReportId(): string | null {
+    return this.newSignTypeReportId;
   }
-  set newSignTypeReportId(val: string | null) {
-    this.missingTypeReportId = val;
+  set missingTypeReportId(val: string | null) {
+    this.newSignTypeReportId = val;
   }
 
   @Column({ type: 'varchar', length: 100 })

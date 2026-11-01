@@ -843,7 +843,7 @@ export class ReviewsService {
         [mc[0].id, reviewerId, note],
       );
       await (this.candidateRepo.manager as any).query(
-        `INSERT INTO review_flags (review_id, reason, note) SELECT id, 'FRAUD', $2 FROM candidate_reviews WHERE candidate_id=$1 AND reviewer_id=$3`,
+        `INSERT INTO review_flags (review_id, flag_reason, note) SELECT id, 'FRAUD', $2 FROM candidate_reviews WHERE candidate_id=$1 AND reviewer_id=$3`,
         [candidateId, note, reviewerId],
       );
     } catch {}
