@@ -25,6 +25,10 @@ import { HazardEvidenceType } from '../infrastructure/persistence/hazard-evidenc
 export class HazardsController {
   constructor(private readonly hazardsService: HazardsService) {}
 
+  /* =========================================================================
+   * TEMPORARILY DISABLED: Road hazard functions commented out
+   * =========================================================================
+
   @ApiBearerAuth()
   @Roles('DRIVER', 'SURVEYOR', 'REVIEWER', 'STAFF', 'ADMIN')
   @ApiOperation({
@@ -88,4 +92,5 @@ export class HazardsController {
   async getHazard(@Param('id', ParseUUIDPipe) id: string) {
     return this.hazardsService.getHazard(id);
   }
+  ========================================================================= */
 }
