@@ -52,7 +52,7 @@ export class AiInferenceService {
     const cfg = config.get<{ baseUrl: string; timeoutMs: number; internalToken: string }>('aiInference') ?? ({} as any);
     this.baseUrl = (cfg.baseUrl || process.env.AI_INFERENCE_URL || 'https://ai.signmap.site').replace(/\/+$/, '');
     this.timeoutMs = cfg.timeoutMs || 30000;
-    this.internalToken = cfg.internalToken || process.env.INTERNAL_TOKEN || 'stm_internal_secret_dev';
+    this.internalToken = cfg.internalToken || process.env.INTERNAL_TOKEN || process.env.INTERNAL_API_TOKEN || '';
   }
 
   /**

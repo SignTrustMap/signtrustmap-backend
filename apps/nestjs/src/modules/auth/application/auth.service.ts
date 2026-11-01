@@ -475,8 +475,7 @@ export class AuthService {
       await this.dataSource.query(`UPDATE auth_otp_tokens SET used = true WHERE email = $1 AND used = false`, [email]);
       await this.dataSource.query(`INSERT INTO auth_otp_tokens (email, otp, expires_at) VALUES ($1,$2,$3)`, [email, otp, new Date(Date.now()+10*60*1000)]);
     }
-    const isDev = process.env.NODE_ENV !== 'production';
-    return isDev ? { sent: true, otp, expiresAt: new Date(Date.now()+10*60*1000) } : { sent: true, message: 'OTP sent to email' };
+    return { sent: true, message: 'OTP sent to email' };
   }
 
   async verifyOtp(email: string, otp: string) {

@@ -127,5 +127,5 @@ export class ModerationController {
   @Roles('STAFF', 'ADMIN')
   @ApiOperation({ summary: 'Resolve moderation case', description: 'Staff/Admin reaches resolution verdict (Dismiss, Ban User, Remove Sign)' })
   @Put('moderation/cases/:id/resolve')
-  resolveCase(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: any, @Body() dto: ResolveCaseDto) { return this.svc.resolveCase(id, user.id, dto); }
+  resolveCase(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: any, @Body() dto: ResolveCaseDto) { return this.svc.resolveCase(id, user.id, dto, user?.role); }
 }

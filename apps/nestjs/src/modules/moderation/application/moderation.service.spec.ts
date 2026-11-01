@@ -1,3 +1,4 @@
+import { ForbiddenException } from '@nestjs/common';
 import { DataSource, Repository } from 'typeorm';
 import { ModerationCase } from '../infrastructure/persistence/moderation-case.entity';
 import { ModerationAction } from '../infrastructure/persistence/moderation-action.entity';
@@ -623,6 +624,14 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     await expect(service.resolveCase('CASE1', 'STAFF1', { actionType: 'REQUEST_RECAPTURE' } as any))
       .rejects.toThrow('expected exactly one INCOMPLETE');
     expect(manager.query).not.toHaveBeenCalledWith(expect.stringContaining("SET status = 'RECAPTURE_REQUESTED'"), expect.anything());
+  });
+
+  it('throws ForbiddenException when non-admin staff attempts to resolveCase with APPROVED actionType', async () => {
+    const { service, cases } = buildService();
+    cases.findOne.mockResolvedValue({ id: 'CASE1', status: 'IN_REVIEW', targetEntityType: 'missing_sign_type_report', targetEntityId: 'R1' });
+
+    await expect(service.resolveCase('CASE1', 'STAFF1', { actionType: 'APPROVED', reportId: 'R1' } as any, 'STAFF'))
+      .rejects.toThrow(ForbiddenException);
   });
 
   it('approve-and-create-type provisions the sign type, bumps catalog version, releases the held candidate and triggers AI label sync', async () => {

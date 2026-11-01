@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, ConflictException, Logger, Optional } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ConflictException, ForbiddenException, Logger, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, In, ILike } from 'typeorm';
 import { randomUUID } from 'crypto';
@@ -1500,7 +1500,7 @@ export class ModerationService {
     const category = categoryId != null ? await this.catRepo.findOne({ where: { id: categoryId } }) : null;
     const resolvedCategoryId = category?.id ?? (await this.requireFallbackCategory());
 
-    const reportName = report.proposedName?.trim() || 'Biá»ƒn bÃ¡o má»›i';
+    const reportName = report.proposedName?.trim() || 'Biển báo mới';
     const nameVi = dto.nameVi?.trim() || reportName;
     const nameEn = dto.nameEn?.trim() || reportName;
 
@@ -1565,7 +1565,7 @@ export class ModerationService {
     await this.missing.save(report);
 
     await this.reportSyncedBackend(created.id);
-    await this.notifyReporter(report, 'APPROVED', 'BÃ¡o cÃ¡o biá»ƒn bÃ¡o má»›i Ä‘Ã£ Ä‘Æ°á»£c cháº¥p thuáº­n', 'BÃ¡o cÃ¡o "' + (report.proposedName || 'biá»ƒn bÃ¡o má»›i') + '" Ä‘Ã£ Ä‘Æ°á»£c thÃªm vÃ o danh má»¥c vá»›i mÃ£ "' + signCode + '".');
+    await this.notifyReporter(report, 'APPROVED', 'Báo cáo biển báo mới đã được chấp thuận', 'Báo cáo "' + (report.proposedName || 'biển báo mới') + '" đã được thêm vào danh mục với mã "' + signCode + '".');
 
     const [enriched] = await this.enrichWithCandidates([report]);
     return { report: enriched, createdSignType: created };
@@ -1584,13 +1584,30 @@ export class ModerationService {
     const acts = await this.actions.find({ where: { caseId: id }, order: { performedAt: 'ASC' } });
     return { ...mc, actions: acts };
   }
-  async resolveCase(id: string, staffId: string, dto: ResolveCaseDto) {
+  async resolveCase(id: string, staffId: string, dto: ResolveCaseDto, userRole?: string) {
     const mc = await this.cases.findOne({ where: { id } });
     if (!mc) throw new NotFoundException('ModerationCase ' + id + ' not found');
     if (mc.status === ModerationStatus.RESOLVED) throw new BadRequestException('Case is already resolved');
     const actionType = (dto.actionType || 'RESOLVE').toUpperCase();
     const reportId: string | null = (dto as any).reportId ?? null;
     const targetTypeId: number | null = (dto as any).targetSignTypeId ?? (dto as any).mergedIntoSignTypeId ?? null;
+
+    if (actionType === 'APPROVED') {
+      let isCallerAdmin = userRole === 'ADMIN';
+      if (!isCallerAdmin) {
+        if (this.userRepo && typeof this.userRepo.findOne === 'function') {
+          const staffUser = await this.userRepo.findOne({ where: { id: staffId } });
+          if (staffUser?.role === 'ADMIN') isCallerAdmin = true;
+        } else if (typeof this.dataSource?.query === 'function') {
+          const rows = await this.dataSource.query('SELECT role FROM users WHERE id = $1', [staffId]);
+          if (rows[0]?.role === 'ADMIN') isCallerAdmin = true;
+        }
+      }
+      if (!isCallerAdmin) {
+        throw new ForbiddenException('Admin role is required to approve and create catalog sign types');
+      }
+    }
+
     if (actionType === 'REQUEST_RECAPTURE' && mc.targetEntityType === 'candidate' && mc.targetEntityId) {
       return this.resolveRecaptureCase(id, staffId, dto);
     }
@@ -1625,8 +1642,8 @@ export class ModerationService {
       const relatedReportId = reportId || (mc.caseType === 'CATALOG_PROPOSAL' as any ? mc.targetEntityId : null);
       if (relatedReportId) {
         const rep: any = await this.missing.findOne({ where: { id: relatedReportId } as any });
-        const actionText: Record<string, string> = { APPROVED: 'Ä‘Ã£ Ä‘Æ°á»£c cháº¥p thuáº­n', MERGED: 'Ä‘Ã£ Ä‘Æ°á»£c gá»™p vÃ o loáº¡i biá»ƒn bÃ¡o hiá»‡n cÃ³', REJECTED: 'Ä‘Ã£ bá»‹ tá»« chá»‘i' };
-        if (rep?.reporterId) await this.notificationsService.create(rep.reporterId, 'MODERATION_RESOLVED', 'Cáº­p nháº­t bÃ¡o cÃ¡o biá»ƒn bÃ¡o má»›i', 'BÃ¡o cÃ¡o "' + (rep.proposedName || 'biá»ƒn bÃ¡o má»›i') + '" cá»§a báº¡n ' + (actionText[actionType] ?? 'Ä‘Ã£ Ä‘Æ°á»£c xá»­ lÃ½') + '.', 'moderation_case', mc.id);
+        const actionText: Record<string, string> = { APPROVED: 'đã được chấp thuận', MERGED: 'đã được gộp vào loại biển báo hiện có', REJECTED: 'đã bị từ chối' };
+        if (rep?.reporterId) await this.notificationsService.create(rep.reporterId, 'MODERATION_RESOLVED', 'Cập nhật báo cáo biển báo mới', 'Báo cáo "' + (rep.proposedName || 'biển báo mới') + '" của bạn ' + (actionText[actionType] ?? 'đã được xử lý') + '.', 'moderation_case', mc.id);
       }
     } catch {}
     return mc;
@@ -1812,7 +1829,7 @@ export class ModerationService {
       if (!fallback) throw new BadRequestException('No sign category exists to assign the new sign type');
       categoryId = fallback.id;
     }
-    const reportName = report.proposedName?.trim() || 'Biá»ƒn bÃ¡o má»›i';
+    const reportName = report.proposedName?.trim() || 'Biển báo mới';
     const baseCode = (report.proposedName || 'NEW').toUpperCase().replace(/[^A-Z0-9]+/g, '_').slice(0, 20) || 'NEW_SIGN';
     let signCode = baseCode;
     let suffix = 0;
