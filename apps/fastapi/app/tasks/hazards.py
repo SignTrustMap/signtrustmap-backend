@@ -22,50 +22,50 @@ from app.models.pipeline import RoadHazardEvent
 
 logger = logging.getLogger(__name__)
 
-_SWEEP_EXPIRED_HAZARDS_STMT = (
-    update(RoadHazardEvent)
-    .where(
-        RoadHazardEvent.status.in_(["UNCONFIRMED", "CONFIRMED"]),
-        or_(
-            RoadHazardEvent.expires_at <= func.now(),
-            RoadHazardEvent.dismissals_count > RoadHazardEvent.confirmations_count,
-        ),
-    )
-    .values(status="DISMISSED", updated_at=func.now())
-    .returning(RoadHazardEvent.id, RoadHazardEvent.hazard_type, RoadHazardEvent.status)
-)
-
-
-@shared_task(
-    name="app.tasks.hazards.task_decay_hazard_events",
-    bind=True,
-    max_retries=3,
-    default_retry_delay=30,
-    acks_late=True,
-)
-def task_decay_hazard_events(self) -> dict[str, Any]:  # type: ignore[no-untyped-def]
-    """Sweep expired or dismissed road hazard events."""
-    started_at = datetime.now(timezone.utc)
-    logger.info("[hazards] Starting hazard decay sweep at %s", started_at.isoformat())
-
-    try:
-        with get_sync_db() as db:
-            result = db.execute(_SWEEP_EXPIRED_HAZARDS_STMT)
-            swept_rows = result.mappings().all()
-            db.commit()
-    except Exception as exc:
-        logger.exception("[hazards] Failed sweeping expired hazards: %s", exc)
-        raise self.retry(exc=exc)
-
-    swept_count = len(swept_rows)
-    logger.info(
-        "[hazards] Swept %d expired or dismissed hazard events in %s",
-        swept_count,
-        datetime.now(timezone.utc) - started_at,
-    )
-
-    return {
-        "swept": swept_count,
-        "swept_ids": [str(r["id"]) for r in swept_rows],
-        "completed_at": datetime.now(timezone.utc).isoformat(),
-    }
+# _SWEEP_EXPIRED_HAZARDS_STMT = (
+#     update(RoadHazardEvent)
+#     .where(
+#         RoadHazardEvent.status.in_(["UNCONFIRMED", "CONFIRMED"]),
+#         or_(
+#             RoadHazardEvent.expires_at <= func.now(),
+#             RoadHazardEvent.dismissals_count > RoadHazardEvent.confirmations_count,
+#         ),
+#     )
+#     .values(status="DISMISSED", updated_at=func.now())
+#     .returning(RoadHazardEvent.id, RoadHazardEvent.hazard_type, RoadHazardEvent.status)
+# )
+# 
+# 
+# @shared_task(
+#     name="app.tasks.hazards.task_decay_hazard_events",
+#     bind=True,
+#     max_retries=3,
+#     default_retry_delay=30,
+#     acks_late=True,
+# )
+# def task_decay_hazard_events(self) -> dict[str, Any]:  # type: ignore[no-untyped-def]
+#     """Sweep expired or dismissed road hazard events."""
+#     started_at = datetime.now(timezone.utc)
+#     logger.info("[hazards] Starting hazard decay sweep at %s", started_at.isoformat())
+# 
+#     try:
+#         with get_sync_db() as db:
+#             result = db.execute(_SWEEP_EXPIRED_HAZARDS_STMT)
+#             swept_rows = result.mappings().all()
+#             db.commit()
+#     except Exception as exc:
+#         logger.exception("[hazards] Failed sweeping expired hazards: %s", exc)
+#         raise self.retry(exc=exc)
+# 
+#     swept_count = len(swept_rows)
+#     logger.info(
+#         "[hazards] Swept %d expired or dismissed hazard events in %s",
+#         swept_count,
+#         datetime.now(timezone.utc) - started_at,
+#     )
+# 
+#     return {
+#         "swept": swept_count,
+#         "swept_ids": [str(r["id"]) for r in swept_rows],
+#         "completed_at": datetime.now(timezone.utc).isoformat(),
+#     }
