@@ -1,29 +1,33 @@
 import {
   Controller,
-  Get,
-  Post,
-  Body,
-  Param,
-  Query,
-  ParseUUIDPipe,
-  UseInterceptors,
-  UploadedFile,
+  // Get,
+  // Post,
+  // Body,
+  // Param,
+  // Query,
+  // ParseUUIDPipe,
+  // UseInterceptors,
+  // UploadedFile,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
-import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { Roles } from '../../../common/decorators/roles.decorator';
-import { CurrentUser } from '../../../common/decorators/current-user.decorator';
+// import { FileInterceptor } from '@nestjs/platform-express';
+import { /* ApiBearerAuth, ApiConsumes, ApiOperation, */ ApiTags } from '@nestjs/swagger';
+// import { Roles } from '../../../common/decorators/roles.decorator';
+// import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { HazardsService } from '../application/hazards.service';
-import { CreateHazardReportDto } from './dto/create-hazard-report.dto';
-import { ConfirmHazardDto } from './dto/confirm-hazard.dto';
-import { QueryHazardsDto } from './dto/query-hazards.dto';
-import { UploadHazardEvidenceDto } from './dto/upload-hazard-evidence.dto';
-import { HazardEvidenceType } from '../infrastructure/persistence/hazard-evidence.entity';
+// import { CreateHazardReportDto } from './dto/create-hazard-report.dto';
+// import { ConfirmHazardDto } from './dto/confirm-hazard.dto';
+// import { QueryHazardsDto } from './dto/query-hazards.dto';
+// import { UploadHazardEvidenceDto } from './dto/upload-hazard-evidence.dto';
+// import { HazardEvidenceType } from '../infrastructure/persistence/hazard-evidence.entity';
 
 @ApiTags('Hazards')
 @Controller()
 export class HazardsController {
   constructor(private readonly hazardsService: HazardsService) {}
+
+  /* =========================================================================
+   * TEMPORARILY DISABLED: Road hazard functions commented out
+   * =========================================================================
 
   @ApiBearerAuth()
   @Roles('DRIVER', 'SURVEYOR', 'REVIEWER', 'STAFF', 'ADMIN')
@@ -88,4 +92,5 @@ export class HazardsController {
   async getHazard(@Param('id', ParseUUIDPipe) id: string) {
     return this.hazardsService.getHazard(id);
   }
+  ========================================================================= */
 }
