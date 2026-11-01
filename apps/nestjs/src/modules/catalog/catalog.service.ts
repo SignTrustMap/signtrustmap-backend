@@ -722,7 +722,7 @@ export class CatalogService {
         const qb = this.candidateRepo
           .createQueryBuilder('c')
           .select(['c.id AS id', 'c.submissionId AS submission_id', 'c.confidenceScore AS confidence_score', 'c.status AS status'])
-          .where("(c.status IN ('PENDING_REVIEW', 'MISSING_TYPE_HOLD') AND c.confidenceScore < 0.60)")
+          .where("(c.status IN ('PENDING_REVIEW', 'NEW_TYPE_HOLD', 'MISSING_TYPE_HOLD') AND c.confidenceScore < 0.60)")
           .orWhere("c.status = 'REJECTED'")
           .orderBy('c.createdAt', 'DESC')
           .limit(500);
@@ -730,7 +730,7 @@ export class CatalogService {
         candidates = res !== undefined && res !== null ? res : await this.dataSource.query(
           `SELECT c.id, c.submission_id, c.confidence_score, c.status
            FROM unverified_sign_candidates c
-           WHERE (c.status IN ('PENDING_REVIEW', 'MISSING_TYPE_HOLD') AND c.confidence_score < 0.60)
+           WHERE (c.status IN ('PENDING_REVIEW', 'NEW_TYPE_HOLD', 'MISSING_TYPE_HOLD') AND c.confidence_score < 0.60)
               OR (c.status = 'REJECTED')
            ORDER BY c.created_at DESC
            LIMIT 500`,
@@ -739,7 +739,7 @@ export class CatalogService {
         candidates = await this.dataSource.query(
           `SELECT c.id, c.submission_id, c.confidence_score, c.status
            FROM unverified_sign_candidates c
-           WHERE (c.status IN ('PENDING_REVIEW', 'MISSING_TYPE_HOLD') AND c.confidence_score < 0.60)
+           WHERE (c.status IN ('PENDING_REVIEW', 'NEW_TYPE_HOLD', 'MISSING_TYPE_HOLD') AND c.confidence_score < 0.60)
               OR (c.status = 'REJECTED')
            ORDER BY c.created_at DESC
            LIMIT 500`,
@@ -749,7 +749,7 @@ export class CatalogService {
       candidates = await this.dataSource.query(
         `SELECT c.id, c.submission_id, c.confidence_score, c.status
          FROM unverified_sign_candidates c
-         WHERE (c.status IN ('PENDING_REVIEW', 'MISSING_TYPE_HOLD') AND c.confidence_score < 0.60)
+         WHERE (c.status IN ('PENDING_REVIEW', 'NEW_TYPE_HOLD', 'MISSING_TYPE_HOLD') AND c.confidence_score < 0.60)
             OR (c.status = 'REJECTED')
          ORDER BY c.created_at DESC
          LIMIT 500`,

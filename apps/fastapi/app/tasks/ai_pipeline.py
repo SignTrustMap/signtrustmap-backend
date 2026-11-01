@@ -955,7 +955,7 @@ def task_reprocess_unresolved_candidates(
             .where(
                 or_(
                     (
-                        UnverifiedSignCandidate.status.in_(["PENDING_REVIEW", "MISSING_TYPE_HOLD"])
+                        UnverifiedSignCandidate.status.in_(["PENDING_REVIEW", "NEW_TYPE_HOLD", "MISSING_TYPE_HOLD"])
                         & (UnverifiedSignCandidate.confidence_score < 0.60)
                     ),
                     UnverifiedSignCandidate.status == "REJECTED",

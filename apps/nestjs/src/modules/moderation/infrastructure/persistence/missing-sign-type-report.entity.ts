@@ -15,7 +15,7 @@ export enum NewSignReportStatus {
   INCOMPLETE = 'INCOMPLETE',
 }
 
-@Entity('missing_sign_type_reports')
+@Entity('new_sign_type_reports')
 export class NewSignTypeReport {
   @PrimaryGeneratedColumn('uuid')
   id: string;
