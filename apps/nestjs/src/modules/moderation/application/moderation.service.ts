@@ -148,7 +148,7 @@ export class ModerationService {
           const updateRes = await manager.getRepository(UnverifiedSignCandidate)
             .createQueryBuilder()
             .update(UnverifiedSignCandidate)
-            .set({ status: CandidateStatus.MISSING_TYPE_HOLD })
+            .set({ status: CandidateStatus.NEW_TYPE_HOLD })
             .where('id = :id AND status IN (:...statuses)', {
               id: dto.candidateId,
               statuses: [CandidateStatus.PENDING_REVIEW, CandidateStatus.IN_CONSENSUS],
@@ -161,14 +161,14 @@ export class ModerationService {
              SET status = $2
              WHERE id = $1 AND status IN ('PENDING_REVIEW', 'IN_CONSENSUS')
              RETURNING id`,
-            [dto.candidateId, CandidateStatus.MISSING_TYPE_HOLD],
+            [dto.candidateId, CandidateStatus.NEW_TYPE_HOLD],
           );
           affected = getAffectedRowCount(updatedCandidates);
         }
         if (affected !== 1) {
           throw new ConflictException('Candidate ' + dto.candidateId + ' changed state while reporting a new sign');
         }
-        this.logger.log('Parked candidate ' + dto.candidateId + ' on MISSING_TYPE_HOLD (report ' + saved.id + ')');
+        this.logger.log('Parked candidate ' + dto.candidateId + ' on NEW_TYPE_HOLD (report ' + saved.id + ')');
       }
       return saved;
     });
@@ -366,8 +366,8 @@ export class ModerationService {
           candidate = candidates[0] ?? null;
         }
         if (!candidate) throw new NotFoundException('Candidate ' + report.candidateId + ' not found');
-        if (candidate.status !== CandidateStatus.MISSING_TYPE_HOLD) {
-          throw new ConflictException('Candidate must be on MISSING_TYPE_HOLD to resolve this report');
+        if (candidate.status !== CandidateStatus.NEW_TYPE_HOLD) {
+          throw new ConflictException('Candidate must be on NEW_TYPE_HOLD to resolve this report');
         }
       }
 
@@ -416,7 +416,7 @@ export class ModerationService {
             })
             .where('id = :id AND status = :status', {
               id: report.candidateId,
-              status: CandidateStatus.MISSING_TYPE_HOLD,
+              status: CandidateStatus.NEW_TYPE_HOLD,
             })
             .execute();
           updateCandAffected = res.affected ?? 0;
@@ -426,7 +426,7 @@ export class ModerationService {
              SET status = $2, predicted_sign_type_id = COALESCE($3, predicted_sign_type_id)
              WHERE id = $1 AND status = $4
              RETURNING id`,
-            [report.candidateId, candidateStatus, signTypeId, CandidateStatus.MISSING_TYPE_HOLD],
+            [report.candidateId, candidateStatus, signTypeId, CandidateStatus.NEW_TYPE_HOLD],
           );
           updateCandAffected = getAffectedRowCount(candidateUpdate);
         }
@@ -701,7 +701,7 @@ export class ModerationService {
           candidate = candidates[0] ?? null;
         }
         if (!candidate) throw new NotFoundException('Candidate ' + report.candidateId + ' not found');
-        if (![CandidateStatus.MISSING_TYPE_HOLD, CandidateStatus.RECAPTURE_REQUESTED].includes(candidate.status)) {
+        if (![CandidateStatus.NEW_TYPE_HOLD, CandidateStatus.RECAPTURE_REQUESTED].includes(candidate.status)) {
           throw new ConflictException('Candidate is not in a state that can be rejected with this report');
         }
 
@@ -985,7 +985,7 @@ export class ModerationService {
           candidate = candidates[0] ?? null;
         }
         if (!candidate) throw new NotFoundException('Candidate ' + report.candidateId + ' not found');
-        if (![CandidateStatus.MISSING_TYPE_HOLD, CandidateStatus.RECAPTURE_REQUESTED].includes(candidate.status)) {
+        if (![CandidateStatus.NEW_TYPE_HOLD, CandidateStatus.RECAPTURE_REQUESTED].includes(candidate.status)) {
           throw new ConflictException('Candidate is not in a state that can be rejected with this report');
         }
 
@@ -1268,8 +1268,8 @@ export class ModerationService {
         candidate = candidateRows[0] ?? null;
       }
       if (!candidate) throw new NotFoundException('Candidate ' + report.candidateId + ' not found');
-      if (candidate.status !== CandidateStatus.MISSING_TYPE_HOLD) {
-        throw new BadRequestException('Candidate must be on MISSING_TYPE_HOLD to request recapture');
+      if (candidate.status !== CandidateStatus.NEW_TYPE_HOLD) {
+        throw new BadRequestException('Candidate must be on NEW_TYPE_HOLD to request recapture');
       }
 
       let activeRequestsCount = 0;
@@ -1325,7 +1325,7 @@ export class ModerationService {
           .createQueryBuilder()
           .update(UnverifiedSignCandidate)
           .set({ status: CandidateStatus.RECAPTURE_REQUESTED })
-          .where('id = :id AND status = :status', { id: candidate.id, status: CandidateStatus.MISSING_TYPE_HOLD })
+          .where('id = :id AND status = :status', { id: candidate.id, status: CandidateStatus.NEW_TYPE_HOLD })
           .execute();
         updateCandAffected = res.affected ?? 0;
       } else if (typeof manager.query === 'function') {
@@ -1334,7 +1334,7 @@ export class ModerationService {
            SET status = $2
            WHERE id = $1 AND status = $3
            RETURNING id`,
-          [candidate.id, CandidateStatus.RECAPTURE_REQUESTED, CandidateStatus.MISSING_TYPE_HOLD],
+          [candidate.id, CandidateStatus.RECAPTURE_REQUESTED, CandidateStatus.NEW_TYPE_HOLD],
         );
         updateCandAffected = getAffectedRowCount(updatedCandidates);
       }
@@ -1966,14 +1966,14 @@ export class ModerationService {
     try {
       if (this.candRepo && typeof this.candRepo.update === 'function') {
         await this.candRepo.update(
-          { id: candidateId, status: CandidateStatus.MISSING_TYPE_HOLD },
+          { id: candidateId, status: CandidateStatus.NEW_TYPE_HOLD },
           { predictedSignTypeId: signTypeId, status: CandidateStatus.PENDING_REVIEW },
         );
       } else {
         await this.dataSource.query(
           `UPDATE unverified_sign_candidates
            SET predicted_sign_type_id = $1, status = 'PENDING_REVIEW'
-           WHERE id = $2::uuid AND status = 'MISSING_TYPE_HOLD'`,
+           WHERE id = $2::uuid AND status IN ('NEW_TYPE_HOLD', 'MISSING_TYPE_HOLD')`,
           [signTypeId, candidateId],
         );
       }

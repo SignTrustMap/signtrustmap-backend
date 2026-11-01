@@ -483,11 +483,11 @@ class AiPipelineContractTests(TestCase):
 
         with patch.object(ai_pipeline, "get_sync_db") as get_sync_db:
             get_sync_db.return_value.__enter__.return_value = db
-            result = task.apply(args=["job-uuid-1", "YOLO12", 0.8]).get()
+            result = task.apply(args=["job-uuid-1", "YOLO26", 0.8]).get()
 
         self.assertEqual(result["status"], "COMPLETED")
         self.assertEqual(result["version_id"], 99)
-        self.assertIn("yolo12", result["version_tag"])
+        self.assertIn("yolo26", result["version_tag"])
         self.assertTrue(db.commit.called)
 
 

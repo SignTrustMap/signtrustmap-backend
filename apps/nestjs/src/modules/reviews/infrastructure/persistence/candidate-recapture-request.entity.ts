@@ -18,6 +18,13 @@ export class CandidateRecaptureRequest {
   @Column({ name: 'missing_type_report_id', type: 'uuid', nullable: true })
   missingTypeReportId: string | null;
 
+  get newSignTypeReportId(): string | null {
+    return this.missingTypeReportId;
+  }
+  set newSignTypeReportId(val: string | null) {
+    this.missingTypeReportId = val;
+  }
+
   @Column({ type: 'varchar', length: 100 })
   reason: string;
 

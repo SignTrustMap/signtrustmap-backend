@@ -136,7 +136,7 @@ export class UpdateRouteMatrixDto {
 }
 
 export class TriggerRetrainDto {
-  @ApiPropertyOptional({ description: 'Model architecture type (e.g. YOLO12, FEW_SHOT)', example: 'YOLO12' })
+  @ApiPropertyOptional({ description: 'Model architecture type (e.g. YOLO26, TRACKER, CLIP)', example: 'YOLO26' })
   @IsOptional()
   @IsString()
   modelType?: string;
