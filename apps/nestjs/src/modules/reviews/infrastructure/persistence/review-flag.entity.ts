@@ -8,7 +8,7 @@ export class ReviewFlag {
   @Column({ name: 'review_id', type: 'uuid' })
   reviewId: string;
 
-  @Column({ type: 'enum', enum: ['BLURRY', 'CORRECTED_LABEL', 'MISSING_TYPE', 'DUPLICATE', 'FRAUD'] as any })
+  @Column({ type: 'enum', enum: ['BLURRY', 'CORRECTED_LABEL', 'NEW_SIGN_TYPE', 'MISSING_TYPE', 'DUPLICATE', 'FRAUD'] as any })
   reason: string;
 
   @Column({ type: 'text', nullable: true })

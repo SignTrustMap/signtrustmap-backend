@@ -48,7 +48,7 @@ CREATE TYPE "candidate_status" AS ENUM (
   'VERIFIED',
   'REJECTED',
   'ESCALATED_MODERATION',
-  'MISSING_TYPE_HOLD',
+  'NEW_TYPE_HOLD',
   'RECAPTURE_REQUESTED'
 );
 
@@ -60,7 +60,7 @@ CREATE TYPE "spatial_confidence_level" AS ENUM (
 CREATE TYPE "review_flag_reason" AS ENUM (
   'BLURRY',
   'CORRECTED_LABEL',
-  'MISSING_TYPE',
+  'NEW_SIGN_TYPE',
   'DUPLICATE',
   'FRAUD'
 );
@@ -108,7 +108,7 @@ CREATE TYPE "reval_decision" AS ENUM (
   'INVALID'
 );
 
-CREATE TYPE "missing_type_status" AS ENUM (
+CREATE TYPE "new_sign_type_status" AS ENUM (
   'PENDING',
   'MERGED',
   'ESCALATED_ADMIN',
@@ -374,7 +374,7 @@ CREATE TABLE "catalog_version_sign_types" (
   "change_action" catalog_change_action NOT NULL
 );
 
-CREATE TABLE "missing_sign_type_reports" (
+CREATE TABLE "new_sign_type_reports" (
   "id" uuid PRIMARY KEY DEFAULT (gen_random_uuid()),
   "reporter_id" uuid NOT NULL,
   "original_reporter_id" uuid NOT NULL,
@@ -382,7 +382,7 @@ CREATE TABLE "missing_sign_type_reports" (
   "proposed_category_id" int,
   "proposed_name" varchar(255),
   "description" text,
-  "status" missing_type_status NOT NULL DEFAULT 'PENDING',
+  "status" new_sign_type_status NOT NULL DEFAULT 'PENDING',
   "merged_into_sign_type_id" int,
   "reviewed_by" uuid,
   "staff_notes" text,
@@ -390,7 +390,7 @@ CREATE TABLE "missing_sign_type_reports" (
   "updated_at" timestamptz NOT NULL DEFAULT (now())
 );
 
-CREATE TABLE "missing_sign_type_report_evidences" (
+CREATE TABLE "new_sign_type_report_evidences" (
   "id" BIGSERIAL PRIMARY KEY,
   "report_id" uuid NOT NULL,
   "media_url" varchar(500) NOT NULL,
@@ -500,7 +500,7 @@ CREATE TABLE "candidate_recapture_requests" (
   "candidate_id" uuid NOT NULL,
   "reviewer_id" uuid NOT NULL,
   "surveyor_id" uuid,
-  "missing_type_report_id" uuid,
+  "new_sign_type_report_id" uuid,
   "reason" varchar(100) NOT NULL,
   "note" text,
   "idempotency_key" varchar(128),
@@ -511,7 +511,7 @@ CREATE TABLE "candidate_recapture_requests" (
 
 CREATE INDEX ON "candidate_recapture_requests" ("candidate_id");
 CREATE INDEX ON "candidate_recapture_requests" ("surveyor_id");
-CREATE INDEX ON "candidate_recapture_requests" ("missing_type_report_id");
+CREATE INDEX ON "candidate_recapture_requests" ("new_sign_type_report_id");
 CREATE UNIQUE INDEX "uq_candidate_recapture_requests_one_active"
   ON "candidate_recapture_requests" ("candidate_id")
   WHERE "completed_at" IS NULL;
@@ -1188,23 +1188,23 @@ ALTER TABLE "catalog_version_sign_types" ADD FOREIGN KEY ("catalog_version_id") 
 
 ALTER TABLE "catalog_version_sign_types" ADD FOREIGN KEY ("sign_type_id") REFERENCES "traffic_sign_types" ("id") DEFERRABLE INITIALLY IMMEDIATE;
 
-ALTER TABLE "missing_sign_type_reports" ADD FOREIGN KEY ("reporter_id") REFERENCES "users" ("id") DEFERRABLE INITIALLY IMMEDIATE;
-ALTER TABLE "missing_sign_type_reports" ADD FOREIGN KEY ("original_reporter_id") REFERENCES "users" ("id") DEFERRABLE INITIALLY IMMEDIATE;
+ALTER TABLE "new_sign_type_reports" ADD FOREIGN KEY ("reporter_id") REFERENCES "users" ("id") DEFERRABLE INITIALLY IMMEDIATE;
+ALTER TABLE "new_sign_type_reports" ADD FOREIGN KEY ("original_reporter_id") REFERENCES "users" ("id") DEFERRABLE INITIALLY IMMEDIATE;
 
-ALTER TABLE "missing_sign_type_reports" ADD FOREIGN KEY ("candidate_id") REFERENCES "unverified_sign_candidates" ("id") DEFERRABLE INITIALLY IMMEDIATE;
+ALTER TABLE "new_sign_type_reports" ADD FOREIGN KEY ("candidate_id") REFERENCES "unverified_sign_candidates" ("id") DEFERRABLE INITIALLY IMMEDIATE;
 
-ALTER TABLE "missing_sign_type_reports" ADD FOREIGN KEY ("proposed_category_id") REFERENCES "sign_categories" ("id") DEFERRABLE INITIALLY IMMEDIATE;
+ALTER TABLE "new_sign_type_reports" ADD FOREIGN KEY ("proposed_category_id") REFERENCES "sign_categories" ("id") DEFERRABLE INITIALLY IMMEDIATE;
 
-ALTER TABLE "missing_sign_type_reports" ADD FOREIGN KEY ("merged_into_sign_type_id") REFERENCES "traffic_sign_types" ("id") DEFERRABLE INITIALLY IMMEDIATE;
+ALTER TABLE "new_sign_type_reports" ADD FOREIGN KEY ("merged_into_sign_type_id") REFERENCES "traffic_sign_types" ("id") DEFERRABLE INITIALLY IMMEDIATE;
 
-ALTER TABLE "missing_sign_type_reports" ADD FOREIGN KEY ("reviewed_by") REFERENCES "users" ("id") DEFERRABLE INITIALLY IMMEDIATE;
+ALTER TABLE "new_sign_type_reports" ADD FOREIGN KEY ("reviewed_by") REFERENCES "users" ("id") DEFERRABLE INITIALLY IMMEDIATE;
 
-ALTER TABLE "missing_sign_type_report_evidences" ADD FOREIGN KEY ("report_id") REFERENCES "missing_sign_type_reports" ("id") DEFERRABLE INITIALLY IMMEDIATE;
+ALTER TABLE "new_sign_type_report_evidences" ADD FOREIGN KEY ("report_id") REFERENCES "new_sign_type_reports" ("id") DEFERRABLE INITIALLY IMMEDIATE;
 
 ALTER TABLE "candidate_recapture_requests" ADD FOREIGN KEY ("candidate_id") REFERENCES "unverified_sign_candidates" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE;
 ALTER TABLE "candidate_recapture_requests" ADD FOREIGN KEY ("reviewer_id") REFERENCES "users" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE;
 ALTER TABLE "candidate_recapture_requests" ADD FOREIGN KEY ("surveyor_id") REFERENCES "users" ("id") ON DELETE SET NULL DEFERRABLE INITIALLY IMMEDIATE;
-ALTER TABLE "candidate_recapture_requests" ADD FOREIGN KEY ("missing_type_report_id") REFERENCES "missing_sign_type_reports" ("id") ON DELETE SET NULL DEFERRABLE INITIALLY IMMEDIATE;
+ALTER TABLE "candidate_recapture_requests" ADD FOREIGN KEY ("new_sign_type_report_id") REFERENCES "new_sign_type_reports" ("id") ON DELETE SET NULL DEFERRABLE INITIALLY IMMEDIATE;
 
 ALTER TABLE "camera_calibration_profiles" ADD FOREIGN KEY ("user_id") REFERENCES "users" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE;
 

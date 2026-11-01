@@ -1318,7 +1318,7 @@ export class ReviewsService {
             candidateId,
             requestId: completedRows[0].id,
             missingTypeReportId: completedRows[0].missing_type_report_id,
-            status: CandidateStatus.MISSING_TYPE_HOLD,
+            status: CandidateStatus.NEW_TYPE_HOLD,
             evidence: {
               signCropUrl: candidate.signCropUrl,
               bestFrameUrl: candidate.bestFrameUrl,
@@ -1389,7 +1389,7 @@ export class ReviewsService {
         if (locked[0].report_status !== 'INCOMPLETE') throw new BadRequestException('Associated Missing Type Report is not incomplete');
         const updated = await tx.query(
           `UPDATE unverified_sign_candidates
-           SET sign_crop_url = $1, best_frame_url = $2, status = 'MISSING_TYPE_HOLD'
+           SET sign_crop_url = $1, best_frame_url = $2, status = 'NEW_TYPE_HOLD'
            WHERE id = $3 AND status = 'RECAPTURE_REQUESTED'`,
           [`${uploaded[0].bucket}/${uploaded[0].objectName}`, `${uploaded[1].bucket}/${uploaded[1].objectName}`, candidateId],
         );
@@ -1440,7 +1440,7 @@ export class ReviewsService {
       candidateId,
       requestId,
       missingTypeReportId: request.missing_type_report_id,
-      status: CandidateStatus.MISSING_TYPE_HOLD,
+      status: CandidateStatus.NEW_TYPE_HOLD,
       evidence: {
         signCropUrl: `${uploaded[0].bucket}/${uploaded[0].objectName}`,
         bestFrameUrl: `${uploaded[1].bucket}/${uploaded[1].objectName}`,
