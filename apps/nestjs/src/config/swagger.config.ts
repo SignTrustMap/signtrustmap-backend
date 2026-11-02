@@ -117,22 +117,63 @@ export function buildOpenApiConfig(): Omit<OpenAPIObject, 'paths'> {
 }
 
 /**
- * Post-processes the OpenAPI document to set additionalProperties: false on object schemas
- * if not otherwise configured. This aligns OpenAPI definitions with NestJS ValidationPipe's
- * `forbidNonWhitelisted: true` to prevent schema validation mismatch errors in Schemathesis.
+ * Post-processes the OpenAPI document:
+ * 1. Sets additionalProperties: false ONLY on standalone object schemas with explicit properties
+ *    (skipping schemas using composition like allOf/oneOf/anyOf and freeform maps) to prevent
+ *    schema validation mismatch errors in Schemathesis while avoiding composition conflicts.
+ * 2. Enforces OpenAPI 3.0 contract requirements: path parameters MUST have required: true,
+ *    and every operation MUST provide at least one response definition.
  */
 export function sanitizeOpenApiDocument(doc: OpenAPIObject): OpenAPIObject {
   if (doc.components?.schemas) {
     for (const schema of Object.values(doc.components.schemas) as any[]) {
-      if (schema && typeof schema === 'object' && schema.type === 'object') {
-        if (schema.additionalProperties === undefined) {
+      if (schema && typeof schema === 'object') {
+        if (
+          schema.type === 'object' &&
+          schema.properties &&
+          Object.keys(schema.properties).length > 0 &&
+          !schema.allOf &&
+          !schema.oneOf &&
+          !schema.anyOf &&
+          schema.additionalProperties === undefined
+        ) {
           schema.additionalProperties = false;
         }
       }
     }
   }
-  // Add deterministic links for collection -> detail operations to eliminate 404s in Schemathesis stateful fuzzing
   if (doc.paths) {
+    for (const [, pathItem] of Object.entries(doc.paths)) {
+      if (!pathItem || typeof pathItem !== 'object') continue;
+      const httpMethods = ['get', 'post', 'put', 'patch', 'delete', 'options', 'head'] as const;
+      for (const method of httpMethods) {
+        const operation = (pathItem as any)[method];
+        if (operation && typeof operation === 'object') {
+          // OpenAPI 3.0 mandate: operations must define at least one response
+          if (!operation.responses || Object.keys(operation.responses).length === 0) {
+            operation.responses = { '200': { description: 'Successful operation' } };
+          }
+          // OpenAPI 3.0 mandate: path parameters MUST have required: true
+          if (Array.isArray(operation.parameters)) {
+            for (const param of operation.parameters) {
+              if (param && param.in === 'path') {
+                param.required = true;
+              }
+            }
+          }
+        }
+      }
+      // Also check top-level parameters for the path item
+      if (Array.isArray((pathItem as any).parameters)) {
+        for (const param of (pathItem as any).parameters) {
+          if (param && param.in === 'path') {
+            param.required = true;
+          }
+        }
+      }
+    }
+
+    // Add deterministic links for collection -> detail operations to eliminate 404s in Schemathesis stateful fuzzing
     const catalogCategories = doc.paths['/api/v1/catalog/categories'] || doc.paths['/catalog/categories'];
     if (catalogCategories?.get?.responses?.['200']) {
       (catalogCategories.get.responses['200'] as any).links = {

@@ -7,6 +7,8 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Matches,
+  MaxLength,
   Max,
   Min,
   ValidateNested,
@@ -36,6 +38,8 @@ export class RouteSignsRequestDto implements RouteSignsRequest {
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
+  @MaxLength(30, { each: true })
+  @Matches(/^[A-Za-z0-9_-]+$/, { each: true, message: 'Each category code must be alphanumeric' })
   enabledCategoryCodes?: string[];
 
   @IsArray()
