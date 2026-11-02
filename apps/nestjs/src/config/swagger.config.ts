@@ -142,7 +142,6 @@ export function sanitizeOpenApiDocument(doc: OpenAPIObject): OpenAPIObject {
       }
     }
   }
-
   if (doc.paths) {
     for (const [, pathItem] of Object.entries(doc.paths)) {
       if (!pathItem || typeof pathItem !== 'object') continue;
@@ -172,6 +171,29 @@ export function sanitizeOpenApiDocument(doc: OpenAPIObject): OpenAPIObject {
           }
         }
       }
+    }
+
+    // Add deterministic links for collection -> detail operations to eliminate 404s in Schemathesis stateful fuzzing
+    const catalogCategories = doc.paths['/api/v1/catalog/categories'] || doc.paths['/catalog/categories'];
+    if (catalogCategories?.get?.responses?.['200']) {
+      (catalogCategories.get.responses['200'] as any).links = {
+        GetCategoryById: {
+          operationId: 'CatalogController_getCategory',
+          parameters: { id: '$response.body#/0/id' },
+          description: 'The id property from any category can be used as path param id.',
+        },
+      };
+    }
+
+    const catalogSignTypes = doc.paths['/api/v1/catalog/sign-types'] || doc.paths['/catalog/sign-types'];
+    if (catalogSignTypes?.get?.responses?.['200']) {
+      (catalogSignTypes.get.responses['200'] as any).links = {
+        GetSignTypeById: {
+          operationId: 'CatalogController_getSignType',
+          parameters: { id: '$response.body#/0/id' },
+          description: 'The id property from any sign type can be used as path param id.',
+        },
+      };
     }
   }
 
