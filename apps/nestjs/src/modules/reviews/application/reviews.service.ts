@@ -760,10 +760,12 @@ export class ReviewsService {
     const s = raw
       .trim()
       .toLowerCase()
+      .replace(/đ/g, 'd')
       .normalize('NFD')
       .replace(/[\u0300-\u036f]/g, '')
       .replace(/[^a-z0-9]/g, '_')
-      .replace(/_+/g, '_');
+      .replace(/_+/g, '_')
+      .replace(/^_+|_+$/g, '');
 
     if (['all', 'tat_ca', 'tat_ca_trang_thai'].includes(s)) {
       return 'ALL';
