@@ -199,6 +199,34 @@ if [ -n "$AUTH_HEADER" ]; then
   fi
 fi
 
+# -----------------------------------------------------------------------------
+# 5. Unauthenticated negative security pass (FastAPI) — expect 401/403, fail on 500
+# -----------------------------------------------------------------------------
+if [ -n "$FASTAPI_AUTH_HEADER" ]; then
+  echo ""
+  echo "--> FastAPI negative auth scan (no X-Internal-Token header)..."
+  FASTAPI_NEG_LOG="$LOG_DIR/fastapi-unauth.log"
+  st run "$FASTAPI_HOST/openapi.json" \
+    -u "$FASTAPI_HOST" \
+    --wait-for-schema 30 \
+    -c not_a_server_error \
+    -n 5 \
+    --hypothesis-seed "$HYPOTHESIS_SEED" \
+    --exclude-method DELETE \
+    --suppress-health-check=filter_too_much \
+    --no-color > "$FASTAPI_NEG_LOG" 2>&1
+  FASTAPI_NEG_EXIT=$?
+  cp -f "$FASTAPI_NEG_LOG" "$REPORTS_DIR/fastapi/latest-unauth.log" 2>/dev/null || true
+  if [ $FASTAPI_NEG_EXIT -ne 0 ]; then
+    echo "❌ FastAPI unauthenticated scan found server errors:"
+    cat "$FASTAPI_NEG_LOG"
+    FASTAPI_EXIT=1
+    python3 "$NOTIFIER" "FastAPI Spatial Engine (unauth)" "FAILED" "$FASTAPI_NEG_LOG" || true
+  else
+    echo "✅ FastAPI unauthenticated scan: no 500s (401/403 expected on secured ops)."
+  fi
+fi
+
 echo ""
 echo "================================================================="
 echo "[$(date -u +"%Y-%m-%d %H:%M:%SZ")] Endpoint failure scan completed."

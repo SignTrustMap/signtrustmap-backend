@@ -79,6 +79,42 @@ describe('Common Guards', () => {
       expect(guard.canActivate(ctx)).toBe(false);
     });
 
+    it('denies access if user roles do not match required role', () => {
+      reflector.getAllAndOverride
+        .mockReturnValueOnce(false)
+        .mockReturnValueOnce(['ADMIN']);
+      const ctx = {
+        getHandler: jest.fn(),
+        getClass: jest.fn(),
+        switchToHttp: () => ({ getRequest: () => ({ user: { roles: ['SURVEYOR', 'DRIVER'] } }) }),
+      } as unknown as ExecutionContext;
+      expect(guard.canActivate(ctx)).toBe(false);
+    });
+
+    it('denies access if user has empty roles array', () => {
+      reflector.getAllAndOverride
+        .mockReturnValueOnce(false)
+        .mockReturnValueOnce(['REVIEWER']);
+      const ctx = {
+        getHandler: jest.fn(),
+        getClass: jest.fn(),
+        switchToHttp: () => ({ getRequest: () => ({ user: { roles: [] } }) }),
+      } as unknown as ExecutionContext;
+      expect(guard.canActivate(ctx)).toBe(false);
+    });
+
+    it('allows access if user has any of multiple required roles', () => {
+      reflector.getAllAndOverride
+        .mockReturnValueOnce(false)
+        .mockReturnValueOnce(['ADMIN', 'MODERATOR', 'REVIEWER']);
+      const ctx = {
+        getHandler: jest.fn(),
+        getClass: jest.fn(),
+        switchToHttp: () => ({ getRequest: () => ({ user: { roles: ['REVIEWER'] } }) }),
+      } as unknown as ExecutionContext;
+      expect(guard.canActivate(ctx)).toBe(true);
+    });
+
     it('allows access if user has required role', () => {
       reflector.getAllAndOverride
         .mockReturnValueOnce(false)
@@ -105,6 +141,15 @@ describe('Common Guards', () => {
       reflector.getAllAndOverride.mockReturnValueOnce(true);
       const ctx = { getHandler: jest.fn(), getClass: jest.fn() } as unknown as ExecutionContext;
       expect(guard.canActivate(ctx)).toBe(true);
+    });
+
+    it('delegates to super.canActivate if route is not public', () => {
+      reflector.getAllAndOverride.mockReturnValueOnce(false);
+      const superSpy = jest.spyOn(Object.getPrototypeOf(Object.getPrototypeOf(guard)), 'canActivate')
+        .mockImplementation(() => true);
+      const ctx = { getHandler: jest.fn(), getClass: jest.fn() } as unknown as ExecutionContext;
+      expect(guard.canActivate(ctx)).toBe(true);
+      superSpy.mockRestore();
     });
   });
 });
