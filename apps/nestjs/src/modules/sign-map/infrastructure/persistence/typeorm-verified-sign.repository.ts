@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { VehicleType } from '../../../../common/vehicle-types';
@@ -223,18 +223,36 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
     routeWkt: string,
     corridorWidthMeters: number,
   ): Promise<VerifiedSign[]> {
-    const rows = (await this.queryWithHealing(
-      `${TypeOrmVerifiedSignRepository.SELECT_SIGN}
-       WHERE sign.status = 'ACTIVE'
-         AND ST_DWithin(
-           sign.location::geography,
-           ST_GeomFromText($1, 4326)::geography,
-           $2
-         )`,
-      [routeWkt, corridorWidthMeters],
-    )) as VerifiedSignRow[];
+    try {
+      const rows = (await this.queryWithHealing(
+        `${TypeOrmVerifiedSignRepository.SELECT_SIGN}
+         WHERE sign.status = 'ACTIVE'
+           AND ST_DWithin(
+             sign.location::geography,
+             ST_GeomFromText($1, 4326)::geography,
+             $2
+           )`,
+        [routeWkt, corridorWidthMeters],
+      )) as VerifiedSignRow[];
 
-    return rows.map((row) => this.toDomain(row));
+      return rows.map((row) => this.toDomain(row));
+    } catch (err: any) {
+      if (
+        err instanceof BadRequestException
+      ) {
+        throw err;
+      }
+      const msg = String(err?.message || '');
+      if (
+        msg.includes('parse error') ||
+        msg.includes('geometry') ||
+        msg.includes('coordinates') ||
+        err?.code === 'XX000'
+      ) {
+        throw new BadRequestException(`Invalid route geometry coordinates: ${msg}`);
+      }
+      throw err;
+    }
   }
 
   async findActiveInBounds(

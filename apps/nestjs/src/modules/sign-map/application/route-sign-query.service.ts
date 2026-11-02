@@ -168,8 +168,14 @@ export class RouteSignQueryService {
       throw new BadRequestException('Route geometry must contain at least two distinct points');
     }
 
+    const formatCoord = (val: number): string => {
+      if (val === 0) return '0';
+      const formatted = Number(val.toFixed(8));
+      return Number.isFinite(formatted) ? formatted.toString() : '0';
+    };
+
     return {
-      wkt: `LINESTRING (${points.map((point) => `${point.longitude} ${point.latitude}`).join(', ')})`,
+      wkt: `LINESTRING (${points.map((point) => `${formatCoord(point.longitude)} ${formatCoord(point.latitude)}`).join(', ')})`,
       segments,
       distanceMeters: routeDistanceMeters,
     };
