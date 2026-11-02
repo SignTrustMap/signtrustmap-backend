@@ -87,7 +87,8 @@ export class RouteSignQueryService {
         if (enabledCategoryCodes && enabledCategoryCodes.length > 0) {
           const catCode = sign.signType.category.code?.toUpperCase() ?? '';
           const matches = enabledCategoryCodes.some((c) => {
-            const norm = c.toUpperCase();
+            if (typeof c !== 'string') return false;
+            const norm = c.trim().toUpperCase();
             return (
               norm === catCode ||
               ((norm === 'P' || norm === 'PROHIBITORY' || norm === 'PROHIBITION') &&
