@@ -58,11 +58,17 @@ export class TopUpDto {
   @Max(2147483647)
   packageId: number;
 
-  @ApiPropertyOptional({ description: 'Payment gateway (e.g. MOCK, MOMO)', example: 'MOCK' })
+  @ApiPropertyOptional({ description: 'Payment gateway (e.g. MOCK, MOMO, VIETQR)', example: 'VIETQR' })
   @IsOptional()
   @IsString()
   @MaxLength(50)
   gateway?: string;
+
+  @ApiPropertyOptional({ description: 'Payment method alias (e.g. vietqr, momo, mock)', example: 'vietqr' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  paymentMethod?: string;
 
   @ApiPropertyOptional({ description: 'Unique idempotency key', maxLength: 128 })
   @IsOptional()
@@ -86,11 +92,17 @@ export class CustomTopUpDto {
   @MaxLength(500)
   description?: string;
 
-  @ApiPropertyOptional({ description: 'Payment gateway (e.g. MOCK, MOMO)', example: 'MOCK' })
+  @ApiPropertyOptional({ description: 'Payment gateway (e.g. MOCK, MOMO, VIETQR)', example: 'VIETQR' })
   @IsOptional()
   @IsString()
   @MaxLength(50)
   gateway?: string;
+
+  @ApiPropertyOptional({ description: 'Payment method alias (e.g. vietqr, momo, mock)', example: 'vietqr' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  paymentMethod?: string;
 
   @ApiPropertyOptional({ description: 'Unique idempotency key', maxLength: 128 })
   @IsOptional()

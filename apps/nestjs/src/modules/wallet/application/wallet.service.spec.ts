@@ -559,6 +559,77 @@ describe('WalletService (Phase 1 Ledger & Double-Entry Tests)', () => {
       expect(mockMomoService.createPayment).toHaveBeenCalledWith('user-1', { customAmount: 50 });
       expect(res.payUrl).toBe('https://test-payment.momo.vn/pay');
     });
+
+    it('creates VietQR payment order with standard QR URL and bank info', async () => {
+      packageRepo.findOne.mockResolvedValue({ id: 1, packageName: 'Starter', priceVnd: '50000', creditAmount: 50, isActive: true });
+      walletRepo.findOne.mockResolvedValue({ id: 'w-1', userId: 'user-1', balance: '0' });
+      orderRepo.create.mockReturnValue({
+        id: 'ord-vqr-1',
+        orderCode: 'STM-VQR-TEST',
+        packageId: 1,
+        amountVnd: '50000',
+        gateway: 'VIETQR',
+        status: 'PENDING',
+      });
+      orderRepo.save.mockResolvedValue({
+        id: 'ord-vqr-1',
+        orderCode: 'STM-VQR-TEST',
+        packageId: 1,
+        amountVnd: '50000',
+        gateway: 'VIETQR',
+        status: 'PENDING',
+        createdAt: new Date(),
+      });
+
+      const res: any = await service.topUp('user-1', { packageId: 1, gateway: 'VIETQR' });
+      expect(res.paymentOrder.gateway).toBe('VIETQR');
+      expect(res.qrCodeUrl).toContain('https://img.vietqr.io/image/');
+      expect(res.bankInfo).toBeDefined();
+      expect(res.bankInfo.bankId).toBeDefined();
+      expect(res.bankInfo.transferContent).toBe('STM-VQR-TEST');
+    });
+
+    it('falls back to sandbox order when MoMo gateway fails with BadGatewayException', async () => {
+      packageRepo.findOne.mockResolvedValue({ id: 1, packageName: 'Starter', priceVnd: '50000', creditAmount: 50, isActive: true });
+      walletRepo.findOne.mockResolvedValue({ id: 'w-1', userId: 'user-1', balance: '0' });
+      const mockMomoService = {
+        createPayment: jest.fn().mockRejectedValue(new Error('MoMo gateway timeout')),
+      };
+      orderRepo.create.mockReturnValue({
+        id: 'ord-momo-fb',
+        orderCode: 'STM-MOMO-FB',
+        packageId: 1,
+        amountVnd: '50000',
+        gateway: 'MOMO',
+        status: 'PENDING',
+      });
+      orderRepo.save.mockResolvedValue({
+        id: 'ord-momo-fb',
+        orderCode: 'STM-MOMO-FB',
+        packageId: 1,
+        amountVnd: '50000',
+        gateway: 'MOMO',
+        status: 'PENDING',
+        createdAt: new Date(),
+      });
+
+      const serviceWithFailingMomo = new WalletService(
+        walletRepo,
+        txRepo,
+        packageRepo,
+        orderRepo,
+        methodRepo,
+        dataSource,
+        undefined,
+        mockMomoService as any,
+      );
+
+      const res: any = await serviceWithFailingMomo.topUp('user-1', { packageId: 1, gateway: 'MOMO' });
+      expect(res.paymentOrder.gateway).toBe('MOMO');
+      expect(res.qrCodeUrl).toBeDefined();
+      expect(res.payUrl).toContain('test-payment.momo.vn');
+      expect(res.message).toContain('MoMo sandbox payment session created');
+    });
   });
 });
 

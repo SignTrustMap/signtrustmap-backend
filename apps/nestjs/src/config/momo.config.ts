@@ -27,6 +27,6 @@ export function getMomoConfig(): MomoConfig {
       process.env.MOMO_IPN_URL ||
       'http://localhost:3000/api/v1/payments/momo/ipn',
     requestType: process.env.MOMO_REQUEST_TYPE || 'captureWallet',
-    timeoutMs: Number(process.env.MOMO_TIMEOUT_MS) || 10000,
+    timeoutMs: Number(process.env.MOMO_TIMEOUT_MS) || 4000,
   };
 }
