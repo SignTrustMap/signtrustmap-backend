@@ -33,19 +33,33 @@ echo "  Reports Dir:    $REPORTS_DIR"
 echo "================================================================="
 
 # -----------------------------------------------------------------------------
-# 1. NestJS JWT (optional) + FastAPI internal token (optional)
+# 1. NestJS JWT (authenticated) + FastAPI internal token
 # -----------------------------------------------------------------------------
-TEST_USER_EMAIL="${TEST_USER_EMAIL:-${SCHEMATHESIS_TEST_EMAIL:-}}"
-TEST_USER_PASSWORD="${TEST_USER_PASSWORD:-${SCHEMATHESIS_TEST_PASSWORD:-}}"
+TEST_USER_EMAIL="${TEST_USER_EMAIL:-${SCHEMATHESIS_TEST_EMAIL:-demo@stm.dev}}"
+TEST_USER_PASSWORD="${TEST_USER_PASSWORD:-${SCHEMATHESIS_TEST_PASSWORD:-Demo@123}}"
+INTERNAL_API_TOKEN="${INTERNAL_API_TOKEN:-stm_internal_secret_dev}"
 
 AUTH_HEADER=""
 if [ -n "$TEST_USER_EMAIL" ] && [ -n "$TEST_USER_PASSWORD" ]; then
   echo "Attempting to obtain authentication token from $NESTJS_HOST/api/v1/auth/login..."
-  LOGIN_RESP=$(wget -qO- --header="Content-Type: application/json" \
-    --post-data="{\"email\":\"$TEST_USER_EMAIL\",\"password\":\"$TEST_USER_PASSWORD\"}" \
-    "$NESTJS_HOST/api/v1/auth/login" 2>/dev/null || true)
+  LOGIN_RESP=""
+  for i in 1 2 3; do
+    if command -v curl >/dev/null 2>&1; then
+      LOGIN_RESP=$(curl -s -X POST -H "Content-Type: application/json" \
+        -d "{\"email\":\"$TEST_USER_EMAIL\",\"password\":\"$TEST_USER_PASSWORD\"}" \
+        "$NESTJS_HOST/api/v1/auth/login" 2>/dev/null || true)
+    elif command -v wget >/dev/null 2>&1; then
+      LOGIN_RESP=$(wget -qO- --header="Content-Type: application/json" \
+        --post-data="{\"email\":\"$TEST_USER_EMAIL\",\"password\":\"$TEST_USER_PASSWORD\"}" \
+        "$NESTJS_HOST/api/v1/auth/login" 2>/dev/null || true)
+    fi
+    TOKEN=$(echo "$LOGIN_RESP" | grep -o '"accessToken":"[^"]*' | cut -d'"' -f4 || true)
+    if [ -n "$TOKEN" ]; then
+      break
+    fi
+    sleep 2
+  done
 
-  TOKEN=$(echo "$LOGIN_RESP" | grep -o '"accessToken":"[^"]*' | cut -d'"' -f4 || true)
   if [ -n "$TOKEN" ]; then
     AUTH_HEADER="-H Authorization:Bearer $TOKEN"
     echo "Successfully acquired JWT authentication token."
