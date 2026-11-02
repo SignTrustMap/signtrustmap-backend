@@ -501,7 +501,7 @@ For Heroku deployments, deploy from the repository root. The root npm workspace 
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | GET | `/reviews/queue` | JWT | Paginated queue of `PENDING_REVIEW` candidates, sorted by AL priority descending. Query: `page`, `pageSize` (max 100) |
-| POST | `/reviews/:candidateId/vote` | JWT | Cast a vote. Body: `{ vote: "APPROVE" \| "REJECT" \| "UNSURE", suggestedSignTypeId? }`. One vote per reviewer per candidate (409 on duplicate). Triggers consensus evaluation |
+| POST | `/reviews/:candidateId/vote` | REVIEWER/ADMIN | Cast a vote. Body: `{ vote: "APPROVE" \| "REJECT" \| "UNSURE", suggestedSignTypeId? }`. One vote per reviewer per candidate (409 on duplicate). Triggers consensus evaluation |
 | GET | `/reviews/internal/unscored-candidates` | Internal | List candidates with default AL priority (not yet scored). Query: `limit` (1-200, default 50) |
 | PATCH | `/reviews/internal/:candidateId/active-learning-priority` | Internal | Set AL uncertainty score. Body: `{ priority: 0.0-1.0 }` |
 | POST | `/reviews/internal/active-learning-priorities` | Internal | Bulk set AL priorities. Body: `{ items: [{ candidateId, priority }] }` (max 200 items) |

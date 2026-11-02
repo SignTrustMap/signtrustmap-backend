@@ -90,6 +90,7 @@ export class ReviewsController {
   }
 
   @ApiBearerAuth()
+  @Roles('REVIEWER', 'ADMIN')
   @ApiOperation({ summary: 'Skip candidate sign', description: 'Skip a difficult or ambiguous candidate without voting, temporarily removing it from queue' })
   @Post('candidates/:candidateId/skip')
   async skipCandidate(@CurrentUser() user: any, @Param('candidateId', ParseUUIDPipe) candidateId: string) {
@@ -97,6 +98,7 @@ export class ReviewsController {
   }
 
   @ApiBearerAuth()
+  @Roles('REVIEWER', 'ADMIN')
   @ApiOperation({ summary: 'Mark sign as unidentifiable', description: 'Skip candidate and mark as cannot identify when sign is obscured or ambiguous' })
   @Post('candidates/:candidateId/can-not-identify')
   async canNotIdentify(@CurrentUser() user: any, @Param('candidateId', ParseUUIDPipe) candidateId: string, @Body() body?: CanNotIdentifyDto) {
@@ -176,6 +178,7 @@ export class ReviewsController {
   }
 
   @ApiBearerAuth()
+  @Roles('REVIEWER', 'ADMIN')
   @ApiOperation({ summary: 'Undo vote on candidate', description: 'Retract a previously cast vote on an unresolved candidate sign' })
   @Delete(':candidateId/vote')
   async undoVote(@CurrentUser() user: any, @Param('candidateId', ParseUUIDPipe) candidateId: string) {
@@ -249,6 +252,7 @@ export class ReviewsController {
   }
 
   @ApiBearerAuth()
+  @Roles('REVIEWER', 'ADMIN')
   @ApiOperation({ summary: 'Cast vote on candidate sign', description: 'Submit confirmation or correction vote for a traffic sign candidate' })
   @Post(':candidateId/vote')
   async vote(@CurrentUser() user: any, @Param('candidateId', ParseUUIDPipe) candidateId: string, @Body() dto: VoteDto) {

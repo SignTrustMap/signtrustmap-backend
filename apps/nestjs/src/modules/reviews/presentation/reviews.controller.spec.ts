@@ -1,5 +1,6 @@
 import { ReviewsController } from './reviews.controller';
 import { ReviewsService } from '../application/reviews.service';
+import { ROLES_KEY } from '../../../common/decorators/roles.decorator';
 
 describe('ReviewsController', () => {
   let controller: ReviewsController;
@@ -146,6 +147,25 @@ describe('ReviewsController', () => {
     const res = await controller.setBulkPriorities({ items: [{ candidateId: 'c1', priority: 0.9 }] });
     expect(res).toEqual({ updated: 2 });
     expect(service.setBulkActiveLearningPriorities).toHaveBeenCalledWith([{ candidateId: 'c1', priority: 0.9 }]);
+  });
+
+  it('enforces REVIEWER and ADMIN roles for voting and review triage actions', () => {
+    expect(Reflect.getMetadata(ROLES_KEY, ReviewsController.prototype.vote)).toEqual([
+      'REVIEWER',
+      'ADMIN',
+    ]);
+    expect(Reflect.getMetadata(ROLES_KEY, ReviewsController.prototype.undoVote)).toEqual([
+      'REVIEWER',
+      'ADMIN',
+    ]);
+    expect(Reflect.getMetadata(ROLES_KEY, ReviewsController.prototype.skipCandidate)).toEqual([
+      'REVIEWER',
+      'ADMIN',
+    ]);
+    expect(Reflect.getMetadata(ROLES_KEY, ReviewsController.prototype.canNotIdentify)).toEqual([
+      'REVIEWER',
+      'ADMIN',
+    ]);
   });
 
   it('vote calls service.vote with vote DTO', async () => {
