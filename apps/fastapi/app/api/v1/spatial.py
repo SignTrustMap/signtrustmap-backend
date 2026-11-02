@@ -164,7 +164,18 @@ def _sign_by_id_query(sign_id: UUID):
         "Unknown query parameters are ignored."
     ),
     tags=["Spatial GIS"],
+    operation_id="query_spatial_signs",
     responses={
+        200: {
+            "description": "GeoJSON FeatureCollection of verified signs within bounding box",
+            "links": {
+                "GetSignDetail": {
+                    "operationId": "get_sign_detail",
+                    "parameters": {"sign_id": "$response.body#/features/0/properties/id"},
+                    "description": "The `id` property from any feature in the collection can be used as `sign_id`.",
+                }
+            },
+        },
         422: {"description": "Validation error (range, type, or zero-area / inverted bbox)"},
     },
 )
@@ -254,6 +265,7 @@ async def get_signs_in_viewport(
 @router.get(
     "/signs/{sign_id}",
     response_model=SignDetailResponse,
+    operation_id="get_sign_detail",
     summary="Get full details of a single verified sign",
     description=(
         "Returns all sign fields plus joined traffic_sign_type metadata "
