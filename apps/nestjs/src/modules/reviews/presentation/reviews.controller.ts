@@ -15,6 +15,7 @@ import {
   SetBulkActiveLearningPrioritiesDto,
   ReviewQueueQueryDto,
   CanNotIdentifyDto,
+  ReviewerCandidatesQueryDto,
 } from './dto/vote.dto';
 import { InternalTokenGuard } from '../../../common/guards/internal-token.guard';
 
@@ -73,6 +74,54 @@ export class ReviewsController {
   @Get('stats')
   async stats(@CurrentUser() user: any) {
     return this.reviewsService.getMyStats(user.id);
+  }
+
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Get reviewed candidates history for reviewer',
+    description:
+      'Paginated list of candidates reviewed by the reviewer, filterable and sortable by 4 status tags: all, unprocessed (Chưa xử lý), in_review (Đang xem xét), reviewed (Đã giải quyết)',
+  })
+  @Get('candidates')
+  async getReviewedCandidates(
+    @CurrentUser() user: any,
+    @Query() query?: ReviewerCandidatesQueryDto,
+  ) {
+    const targetReviewerId =
+      (user?.role === 'ADMIN' || user?.role === 'STAFF') && query?.reviewerId
+        ? query.reviewerId
+        : user?.id;
+
+    const p = query?.page ? parseInt(String(query.page), 10) : 1;
+    const ps = query?.pageSize ? parseInt(String(query.pageSize), 10) : 20;
+    const status = query?.status || query?.tag;
+    const sortBy = query?.sortBy || 'reviewedAt';
+    const sortOrder = (query?.sortOrder?.toUpperCase() === 'ASC' ? 'ASC' : 'DESC') as 'ASC' | 'DESC';
+
+    return this.reviewsService.getReviewedCandidates(
+      targetReviewerId,
+      Number.isNaN(p) ? 1 : p,
+      Number.isNaN(ps) ? 20 : ps,
+      status,
+      query?.search,
+      query?.surveyorId,
+      sortBy,
+      sortOrder,
+    );
+  }
+
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Get my reviewed candidates history',
+    description:
+      'Paginated list of candidates reviewed by current reviewer, filterable and sortable by 4 status tags: all, unprocessed (Chưa xử lý), in_review (Đang xem xét), reviewed (Đã giải quyết)',
+  })
+  @Get('me/candidates')
+  async getMyReviewedCandidates(
+    @CurrentUser() user: any,
+    @Query() query?: ReviewerCandidatesQueryDto,
+  ) {
+    return this.getReviewedCandidates(user, query);
   }
 
   @ApiBearerAuth()
