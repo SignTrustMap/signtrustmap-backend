@@ -7,6 +7,7 @@ GET /spatial/signs/{sign_id}  -> Full sign detail (joined with traffic_sign_type
 from __future__ import annotations
 
 import logging
+import math
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -36,12 +37,30 @@ def _validate_bbox_area(
     max_lat: float,
     max_lon: float,
 ) -> None:
-    """Reject zero-area / inverted bounding boxes before PostGIS is invoked.
+    """Reject non-finite / zero-area / inverted bounding boxes before PostGIS is invoked.
 
-    Coordinates of 0.0 are geographically valid; a box with min == max is not.
+    Coordinates of 0.0 are geographically valid; NaN/Inf or a box with min >= max is not.
     Matches NestJS verified-sign behaviour and BoundingBoxParams.
     """
     errors: list[dict] = []
+    for val, name in [
+        (min_lat, "min_lat"),
+        (min_lon, "min_lon"),
+        (max_lat, "max_lat"),
+        (max_lon, "max_lon"),
+    ]:
+        if not math.isfinite(val):
+            errors.append(
+                {
+                    "type": "value_error",
+                    "loc": ("query", name),
+                    "msg": f"{name} must be a finite floating-point number",
+                    "input": val,
+                }
+            )
+    if errors:
+        raise RequestValidationError(errors)
+
     if min_lat >= max_lat:
         errors.append(
             {
