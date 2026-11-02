@@ -143,11 +143,10 @@ export class ConsensusService {
       outcome = ConsensusOutcome.ESCALATED;
       winningVote = score >= 0 ? 1 : -1;
     } else {
-        if (candidate.status === CandidateStatus.PENDING_REVIEW) {
-          await this.candidateRepo.update(candidateId, { status: CandidateStatus.IN_CONSENSUS });
-        }
-        return null;
+      if (candidate.status === CandidateStatus.PENDING_REVIEW) {
+        await this.candidateRepo.update(candidateId, { status: CandidateStatus.IN_CONSENSUS });
       }
+      return null;
     }
 
     return this.executeOutcome(candidate, config, score, outcome, winningVote, voterDetails);
