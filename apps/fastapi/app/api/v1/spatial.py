@@ -215,8 +215,15 @@ async def get_signs_in_viewport(
     # Contract: positive-area bbox (same rule as BoundingBoxParams / NestJS).
     _validate_bbox_area(min_lat, min_lon, max_lat, max_lon)
     stmt = _signs_in_bbox_query(min_lon, min_lat, max_lon, max_lat, sign_type_id, category_id)
-    result = await db.execute(stmt)
-    rows = result.mappings().all()
+    try:
+        result = await db.execute(stmt)
+        rows = result.mappings().all()
+    except Exception as exc:
+        logger.error("Spatial signs query failed: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Database error occurred while processing spatial signs query",
+        ) from exc
     features: list[GeoJSONFeature] = [
         GeoJSONFeature(
             geometry={
@@ -266,8 +273,15 @@ async def get_sign_detail(
     db: AsyncSession = Depends(get_db),
 ) -> SignDetailResponse:
     stmt = _sign_by_id_query(sign_id)
-    result = await db.execute(stmt)
-    row = result.mappings().first()
+    try:
+        result = await db.execute(stmt)
+        row = result.mappings().first()
+    except Exception as exc:
+        logger.error("Spatial sign detail query failed for %s: %s", sign_id, exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Database error occurred while retrieving sign detail",
+        ) from exc
     if row is None:
         raise HTTPException(status_code=404, detail=f"Sign {sign_id} not found")
     return SignDetailResponse(
