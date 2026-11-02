@@ -146,3 +146,83 @@ export class CanNotIdentifyDto {
   note?: string;
 }
 
+export class ReviewerCandidatesQueryDto {
+  @ApiPropertyOptional({ required: false, default: 1, description: 'Page number (1-based)' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number = 1;
+
+  @ApiPropertyOptional({ required: false, default: 20, description: 'Page size (1-100)' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  pageSize?: number = 20;
+
+  @ApiPropertyOptional({
+    required: false,
+    default: 'ALL',
+    enum: ['ALL', 'PENDING_REVIEW', 'IN_CONSENSUS', 'RESOLVED'],
+    description:
+      'Filter by consensus lifecycle status: ALL, PENDING_REVIEW (Chưa xử lý), IN_CONSENSUS (Đang xem xét), RESOLVED (Đã giải quyết). Also accepts aliases: unprocessed, in_review, reviewed and Vietnamese labels.',
+  })
+  @IsOptional()
+  @IsString()
+  status?: string;
+
+  @ApiPropertyOptional({
+    required: false,
+    description: 'Alias for status',
+  })
+  @IsOptional()
+  @IsString()
+  tag?: string;
+
+  @ApiPropertyOptional({
+    required: false,
+    default: 'reviewedAt',
+    description: 'Field to sort by: reviewedAt, createdAt, confidence, status',
+  })
+  @IsOptional()
+  @IsString()
+  sortBy?: string = 'reviewedAt';
+
+  @ApiPropertyOptional({
+    required: false,
+    default: 'DESC',
+    enum: ['ASC', 'DESC', 'asc', 'desc'],
+    description: 'Sort order: ASC or DESC',
+  })
+  @IsOptional()
+  @IsString()
+  sortOrder?: 'ASC' | 'DESC' | 'asc' | 'desc' = 'DESC';
+
+  @ApiPropertyOptional({
+    required: false,
+    description: 'Search by sign name (Vi/En) or standard code',
+  })
+  @IsOptional()
+  @IsString()
+  search?: string;
+
+  @ApiPropertyOptional({
+    required: false,
+    description: 'Filter by surveyor ID',
+  })
+  @IsOptional()
+  @IsString()
+  surveyorId?: string;
+
+  @ApiPropertyOptional({
+    required: false,
+    description: 'Filter by specific reviewer ID (Admin/Staff only, defaults to current reviewer)',
+  })
+  @IsOptional()
+  @IsString()
+  reviewerId?: string;
+}
+
+
