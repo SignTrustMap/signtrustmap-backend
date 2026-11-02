@@ -87,6 +87,49 @@ export class SelectSignRemedyDto {
   reason?: string;
 }
 
+export class TestReviewDto {
+  @ApiProperty({ description: 'Candidate UUID', example: '123e4567-e89b-12d3-a456-426614174000' })
+  @IsString()
+  candidateId: string;
+
+  @ApiPropertyOptional({ description: 'Optional Reviewer UUID (defaults to current authenticated user)' })
+  @IsOptional()
+  @IsString()
+  reviewerId?: string;
+
+  @ApiProperty({ description: 'Vote value: 1 for approve, -1 for reject', example: 1 })
+  @IsIn([1, -1], { message: 'vote must be 1 (approve) or -1 (reject)' })
+  vote: number;
+
+  @ApiPropertyOptional({ description: 'Suggested Sign Type ID' })
+  @IsOptional()
+  @IsInt({ message: 'suggestedSignTypeId must be an integer' })
+  suggestedSignTypeId?: number;
+
+  @ApiPropertyOptional({ description: 'Decline reason' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  declineReason?: string;
+
+  @ApiPropertyOptional({ description: 'Decline note' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  declineNote?: string;
+}
+
+export class TestAssignDto {
+  @ApiPropertyOptional({ description: 'Reviewer UUID (defaults to current authenticated user)' })
+  @IsOptional()
+  @IsString()
+  reviewerId?: string;
+
+  @ApiPropertyOptional({ description: 'Optional list of Candidate UUIDs to assign', type: [String] })
+  @IsOptional()
+  candidateIds?: string[];
+}
+
 export class SetActiveLearningPriorityDto {
   @ApiProperty({ description: 'Active learning priority score (0.0 to 1.0)', example: 0.85 })
   @Type(() => Number)

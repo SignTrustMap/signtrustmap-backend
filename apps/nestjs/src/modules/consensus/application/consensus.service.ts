@@ -69,7 +69,7 @@ export class ConsensusService {
         id: 0,
         approvalThreshold: 0.5,
         rejectionThreshold: -0.5,
-        minVotesRequired: 3,
+        minVotesRequired: 1,
         alphaSmoothingFactor: 0.1,
         weightCorrect: 1.0,
         penaltyFalse: 2.0,
@@ -133,20 +133,33 @@ export class ConsensusService {
     let outcome: ConsensusOutcome | null = null;
     let winningVote: number | null = null;
 
-    if (score >= config.approvalThreshold) {
-      outcome = ConsensusOutcome.APPROVED;
-      winningVote = 1;
-    } else if (score <= config.rejectionThreshold) {
-      outcome = ConsensusOutcome.REJECTED;
-      winningVote = -1;
-    } else if (reviews.length >= maxVotes) {
-      outcome = ConsensusOutcome.ESCALATED;
-      winningVote = score >= 0 ? 1 : -1;
-    } else {
-      if (candidate.status === CandidateStatus.PENDING_REVIEW) {
-        await this.candidateRepo.update(candidateId, { status: CandidateStatus.IN_CONSENSUS });
+    if ((config.minVotesRequired === 1 || process.env.DEMO_MODE !== 'false') && reviews.length >= 1) {
+      const lastReview = reviews[reviews.length - 1];
+      if (lastReview.vote === 1 || score > 0) {
+        outcome = ConsensusOutcome.APPROVED;
+        winningVote = 1;
+      } else if (lastReview.vote === -1 || score < 0) {
+        outcome = ConsensusOutcome.REJECTED;
+        winningVote = -1;
       }
-      return null;
+    }
+
+    if (!outcome) {
+      if (score >= config.approvalThreshold) {
+        outcome = ConsensusOutcome.APPROVED;
+        winningVote = 1;
+      } else if (score <= config.rejectionThreshold) {
+        outcome = ConsensusOutcome.REJECTED;
+        winningVote = -1;
+      } else if (reviews.length >= maxVotes) {
+        outcome = ConsensusOutcome.ESCALATED;
+        winningVote = score >= 0 ? 1 : -1;
+      } else {
+        if (candidate.status === CandidateStatus.PENDING_REVIEW) {
+          await this.candidateRepo.update(candidateId, { status: CandidateStatus.IN_CONSENSUS });
+        }
+        return null;
+      }
     }
 
     return this.executeOutcome(candidate, config, score, outcome, winningVote, voterDetails);

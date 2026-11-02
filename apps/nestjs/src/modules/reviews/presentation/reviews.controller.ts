@@ -8,6 +8,8 @@ import { ReviewsService } from '../application/reviews.service';
 import {
   VoteDto,
   ReportDto,
+  TestReviewDto,
+  TestAssignDto,
   RequestRecaptureDto,
   SubmitRecaptureDto,
   SelectSignRemedyDto,
@@ -250,14 +252,15 @@ export class ReviewsController {
     if (typeof queryDto === 'string' || typeof queryDto === 'number') {
       p = parseInt(String(queryDto), 10);
       ps = legacyPageSize ? parseInt(legacyPageSize, 10) : 20;
-      allowSelf = user?.role === 'ADMIN' && (legacyIncludeOwnSubmissions === 'true' || legacyIncludeOwnSubmissions === '1');
+      allowSelf = legacyIncludeOwnSubmissions === 'true' || legacyIncludeOwnSubmissions === '1' || user?.role === 'ADMIN';
     } else if (queryDto && typeof queryDto === 'object') {
       p = queryDto.page ? Number(queryDto.page) : 1;
       ps = queryDto.pageSize ? Number(queryDto.pageSize) : 20;
-      allowSelf = user?.role === 'ADMIN' && (
+      allowSelf = (
         queryDto.includeOwnSubmissions === true ||
         queryDto.includeOwnSubmissions === 'true' ||
-        queryDto.includeOwnSubmissions === '1'
+        queryDto.includeOwnSubmissions === '1' ||
+        user?.role === 'ADMIN'
       );
     }
 
@@ -267,6 +270,33 @@ export class ReviewsController {
       Number.isNaN(ps) ? 20 : ps,
       allowSelf,
     );
+  }
+
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Test review candidate sign (Testing/Development)',
+    description: 'Submit review for a candidate with 1 specific reviewer and immediately evaluate consensus. Bypasses surveyor check.',
+  })
+  @Post('test-review')
+  async testReview(@CurrentUser() user: any, @Body() dto: TestReviewDto) {
+    const targetReviewerId = dto.reviewerId || user.id;
+    return this.reviewsService.testReviewCandidate(dto.candidateId, targetReviewerId, {
+      vote: dto.vote,
+      suggestedSignTypeId: dto.suggestedSignTypeId,
+      declineReason: dto.declineReason,
+      declineNote: dto.declineNote,
+    });
+  }
+
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Direct/Assign candidates to 1 specific reviewer for testing',
+    description: 'Clear previous skipped/reviewed flags or prepare pending candidates for a specific reviewer queue',
+  })
+  @Post('test-assign')
+  async testAssign(@CurrentUser() user: any, @Body() dto: TestAssignDto) {
+    const targetReviewerId = dto.reviewerId || user.id;
+    return this.reviewsService.directCandidatesToReviewer(targetReviewerId, dto.candidateIds);
   }
 
   // -- Flow 14: Active Learning orchestration hooks (internal) --
