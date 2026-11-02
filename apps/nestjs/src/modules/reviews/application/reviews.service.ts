@@ -744,12 +744,291 @@ export class ReviewsService {
     if (status === 'approved') qb.andWhere('r.vote = 1');
     else if (status === 'rejected') qb.andWhere('r.vote = -1');
     else if (status === 'unsure') qb.andWhere('r.vote = 0');
+    else if (status === 'unprocessed' || status === 'Chưa xử lý') qb.andWhere('c.status = :cs', { cs: CandidateStatus.PENDING_REVIEW });
+    else if (status === 'in_review' || status === 'Đang xem xét' || status === 'in_consensus') qb.andWhere('c.status = :cs', { cs: CandidateStatus.IN_CONSENSUS });
+    else if (status === 'reviewed' || status === 'Đã giải quyết') qb.andWhere('c.status IN (:...cs)', { cs: [CandidateStatus.VERIFIED, CandidateStatus.REJECTED, CandidateStatus.ESCALATED_MODERATION] });
     if (surveyorId) qb.andWhere('sub.surveyorId = :surveyorId', { surveyorId });
     if (search) {
       qb.andWhere('(pst.nameEn ILIKE :s OR pst.nameVi ILIKE :s OR pst.signCode ILIKE :s)', { s: `%${search}%` });
     }
     const [items, total] = await qb.getManyAndCount();
     return { items, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
+  }
+
+  normalizeStatusTag(raw?: string): 'ALL' | 'PENDING_REVIEW' | 'IN_CONSENSUS' | 'RESOLVED' {
+    if (!raw) return 'ALL';
+    const s = raw
+      .trim()
+      .toLowerCase()
+      .replace(/đ/g, 'd')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]/g, '_')
+      .replace(/_+/g, '_')
+      .replace(/^_+|_+$/g, '');
+
+    if (['all', 'tat_ca', 'tat_ca_trang_thai'].includes(s)) {
+      return 'ALL';
+    }
+    if (['unprocessed', 'chua_xu_ly', 'pending', 'pending_review'].includes(s)) {
+      return 'PENDING_REVIEW';
+    }
+    if (['in_review', 'in_consensus', 'under_review', 'dang_xem_xet'].includes(s)) {
+      return 'IN_CONSENSUS';
+    }
+    if (['reviewed', 'da_giai_quyet', 'resolved', 'verified', 'rejected', 'consensus_reached'].includes(s)) {
+      return 'RESOLVED';
+    }
+    return 'ALL';
+  }
+
+  getCandidateStatusTag(status: CandidateStatus | string): 'PENDING_REVIEW' | 'IN_CONSENSUS' | 'RESOLVED' {
+    if (status === CandidateStatus.IN_CONSENSUS) {
+      return 'IN_CONSENSUS';
+    }
+    if (
+      status === CandidateStatus.VERIFIED ||
+      status === CandidateStatus.REJECTED ||
+      status === CandidateStatus.ESCALATED_MODERATION
+    ) {
+      return 'RESOLVED';
+    }
+    return 'PENDING_REVIEW';
+  }
+
+  getCandidateStatusTagVi(tag: 'PENDING_REVIEW' | 'IN_CONSENSUS' | 'RESOLVED' | string): string {
+    switch (tag) {
+      case 'PENDING_REVIEW':
+      case 'unprocessed':
+        return 'Chưa xử lý';
+      case 'IN_CONSENSUS':
+      case 'in_review':
+        return 'Đang xem xét';
+      case 'RESOLVED':
+      case 'reviewed':
+        return 'Đã giải quyết';
+      default:
+        return 'Tất cả trạng thái';
+    }
+  }
+
+  async getReviewedCandidates(
+    reviewerId: string,
+    page = 1,
+    pageSize = 20,
+    status?: string,
+    search?: string,
+    surveyorId?: string,
+    sortBy = 'reviewedAt',
+    sortOrder: 'ASC' | 'DESC' = 'DESC',
+  ) {
+    if (!reviewerId) {
+      throw new BadRequestException('reviewerId is required');
+    }
+
+    const safePage = Math.max(1, page);
+    const safeSize = Math.min(Math.max(1, pageSize), 100);
+    const normStatus = this.normalizeStatusTag(status);
+
+    // 1. Compute category counts for the 4 status tags
+    let counts = {
+      ALL: 0,
+      PENDING_REVIEW: 0,
+      IN_CONSENSUS: 0,
+      RESOLVED: 0,
+      all: 0,
+      unprocessed: 0,
+      inReview: 0,
+      reviewed: 0,
+    };
+
+    try {
+      const countQb = this.reviewRepo.createQueryBuilder('r')
+        .innerJoin('r.candidate', 'c')
+        .leftJoin('c.predictedSignType', 'pst')
+        .leftJoin('c.submission', 'sub')
+        .where('r.reviewerId = :reviewerId', { reviewerId });
+
+      if (surveyorId) {
+        countQb.andWhere('sub.surveyorId = :surveyorId', { surveyorId });
+      }
+      if (search) {
+        countQb.andWhere('(pst.nameEn ILIKE :s OR pst.nameVi ILIKE :s OR pst.signCode ILIKE :s)', { s: `%${search}%` });
+      }
+
+      if (typeof countQb.select === 'function' && typeof countQb.getRawOne === 'function') {
+        const countResult: any = await countQb
+          .select([
+            'COUNT(*)::int AS "all"',
+            `COUNT(CASE WHEN c.status = '${CandidateStatus.PENDING_REVIEW}' THEN 1 END)::int AS "pendingReview"`,
+            `COUNT(CASE WHEN c.status = '${CandidateStatus.IN_CONSENSUS}' THEN 1 END)::int AS "inConsensus"`,
+            `COUNT(CASE WHEN c.status IN ('${CandidateStatus.VERIFIED}', '${CandidateStatus.REJECTED}', '${CandidateStatus.ESCALATED_MODERATION}') THEN 1 END)::int AS "resolved"`,
+          ])
+          .getRawOne();
+
+        if (countResult) {
+          const totalAll = Number(countResult.all) || 0;
+          const pendingReview = Number(countResult.pendingReview) || 0;
+          const inConsensus = Number(countResult.inConsensus) || 0;
+          const resolved = Number(countResult.resolved) || 0;
+
+          counts = {
+            ALL: totalAll,
+            PENDING_REVIEW: pendingReview,
+            IN_CONSENSUS: inConsensus,
+            RESOLVED: resolved,
+            all: totalAll,
+            unprocessed: pendingReview,
+            inReview: inConsensus,
+            reviewed: resolved,
+          };
+        }
+      }
+    } catch (countErr: any) {
+      this.logger.warn(`Failed computing reviewed candidate tag counts: ${countErr?.message}`);
+    }
+
+    // 2. Build the main query for the requested page
+    const qb = this.reviewRepo.createQueryBuilder('r')
+      .innerJoinAndSelect('r.candidate', 'c')
+      .leftJoinAndSelect('c.predictedSignType', 'pst')
+      .leftJoinAndSelect('c.submission', 'sub')
+      .leftJoinAndSelect('r.suggestedSignType', 'sst')
+      .where('r.reviewerId = :reviewerId', { reviewerId });
+
+    if (normStatus === 'PENDING_REVIEW') {
+      qb.andWhere('c.status = :cStatus', { cStatus: CandidateStatus.PENDING_REVIEW });
+    } else if (normStatus === 'IN_CONSENSUS') {
+      qb.andWhere('c.status = :cStatus', { cStatus: CandidateStatus.IN_CONSENSUS });
+    } else if (normStatus === 'RESOLVED') {
+      qb.andWhere('c.status IN (:...resolvedStatuses)', {
+        resolvedStatuses: [
+          CandidateStatus.VERIFIED,
+          CandidateStatus.REJECTED,
+          CandidateStatus.ESCALATED_MODERATION,
+        ],
+      });
+    }
+
+    if (surveyorId) {
+      qb.andWhere('sub.surveyorId = :surveyorId', { surveyorId });
+    }
+    if (search) {
+      qb.andWhere('(pst.nameEn ILIKE :s OR pst.nameVi ILIKE :s OR pst.signCode ILIKE :s)', { s: `%${search}%` });
+    }
+
+    const safeOrder = String(sortOrder).toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+    if (sortBy === 'createdAt') {
+      qb.orderBy('c.createdAt', safeOrder);
+    } else if (sortBy === 'confidence' || sortBy === 'confidenceScore') {
+      qb.orderBy('c.confidenceScore', safeOrder);
+    } else if (sortBy === 'status') {
+      qb.orderBy(
+        `CASE 
+          WHEN c.status = '${CandidateStatus.PENDING_REVIEW}' THEN 1 
+          WHEN c.status = '${CandidateStatus.IN_CONSENSUS}' THEN 2 
+          WHEN c.status IN ('${CandidateStatus.VERIFIED}', '${CandidateStatus.REJECTED}', '${CandidateStatus.ESCALATED_MODERATION}') THEN 3 
+          ELSE 4 END`,
+        safeOrder,
+      );
+    } else {
+      qb.orderBy('r.reviewedAt', safeOrder);
+    }
+
+    qb.skip((safePage - 1) * safeSize).take(safeSize);
+
+    let reviews: CandidateReview[] = [];
+    let total = 0;
+    try {
+      [reviews, total] = await qb.getManyAndCount();
+    } catch (err: any) {
+      this.logger.error(`getReviewedCandidates query failed: ${err?.message}`);
+      return {
+        items: [],
+        total: 0,
+        page: safePage,
+        pageSize: safeSize,
+        totalPages: 0,
+        counts,
+        categories: [
+          { id: 'ALL', label: 'Tất cả trạng thái', count: counts.ALL },
+          { id: 'PENDING_REVIEW', label: 'Chưa xử lý', count: counts.PENDING_REVIEW },
+          { id: 'IN_CONSENSUS', label: 'Đang xem xét', count: counts.IN_CONSENSUS },
+          { id: 'RESOLVED', label: 'Đã giải quyết', count: counts.RESOLVED },
+        ],
+      };
+    }
+
+    if (counts.ALL === 0 && total > 0) {
+      counts.ALL = total;
+      counts.all = total;
+    }
+
+    // 3. Map to candidate-centric items enriched with review data
+    const items = await Promise.all(
+      reviews.map(async (review) => {
+        const candidate = review.candidate || ({} as any);
+        const statusTag = this.getCandidateStatusTag(candidate.status);
+        const statusTagVi = this.getCandidateStatusTagVi(statusTag);
+
+        let possibleSigns = candidate.possibleSigns ?? candidate.top5 ?? candidate.remedySigns;
+        if (!possibleSigns && typeof (this as any).resolveTopPossibleSigns === 'function') {
+          try {
+            possibleSigns = await (this as any).resolveTopPossibleSigns(candidate, { allowNetwork: false });
+          } catch {}
+        }
+
+        return {
+          id: candidate.id,
+          submissionId: candidate.submissionId,
+          predictedSignTypeId: candidate.predictedSignTypeId,
+          confidenceScore: candidate.confidenceScore,
+          bestFrameUrl: candidate.bestFrameUrl,
+          signCropUrl: candidate.signCropUrl,
+          spatialConfidence: candidate.spatialConfidence,
+          activeLearningPriority: candidate.activeLearningPriority,
+          status: candidate.status,
+          lifecycleStatus: candidate.status,
+          statusTag,
+          statusTagVi,
+          createdAt: candidate.createdAt,
+          predictedSignType: candidate.predictedSignType,
+          submission: candidate.submission,
+          possibleSigns: possibleSigns ?? [],
+          top5: possibleSigns ?? [],
+          remedySigns: possibleSigns ?? [],
+          review: {
+            id: review.id,
+            vote: review.vote,
+            suggestedSignTypeId: review.suggestedSignTypeId,
+            suggestedSignType: review.suggestedSignType,
+            declineReason: review.declineReason,
+            declineNote: review.declineNote,
+            reviewedAt: review.reviewedAt,
+          },
+          myVote: review.vote,
+          reviewedAt: review.reviewedAt,
+          candidate,
+        };
+      }),
+    );
+
+    const categories = [
+      { id: 'ALL', label: 'Tất cả trạng thái', count: counts.ALL },
+      { id: 'PENDING_REVIEW', label: 'Chưa xử lý', count: counts.PENDING_REVIEW },
+      { id: 'IN_CONSENSUS', label: 'Đang xem xét', count: counts.IN_CONSENSUS },
+      { id: 'RESOLVED', label: 'Đã giải quyết', count: counts.RESOLVED },
+    ];
+
+    return {
+      items,
+      total,
+      page: safePage,
+      pageSize: safeSize,
+      totalPages: Math.ceil(total / safeSize),
+      counts,
+      categories,
+    };
   }
 
   async getMyStats(reviewerId: string) {

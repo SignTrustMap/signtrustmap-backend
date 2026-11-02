@@ -1185,4 +1185,144 @@ describe('ReviewsService', () => {
       expect(item.possibleSigns[0].signCode).toBe('P.102');
     });
   });
+
+  describe('ReviewsService getReviewedCandidates', () => {
+    it('normalizes status tags correctly to match candidate lifecycle status', () => {
+      const service = new ReviewsService({} as any, {} as any, {} as any, {} as any);
+
+      expect(service.normalizeStatusTag('all')).toBe('ALL');
+      expect(service.normalizeStatusTag('Tất cả trạng thái')).toBe('ALL');
+      expect(service.normalizeStatusTag('Chưa xử lý')).toBe('PENDING_REVIEW');
+      expect(service.normalizeStatusTag('unprocessed')).toBe('PENDING_REVIEW');
+      expect(service.normalizeStatusTag('pending_review')).toBe('PENDING_REVIEW');
+      expect(service.normalizeStatusTag('PENDING_REVIEW')).toBe('PENDING_REVIEW');
+
+      expect(service.normalizeStatusTag('Đang xem xét')).toBe('IN_CONSENSUS');
+      expect(service.normalizeStatusTag('in_review')).toBe('IN_CONSENSUS');
+      expect(service.normalizeStatusTag('in-review')).toBe('IN_CONSENSUS');
+      expect(service.normalizeStatusTag('in_consensus')).toBe('IN_CONSENSUS');
+      expect(service.normalizeStatusTag('IN_CONSENSUS')).toBe('IN_CONSENSUS');
+
+      expect(service.normalizeStatusTag('Đã giải quyết')).toBe('RESOLVED');
+      expect(service.normalizeStatusTag('reviewed')).toBe('RESOLVED');
+      expect(service.normalizeStatusTag('resolved')).toBe('RESOLVED');
+      expect(service.normalizeStatusTag('verified')).toBe('RESOLVED');
+      expect(service.normalizeStatusTag('RESOLVED')).toBe('RESOLVED');
+    });
+
+    it('maps candidate status to lifecycle status tags and Vietnamese display labels', () => {
+      const service = new ReviewsService({} as any, {} as any, {} as any, {} as any);
+
+      expect(service.getCandidateStatusTag(CandidateStatus.PENDING_REVIEW)).toBe('PENDING_REVIEW');
+      expect(service.getCandidateStatusTagVi('PENDING_REVIEW')).toBe('Chưa xử lý');
+
+      expect(service.getCandidateStatusTag(CandidateStatus.IN_CONSENSUS)).toBe('IN_CONSENSUS');
+      expect(service.getCandidateStatusTagVi('IN_CONSENSUS')).toBe('Đang xem xét');
+
+      expect(service.getCandidateStatusTag(CandidateStatus.VERIFIED)).toBe('RESOLVED');
+      expect(service.getCandidateStatusTag(CandidateStatus.REJECTED)).toBe('RESOLVED');
+      expect(service.getCandidateStatusTagVi('RESOLVED')).toBe('Đã giải quyết');
+    });
+
+    it('throws BadRequestException if reviewerId is missing', async () => {
+      const service = new ReviewsService({} as any, {} as any, {} as any, {} as any);
+      await expect(service.getReviewedCandidates('')).rejects.toThrow(BadRequestException);
+    });
+
+    it('queries candidate reviews and returns candidates formatted with matching lifecycle status, counts, and categories', async () => {
+      const mockCandidate = {
+        id: 'cand-100',
+        submissionId: 'sub-1',
+        predictedSignTypeId: 102,
+        confidenceScore: 0.95,
+        bestFrameUrl: 'frame.jpg',
+        signCropUrl: 'crop.jpg',
+        spatialConfidence: 'HIGH',
+        activeLearningPriority: 0,
+        status: CandidateStatus.IN_CONSENSUS,
+        createdAt: new Date('2026-11-01T10:00:00Z'),
+        predictedSignType: { id: 102, signCode: 'P.102', nameVi: 'Cấm đi ngược chiều', nameEn: 'No entry' },
+        submission: { id: 'sub-1', surveyorId: 'surv-1' },
+      };
+
+      const mockReview = {
+        id: 'rev-rec-1',
+        candidateId: 'cand-100',
+        reviewerId: 'reviewer-1',
+        vote: 1,
+        suggestedSignTypeId: null,
+        suggestedSignType: null,
+        declineReason: null,
+        declineNote: null,
+        reviewedAt: new Date('2026-11-01T12:00:00Z'),
+        candidate: mockCandidate,
+      };
+
+      const mainQb: any = {
+        innerJoinAndSelect: jest.fn().mockReturnThis(),
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[mockReview], 1]),
+      };
+
+      const countQb: any = {
+        innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        getRawOne: jest.fn().mockResolvedValue({
+          all: '1',
+          pendingReview: '0',
+          inConsensus: '1',
+          resolved: '0',
+        }),
+      };
+
+      let qbCallCount = 0;
+      const reviewRepo = {
+        createQueryBuilder: jest.fn().mockImplementation(() => {
+          qbCallCount++;
+          return qbCallCount === 1 ? countQb : mainQb;
+        }),
+      } as unknown as Repository<CandidateReview>;
+
+      const service = new ReviewsService(
+        {} as any,
+        reviewRepo,
+        {} as any,
+        {} as any,
+      );
+
+      const res = await service.getReviewedCandidates('reviewer-1', 1, 20, 'IN_CONSENSUS');
+
+      expect(res.total).toBe(1);
+      expect(res.items).toHaveLength(1);
+      expect(res.items[0].id).toBe('cand-100');
+      expect(res.items[0].status).toBe(CandidateStatus.IN_CONSENSUS);
+      expect(res.items[0].lifecycleStatus).toBe(CandidateStatus.IN_CONSENSUS);
+      expect(res.items[0].statusTag).toBe('IN_CONSENSUS');
+      expect(res.items[0].statusTagVi).toBe('Đang xem xét');
+      expect(res.items[0].review.vote).toBe(1);
+      expect(res.items[0].myVote).toBe(1);
+
+      // Verify counts with lifecycle status keys
+      expect(res.counts.ALL).toBe(1);
+      expect(res.counts.PENDING_REVIEW).toBe(0);
+      expect(res.counts.IN_CONSENSUS).toBe(1);
+      expect(res.counts.RESOLVED).toBe(0);
+
+      // Verify categories format matches lifecycle status names and UI labels
+      expect(res.categories).toEqual([
+        { id: 'ALL', label: 'Tất cả trạng thái', count: 1 },
+        { id: 'PENDING_REVIEW', label: 'Chưa xử lý', count: 0 },
+        { id: 'IN_CONSENSUS', label: 'Đang xem xét', count: 1 },
+        { id: 'RESOLVED', label: 'Đã giải quyết', count: 0 },
+      ]);
+    });
+  });
 });

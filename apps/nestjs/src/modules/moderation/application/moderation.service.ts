@@ -1596,8 +1596,14 @@ export class ModerationService {
       let isCallerAdmin = userRole === 'ADMIN';
       if (!isCallerAdmin) {
         if (this.userRepo && typeof this.userRepo.findOne === 'function') {
-          const staffUser: any = await this.userRepo.findOne({ where: { id: staffId } as any });
-          if (staffUser?.role === 'ADMIN' || staffUser?.userRoles?.some((ur: any) => ur.role === 'ADMIN')) isCallerAdmin = true;
+    const staffUser: any = await this.userRepo.findOne({ 
+      where: { id: staffId },
+      relations: ['userRoles'], 
+    });
+
+    if (staffUser?.role === 'ADMIN' || staffUser?.userRoles?.some((ur: any) => ur.role === 'ADMIN')) {
+      isCallerAdmin = true;
+    }
         } else if (typeof this.dataSource?.query === 'function') {
           const rows = await this.dataSource.query('SELECT role FROM users WHERE id = $1', [staffId]);
           if (rows[0]?.role === 'ADMIN') isCallerAdmin = true;
