@@ -731,15 +731,18 @@ export class ReviewsService {
     };
   }
 
-  async getMyHistory(reviewerId: string, page = 1, pageSize = 20, status?: string, search?: string, surveyorId?: string) {
+  async getMyHistory(reviewerId?: string, page = 1, pageSize = 20, status?: string, search?: string, surveyorId?: string) {
     const p = Math.max(1, page), ps = Math.min(Math.max(1, pageSize), 100);
     const qb = this.reviewRepo.createQueryBuilder('r')
       .leftJoinAndSelect('r.candidate', 'c')
       .leftJoinAndSelect('c.predictedSignType', 'pst')
       .leftJoinAndSelect('c.submission', 'sub')
-      .where('r.reviewerId = :reviewerId', { reviewerId })
+      .leftJoinAndSelect('r.reviewer', 'rev')
       .orderBy('r.reviewedAt', 'DESC')
       .skip((p - 1) * ps).take(ps);
+    if (reviewerId) {
+      qb.where('r.reviewerId = :reviewerId', { reviewerId });
+    }
     if (status === 'approved') qb.andWhere('r.vote = 1');
     else if (status === 'rejected') qb.andWhere('r.vote = -1');
     else if (status === 'unsure') qb.andWhere('r.vote = 0');
@@ -812,7 +815,7 @@ export class ReviewsService {
   }
 
   async getReviewedCandidates(
-    reviewerId: string,
+    reviewerId?: string,
     page = 1,
     pageSize = 20,
     status?: string,
@@ -821,8 +824,8 @@ export class ReviewsService {
     sortBy = 'reviewedAt',
     sortOrder: 'ASC' | 'DESC' = 'DESC',
   ) {
-    if (!reviewerId) {
-      throw new BadRequestException('reviewerId is required');
+    if (reviewerId !== undefined && reviewerId !== null && typeof reviewerId === 'string' && reviewerId.trim() === '') {
+      throw new BadRequestException('reviewerId cannot be empty');
     }
 
     const safePage = Math.max(1, page);
@@ -845,8 +848,11 @@ export class ReviewsService {
       const countQb = this.reviewRepo.createQueryBuilder('r')
         .innerJoin('r.candidate', 'c')
         .leftJoin('c.predictedSignType', 'pst')
-        .leftJoin('c.submission', 'sub')
-        .where('r.reviewerId = :reviewerId', { reviewerId });
+        .leftJoin('c.submission', 'sub');
+
+      if (reviewerId) {
+        countQb.where('r.reviewerId = :reviewerId', { reviewerId });
+      }
 
       if (surveyorId) {
         countQb.andWhere('sub.surveyorId = :surveyorId', { surveyorId });
@@ -893,7 +899,11 @@ export class ReviewsService {
       .leftJoinAndSelect('c.predictedSignType', 'pst')
       .leftJoinAndSelect('c.submission', 'sub')
       .leftJoinAndSelect('r.suggestedSignType', 'sst')
-      .where('r.reviewerId = :reviewerId', { reviewerId });
+      .leftJoinAndSelect('r.reviewer', 'rev');
+
+    if (reviewerId) {
+      qb.where('r.reviewerId = :reviewerId', { reviewerId });
+    }
 
     if (normStatus === 'PENDING_REVIEW') {
       qb.andWhere('c.status = :cStatus', { cStatus: CandidateStatus.PENDING_REVIEW });
@@ -1004,7 +1014,23 @@ export class ReviewsService {
             declineReason: review.declineReason,
             declineNote: review.declineNote,
             reviewedAt: review.reviewedAt,
+            reviewerId: review.reviewerId,
+            reviewer: review.reviewer
+              ? {
+                  id: review.reviewer.id,
+                  email: review.reviewer.email,
+                  fullName: (review.reviewer as any).fullName ?? null,
+                }
+              : null,
           },
+          reviewerId: review.reviewerId,
+          reviewer: review.reviewer
+            ? {
+                id: review.reviewer.id,
+                email: review.reviewer.email,
+                fullName: (review.reviewer as any).fullName ?? null,
+              }
+            : null,
           myVote: review.vote,
           reviewedAt: review.reviewedAt,
           candidate,

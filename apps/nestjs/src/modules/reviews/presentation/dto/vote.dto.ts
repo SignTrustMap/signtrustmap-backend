@@ -261,7 +261,7 @@ export class ReviewerCandidatesQueryDto {
 
   @ApiPropertyOptional({
     required: false,
-    description: 'Filter by specific reviewer ID (Admin/Staff only, defaults to current reviewer)',
+    description: 'Filter by specific reviewer ID (Admin/Staff only, omit or set to "all" to view all history across all reviewers regardless of the person involved)',
   })
   @IsOptional()
   @IsString()

@@ -13,17 +13,21 @@ export class CandidatesController {
   @ApiOperation({
     summary: 'Get candidates for reviewers / staff',
     description:
-      'Paginated list of candidates reviewed by the reviewer, filterable and sortable by the 4 status tags: all, unprocessed (Chưa xử lý), in_review (Đang xem xét), reviewed (Đã giải quyết)',
+      'Paginated list of candidates reviewed by the reviewer, filterable and sortable by the 4 status tags: all, unprocessed (Chưa xử lý), in_review (Đang xem xét), reviewed (Đã giải quyết). For ADMIN / STAFF, omitting reviewerId returns candidates across all users regardless of the person involved.',
   })
   @Get()
   async getCandidates(
     @CurrentUser() user: any,
     @Query() query?: ReviewerCandidatesQueryDto,
   ) {
-    const targetReviewerId =
-      (user?.role === 'ADMIN' || user?.role === 'STAFF') && query?.reviewerId
-        ? query.reviewerId
-        : user?.id;
+    const isAdmin =
+      user?.role === 'ADMIN' ||
+      user?.role === 'STAFF' ||
+      (Array.isArray(user?.roles) && (user.roles.includes('ADMIN') || user.roles.includes('STAFF')));
+
+    const targetReviewerId = isAdmin
+      ? (query?.reviewerId && query.reviewerId !== 'all' ? query.reviewerId : undefined)
+      : user?.id;
 
     const p = query?.page ? parseInt(String(query.page), 10) : 1;
     const ps = query?.pageSize ? parseInt(String(query.pageSize), 10) : 20;

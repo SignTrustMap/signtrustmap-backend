@@ -49,7 +49,7 @@ export class ReviewsController {
   }
 
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Get my review history', description: 'Paginated list of previous sign reviews and consensus verdicts submitted by current reviewer' })
+  @ApiOperation({ summary: 'Get my review history', description: 'Paginated list of previous sign reviews and consensus verdicts. For Admin/Staff, omitting reviewerId returns history across all users regardless of the person involved.' })
   @Get('me/history')
   async myHistory(
     @CurrentUser() user: any,
@@ -58,10 +58,38 @@ export class ReviewsController {
     @Query('status') status?: string,
     @Query('search') search?: string,
     @Query('surveyorId') surveyorId?: string,
+    @Query('reviewerId') reviewerId?: string,
   ) {
     const p = page ? parseInt(page, 10) : 1;
     const ps = pageSize ? parseInt(pageSize, 10) : 20;
-    return this.reviewsService.getMyHistory(user.id, Number.isNaN(p) ? 1 : p, Number.isNaN(ps) ? 20 : ps, status, search, surveyorId);
+    const isAdmin =
+      user?.role === 'ADMIN' ||
+      user?.role === 'STAFF' ||
+      (Array.isArray(user?.roles) && (user.roles.includes('ADMIN') || user.roles.includes('STAFF')));
+
+    const targetReviewerId = isAdmin
+      ? (reviewerId && reviewerId !== 'all' ? reviewerId : undefined)
+      : user?.id;
+
+    return this.reviewsService.getMyHistory(targetReviewerId, Number.isNaN(p) ? 1 : p, Number.isNaN(ps) ? 20 : ps, status, search, surveyorId);
+  }
+
+  @ApiBearerAuth()
+  @Roles('ADMIN', 'STAFF')
+  @ApiOperation({ summary: 'Get global review history (Admin/Staff)', description: 'Review history of candidates across all reviewers and surveyors regardless of the person involved.' })
+  @Get('history')
+  async allHistory(
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+    @Query('status') status?: string,
+    @Query('search') search?: string,
+    @Query('surveyorId') surveyorId?: string,
+    @Query('reviewerId') reviewerId?: string,
+  ) {
+    const p = page ? parseInt(page, 10) : 1;
+    const ps = pageSize ? parseInt(pageSize, 10) : 20;
+    const targetReviewerId = reviewerId && reviewerId !== 'all' ? reviewerId : undefined;
+    return this.reviewsService.getMyHistory(targetReviewerId, Number.isNaN(p) ? 1 : p, Number.isNaN(ps) ? 20 : ps, status, search, surveyorId);
   }
 
   @ApiBearerAuth()
@@ -82,17 +110,21 @@ export class ReviewsController {
   @ApiOperation({
     summary: 'Get reviewed candidates history for reviewer',
     description:
-      'Paginated list of candidates reviewed by the reviewer, filterable and sortable by 4 status tags: all, unprocessed (Chưa xử lý), in_review (Đang xem xét), reviewed (Đã giải quyết)',
+      'Paginated list of candidates reviewed by the reviewer, filterable and sortable by 4 status tags: all, unprocessed (Chưa xử lý), in_review (Đang xem xét), reviewed (Đã giải quyết). For ADMIN / STAFF, omitting reviewerId returns candidates across all users regardless of the person involved.',
   })
   @Get('candidates')
   async getReviewedCandidates(
     @CurrentUser() user: any,
     @Query() query?: ReviewerCandidatesQueryDto,
   ) {
-    const targetReviewerId =
-      (user?.role === 'ADMIN' || user?.role === 'STAFF') && query?.reviewerId
-        ? query.reviewerId
-        : user?.id;
+    const isAdmin =
+      user?.role === 'ADMIN' ||
+      user?.role === 'STAFF' ||
+      (Array.isArray(user?.roles) && (user.roles.includes('ADMIN') || user.roles.includes('STAFF')));
+
+    const targetReviewerId = isAdmin
+      ? (query?.reviewerId && query.reviewerId !== 'all' ? query.reviewerId : undefined)
+      : user?.id;
 
     const p = query?.page ? parseInt(String(query.page), 10) : 1;
     const ps = query?.pageSize ? parseInt(String(query.pageSize), 10) : 20;

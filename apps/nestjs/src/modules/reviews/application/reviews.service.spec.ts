@@ -1324,5 +1324,69 @@ describe('ReviewsService', () => {
         { id: 'RESOLVED', label: 'Đã giải quyết', count: 0 },
       ]);
     });
+
+    it('allows querying all candidates regardless of reviewer when reviewerId is undefined', async () => {
+      const mockCandidate = {
+        id: 'cand-all-1',
+        submissionId: 'sub-2',
+        predictedSignTypeId: 103,
+        confidenceScore: 0.90,
+        status: CandidateStatus.VERIFIED,
+        createdAt: new Date('2026-11-01T10:00:00Z'),
+      };
+
+      const mockReview: any = {
+        id: 'rev-entry-1',
+        candidateId: 'cand-all-1',
+        reviewerId: 'reviewer-99',
+        vote: 1,
+        reviewedAt: new Date('2026-11-01T12:00:00Z'),
+        candidate: mockCandidate,
+        reviewer: { id: 'reviewer-99', email: 'rev99@stm.dev' },
+      };
+
+      const mainQb: any = {
+        innerJoinAndSelect: jest.fn().mockReturnThis(),
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[mockReview], 1]),
+      };
+
+      const countQb: any = {
+        innerJoin: jest.fn().mockReturnThis(),
+        leftJoin: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        getRawOne: jest.fn().mockResolvedValue({
+          all: '1',
+          pendingReview: '0',
+          inConsensus: '0',
+          resolved: '1',
+        }),
+      };
+
+      let qbCallCount = 0;
+      const reviewRepo = {
+        createQueryBuilder: jest.fn().mockImplementation(() => {
+          qbCallCount++;
+          return qbCallCount === 1 ? countQb : mainQb;
+        }),
+      } as unknown as Repository<CandidateReview>;
+
+      const service = new ReviewsService({} as any, reviewRepo, {} as any, {} as any);
+      const res = await service.getReviewedCandidates(undefined, 1, 20, 'ALL');
+
+      expect(res.total).toBe(1);
+      expect(res.items[0].id).toBe('cand-all-1');
+      expect(res.items[0].reviewerId).toBe('reviewer-99');
+      expect(res.items[0].reviewer).toEqual({ id: 'reviewer-99', email: 'rev99@stm.dev', fullName: null });
+      expect(countQb.where).not.toHaveBeenCalled();
+      expect(mainQb.where).not.toHaveBeenCalled();
+    });
   });
 });
