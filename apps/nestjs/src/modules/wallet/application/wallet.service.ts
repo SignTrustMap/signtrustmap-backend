@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, Optional } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Optional, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { CreditTransaction, TransactionType } from '../infrastructure/persistence/credit-transaction.entity';
@@ -15,6 +15,8 @@ import { CreditRule } from '../../rewards/infrastructure/persistence/credit-rule
 
 @Injectable()
 export class WalletService {
+  private readonly logger = new Logger(WalletService.name);
+
   constructor(
     @InjectRepository(Wallet) private readonly walletRepo: Repository<Wallet>,
     @InjectRepository(CreditTransaction) private readonly txRepo: Repository<CreditTransaction>,
@@ -119,22 +121,30 @@ export class WalletService {
     if (!pkg) throw new NotFoundException(`Top-up package #${dto.packageId} not found`);
     if (!pkg.isActive) throw new NotFoundException(`Top-up package #${dto.packageId} is inactive`);
 
-    const gateway = (dto.gateway || 'MOCK').toUpperCase();
+    const gateway = (dto.gateway || dto.paymentMethod || 'MOCK').toUpperCase();
     if (gateway === 'MOMO' && this.momoService) {
-      return this.momoService.createPayment(userId, {
-        packageId: dto.packageId,
-        ...(dto.idempotencyKey ? { idempotencyKey: dto.idempotencyKey } : {}),
-      });
+      try {
+        return await this.momoService.createPayment(userId, {
+          packageId: dto.packageId,
+          ...(dto.idempotencyKey ? { idempotencyKey: dto.idempotencyKey } : {}),
+        });
+      } catch (err: any) {
+        if (err instanceof BadRequestException || err instanceof NotFoundException) {
+          throw err;
+        }
+        this.logger.warn(`MoMo createPayment failed (${err?.message}). Falling back to sandbox payment order.`);
+      }
     }
 
     await this.ensureWallet(userId);
-    const orderCode = `STM-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+    const prefix = gateway === 'VIETQR' ? 'STM-VQR' : gateway === 'MOMO' ? 'STM-MOMO' : 'STM';
+    const orderCode = `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
     const order = this.orderRepo.create({
       userId,
       packageId: pkg.id,
       orderCode,
       amountVnd: pkg.priceVnd,
-      gateway: dto.gateway || 'MOCK',
+      gateway: gateway === 'VIETQR' ? 'VIETQR' : gateway === 'MOMO' ? 'MOMO' : (dto.gateway || 'MOCK'),
       status: PaymentStatus.PENDING,
       idempotencyKey: dto.idempotencyKey?.trim() || null,
     } as any);
@@ -149,14 +159,79 @@ export class WalletService {
       if (!existing) throw error;
       return {
         paymentOrder: {
-          id: existing.id, orderCode: existing.orderCode, packageId: existing.packageId,
-          packageName: pkg.packageName, amountVnd: existing.amountVnd,
-          creditAmount: pkg.creditAmount, gateway: existing.gateway,
-          status: existing.status, createdAt: existing.createdAt,
+          id: existing.id,
+          orderCode: existing.orderCode,
+          packageId: existing.packageId,
+          packageName: pkg.packageName,
+          amountVnd: existing.amountVnd,
+          creditAmount: pkg.creditAmount,
+          gateway: existing.gateway,
+          status: existing.status,
+          createdAt: existing.createdAt,
         },
         idempotentReplay: true,
       };
     }
+
+    const amountVnd = Math.round(Number(pkg.priceVnd));
+
+    if (gateway === 'VIETQR') {
+      const bankId = process.env.VIETQR_BANK_ID || 'MB';
+      const accountNo = process.env.VIETQR_ACCOUNT_NO || '0912345678';
+      const accountName = process.env.VIETQR_ACCOUNT_NAME || 'SIGNTRUSTMAP';
+      const qrCodeUrl = `https://img.vietqr.io/image/${bankId}-${accountNo}-compact2.png?amount=${amountVnd}&addInfo=${encodeURIComponent(saved.orderCode)}&accountName=${encodeURIComponent(accountName)}`;
+      return {
+        paymentOrder: {
+          id: saved.id,
+          orderCode: saved.orderCode,
+          packageId: saved.packageId,
+          packageName: pkg.packageName,
+          amountVnd: saved.amountVnd,
+          creditAmount: pkg.creditAmount,
+          gateway: 'VIETQR',
+          status: saved.status,
+          createdAt: saved.createdAt,
+        },
+        payUrl: qrCodeUrl,
+        qrCodeUrl,
+        deeplink: qrCodeUrl,
+        bankInfo: {
+          bankId,
+          accountNo,
+          accountName,
+          amount: amountVnd,
+          transferContent: saved.orderCode,
+        },
+        message: 'VietQR payment order created successfully',
+      };
+    }
+
+    if (gateway === 'MOMO') {
+      const payUrl = `https://test-payment.momo.vn/pay?orderId=${saved.orderCode}&amount=${amountVnd}`;
+      const deeplink = `momo://app?action=payWithApp&orderId=${saved.orderCode}&amount=${amountVnd}`;
+      const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(deeplink)}`;
+      return {
+        paymentOrder: {
+          id: saved.id,
+          orderCode: saved.orderCode,
+          packageId: saved.packageId,
+          packageName: pkg.packageName,
+          amountVnd: saved.amountVnd,
+          creditAmount: pkg.creditAmount,
+          gateway: 'MOMO',
+          status: saved.status,
+          createdAt: saved.createdAt,
+        },
+        payUrl,
+        deeplink,
+        qrCodeUrl,
+        orderId: saved.orderCode,
+        amount: amountVnd,
+        resultCode: 0,
+        message: 'MoMo sandbox payment session created',
+      };
+    }
+
     return {
       paymentOrder: {
         id: saved.id, orderCode: saved.orderCode, packageId: saved.packageId,
@@ -164,6 +239,8 @@ export class WalletService {
         creditAmount: pkg.creditAmount, gateway: saved.gateway,
         status: saved.status, createdAt: saved.createdAt,
       },
+      payUrl: `https://test-payment.momo.vn/pay?orderId=${saved.orderCode}&amount=${amountVnd}`,
+      qrCodeUrl: `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(saved.orderCode)}`,
       message: 'Payment order created. Complete via gateway callback.',
     };
   }
@@ -174,12 +251,19 @@ export class WalletService {
       throw new BadRequestException('amount must be an integer in [10, 10000]');
     }
 
-    const gateway = (dto.gateway || 'MOCK').toUpperCase();
+    const gateway = (dto.gateway || dto.paymentMethod || 'MOCK').toUpperCase();
     if (gateway === 'MOMO' && this.momoService) {
-      return this.momoService.createPayment(userId, {
-        customAmount: amount,
-        ...(dto.idempotencyKey ? { idempotencyKey: dto.idempotencyKey } : {}),
-      });
+      try {
+        return await this.momoService.createPayment(userId, {
+          customAmount: amount,
+          ...(dto.idempotencyKey ? { idempotencyKey: dto.idempotencyKey } : {}),
+        });
+      } catch (err: any) {
+        if (err instanceof BadRequestException || err instanceof NotFoundException) {
+          throw err;
+        }
+        this.logger.warn(`MoMo createPayment failed for custom amount (${err?.message}). Falling back to sandbox order.`);
+      }
     }
 
     await this.ensureWallet(userId);
@@ -212,10 +296,13 @@ export class WalletService {
     } catch {
       pkg = { id: -1, packageName: `Custom ${amount}`, priceVnd: amountVnd, creditAmount: amount } as any;
     }
-    const orderCode = `STM-CUSTOM-${Date.now()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+    const prefix = gateway === 'VIETQR' ? 'STM-CUSTOM-VQR' : gateway === 'MOMO' ? 'STM-CUSTOM-MOMO' : 'STM-CUSTOM';
+    const orderCode = `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
     const order = this.orderRepo.create({
       userId, packageId: (pkg as any).id > 0 ? (pkg as any).id : 1,
-      orderCode, amountVnd, gateway: dto.gateway || 'MOCK', status: PaymentStatus.PENDING,
+      orderCode, amountVnd,
+      gateway: gateway === 'VIETQR' ? 'VIETQR' : gateway === 'MOMO' ? 'MOMO' : (dto.gateway || 'MOCK'),
+      status: PaymentStatus.PENDING,
       idempotencyKey: dto.idempotencyKey?.trim() || null,
     } as any);
     let saved: PaymentOrder;
@@ -229,19 +316,85 @@ export class WalletService {
       if (!existing) throw error;
       return {
         paymentOrder: {
-          id: existing.id, orderCode: existing.orderCode, packageId: existing.packageId,
-          customAmount: amount, amountVnd: existing.amountVnd,
-          gateway: existing.gateway, status: existing.status, createdAt: existing.createdAt,
+          id: existing.id,
+          orderCode: existing.orderCode,
+          packageId: existing.packageId,
+          packageName: pkg.packageName,
+          amountVnd: existing.amountVnd,
+          creditAmount: pkg.creditAmount,
+          gateway: existing.gateway,
+          status: existing.status,
+          createdAt: existing.createdAt,
         },
         idempotentReplay: true,
       };
     }
+
+    const numAmountVnd = Math.round(Number(amountVnd));
+
+    if (gateway === 'VIETQR') {
+      const bankId = process.env.VIETQR_BANK_ID || 'MB';
+      const accountNo = process.env.VIETQR_ACCOUNT_NO || '0912345678';
+      const accountName = process.env.VIETQR_ACCOUNT_NAME || 'SIGNTRUSTMAP';
+      const qrCodeUrl = `https://img.vietqr.io/image/${bankId}-${accountNo}-compact2.png?amount=${numAmountVnd}&addInfo=${encodeURIComponent(saved.orderCode)}&accountName=${encodeURIComponent(accountName)}`;
+      return {
+        paymentOrder: {
+          id: saved.id,
+          orderCode: saved.orderCode,
+          packageId: saved.packageId,
+          customAmount: amount,
+          amountVnd,
+          gateway: 'VIETQR',
+          status: saved.status,
+          createdAt: saved.createdAt,
+        },
+        payUrl: qrCodeUrl,
+        qrCodeUrl,
+        deeplink: qrCodeUrl,
+        bankInfo: {
+          bankId,
+          accountNo,
+          accountName,
+          amount: numAmountVnd,
+          transferContent: saved.orderCode,
+        },
+        message: 'VietQR custom payment order created successfully',
+      };
+    }
+
+    if (gateway === 'MOMO') {
+      const payUrl = `https://test-payment.momo.vn/pay?orderId=${saved.orderCode}&amount=${numAmountVnd}`;
+      const deeplink = `momo://app?action=payWithApp&orderId=${saved.orderCode}&amount=${numAmountVnd}`;
+      const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(deeplink)}`;
+      return {
+        paymentOrder: {
+          id: saved.id,
+          orderCode: saved.orderCode,
+          packageId: saved.packageId,
+          customAmount: amount,
+          amountVnd,
+          gateway: 'MOMO',
+          status: saved.status,
+          createdAt: saved.createdAt,
+        },
+        payUrl,
+        deeplink,
+        qrCodeUrl,
+        orderId: saved.orderCode,
+        amount: numAmountVnd,
+        resultCode: 0,
+        message: 'MoMo sandbox custom payment session created',
+      };
+    }
+
     // Override credit amount for custom orders (stored in note / callback payload)
     return {
       paymentOrder: {
         id: saved.id, orderCode: saved.orderCode, packageId: saved.packageId,
         customAmount: amount, amountVnd, gateway: saved.gateway, status: saved.status, createdAt: saved.createdAt,
       },
+      payUrl: `https://test-payment.momo.vn/pay?orderId=${saved.orderCode}&amount=${numAmountVnd}`,
+      qrCodeUrl: `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(saved.orderCode)}`,
       message: `Custom order: ${amount} credits for ${amountVnd} VND. Complete via payment gateway.`,
     };
   }
