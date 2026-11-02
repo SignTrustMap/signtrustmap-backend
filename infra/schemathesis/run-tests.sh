@@ -33,19 +33,33 @@ echo "  Reports Dir:    $REPORTS_DIR"
 echo "================================================================="
 
 # -----------------------------------------------------------------------------
-# 1. NestJS JWT (optional) + FastAPI internal token (optional)
+# 1. NestJS JWT (authenticated) + FastAPI internal token
 # -----------------------------------------------------------------------------
-TEST_USER_EMAIL="${TEST_USER_EMAIL:-${SCHEMATHESIS_TEST_EMAIL:-}}"
-TEST_USER_PASSWORD="${TEST_USER_PASSWORD:-${SCHEMATHESIS_TEST_PASSWORD:-}}"
+TEST_USER_EMAIL="${TEST_USER_EMAIL:-${SCHEMATHESIS_TEST_EMAIL:-demo@stm.dev}}"
+TEST_USER_PASSWORD="${TEST_USER_PASSWORD:-${SCHEMATHESIS_TEST_PASSWORD:-Demo@123}}"
+INTERNAL_API_TOKEN="${INTERNAL_API_TOKEN:-stm_internal_secret_dev}"
 
 AUTH_HEADER=""
 if [ -n "$TEST_USER_EMAIL" ] && [ -n "$TEST_USER_PASSWORD" ]; then
   echo "Attempting to obtain authentication token from $NESTJS_HOST/api/v1/auth/login..."
-  LOGIN_RESP=$(wget -qO- --header="Content-Type: application/json" \
-    --post-data="{\"email\":\"$TEST_USER_EMAIL\",\"password\":\"$TEST_USER_PASSWORD\"}" \
-    "$NESTJS_HOST/api/v1/auth/login" 2>/dev/null || true)
+  LOGIN_RESP=""
+  for i in 1 2 3; do
+    if command -v curl >/dev/null 2>&1; then
+      LOGIN_RESP=$(curl -s -X POST -H "Content-Type: application/json" \
+        -d "{\"email\":\"$TEST_USER_EMAIL\",\"password\":\"$TEST_USER_PASSWORD\"}" \
+        "$NESTJS_HOST/api/v1/auth/login" 2>/dev/null || true)
+    elif command -v wget >/dev/null 2>&1; then
+      LOGIN_RESP=$(wget -qO- --header="Content-Type: application/json" \
+        --post-data="{\"email\":\"$TEST_USER_EMAIL\",\"password\":\"$TEST_USER_PASSWORD\"}" \
+        "$NESTJS_HOST/api/v1/auth/login" 2>/dev/null || true)
+    fi
+    TOKEN=$(echo "$LOGIN_RESP" | grep -o '"accessToken":"[^"]*' | cut -d'"' -f4 || true)
+    if [ -n "$TOKEN" ]; then
+      break
+    fi
+    sleep 2
+  done
 
-  TOKEN=$(echo "$LOGIN_RESP" | grep -o '"accessToken":"[^"]*' | cut -d'"' -f4 || true)
   if [ -n "$TOKEN" ]; then
     AUTH_HEADER="-H Authorization:Bearer $TOKEN"
     echo "Successfully acquired JWT authentication token."
@@ -182,6 +196,34 @@ if [ -n "$AUTH_HEADER" ]; then
     python3 "$NOTIFIER" "NestJS Core API (unauth)" "FAILED" "$NESTJS_NEG_LOG" || true
   else
     echo "✅ NestJS unauthenticated scan: no 500s (401/403 expected on secured ops)."
+  fi
+fi
+
+# -----------------------------------------------------------------------------
+# 5. Unauthenticated negative security pass (FastAPI) — expect 401/403, fail on 500
+# -----------------------------------------------------------------------------
+if [ -n "$FASTAPI_AUTH_HEADER" ]; then
+  echo ""
+  echo "--> FastAPI negative auth scan (no X-Internal-Token header)..."
+  FASTAPI_NEG_LOG="$LOG_DIR/fastapi-unauth.log"
+  st run "$FASTAPI_HOST/openapi.json" \
+    -u "$FASTAPI_HOST" \
+    --wait-for-schema 30 \
+    -c not_a_server_error \
+    -n 5 \
+    --hypothesis-seed "$HYPOTHESIS_SEED" \
+    --exclude-method DELETE \
+    --suppress-health-check=filter_too_much \
+    --no-color > "$FASTAPI_NEG_LOG" 2>&1
+  FASTAPI_NEG_EXIT=$?
+  cp -f "$FASTAPI_NEG_LOG" "$REPORTS_DIR/fastapi/latest-unauth.log" 2>/dev/null || true
+  if [ $FASTAPI_NEG_EXIT -ne 0 ]; then
+    echo "❌ FastAPI unauthenticated scan found server errors:"
+    cat "$FASTAPI_NEG_LOG"
+    FASTAPI_EXIT=1
+    python3 "$NOTIFIER" "FastAPI Spatial Engine (unauth)" "FAILED" "$FASTAPI_NEG_LOG" || true
+  else
+    echo "✅ FastAPI unauthenticated scan: no 500s (401/403 expected on secured ops)."
   fi
 fi
 
