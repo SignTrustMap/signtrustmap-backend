@@ -6,7 +6,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, ILike, In, Repository } from 'typeorm';
+import { DataSource, EntityManager, ILike, In, Not, Repository } from 'typeorm';
 import { PageResponse, pageResponse } from '../../common/pagination/page-response';
 import {
   CreateSignCategoryDto,
@@ -79,7 +79,10 @@ export class CatalogService {
   ) {}
 
   listCategories() {
-    return this.categories.find({ order: { sortOrder: 'ASC', id: 'ASC' } });
+    return this.categories.find({
+      where: { code: Not(In(['MOCK_TRAFFIC_SIGNS', 'MOCK'])) },
+      order: { sortOrder: 'ASC', id: 'ASC' },
+    });
   }
 
   async checkSignCodeAvailability(input: string) {
@@ -147,6 +150,15 @@ export class CatalogService {
         `Cannot delete: ${referenceCount} sign type(s) reference category #${id}.`,
       );
     }
+    // Clean up foreign key references from new_sign_type_reports and freshness_rules before deletion
+    await this.dataSource.query(
+      `UPDATE "new_sign_type_reports" SET "proposed_category_id" = NULL WHERE "proposed_category_id" = $1`,
+      [id],
+    );
+    await this.dataSource.query(
+      `DELETE FROM "freshness_rules" WHERE "sign_category_id" = $1`,
+      [id],
+    );
     await this.categories.delete(id);
     return { deleted: true, id };
   }
