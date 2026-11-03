@@ -52,31 +52,73 @@ def send_alert(service_name: str, status: str, log_file: str):
     is_failed = status.upper() == "FAILED"
     snippet = extract_failure_snippet(log_file) if is_failed else ""
 
+    clean_content = ""
+    if os.path.exists(log_file):
+        with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+            clean_content = strip_ansi(f.read())
+
+    has_500 = bool(re.search(r"500\s+(?:Internal Server Error|Server error)|ST101\s+Server error|\[500\]", clean_content, re.IGNORECASE))
+    schema_err_match = re.search(r"(?:Schema Error:\s*(\d+)|Spec problems\s+(\d+))", clean_content, re.IGNORECASE)
+    has_schema_error = bool(schema_err_match)
+
+    coverage_fields = []
+    cov_ops = re.search(r"Operations\s+([0-9/]+\s+[0-9.]+\%)", clean_content)
+    cov_params = re.search(r"Parameters\s+([0-9/]+\s+[0-9.]+\%)", clean_content)
+    cov_resp = re.search(r"Responses\s+([0-9/]+\s+[0-9.]+\%)", clean_content)
+    if cov_ops:
+        coverage_summary = f"Operations: `{cov_ops.group(1)}`"
+        if cov_params:
+            coverage_summary += f" | Parameters: `{cov_params.group(1)}`"
+        if cov_resp:
+            coverage_summary += f" | Responses: `{cov_resp.group(1)}`"
+        coverage_fields.append({"name": "Schema Coverage", "value": coverage_summary, "inline": False})
+
     if is_failed:
+        if has_500:
+            title = f"🚨 [Coolify] API Server Crash Detected: {service_name}"
+            desc = f"Schemathesis detected unhandled exceptions (`500 Server Error`) during automated testing."
+            status_text = "❌ **FAILED (HTTP 500 Detected)**"
+            color = 15158332  # Red (0xE74C3C)
+        elif has_schema_error:
+            title = f"⚠️ [Coolify] OpenAPI Contract Defect: {service_name}"
+            desc = f"No HTTP 500 server crashes occurred, but OpenAPI specification/schema errors were detected."
+            status_text = "⚠️ **FAILED (Schema/Spec Defect)**"
+            color = 15844367  # Gold/Orange (0xF1C40F)
+        else:
+            title = f"🚨 [Coolify] API Test Suite Failure: {service_name}"
+            desc = f"Schemathesis test runner reported failures during test execution."
+            status_text = "❌ **FAILED**"
+            color = 15158332
+
+        fields = [
+            {"name": "Target Service", "value": f"`{service_name}`", "inline": True},
+            {"name": "Status", "value": status_text, "inline": True},
+            *coverage_fields,
+            {
+                "name": "Failure Details & Reproduction",
+                "value": f"```text\n{snippet}\n```",
+                "inline": False,
+            },
+        ]
+
         embed = {
-            "title": f"🚨 [Coolify] API Failure Detected: {service_name}",
-            "description": f"Schemathesis detected unhandled exceptions (`500 Server Error`) during automated testing.",
-            "color": 15158332,  # Red (0xE74C3C)
-            "fields": [
-                {"name": "Target Service", "value": f"`{service_name}`", "inline": True},
-                {"name": "Status", "value": "❌ **FAILED (500 Caught)**", "inline": True},
-                {
-                    "name": "Failure Details & Reproduction",
-                    "value": f"```text\n{snippet}\n```",
-                    "inline": False,
-                },
-            ],
+            "title": title,
+            "description": desc,
+            "color": color,
+            "fields": fields,
             "footer": {"text": "SignTrustMap • Coolify Sentinel"},
         }
     else:
+        fields = [
+            {"name": "Target Service", "value": f"`{service_name}`", "inline": True},
+            {"name": "Status", "value": "🟢 **PASSED (0 Server Errors)**", "inline": True},
+            *coverage_fields,
+        ]
         embed = {
             "title": f"✅ [Coolify] All Endpoints Healthy: {service_name}",
             "description": f"Schemathesis finished testing `{service_name}` endpoints with **0 crashes**.",
             "color": 3066993,  # Green (0x2ECC71)
-            "fields": [
-                {"name": "Target Service", "value": f"`{service_name}`", "inline": True},
-                {"name": "Status", "value": "🟢 **PASSED**", "inline": True},
-            ],
+            "fields": fields,
             "footer": {"text": "SignTrustMap • Coolify Sentinel"},
         }
 

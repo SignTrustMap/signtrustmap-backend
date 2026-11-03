@@ -218,3 +218,27 @@ def test_bounding_box_params_model_accepts_box_crossing_zero():
     bbox = BoundingBoxParams(min_lat=-1.0, min_lon=-1.0, max_lat=1.0, max_lon=1.0)
     assert bbox.min_lat == -1.0
     assert bbox.max_lon == 1.0
+
+
+def test_database_error_handling_returns_500(client, mock_db):
+    """Database query failure must return structured 500 error instead of unhandled crash."""
+    mock_db.execute.side_effect = RuntimeError("PostGIS connection failed")
+    res = client.get(_signs_url(min_lat=10.75, min_lon=106.65, max_lat=10.82, max_lon=106.75))
+    assert res.status_code == 500
+    assert "Database error occurred" in res.json()["detail"]
+
+
+def test_sign_detail_database_error_returns_500(client, mock_db):
+    mock_db.execute.side_effect = RuntimeError("PostgreSQL socket closed")
+    res = client.get(f"/api/v1/spatial/signs/{uuid4()}")
+    assert res.status_code == 500
+    assert "Database error occurred" in res.json()["detail"]
+
+
+def test_sign_detail_not_found_returns_404(client, mock_db):
+    result = MagicMock()
+    result.mappings.return_value.first.return_value = None
+    mock_db.execute.return_value = result
+    res = client.get(f"/api/v1/spatial/signs/{uuid4()}")
+    assert res.status_code == 404
+

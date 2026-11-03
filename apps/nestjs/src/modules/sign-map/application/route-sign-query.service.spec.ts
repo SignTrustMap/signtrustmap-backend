@@ -237,4 +237,39 @@ describe('RouteSignQueryService', () => {
 
     expect(response.signCount).toBe(1);
   });
+
+  describe('Schemathesis 4srRTK Fuzz Regression Tests', () => {
+    it('handles tiny subnormal floating point coordinates and boundary -180 longitude safely', async () => {
+      repository.findActiveAlongRoute.mockResolvedValue([]);
+      const fuzzGeometry = [
+        { longitude: 5e-324, latitude: 1.1125369292536007e-308 },
+        { longitude: -179.99999999999997, latitude: 9.71426437771207 },
+        { latitude: 1.117881775394719e-180, longitude: 1.3242212755080782e-07 },
+        { longitude: 79.661707670211, latitude: -3.791337281944445e-105 },
+        { latitude: 3.005184169573914e-256, longitude: -180.0 },
+        { latitude: 1.1754943508222875e-38, longitude: -3.84235389852305e-69 },
+      ];
+
+      const response = await service().findAlongRoute({
+        geometry: fuzzGeometry,
+        enabledCategoryCodes: ['W', 'P'],
+      });
+
+      expect(response).toBeDefined();
+      expect(response.signCount).toBe(0);
+      expect(repository.findActiveAlongRoute).toHaveBeenCalled();
+    });
+
+    it('safely filters out non-matching or arbitrary category codes without crashing', async () => {
+      const pSign = sign('psign', 10.00005, 106.002, 90);
+      repository.findActiveAlongRoute.mockResolvedValue([pSign]);
+
+      const response = await service().findAlongRoute({
+        geometry: route({ latitude: 10, longitude: 106 }, { latitude: 10, longitude: 106.01 }),
+        enabledCategoryCodes: ['UNKNOWN_CODE', 'INVALID_CAT_123'],
+      });
+
+      expect(response.signCount).toBe(0);
+    });
+  });
 });

@@ -144,7 +144,7 @@ describe('WorkflowIntegrationTest (Direct DI)', () => {
           steps: [
             {
               type: 'turn',
-              instruction: 'Head north on Le Loi',
+              instruction: 'Đi về hướng bắc vào Le Loi',
               edgeId: null,
               fromNodeId: null,
               toNodeId: null,

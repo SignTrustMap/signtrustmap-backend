@@ -87,7 +87,8 @@ export class RouteSignQueryService {
         if (enabledCategoryCodes && enabledCategoryCodes.length > 0) {
           const catCode = sign.signType.category.code?.toUpperCase() ?? '';
           const matches = enabledCategoryCodes.some((c) => {
-            const norm = c.toUpperCase();
+            if (typeof c !== 'string') return false;
+            const norm = c.trim().toUpperCase();
             return (
               norm === catCode ||
               ((norm === 'P' || norm === 'PROHIBITORY' || norm === 'PROHIBITION') &&
@@ -168,8 +169,14 @@ export class RouteSignQueryService {
       throw new BadRequestException('Route geometry must contain at least two distinct points');
     }
 
+    const formatCoord = (val: number): string => {
+      if (val === 0) return '0';
+      const formatted = Number(val.toFixed(8));
+      return Number.isFinite(formatted) ? formatted.toString() : '0';
+    };
+
     return {
-      wkt: `LINESTRING (${points.map((point) => `${point.longitude} ${point.latitude}`).join(', ')})`,
+      wkt: `LINESTRING (${points.map((point) => `${formatCoord(point.longitude)} ${formatCoord(point.latitude)}`).join(', ')})`,
       segments,
       distanceMeters: routeDistanceMeters,
     };
