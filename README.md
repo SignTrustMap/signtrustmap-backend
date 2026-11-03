@@ -614,7 +614,7 @@ are ordered by `routeOffsetMeters`:
   "steps": [
     {
       "type": "turn",
-      "instruction": "Turn right onto Nguyen Hue",
+      "instruction": "Rẽ phải vào Nguyen Hue",
       "distanceMeters": 120
     }
   ],

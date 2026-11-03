@@ -391,39 +391,114 @@ export class OsrmRoutingClient {
     roadName: string | null,
     exitValue: unknown,
   ): string {
-    const direction = modifier ? ` ${modifier.replace(/-/g, ' ')}` : '';
-    const road = roadName ? ` onto ${roadName}` : '';
+    const road = roadName ? ` vào ${roadName}` : '';
     const exit = this.numberOrZero(exitValue);
+    const mod = modifier ? modifier.toLowerCase().trim().replace(/-/g, ' ') : '';
 
     switch (type) {
-      case 'depart':
-        return `Head${direction}${road}`;
-      case 'arrive':
-        return modifier ? `Arrive at your destination on the ${modifier}` : 'Arrive at your destination';
+      case 'depart': {
+        if (mod === 'straight') return `Đi thẳng${road}`;
+        if (mod === 'left') return `Đi về bên trái${road}`;
+        if (mod === 'right') return `Đi về bên phải${road}`;
+        const compass = this.compassDirectionVi(mod);
+        if (compass) return `Đi về ${compass}${road}`;
+        return roadName ? `Đi vào ${roadName}` : 'Bắt đầu xuất phát';
+      }
+
+      case 'arrive': {
+        if (mod === 'left') return 'Đến điểm đến ở bên trái của bạn';
+        if (mod === 'right') return 'Đến điểm đến ở bên phải của bạn';
+        if (mod === 'straight') return 'Đến điểm đến ở phía trước';
+        return 'Đến điểm đến của bạn';
+      }
+
       case 'turn':
-      case 'end of road':
-        return `Turn${direction}${road}`;
-      case 'continue':
+      case 'end of road': {
+        if (mod === 'right') return `Rẽ phải${road}`;
+        if (mod === 'left') return `Rẽ trái${road}`;
+        if (mod === 'slight right') return `Rẽ chếch sang phải${road}`;
+        if (mod === 'slight left') return `Rẽ chếch sang trái${road}`;
+        if (mod === 'sharp right') return `Rẽ ngoặt sang phải${road}`;
+        if (mod === 'sharp left') return `Rẽ ngoặt sang trái${road}`;
+        if (mod === 'uturn' || mod === 'u turn') return `Quay đầu xe${road}`;
+        if (mod === 'straight') return `Đi thẳng${road}`;
+        return `Rẽ${mod ? ` ${mod}` : ''}${road}`;
+      }
+
+      case 'continue': {
+        if (mod === 'slight right') return `Tiếp tục chếch sang phải${road}`;
+        if (mod === 'slight left') return `Tiếp tục chếch sang trái${road}`;
+        if (mod === 'right') return `Tiếp tục rẽ phải${road}`;
+        if (mod === 'left') return `Tiếp tục rẽ trái${road}`;
+        if (mod === 'uturn' || mod === 'u turn') return `Quay đầu xe${road}`;
+        return `Tiếp tục đi thẳng${road}`;
+      }
+
       case 'new name':
-        return `Continue${direction}${road}`;
-      case 'merge':
-        return `Merge${direction}${road}`;
-      case 'fork':
-        return `Keep${direction}${road}`;
-      case 'on ramp':
-      case 'off ramp':
-        return `Take the ramp${direction}${road}`;
+        return roadName ? `Tiếp tục đi vào ${roadName}` : 'Tiếp tục đi thẳng';
+
+      case 'merge': {
+        if (mod === 'left' || mod === 'slight left') return `Nhập làn sang trái${road}`;
+        if (mod === 'right' || mod === 'slight right') return `Nhập làn sang phải${road}`;
+        return `Nhập làn${road}`;
+      }
+
+      case 'fork': {
+        if (mod === 'left' || mod === 'slight left') return `Giữ bên trái${road}`;
+        if (mod === 'right' || mod === 'slight right') return `Giữ bên phải${road}`;
+        if (mod === 'straight') return `Đi thẳng${road}`;
+        return `Đi theo nhánh đường${road}`;
+      }
+
+      case 'on ramp': {
+        if (mod === 'left' || mod === 'slight left') return `Đi vào nhánh rẽ bên trái${road}`;
+        if (mod === 'right' || mod === 'slight right') return `Đi vào nhánh rẽ bên phải${road}`;
+        return `Đi vào nhánh rẽ${road}`;
+      }
+
+      case 'off ramp': {
+        if (mod === 'left' || mod === 'slight left') return `Đi theo lối ra bên trái${road}`;
+        if (mod === 'right' || mod === 'slight right') return `Đi theo lối ra bên phải${road}`;
+        return `Đi theo lối ra${road}`;
+      }
+
       case 'roundabout':
       case 'rotary':
-      case 'roundabout turn':
+      case 'roundabout turn': {
         return exit > 0
-          ? `Enter the roundabout and take exit ${exit}${road}`
-          : `Enter the roundabout${road}`;
+          ? `Đi vào vòng xuyến và đi theo lối ra thứ ${exit}${road}`
+          : `Đi vào vòng xuyến${road}`;
+      }
+
       case 'exit roundabout':
       case 'exit rotary':
-        return `Exit the roundabout${road}`;
+        return `Rời khỏi vòng xuyến${road}`;
+
       default:
-        return `${this.capitalize(type.replace(/-/g, ' '))}${direction}${road}`;
+        return `Tiếp tục đi${road}`;
+    }
+  }
+
+  private compassDirectionVi(direction: string): string | null {
+    switch (direction) {
+      case 'north':
+        return 'hướng bắc';
+      case 'south':
+        return 'hướng nam';
+      case 'east':
+        return 'hướng đông';
+      case 'west':
+        return 'hướng tây';
+      case 'northeast':
+        return 'hướng đông bắc';
+      case 'northwest':
+        return 'hướng tây bắc';
+      case 'southeast':
+        return 'hướng đông nam';
+      case 'southwest':
+        return 'hướng tây nam';
+      default:
+        return null;
     }
   }
 
