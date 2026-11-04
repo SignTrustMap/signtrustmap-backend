@@ -464,6 +464,7 @@ describe('ReviewsService', () => {
 
     it('successfully creates recapture request, updates candidate status, and dispatches notification', async () => {
       const rawQuery = jest.fn()
+        .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ status: CandidateStatus.PENDING_REVIEW }])
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ id: 'report-1', status: 'INCOMPLETE' }])
@@ -536,6 +537,7 @@ describe('ReviewsService', () => {
 
     it('translates the active-request unique constraint into a domain conflict', async () => {
       const rawQuery = jest.fn()
+        .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ status: CandidateStatus.PENDING_REVIEW }])
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ id: 'report-1', status: 'INCOMPLETE' }])
@@ -559,6 +561,7 @@ describe('ReviewsService', () => {
         }),
         update: jest.fn().mockResolvedValue({ affected: 1 }),
         manager: { query: jest.fn()
+          .mockResolvedValueOnce([])
           .mockResolvedValueOnce([{ status: CandidateStatus.PENDING_REVIEW }])
           .mockResolvedValueOnce([])
           .mockResolvedValueOnce([{ id: 'report-admin', status: 'INCOMPLETE' }])
@@ -595,6 +598,63 @@ describe('ReviewsService', () => {
       expect(candidates.manager.query).toHaveBeenCalledWith(
         expect.stringContaining("SET status = 'RECAPTURE_REQUESTED'"),
         ['cand-1'],
+      );
+    });
+
+    it('forces recapture request assignment to demo@stm.dev when demo user exists in database', async () => {
+      const rawQuery = jest.fn()
+        .mockResolvedValueOnce([{ id: 'demo-user-id' }])
+        .mockResolvedValueOnce([{ status: CandidateStatus.PENDING_REVIEW }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'report-1', status: 'INCOMPLETE' }])
+        .mockResolvedValueOnce({ rowCount: 1 })
+        .mockResolvedValueOnce([{ id: 'req-1', missing_type_report_id: 'report-1' }])
+        .mockResolvedValue([]);
+      const candidates = {
+        findOne: jest.fn().mockResolvedValue({
+          id: 'cand-1',
+          status: CandidateStatus.PENDING_REVIEW,
+          submission: { surveyorId: 'different-surveyor' },
+          predictedSignType: { nameVi: 'Biển báo nguy hiểm' },
+        }),
+        update: jest.fn().mockResolvedValue({ affected: 1 }),
+        manager: { query: rawQuery },
+      } as unknown as Repository<UnverifiedSignCandidate>;
+
+      const recaptureRepo = {
+        create: jest.fn((dto) => dto),
+        save: jest.fn(async (dto) => ({ id: 'req-1', ...dto, createdAt: new Date() })),
+      } as any;
+      const notifications = { create: jest.fn().mockResolvedValue({ id: 'notif-1' }) } as any;
+
+      const service = new ReviewsService(
+        candidates,
+        {} as any,
+        {} as any,
+        {} as any,
+        undefined,
+        undefined,
+        undefined,
+        recaptureRepo,
+        notifications,
+      );
+
+      const res = await service.requestRecapture(
+        'rev-1',
+        'cand-1',
+        { reason: 'BLURRY', note: 'Too dark to verify sign' },
+        false,
+      );
+
+      expect(res.success).toBe(true);
+      expect(res.surveyorId).toBe('demo-user-id');
+      expect(notifications.create).toHaveBeenCalledWith(
+        'demo-user-id',
+        'IMAGE_RECAPTURE_REQUESTED',
+        expect.any(String),
+        expect.any(String),
+        'candidate',
+        'cand-1',
       );
     });
 

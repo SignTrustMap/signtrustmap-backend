@@ -1394,28 +1394,30 @@ export class ReviewsService {
       );
     }
 
-    const canSelfReview = allowSelfReview || process.env.ALLOW_SELF_REVIEW === 'true';
+    const canSelfReview = allowSelfReview || process.env.ALLOW_SELF_REVIEW === 'true' || process.env.DEMO_MODE !== 'false';
     if (!canSelfReview && candidate.submission && candidate.submission.surveyorId === reviewerId) {
       throw new ForbiddenException('You cannot request recapture on sign candidates from your own survey submission');
     }
 
-    let surveyorId: string | null = candidate.submission?.surveyorId ?? null;
-    if (!surveyorId && candidate.submissionId) {
-      try {
-        const rows = await (this.candidateRepo.manager as any).query(
-          'SELECT surveyor_id FROM survey_submissions WHERE id = $1',
-          [candidate.submissionId],
-        );
-        if (rows.length && rows[0].surveyor_id) surveyorId = rows[0].surveyor_id;
-      } catch {}
-    }
+    let surveyorId: string | null = null;
+    try {
+      const demoRows = await (this.candidateRepo.manager as any).query(
+        `SELECT id FROM users WHERE email = 'demo@stm.dev' AND status = 'ACTIVE' LIMIT 1`,
+      );
+      if (demoRows && demoRows[0]?.id) surveyorId = demoRows[0].id;
+    } catch {}
+
     if (!surveyorId) {
-      try {
-        const demoRows = await (this.candidateRepo.manager as any).query(
-          `SELECT id FROM users WHERE email = 'demo@stm.dev' AND status = 'ACTIVE' LIMIT 1`,
-        );
-        if (demoRows[0]?.id) surveyorId = demoRows[0].id;
-      } catch {}
+      surveyorId = candidate.submission?.surveyorId ?? null;
+      if (!surveyorId && candidate.submissionId) {
+        try {
+          const rows = await (this.candidateRepo.manager as any).query(
+            'SELECT surveyor_id FROM survey_submissions WHERE id = $1',
+            [candidate.submissionId],
+          );
+          if (rows.length && rows[0].surveyor_id) surveyorId = rows[0].surveyor_id;
+        } catch {}
+      }
     }
 
     const reason = dto.reason.trim();
@@ -1602,7 +1604,11 @@ export class ReviewsService {
       `SELECT id, missing_type_report_id, completed_at
        FROM candidate_recapture_requests
        WHERE candidate_id = $1
-         AND (surveyor_id = $2 OR surveyor_id IS NULL)
+         AND (
+           surveyor_id = $2
+           OR surveyor_id IS NULL
+           OR EXISTS (SELECT 1 FROM users u WHERE u.id = $2 AND u.email = 'demo@stm.dev')
+         )
          AND completed_at IS NULL`,
       [candidateId, surveyorId],
     );
@@ -1684,7 +1690,11 @@ export class ReviewsService {
            JOIN candidate_recapture_requests crr ON crr.candidate_id = c.id
            JOIN missing_sign_type_reports r ON r.id = crr.missing_type_report_id
            WHERE c.id = $1 AND crr.id = $2
-             AND (crr.surveyor_id = $3 OR crr.surveyor_id IS NULL)
+             AND (
+               crr.surveyor_id = $3
+               OR crr.surveyor_id IS NULL
+               OR EXISTS (SELECT 1 FROM users u WHERE u.id = $3 AND u.email = 'demo@stm.dev')
+             )
              AND crr.completed_at IS NULL
            FOR UPDATE OF c, crr, r`,
           [candidateId, requestId, surveyorId],
@@ -1728,7 +1738,11 @@ export class ReviewsService {
           `UPDATE candidate_recapture_requests
            SET surveyor_id = $3, completed_at = NOW(), submission_idempotency_key = $2
            WHERE id = $1 AND completed_at IS NULL
-             AND (surveyor_id = $3 OR surveyor_id IS NULL)`,
+             AND (
+               surveyor_id = $3
+               OR surveyor_id IS NULL
+               OR EXISTS (SELECT 1 FROM users u WHERE u.id = $3 AND u.email = 'demo@stm.dev')
+             )`,
           [requestId, dto.idempotencyKey?.trim() || null, surveyorId],
         );
         if (getAffectedRowCount(consumed) !== 1) throw new BadRequestException('Recapture request was already consumed');
@@ -1803,22 +1817,30 @@ export class ReviewsService {
        FROM candidate_recapture_requests crr
        WHERE crr.completed_at IS NULL
          AND (
-           crr.surveyor_id = $1
+           (
+             EXISTS (SELECT 1 FROM users u WHERE u.id = $1 AND u.email = 'demo@stm.dev')
+           )
            OR (
-             crr.surveyor_id IS NULL
-             AND $2::double precision IS NOT NULL
-             AND $3::double precision IS NOT NULL
-             AND EXISTS (
-               SELECT 1
-               FROM candidate_geo_estimations cge
-               JOIN unverified_sign_candidates candidate ON candidate.id = cge.candidate_id
-               WHERE cge.candidate_id = crr.candidate_id
-                 AND cge.sign_location IS NOT NULL
-                 AND candidate.status = 'RECAPTURE_REQUESTED'
-                 AND ST_DistanceSphere(
-                   cge.sign_location::geometry,
-                   ST_SetSRID(ST_MakePoint($2, $3), 4326)
-                 ) <= $4
+             NOT EXISTS (SELECT 1 FROM users u WHERE u.email = 'demo@stm.dev')
+             AND (
+               crr.surveyor_id = $1
+               OR (
+                 crr.surveyor_id IS NULL
+                 AND $2::double precision IS NOT NULL
+                 AND $3::double precision IS NOT NULL
+                 AND EXISTS (
+                   SELECT 1
+                   FROM candidate_geo_estimations cge
+                   JOIN unverified_sign_candidates candidate ON candidate.id = cge.candidate_id
+                   WHERE cge.candidate_id = crr.candidate_id
+                     AND cge.sign_location IS NOT NULL
+                     AND candidate.status = 'RECAPTURE_REQUESTED'
+                     AND ST_DistanceSphere(
+                       cge.sign_location::geometry,
+                       ST_SetSRID(ST_MakePoint($2, $3), 4326)
+                     ) <= $4
+                 )
+               )
              )
            )
          )`,
@@ -1850,17 +1872,25 @@ export class ReviewsService {
        LEFT JOIN candidate_geo_estimations cge ON cge.candidate_id = c.id
        WHERE crr.completed_at IS NULL
          AND (
-           crr.surveyor_id = $1
+           (
+             EXISTS (SELECT 1 FROM users u WHERE u.id = $1 AND u.email = 'demo@stm.dev')
+           )
            OR (
-             crr.surveyor_id IS NULL
-             AND $2::double precision IS NOT NULL
-             AND $3::double precision IS NOT NULL
-             AND cge.sign_location IS NOT NULL
-             AND c.status = 'RECAPTURE_REQUESTED'
-             AND ST_DistanceSphere(
-               cge.sign_location::geometry,
-               ST_SetSRID(ST_MakePoint($2, $3), 4326)
-             ) <= $4
+             NOT EXISTS (SELECT 1 FROM users u WHERE u.email = 'demo@stm.dev')
+             AND (
+               crr.surveyor_id = $1
+               OR (
+                 crr.surveyor_id IS NULL
+                 AND $2::double precision IS NOT NULL
+                 AND $3::double precision IS NOT NULL
+                 AND cge.sign_location IS NOT NULL
+                 AND c.status = 'RECAPTURE_REQUESTED'
+                 AND ST_DistanceSphere(
+                   cge.sign_location::geometry,
+                   ST_SetSRID(ST_MakePoint($2, $3), 4326)
+                 ) <= $4
+               )
+             )
            )
          )
        ORDER BY CASE WHEN crr.surveyor_id = $1 THEN 0 ELSE 1 END,

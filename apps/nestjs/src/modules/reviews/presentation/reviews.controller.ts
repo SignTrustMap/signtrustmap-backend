@@ -200,7 +200,7 @@ export class ReviewsController {
     @Param('candidateId', ParseUUIDPipe) candidateId: string,
     @Body() dto: RequestRecaptureDto,
   ) {
-    const allowSelf = user?.role === 'ADMIN';
+    const allowSelf = user?.role === 'ADMIN' || user?.email === 'demo@stm.dev' || process.env.ALLOW_SELF_REVIEW === 'true';
     return this.reviewsService.requestRecapture(user.id, candidateId, dto, allowSelf);
   }
 
