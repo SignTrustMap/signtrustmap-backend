@@ -4,6 +4,7 @@ import {
   Patch,
   Post,
   Put,
+  Delete,
   Body,
   Param,
   Query,
@@ -24,6 +25,9 @@ import {
   UpdateConsensusConfigDto,
   UpdateRouteMatrixDto,
   TriggerRetrainDto,
+  CreateFreshnessRuleDto,
+  UpdateFreshnessRuleDto,
+  UpdateRewardRuleDto,
 } from './dto/admin.dto';
 import { WalletService } from '../wallet/application/wallet.service';
 
@@ -156,6 +160,108 @@ export class AdminController {
   ) {
     const ip = req.ip || req.headers['x-forwarded-for'] || null;
     return this.svc.updateRouteMatrix(id, dto, user.id, ip);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Freshness Rules Parameters Management
+  // ---------------------------------------------------------------------------
+
+  @ApiOperation({
+    summary: 'Get all freshness rules and field security parameters',
+    description: 'Admin operation to view GPS proximity limits, daily submission limits, and freshness period per category',
+  })
+  @Get('freshness-rules')
+  listFreshnessRules() {
+    return this.svc.listFreshnessRules();
+  }
+
+  @ApiOperation({
+    summary: 'Get freshness rule by ID',
+    description: 'Admin operation to view specific category freshness and proximity guardrails',
+  })
+  @Get('freshness-rules/:id')
+  getFreshnessRule(@Param('id', ParseIntPipe) id: number) {
+    return this.svc.getFreshnessRule(id);
+  }
+
+  @ApiOperation({
+    summary: 'Create freshness rule for a sign category',
+    description: 'Admin operation to establish category freshness period, GPS proximity limit, and daily submission limit',
+  })
+  @Post('freshness-rules')
+  createFreshnessRule(
+    @Body() dto: CreateFreshnessRuleDto,
+    @CurrentUser() user: any,
+    @Req() req: any,
+  ) {
+    const ip = req.ip || req.headers['x-forwarded-for'] || null;
+    return this.svc.createFreshnessRule(dto, user.id, ip);
+  }
+
+  @ApiOperation({
+    summary: 'Update freshness rule and field security parameters',
+    description: 'Admin operation to update GPS max proximity metres, daily submissions limit, or priority with audit logging',
+  })
+  @Put('freshness-rules/:id')
+  updateFreshnessRule(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateFreshnessRuleDto,
+    @CurrentUser() user: any,
+    @Req() req: any,
+  ) {
+    const ip = req.ip || req.headers['x-forwarded-for'] || null;
+    return this.svc.updateFreshnessRule(id, dto, user.id, ip);
+  }
+
+  @ApiOperation({
+    summary: 'Deactivate freshness rule',
+    description: 'Admin operation to deactivate category freshness rule with audit logging',
+  })
+  @Delete('freshness-rules/:id')
+  deleteFreshnessRule(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: any,
+    @Req() req: any,
+  ) {
+    const ip = req.ip || req.headers['x-forwarded-for'] || null;
+    return this.svc.deleteFreshnessRule(id, user.id, ip);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Reward Rules Parameters Management
+  // ---------------------------------------------------------------------------
+
+  @ApiOperation({
+    summary: 'Get all reward rules and credit disbursement parameters',
+    description: 'Admin operation to view base reward credits and daily limits for all system activities',
+  })
+  @Get('reward-rules')
+  listRewardRules() {
+    return this.svc.listRewardRules();
+  }
+
+  @ApiOperation({
+    summary: 'Get reward rule by activity type',
+    description: 'Admin operation to view specific activity reward parameters (e.g. REVALIDATION_REWARD, REVIEW_REWARD)',
+  })
+  @Get('reward-rules/:activityType')
+  getRewardRule(@Param('activityType') activityType: string) {
+    return this.svc.getRewardRule(activityType);
+  }
+
+  @ApiOperation({
+    summary: 'Update reward rule parameters',
+    description: 'Admin operation to update base credit amount, daily limits, and multiplier config with audit logging',
+  })
+  @Put('reward-rules/:activityType')
+  updateRewardRule(
+    @Param('activityType') activityType: string,
+    @Body() dto: UpdateRewardRuleDto,
+    @CurrentUser() user: any,
+    @Req() req: any,
+  ) {
+    const ip = req.ip || req.headers['x-forwarded-for'] || null;
+    return this.svc.updateRewardRule(activityType, dto, user.id, ip);
   }
 
   @ApiOperation({
