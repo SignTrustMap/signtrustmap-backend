@@ -129,7 +129,7 @@ export class ConsensusService {
       voterDetails.push({ reviewerId: r.reviewerId, weight: w, vote: r.vote, suggestedSignTypeId: r.suggestedSignTypeId });
     }
 
-    const maxVotes = Math.max(config.minVotesRequired * 2, 9);
+    const maxVotes = config.maxVotesLimit ?? Math.max(config.minVotesRequired * 2, 9);
     let outcome: ConsensusOutcome | null = null;
     let winningVote: number | null = null;
 
