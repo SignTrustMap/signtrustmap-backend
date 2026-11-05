@@ -29,6 +29,8 @@ describe('AdminController (Phase 1 Ledger Adjustments & Admin Operations)', () =
       listRewardRules: jest.fn(),
       getRewardRule: jest.fn(),
       updateRewardRule: jest.fn(),
+      getUserStatistics: jest.fn(),
+      getUsersSummaryStatistics: jest.fn(),
     } as unknown as jest.Mocked<AdminService>;
 
     walletService = {
@@ -91,7 +93,7 @@ describe('AdminController (Phase 1 Ledger Adjustments & Admin Operations)', () =
     expect(result).toBe(expected);
   });
 
-  it('listUsers delegates to adminService.listUsers with pagination parameters', async () => {
+  it('listUsers delegates to adminService.listUsers with pagination parameters and includeStats', async () => {
     const expected = { items: [], total: 0, page: 1, pageSize: 20 };
     adminService.listUsers.mockResolvedValue(expected as any);
 
@@ -103,7 +105,44 @@ describe('AdminController (Phase 1 Ledger Adjustments & Admin Operations)', () =
       search: undefined,
       page: 2,
       pageSize: 10,
+      includeStats: true,
     });
+    expect(result).toBe(expected);
+  });
+
+  it('listUsers passes includeStats=false when requested', async () => {
+    const expected = { items: [], total: 0, page: 1, pageSize: 20 };
+    adminService.listUsers.mockResolvedValue(expected as any);
+
+    await controller.listUsers(undefined, undefined, undefined, '1', '20', 'false');
+
+    expect(adminService.listUsers).toHaveBeenCalledWith({
+      role: undefined,
+      status: undefined,
+      search: undefined,
+      page: 1,
+      pageSize: 20,
+      includeStats: false,
+    });
+  });
+
+  it('getUsersSummaryStatistics delegates to adminService.getUsersSummaryStatistics', async () => {
+    const expected = { totalUsers: 10 } as any;
+    adminService.getUsersSummaryStatistics.mockResolvedValue(expected);
+
+    const result = await controller.getUsersSummaryStatistics();
+
+    expect(adminService.getUsersSummaryStatistics).toHaveBeenCalled();
+    expect(result).toBe(expected);
+  });
+
+  it('getUserStatistics delegates to adminService.getUserStatistics with UUID', async () => {
+    const expected = { userId: 'u1' } as any;
+    adminService.getUserStatistics.mockResolvedValue(expected);
+
+    const result = await controller.getUserStatistics('u1');
+
+    expect(adminService.getUserStatistics).toHaveBeenCalledWith('u1');
     expect(result).toBe(expected);
   });
 

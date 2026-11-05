@@ -68,6 +68,24 @@ describe('AdminService', () => {
       expect(result.pageSize).toBe(20);
       expect(result.items[0].roles).toEqual(['ADMIN']);
       expect(result.items[1].roles).toEqual(['DRIVER']);
+      expect(result.items[0].statistics).toBeDefined();
+      expect(result.items[0].statistics.reviews.total).toBe(0);
+      expect(result.items[0].statistics.surveys.accepted).toBe(0);
+      expect(result.items[0].statistics.surveys.rejected).toBe(0);
+      expect(result.items[0].statistics.surveys.failed).toBe(0);
+      expect(result.items[0].statistics.surveys.noSignsDetected).toBe(0);
+    });
+
+    it('omits statistics when includeStats is false', async () => {
+      mockUserQueryBuilder.getManyAndCount.mockResolvedValueOnce([
+        [
+          { id: 'u1', email: 'user1@stm.dev', fullName: 'User 1', userRoles: [] },
+        ],
+        1,
+      ]);
+
+      const result = await service.listUsers({ includeStats: false });
+      expect(result.items[0].statistics).toBeUndefined();
     });
 
     it('applies status, search, and role filters', async () => {
@@ -602,6 +620,68 @@ describe('AdminService', () => {
       expect(result.updated).toBe(true);
       expect(result.baseAmount).toBe(25);
       expect(result.dailyLimit).toBe(15);
+    });
+  });
+
+  describe('getUserStatistics', () => {
+    it('throws NotFoundException if user does not exist', async () => {
+      dataSource.getRepository.mockReturnValueOnce({
+        findOne: jest.fn().mockResolvedValue(null),
+      });
+
+      await expect(service.getUserStatistics('missing-id')).rejects.toThrow(NotFoundException);
+    });
+
+    it('returns full user statistics breakdown when user exists', async () => {
+      const mockUser = {
+        id: 'u1',
+        fullName: 'Test User',
+        email: 'test@stm.dev',
+        status: 'ACTIVE',
+        userRoles: [{ isActive: true, role: { code: 'SURVEYOR' } }],
+        createdAt: new Date('2026-01-01'),
+      };
+      dataSource.getRepository.mockReturnValueOnce({
+        findOne: jest.fn().mockResolvedValue(mockUser),
+      });
+
+      dataSource.query.mockResolvedValue([]);
+
+      const result = await service.getUserStatistics('u1');
+      expect(result.userId).toBe('u1');
+      expect(result.fullName).toBe('Test User');
+      expect(result.roles).toEqual(['SURVEYOR']);
+      expect(result.reviews).toBeDefined();
+      expect(result.surveys).toBeDefined();
+      expect(result.hazards).toBeDefined();
+      expect(result.navigation).toBeDefined();
+    });
+  });
+
+  describe('getUsersSummaryStatistics', () => {
+    it('aggregates platform metrics across users, reviews, and surveys', async () => {
+      dataSource.query.mockImplementation((sql: string) => {
+        if (sql.includes('FROM users GROUP BY status')) {
+          return Promise.resolve([
+            { status: 'ACTIVE', cnt: 10 },
+            { status: 'SUSPENDED', cnt: 2 },
+          ]);
+        }
+        if (sql.includes('FROM user_roles ur')) {
+          return Promise.resolve([
+            { code: 'SURVEYOR', cnt: 5 },
+            { code: 'REVIEWER', cnt: 6 },
+          ]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const summary = await service.getUsersSummaryStatistics();
+      expect(summary.totalUsers).toBe(12);
+      expect(summary.usersByStatus.active).toBe(10);
+      expect(summary.usersByStatus.suspended).toBe(2);
+      expect(summary.usersByRole.surveyor).toBe(5);
+      expect(summary.usersByRole.reviewer).toBe(6);
     });
   });
 });
