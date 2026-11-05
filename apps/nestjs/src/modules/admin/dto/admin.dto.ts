@@ -321,6 +321,36 @@ export class UpdateRewardRuleDto {
   reason?: string;
 }
 
+export class UpdateSystemFeatureFlagDto {
+  @ApiProperty({ description: 'Whether the feature flag is enabled' })
+  @IsBoolean()
+  isEnabled: boolean;
+
+  @ApiPropertyOptional({ description: 'Optional metadata parameters (e.g. targetEmail)' })
+  @IsOptional()
+  @IsObject()
+  metadata?: Record<string, any>;
+
+  @ApiPropertyOptional({ description: 'Audit reason for toggle change', maxLength: 500 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
+}
+
+export class DemoModeToggleDto {
+  @ApiPropertyOptional({ description: 'Target surveyor email for auto-assigning recaptures in demo mode', example: 'demo@stm.dev' })
+  @IsOptional()
+  @IsString()
+  targetEmail?: string;
+
+  @ApiPropertyOptional({ description: 'Audit reason', maxLength: 500 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
+}
+
 export * from './user-statistics.dto';
 
 

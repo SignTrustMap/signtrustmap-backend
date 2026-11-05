@@ -28,8 +28,11 @@ import {
   CreateFreshnessRuleDto,
   UpdateFreshnessRuleDto,
   UpdateRewardRuleDto,
+  UpdateSystemFeatureFlagDto,
+  DemoModeToggleDto,
 } from './dto/admin.dto';
 import { WalletService } from '../wallet/application/wallet.service';
+import { SystemSwitchService } from './system-switch.service';
 
 @ApiTags('Admin')
 @ApiBearerAuth()
@@ -39,6 +42,7 @@ export class AdminController {
   constructor(
     private readonly svc: AdminService,
     private readonly walletService: WalletService,
+    private readonly systemSwitchService: SystemSwitchService,
   ) { }
 
   @ApiOperation({
@@ -386,6 +390,76 @@ export class AdminController {
   @Get('models/pipeline/status')
   getPipelineStatus() {
     return this.svc.getPipelineStatus();
+  }
+
+  // ── System Feature Switches & Demo Controls ─────────────────────────────────
+
+  @ApiOperation({
+    summary: 'List system feature flags and demo mode switches',
+    description: 'Admin operation to view all runtime feature toggles and bypass flags',
+  })
+  @Get('system-switches')
+  async listSystemSwitches() {
+    return this.systemSwitchService.getAllFlags();
+  }
+
+  @ApiOperation({
+    summary: 'Update or toggle a specific system feature flag',
+    description: 'Admin operation to enable/disable a feature flag with audit logging',
+  })
+  @Patch('system-switches/:key')
+  async updateSystemSwitch(
+    @Param('key') key: string,
+    @Body() dto: UpdateSystemFeatureFlagDto,
+    @CurrentUser() user: any,
+    @Req() req: any,
+  ) {
+    const ip = req.ip || req.headers?.['x-forwarded-for'] || null;
+    return this.systemSwitchService.setFlag(
+      key,
+      dto.isEnabled,
+      dto.metadata,
+      user?.id,
+      dto.reason,
+      ip,
+    );
+  }
+
+  @ApiOperation({
+    summary: 'Enable Master Demo Mode and all presentation shortcuts',
+    description: 'One-click activation of self-review bypass, single-vote consensus, geofence bypass, and testing utilities',
+  })
+  @Post('system-switches/demo-mode/enable')
+  async enableDemoMode(
+    @Body() dto: DemoModeToggleDto,
+    @CurrentUser() user: any,
+    @Req() req: any,
+  ) {
+    const ip = req.ip || req.headers?.['x-forwarded-for'] || null;
+    return this.systemSwitchService.enableDemoMode(
+      dto?.targetEmail || 'demo@stm.dev',
+      user?.id,
+      dto?.reason || 'Admin enabled demo mode for live presentation',
+      ip,
+    );
+  }
+
+  @ApiOperation({
+    summary: 'Reset system to strict production standards',
+    description: 'One-click deactivation of all demo mode switches, quorums, and bypasses',
+  })
+  @Post('system-switches/demo-mode/disable')
+  async disableDemoMode(
+    @Body() dto: DemoModeToggleDto,
+    @CurrentUser() user: any,
+    @Req() req: any,
+  ) {
+    const ip = req.ip || req.headers?.['x-forwarded-for'] || null;
+    return this.systemSwitchService.disableDemoMode(
+      user?.id,
+      dto?.reason || 'Admin reset system to strict production standards',
+      ip,
+    );
   }
 }
 

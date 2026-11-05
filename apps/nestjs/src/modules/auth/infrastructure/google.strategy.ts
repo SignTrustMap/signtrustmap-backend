@@ -6,7 +6,8 @@ import { Strategy, Profile, VerifyCallback } from 'passport-google-oauth20';
 @Injectable()
 export class GoogleStrategy extends PassportStrategy(Strategy, 'google') {
   constructor(configService: ConfigService) {
-    const clientID = configService.get<string>('jwt.googleClientId') || process.env.GOOGLE_CLIENT_ID || 'dummy-client-id';
+    const rawClientId = configService.get<string>('jwt.googleClientId') || process.env.GOOGLE_CLIENT_ID || 'dummy-client-id';
+    const clientID = rawClientId.split(',')[0].trim();
     const clientSecret = configService.get<string>('jwt.googleClientSecret') || process.env.GOOGLE_CLIENT_SECRET || 'dummy-client-secret';
     const callbackURL =
       configService.get<string>('jwt.googleCallbackUrl') ||

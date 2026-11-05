@@ -628,6 +628,11 @@ describe('ReviewsService', () => {
       } as any;
       const notifications = { create: jest.fn().mockResolvedValue({ id: 'notif-1' }) } as any;
 
+      const mockSwitchService = {
+        isEnabled: jest.fn().mockResolvedValue(true),
+        getMetadata: jest.fn().mockResolvedValue({ targetEmail: 'demo@stm.dev' }),
+      } as any;
+
       const service = new ReviewsService(
         candidates,
         {} as any,
@@ -638,6 +643,13 @@ describe('ReviewsService', () => {
         undefined,
         recaptureRepo,
         notifications,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        mockSwitchService,
       );
 
       const res = await service.requestRecapture(

@@ -23,6 +23,7 @@ import { MediaFileType, MEDIA_SIZE_LIMITS } from '../../survey/domain/submission
 import { validateFileSignature, decodeMedia } from '../../survey/domain/media-validator';
 import { AiInferenceService, TopCandidateResult } from '../../../integrations/ai-inference/ai-inference.service';
 import { SignRemedySuggestion } from './sign-remedies.constants';
+import { SystemSwitchService } from '../../admin/system-switch.service';
 
 const RECAPTURE_GEOFENCE_METERS = 100;
 const RECAPTURE_QUEST_RADIUS_KM = 5;
@@ -67,6 +68,7 @@ export class ReviewsService {
     @Optional() @InjectRepository(ReviewerProfile) private readonly reviewerProfileRepo?: Repository<ReviewerProfile>,
     @Optional() @InjectRepository(ReviewFlag) private readonly reviewFlagRepo?: Repository<ReviewFlag>,
     @Optional() @InjectRepository(ReviewerReliabilityHistory) private readonly reliabilityHistoryRepo?: Repository<ReviewerReliabilityHistory>,
+    @Optional() private readonly systemSwitchService?: SystemSwitchService,
   ) {}
 
   async getSignRemedies(candidateId: string): Promise<{ candidateId: string; items: SignRemedySuggestion[] }> {
@@ -137,7 +139,10 @@ export class ReviewsService {
 
   async queue(reviewerId?: string, page = 1, pageSize = 20, includeOwnSubmissions = false) {
     const safePage = Math.max(1, page); const safeSize = Math.min(Math.max(1, pageSize), 100);
-    const allowSelfReview = includeOwnSubmissions || process.env.ALLOW_SELF_REVIEW === 'true';
+    const allowSelfReview = includeOwnSubmissions ||
+      (this.systemSwitchService
+        ? await this.systemSwitchService.isEnabled('ALLOW_SELF_REVIEW')
+        : process.env.ALLOW_SELF_REVIEW === 'true');
     const query = this.candidateRepo.createQueryBuilder('candidate')
       .leftJoinAndSelect('candidate.predictedSignType', 'predictedSignType')
       .leftJoinAndSelect('candidate.submission', 'submission')
@@ -214,7 +219,10 @@ export class ReviewsService {
       relations: ['submission'],
     });
     if (!candidate) throw new NotFoundException('Candidate ' + candidateId + ' not found');
-    const canSelfReview = allowSelfReview || process.env.ALLOW_SELF_REVIEW === 'true';
+    const canSelfReview = allowSelfReview ||
+      (this.systemSwitchService
+        ? await this.systemSwitchService.isEnabled('ALLOW_SELF_REVIEW')
+        : process.env.ALLOW_SELF_REVIEW === 'true');
     if (!canSelfReview && candidate.submission && candidate.submission.surveyorId === reviewerId) {
       throw new ForbiddenException('You cannot review sign candidates from your own survey submission');
     }
@@ -1396,18 +1404,29 @@ export class ReviewsService {
 
     const canSelfReview = allowSelfReview !== undefined
       ? allowSelfReview
-      : (process.env.ALLOW_SELF_REVIEW === 'true' || process.env.DEMO_MODE === 'true');
+      : (this.systemSwitchService
+        ? await this.systemSwitchService.isEnabled('ALLOW_SELF_REVIEW')
+        : (process.env.ALLOW_SELF_REVIEW === 'true' || process.env.DEMO_MODE === 'true'));
     if (!canSelfReview && candidate.submission && candidate.submission.surveyorId === reviewerId) {
       throw new ForbiddenException('You cannot request recapture on sign candidates from your own survey submission');
     }
 
     let surveyorId: string | null = null;
-    try {
-      const demoRows = await (this.candidateRepo.manager as any).query(
-        `SELECT id FROM users WHERE email = 'demo@stm.dev' AND status = 'ACTIVE' LIMIT 1`,
-      );
-      if (demoRows && demoRows[0]?.id) surveyorId = demoRows[0].id;
-    } catch {}
+    const isAutoAssignRecapture = this.systemSwitchService
+      ? await this.systemSwitchService.isEnabled('AUTO_ASSIGN_RECAPTURE_EMAIL')
+      : false;
+
+    if (isAutoAssignRecapture) {
+      const meta = await this.systemSwitchService?.getMetadata<{ targetEmail?: string }>('AUTO_ASSIGN_RECAPTURE_EMAIL');
+      const targetEmail = meta?.targetEmail || 'demo@stm.dev';
+      try {
+        const demoRows = await (this.candidateRepo.manager as any).query(
+          `SELECT id FROM users WHERE email = $1 AND status = 'ACTIVE' LIMIT 1`,
+          [targetEmail],
+        );
+        if (demoRows && demoRows[0]?.id) surveyorId = demoRows[0].id;
+      } catch {}
+    }
 
     if (!surveyorId) {
       surveyorId = candidate.submission?.surveyorId ?? null;
@@ -1602,6 +1621,10 @@ export class ReviewsService {
       throw new BadRequestException(`Candidate ${candidateId} is not awaiting recapture (status=${candidate.status})`);
     }
 
+    const isRecaptureBypass = this.systemSwitchService
+      ? await this.systemSwitchService.isEnabled('BYPASS_RECAPTURE_GEOFENCE')
+      : false;
+
     const requestRows: any[] = await (this.candidateRepo.manager as any).query(
       `SELECT id, missing_type_report_id, completed_at
        FROM candidate_recapture_requests
@@ -1609,10 +1632,10 @@ export class ReviewsService {
          AND (
            surveyor_id = $2
            OR surveyor_id IS NULL
-           OR EXISTS (SELECT 1 FROM users u WHERE u.id = $2 AND u.email = 'demo@stm.dev')
+           OR $3::boolean = true
          )
          AND completed_at IS NULL`,
-      [candidateId, surveyorId],
+      [candidateId, surveyorId, isRecaptureBypass],
     );
     if (requestRows.length !== 1) {
       if (dto.idempotencyKey?.trim()) {
@@ -1695,11 +1718,11 @@ export class ReviewsService {
              AND (
                crr.surveyor_id = $3
                OR crr.surveyor_id IS NULL
-               OR EXISTS (SELECT 1 FROM users u WHERE u.id = $3 AND u.email = 'demo@stm.dev')
+               OR $4::boolean = true
              )
              AND crr.completed_at IS NULL
            FOR UPDATE OF c, crr, r`,
-          [candidateId, requestId, surveyorId],
+          [candidateId, requestId, surveyorId, isRecaptureBypass],
         );
         if (locked.length !== 1 || locked[0].status !== CandidateStatus.RECAPTURE_REQUESTED) throw new BadRequestException('Recapture request is no longer active');
         if (locked[0].report_status !== 'INCOMPLETE') throw new BadRequestException('Associated Missing Type Report is not incomplete');
@@ -1736,6 +1759,10 @@ export class ReviewsService {
         if (getAffectedRowCount(location) !== 1) {
           throw new BadRequestException('Candidate sign location changed before recapture persistence');
         }
+        const isBypassActive = this.systemSwitchService
+          ? await this.systemSwitchService.isEnabled('BYPASS_RECAPTURE_GEOFENCE')
+          : false;
+
         const consumed = await tx.query(
           `UPDATE candidate_recapture_requests
            SET surveyor_id = $3, completed_at = NOW(), submission_idempotency_key = $2
@@ -1743,9 +1770,9 @@ export class ReviewsService {
              AND (
                surveyor_id = $3
                OR surveyor_id IS NULL
-               OR EXISTS (SELECT 1 FROM users u WHERE u.id = $3 AND u.email = 'demo@stm.dev')
+               OR $4::boolean = true
              )`,
-          [requestId, dto.idempotencyKey?.trim() || null, surveyorId],
+          [requestId, dto.idempotencyKey?.trim() || null, surveyorId, isBypassActive],
         );
         if (getAffectedRowCount(consumed) !== 1) throw new BadRequestException('Recapture request was already consumed');
       };
@@ -1810,6 +1837,9 @@ export class ReviewsService {
     const longitudeValue = longitude ?? null;
     const latitudeValue = latitude ?? null;
     const radiusMeters = RECAPTURE_QUEST_RADIUS_KM * 1000;
+    const isGeofenceBypassed = this.systemSwitchService
+      ? await this.systemSwitchService.isEnabled('BYPASS_RECAPTURE_GEOFENCE')
+      : false;
 
     let total = 0;
     let items: any[] = [];
@@ -1820,10 +1850,10 @@ export class ReviewsService {
        WHERE crr.completed_at IS NULL
          AND (
            (
-             EXISTS (SELECT 1 FROM users u WHERE u.id = $1 AND u.email = 'demo@stm.dev')
+             $5::boolean = true
            )
            OR (
-             NOT EXISTS (SELECT 1 FROM users u WHERE u.email = 'demo@stm.dev')
+             TRUE
              AND (
                crr.surveyor_id = $1
                OR (
@@ -1846,7 +1876,7 @@ export class ReviewsService {
              )
            )
          )`,
-      [surveyorId, longitudeValue, latitudeValue, radiusMeters],
+      [surveyorId, longitudeValue, latitudeValue, radiusMeters, isGeofenceBypassed],
     );
     total = countRows[0]?.cnt ?? 0;
 
@@ -1875,10 +1905,10 @@ export class ReviewsService {
        WHERE crr.completed_at IS NULL
          AND (
            (
-             EXISTS (SELECT 1 FROM users u WHERE u.id = $1 AND u.email = 'demo@stm.dev')
+             $5::boolean = true
            )
            OR (
-             NOT EXISTS (SELECT 1 FROM users u WHERE u.email = 'demo@stm.dev')
+             TRUE
              AND (
                crr.surveyor_id = $1
                OR (
@@ -1898,8 +1928,8 @@ export class ReviewsService {
        ORDER BY CASE WHEN crr.surveyor_id = $1 THEN 0 ELSE 1 END,
          CASE WHEN crr.surveyor_id IS NULL THEN RANDOM() END,
          crr.created_at DESC
-       LIMIT $5 OFFSET $6`,
-      [surveyorId, longitudeValue, latitudeValue, radiusMeters, ps, (p - 1) * ps],
+       LIMIT $6 OFFSET $7`,
+      [surveyorId, longitudeValue, latitudeValue, radiusMeters, isGeofenceBypassed, ps, (p - 1) * ps],
     );
 
     return {

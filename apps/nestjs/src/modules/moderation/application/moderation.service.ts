@@ -24,6 +24,7 @@ import { MinioStorageService, STM_BUCKETS } from '../../../integrations/minio/mi
 import { VEHICLE_TYPES } from '../../../common/vehicle-types';
 import { validateFileSignature } from '../../survey/domain/media-validator';
 import { MediaFileType } from '../../survey/domain/submission-contract';
+import { SystemSwitchService } from '../../admin/system-switch.service';
 
 export interface CandidateEnriched {
   id: string;
@@ -63,6 +64,7 @@ export class ModerationService {
     @Optional() @InjectRepository(SignTypeImage) private readonly signTypeImageRepo?: Repository<SignTypeImage>,
     @Optional() @InjectRepository(UserStatusHistory) private readonly userStatusHistoryRepo?: Repository<UserStatusHistory>,
     @Optional() @InjectRepository(AuditLog) private readonly auditLogRepo?: Repository<AuditLog>,
+    @Optional() private readonly systemSwitchService?: SystemSwitchService,
   ) {}
 
   /**
@@ -1292,10 +1294,17 @@ export class ModerationService {
         throw new ConflictException('An active recapture request already exists for candidate ' + candidate.id);
       }
       let surveyorId: string | null = null;
-      if (typeof manager.getRepository === 'function') {
+      const isAutoAssignRecapture = this.systemSwitchService
+        ? await this.systemSwitchService.isEnabled('AUTO_ASSIGN_RECAPTURE_EMAIL')
+        : false;
+
+      if (isAutoAssignRecapture && typeof manager.getRepository === 'function') {
+        const meta = await this.systemSwitchService?.getMetadata<{ targetEmail?: string }>('AUTO_ASSIGN_RECAPTURE_EMAIL');
+        const targetEmail = meta?.targetEmail || 'demo@stm.dev';
         try {
           const demoSurveyorRows: Array<{ id: string }> = await manager.query(
-            `SELECT id FROM users WHERE email = 'demo@stm.dev' AND status = 'ACTIVE' LIMIT 1`,
+            `SELECT id FROM users WHERE email = $1 AND status = 'ACTIVE' LIMIT 1`,
+            [targetEmail],
           );
           if (demoSurveyorRows[0]?.id) surveyorId = demoSurveyorRows[0].id;
         } catch {}
@@ -1772,10 +1781,17 @@ export class ModerationService {
       }
       // Open quest; the first eligible nearby Surveyor claims it on submission.
       let surveyorId: string | null = null;
-      if (typeof manager.getRepository === 'function') {
+      const isAutoAssignRecapture = this.systemSwitchService
+        ? await this.systemSwitchService.isEnabled('AUTO_ASSIGN_RECAPTURE_EMAIL')
+        : false;
+
+      if (isAutoAssignRecapture && typeof manager.getRepository === 'function') {
+        const meta = await this.systemSwitchService?.getMetadata<{ targetEmail?: string }>('AUTO_ASSIGN_RECAPTURE_EMAIL');
+        const targetEmail = meta?.targetEmail || 'demo@stm.dev';
         try {
           const demoSurveyorRows: Array<{ id: string }> = await manager.query(
-            `SELECT id FROM users WHERE email = 'demo@stm.dev' AND status = 'ACTIVE' LIMIT 1`,
+            `SELECT id FROM users WHERE email = $1 AND status = 'ACTIVE' LIMIT 1`,
+            [targetEmail],
           );
           if (demoSurveyorRows[0]?.id) surveyorId = demoSurveyorRows[0].id;
         } catch {}

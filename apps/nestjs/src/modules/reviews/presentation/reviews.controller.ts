@@ -1,10 +1,11 @@
-import { Controller, Body, Param, ParseUUIDPipe, Post, Query, Get, Patch, Delete, UseGuards, UseInterceptors, UploadedFiles } from '@nestjs/common';
+import { Controller, Body, Param, ParseUUIDPipe, Post, Query, Get, Patch, Delete, UseGuards, UseInterceptors, UploadedFiles, ForbiddenException, Optional } from '@nestjs/common';
 import { FileFieldsInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { Public } from '../../../common/decorators/public.decorator';
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { ReviewsService } from '../application/reviews.service';
+import { SystemSwitchService } from '../../admin/system-switch.service';
 import {
   VoteDto,
   ReportDto,
@@ -24,7 +25,10 @@ import { InternalTokenGuard } from '../../../common/guards/internal-token.guard'
 @ApiTags('Reviews')
 @Controller('reviews')
 export class ReviewsController {
-  constructor(private readonly reviewsService: ReviewsService) {}
+  constructor(
+    private readonly reviewsService: ReviewsService,
+    @Optional() private readonly systemSwitchService?: SystemSwitchService,
+  ) {}
 
   @ApiBearerAuth()
   @ApiOperation({
@@ -200,7 +204,10 @@ export class ReviewsController {
     @Param('candidateId', ParseUUIDPipe) candidateId: string,
     @Body() dto: RequestRecaptureDto,
   ) {
-    const allowSelf = user?.role === 'ADMIN' || user?.email === 'demo@stm.dev' || process.env.ALLOW_SELF_REVIEW === 'true';
+    const isSelfAllowed = this.systemSwitchService
+      ? await this.systemSwitchService.isEnabled('ALLOW_SELF_REVIEW')
+      : process.env.ALLOW_SELF_REVIEW === 'true';
+    const allowSelf = user?.role === 'ADMIN' || isSelfAllowed;
     return this.reviewsService.requestRecapture(user.id, candidateId, dto, allowSelf);
   }
 
@@ -296,6 +303,11 @@ export class ReviewsController {
       );
     }
 
+    const isSelfAllowed = this.systemSwitchService
+      ? await this.systemSwitchService.isEnabled('ALLOW_SELF_REVIEW')
+      : false;
+    allowSelf = allowSelf || isSelfAllowed;
+
     return this.reviewsService.queue(
       user?.id,
       Number.isNaN(p) ? 1 : p,
@@ -305,12 +317,16 @@ export class ReviewsController {
   }
 
   @ApiBearerAuth()
+  @Roles('ADMIN')
   @ApiOperation({
-    summary: 'Test review candidate sign (Testing/Development)',
-    description: 'Submit review for a candidate with 1 specific reviewer and immediately evaluate consensus. Bypasses surveyor check.',
+    summary: 'Test review candidate sign (Admin Testing)',
+    description: 'Submit review for a candidate with 1 specific reviewer and immediately evaluate consensus. Gated by ENABLE_TEST_UTILITY_ENDPOINTS.',
   })
   @Post('test-review')
   async testReview(@CurrentUser() user: any, @Body() dto: TestReviewDto) {
+    if (this.systemSwitchService && !(await this.systemSwitchService.isEnabled('ENABLE_TEST_UTILITY_ENDPOINTS'))) {
+      throw new ForbiddenException('Testing utility endpoints are disabled in production mode. Enable via Admin System Switches.');
+    }
     const targetReviewerId = dto.reviewerId || user.id;
     return this.reviewsService.testReviewCandidate(dto.candidateId, targetReviewerId, {
       vote: dto.vote,
@@ -321,12 +337,16 @@ export class ReviewsController {
   }
 
   @ApiBearerAuth()
+  @Roles('ADMIN')
   @ApiOperation({
-    summary: 'Direct/Assign candidates to 1 specific reviewer for testing',
-    description: 'Clear previous skipped/reviewed flags or prepare pending candidates for a specific reviewer queue',
+    summary: 'Direct/Assign candidates to 1 specific reviewer for testing (Admin Testing)',
+    description: 'Clear previous skipped/reviewed flags or prepare pending candidates for a specific reviewer queue. Gated by ENABLE_TEST_UTILITY_ENDPOINTS.',
   })
   @Post('test-assign')
   async testAssign(@CurrentUser() user: any, @Body() dto: TestAssignDto) {
+    if (this.systemSwitchService && !(await this.systemSwitchService.isEnabled('ENABLE_TEST_UTILITY_ENDPOINTS'))) {
+      throw new ForbiddenException('Testing utility endpoints are disabled in production mode. Enable via Admin System Switches.');
+    }
     const targetReviewerId = dto.reviewerId || user.id;
     return this.reviewsService.directCandidatesToReviewer(targetReviewerId, dto.candidateIds);
   }

@@ -14,10 +14,14 @@ import { UserStatusHistory } from './user-status-history.entity';
 import { ConsensusConfig } from '../consensus/infrastructure/persistence/consensus-config.entity';
 import { FreshnessRule } from '../revalidation/infrastructure/persistence/freshness-rule.entity';
 import { RewardRule } from '../rewards/infrastructure/persistence/reward-rule.entity';
+import { SystemFeatureFlag } from './system-feature-flag.entity';
+import { SystemSwitchModule } from './system-switch.module';
+import { SystemSwitchService } from './system-switch.service';
 
 @Module({
   imports: [
     WalletModule,
+    SystemSwitchModule,
     TypeOrmModule.forFeature([
       User,
       UserRole,
@@ -29,10 +33,11 @@ import { RewardRule } from '../rewards/infrastructure/persistence/reward-rule.en
       ConsensusConfig,
       FreshnessRule,
       RewardRule,
+      SystemFeatureFlag,
     ]),
   ],
   controllers: [AdminController, MlopsController],
   providers: [AdminService],
-  exports: [AdminService],
+  exports: [AdminService, SystemSwitchModule],
 })
 export class AdminModule {}

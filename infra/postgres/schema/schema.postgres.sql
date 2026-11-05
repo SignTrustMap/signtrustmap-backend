@@ -1328,3 +1328,21 @@ ALTER TABLE "system_parameters" ADD FOREIGN KEY ("updated_by") REFERENCES "users
 ALTER TABLE "audit_logs" ADD FOREIGN KEY ("user_id") REFERENCES "users" ("id") DEFERRABLE INITIALLY IMMEDIATE;
 
 ALTER TABLE "notifications" ADD FOREIGN KEY ("user_id") REFERENCES "users" ("id") DEFERRABLE INITIALLY IMMEDIATE;
+
+
+-- -----------------------------------------------------------------------------
+-- system_feature_flags: Runtime feature toggles and demo bypass switches
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS "system_feature_flags" (
+  "key" VARCHAR(64) PRIMARY KEY,
+  "name" VARCHAR(128) NOT NULL,
+  "description" TEXT,
+  "category" VARCHAR(32) NOT NULL DEFAULT 'DEMO',
+  "is_enabled" BOOLEAN NOT NULL DEFAULT FALSE,
+  "metadata" JSONB DEFAULT '{}'::jsonb,
+  "updated_at" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  "updated_by" UUID REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS "idx_system_feature_flags_category"
+  ON "system_feature_flags" ("category");

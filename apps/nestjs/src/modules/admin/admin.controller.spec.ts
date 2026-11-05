@@ -38,7 +38,14 @@ describe('AdminController (Phase 1 Ledger Adjustments & Admin Operations)', () =
       freezeWallet: jest.fn(),
     } as unknown as jest.Mocked<WalletService>;
 
-    controller = new AdminController(adminService, walletService);
+    const systemSwitchService = {
+      getAllFlags: jest.fn().mockResolvedValue([]),
+      setFlag: jest.fn().mockResolvedValue({ key: 'DEMO_MODE_ACTIVE', isEnabled: true }),
+      enableDemoMode: jest.fn().mockResolvedValue([]),
+      disableDemoMode: jest.fn().mockResolvedValue([]),
+    } as any;
+
+    controller = new AdminController(adminService, walletService, systemSwitchService);
   });
 
   it('enforces ADMIN role restriction on AdminController', () => {
@@ -356,6 +363,26 @@ describe('AdminController (Phase 1 Ledger Adjustments & Admin Operations)', () =
 
       expect(adminService.updateRewardRule).toHaveBeenCalledWith('REVALIDATION_REWARD', dto, mockAdmin.id, '127.0.0.1');
       expect(result).toBe(expected);
+    });
+
+    it('listSystemSwitches delegates to systemSwitchService.getAllFlags', async () => {
+      const result = await controller.listSystemSwitches();
+      expect(Array.isArray(result)).toBe(true);
+    });
+
+    it('updateSystemSwitch delegates to systemSwitchService.setFlag', async () => {
+      const dto = { isEnabled: true, reason: 'Testing presentation' };
+      const result = await controller.updateSystemSwitch('DEMO_MODE_ACTIVE', dto, mockAdmin, mockReq);
+      expect(result).toEqual({ key: 'DEMO_MODE_ACTIVE', isEnabled: true });
+    });
+
+    it('enableDemoMode and disableDemoMode delegate to systemSwitchService', async () => {
+      const dto = { targetEmail: 'demo@stm.dev' };
+      const enabledResult = await controller.enableDemoMode(dto, mockAdmin, mockReq);
+      expect(Array.isArray(enabledResult)).toBe(true);
+
+      const disabledResult = await controller.disableDemoMode(dto, mockAdmin, mockReq);
+      expect(Array.isArray(disabledResult)).toBe(true);
     });
   });
 });

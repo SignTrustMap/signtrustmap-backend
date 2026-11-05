@@ -23,6 +23,7 @@ import { SurveySubmission } from '../../survey/infrastructure/persistence/survey
 import { SurveyorProfile } from '../../survey/infrastructure/persistence/surveyor-profile.entity';
 import { ModerationCase } from '../../moderation/infrastructure/persistence/moderation-case.entity';
 import { RevalidationTask, TaskStatus } from '../../revalidation/infrastructure/persistence/revalidation-task.entity';
+import { SystemSwitchService } from '../../admin/system-switch.service';
 
 @Injectable()
 export class ConsensusService {
@@ -48,6 +49,7 @@ export class ConsensusService {
     @Optional() @InjectRepository(SurveyorProfile) private readonly surveyorProfileRepo?: Repository<SurveyorProfile>,
     @Optional() @InjectRepository(ModerationCase) private readonly moderationCaseRepo?: Repository<ModerationCase>,
     @Optional() @InjectRepository(ReviewerReliabilityHistory) private readonly reviewerHistoryRepo?: Repository<ReviewerReliabilityHistory>,
+    @Optional() private readonly systemSwitchService?: SystemSwitchService,
   ) {}
 
   async evaluate(candidateId: string): Promise<ConsensusLog | null> {
@@ -69,7 +71,7 @@ export class ConsensusService {
         id: 0,
         approvalThreshold: 0.5,
         rejectionThreshold: -0.5,
-        minVotesRequired: 1,
+        minVotesRequired: 3,
         alphaSmoothingFactor: 0.1,
         weightCorrect: 1.0,
         penaltyFalse: 2.0,
@@ -133,7 +135,13 @@ export class ConsensusService {
     let outcome: ConsensusOutcome | null = null;
     let winningVote: number | null = null;
 
-    if ((config.minVotesRequired === 1 || process.env.DEMO_MODE !== 'false') && reviews.length >= 1) {
+    const isSingleVoteConsensus =
+      config.minVotesRequired === 1 ||
+      (this.systemSwitchService
+        ? await this.systemSwitchService.isEnabled('SINGLE_VOTE_CONSENSUS')
+        : process.env.DEMO_MODE === 'true');
+
+    if (isSingleVoteConsensus && reviews.length >= 1) {
       const lastReview = reviews[reviews.length - 1];
       if (lastReview.vote === 1 || score > 0) {
         outcome = ConsensusOutcome.APPROVED;
