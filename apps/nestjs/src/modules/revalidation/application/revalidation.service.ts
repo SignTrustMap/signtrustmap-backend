@@ -356,7 +356,15 @@ export class RevalidationService {
   async submitEvidence(
     taskId: string,
     userId: string,
-    dto: { mediaUrl?: string; latitude: number; longitude: number; evidenceType?: string },
+    dto: {
+      mediaUrl?: string;
+      latitude: number;
+      longitude: number;
+      evidenceType?: string;
+      isLiveCapture?: boolean;
+      accuracyMeters?: number;
+      headingDegrees?: number;
+    },
     file?: Express.Multer.File,
   ) {
     const task = await this.tasks.findOne({ where: { id: taskId } });
@@ -438,9 +446,20 @@ export class RevalidationService {
       }
       await manager.query(
         `INSERT INTO revalidation_evidences
-           (id, task_id, user_id, media_url, location, evidence_type)
-         VALUES ($1, $2, $3, $4, ST_SetSRID(ST_MakePoint($5, $6), 4326), $7)`,
-        [id, taskId, userId, mediaUrl, lon, lat, evidenceType],
+           (id, task_id, user_id, media_url, location, evidence_type, is_live_capture, accuracy_meters, heading_degrees)
+         VALUES ($1, $2, $3, $4, ST_SetSRID(ST_MakePoint($5, $6), 4326), $7, $8, $9, $10)`,
+        [
+          id,
+          taskId,
+          userId,
+          mediaUrl,
+          lon,
+          lat,
+          evidenceType,
+          Boolean(dto.isLiveCapture),
+          dto.accuracyMeters != null ? Number(dto.accuracyMeters) : null,
+          dto.headingDegrees != null ? Number(dto.headingDegrees) : null,
+        ],
       );
       if (lockedTasks[0].status === TaskStatus.OPEN) {
         await manager.query(
@@ -481,10 +500,116 @@ export class RevalidationService {
       latitude: lat,
       longitude: lon,
       evidenceType,
+      isLiveCapture: Boolean(dto.isLiveCapture),
+      accuracyMeters: dto.accuracyMeters != null ? Number(dto.accuracyMeters) : null,
+      headingDegrees: dto.headingDegrees != null ? Number(dto.headingDegrees) : null,
       distanceMeters: Math.round(distanceMeters * 100) / 100,
       maxProximityMeters,
       dailySubmissionLimit,
       remainingDailySubmissions: Math.max(0, dailySubmissionLimit - (recentCount + 1)),
+    };
+  }
+
+  /**
+   * Pre-flight GPS proximity check to determine if surveyor is eligible to trigger live camera capture on-site.
+   * Mirrors geofencing behavior of attendance/check-in applications.
+   */
+  async checkInEligibility(
+    taskId: string,
+    userId: string,
+    dto: { latitude: number; longitude: number; accuracyMeters?: number },
+  ) {
+    const task = await this.tasks.findOne({ where: { id: taskId } });
+    if (!task) throw new NotFoundException(`RevalidationTask ${taskId} not found`);
+
+    const isOpen = [TaskStatus.OPEN, TaskStatus.EVALUATING].includes(task.status as any);
+    if (!isOpen) {
+      return {
+        eligible: false,
+        taskId,
+        taskStatus: task.status,
+        canCaptureLive: false,
+        isWithinProximity: false,
+        distanceMeters: null,
+        maxProximityMeters: null,
+        remainingDistanceMeters: null,
+        dailyLimitReached: false,
+        remainingSubmissionsToday: 0,
+        message: `Nhiệm vụ #${taskId} hiện không nhận bằng chứng mới (trạng thái: ${task.status}).`,
+      };
+    }
+
+    const { maxProximityMeters, dailySubmissionLimit } = await this.resolveRuleLimits(task);
+
+    // Compute PostGIS spherical distance to target traffic sign
+    const distanceRows: any[] = await this.dataSource.query(
+      `SELECT ST_DistanceSphere(
+                ST_SetSRID(ST_MakePoint($1, $2), 4326),
+                vts.location
+              ) AS distance_meters,
+              ST_Y(vts.location::geometry) AS target_lat,
+              ST_X(vts.location::geometry) AS target_lon,
+              vts.id AS verified_sign_id
+       FROM revalidation_tasks rt
+       JOIN verified_traffic_signs vts ON vts.id = rt.verified_sign_id
+       WHERE rt.id = $3`,
+      [dto.longitude, dto.latitude, taskId],
+    );
+
+    if (distanceRows.length === 0 || distanceRows[0].distance_meters == null) {
+      throw new BadRequestException('Target traffic sign has no valid geographic coordinates');
+    }
+
+    const distanceMeters = Math.round(Number(distanceRows[0].distance_meters) * 10) / 10;
+    const isWithinProximity = distanceMeters <= maxProximityMeters;
+    const remainingDistanceMeters = Math.max(0, Math.round((distanceMeters - maxProximityMeters) * 10) / 10);
+
+    // Check daily submission limit in the last 24 hours
+    const recentRows: any[] = await this.dataSource.query(
+      `SELECT COUNT(*)::int AS cnt
+       FROM revalidation_evidences
+       WHERE task_id = $1 AND submitted_at >= now() - interval '24 hours'`,
+      [taskId],
+    );
+    const recentCount = Number(recentRows[0]?.cnt ?? 0);
+    const dailyLimitReached = recentCount >= dailySubmissionLimit;
+    const remainingSubmissionsToday = Math.max(0, dailySubmissionLimit - recentCount);
+
+    const eligible = isWithinProximity && !dailyLimitReached;
+
+    let message = '';
+    if (dailyLimitReached) {
+      message = `Nhiệm vụ này đã đạt giới hạn nộp bằng chứng trong 24h (${recentCount}/${dailySubmissionLimit} lượt).`;
+    } else if (isWithinProximity) {
+      message = `Vị trí hợp lệ để chụp ảnh tại hiện trường (cách biển báo ${distanceMeters}m <= ${maxProximityMeters}m).`;
+    } else {
+      message = `Bạn đang cách biển báo ${distanceMeters}m. Vui lòng di chuyển lại gần thêm ${remainingDistanceMeters}m (tối đa ${maxProximityMeters}m) để mở máy ảnh.`;
+    }
+
+    return {
+      eligible,
+      canCaptureLive: eligible,
+      taskId,
+      signId: distanceRows[0].verified_sign_id,
+      taskStatus: task.status,
+      distanceMeters,
+      maxProximityMeters,
+      isWithinProximity,
+      remainingDistanceMeters,
+      dailyLimitReached,
+      recentSubmissionsCount: recentCount,
+      dailySubmissionLimit,
+      remainingSubmissionsToday,
+      targetLocation: {
+        lat: Number(distanceRows[0].target_lat),
+        lon: Number(distanceRows[0].target_lon),
+      },
+      surveyorLocation: {
+        lat: dto.latitude,
+        lon: dto.longitude,
+      },
+      accuracyMeters: dto.accuracyMeters != null ? Number(dto.accuracyMeters) : null,
+      message,
     };
   }
   async listEvidencesForTask(taskId: string) {
@@ -498,9 +623,12 @@ export class RevalidationService {
       }
       throw new NotFoundException('RevalidationTask ' + taskId + ' not found');
     }
-    const rows: any[] = await this.dataSource.query('SELECT id, task_id, user_id, media_url, evidence_type, submitted_at, ST_AsText(location) as location_wkt FROM revalidation_evidences WHERE task_id=$1 ORDER BY submitted_at ASC', [taskId]);
+    const rows: any[] = await this.dataSource.query('SELECT id, task_id, user_id, media_url, evidence_type, is_live_capture, accuracy_meters, heading_degrees, submitted_at, ST_AsText(location) as location_wkt FROM revalidation_evidences WHERE task_id=$1 ORDER BY submitted_at ASC', [taskId]);
     return rows.map((r) => ({
       ...r,
+      isLiveCapture: Boolean(r.is_live_capture),
+      accuracyMeters: r.accuracy_meters != null ? Number(r.accuracy_meters) : null,
+      headingDegrees: r.heading_degrees != null ? Number(r.heading_degrees) : null,
       media_url: this.toS3Url(r.media_url, r.task_id),
       mediaUrl: this.toS3Url(r.media_url, r.task_id),
     }));
@@ -510,7 +638,7 @@ export class RevalidationService {
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(signId);
     if (!isUuid) return [];
     const rows: any[] = await this.dataSource.query(
-      `SELECT ev.id, ev.task_id, ev.user_id, ev.media_url, ev.evidence_type, ev.submitted_at, ST_AsText(ev.location) as location_wkt
+      `SELECT ev.id, ev.task_id, ev.user_id, ev.media_url, ev.evidence_type, ev.is_live_capture, ev.accuracy_meters, ev.heading_degrees, ev.submitted_at, ST_AsText(ev.location) as location_wkt
        FROM revalidation_evidences ev
        JOIN revalidation_tasks rt ON rt.id = ev.task_id
        WHERE rt.verified_sign_id = $1
@@ -519,6 +647,9 @@ export class RevalidationService {
     );
     return rows.map((r) => ({
       ...r,
+      isLiveCapture: Boolean(r.is_live_capture),
+      accuracyMeters: r.accuracy_meters != null ? Number(r.accuracy_meters) : null,
+      headingDegrees: r.heading_degrees != null ? Number(r.heading_degrees) : null,
       media_url: this.toS3Url(r.media_url, r.task_id),
       mediaUrl: this.toS3Url(r.media_url, r.task_id),
     }));
@@ -549,6 +680,9 @@ export class RevalidationService {
          ev.user_id,
          ev.media_url,
          ev.evidence_type,
+         ev.is_live_capture,
+         ev.accuracy_meters,
+         ev.heading_degrees,
          ev.submitted_at,
          ST_Y(ev.location::geometry) AS latitude,
          ST_X(ev.location::geometry) AS longitude,
@@ -587,6 +721,9 @@ export class RevalidationService {
       evidence: {
         mediaUrl: this.toS3Url(r.media_url, r.task_id),
         evidenceType: r.evidence_type ?? 'STILL_ACTIVE',
+        isLiveCapture: Boolean(r.is_live_capture),
+        accuracyMeters: r.accuracy_meters != null ? Number(r.accuracy_meters) : null,
+        headingDegrees: r.heading_degrees != null ? Number(r.heading_degrees) : null,
         submittedAt: r.submitted_at,
         latitude: Number(r.latitude),
         longitude: Number(r.longitude),

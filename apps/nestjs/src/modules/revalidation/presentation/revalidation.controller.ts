@@ -4,7 +4,7 @@ import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagg
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RevalidationService } from '../application/revalidation.service';
-import { SubmitEvidenceDto, EvidenceVoteDto, EarlyClassifyDto, RequestEvidenceRecaptureDto } from './dto/revalidation.dto';
+import { SubmitEvidenceDto, EvidenceVoteDto, EarlyClassifyDto, RequestEvidenceRecaptureDto, CheckInEligibilityDto } from './dto/revalidation.dto';
 
 @ApiTags('Revalidation')
 @Controller()
@@ -84,6 +84,48 @@ export class RevalidationController {
   @ApiOperation({ summary: 'List evidences for sign', description: 'Retrieve surveyor evidence submissions and photos across all revalidations for a verified sign' })
   @Get('revalidation/signs/:signId/evidences')
   listEvidencesForSign(@Param('signId', ParseUUIDPipe) signId: string) { return this.svc.listEvidencesForSign(signId); }
+
+  @ApiBearerAuth()
+  @Roles('SURVEYOR', 'ADMIN')
+  @ApiOperation({
+    summary: 'Check on-site check-in eligibility',
+    description: 'Verify if surveyor GPS position is within allowed proximity of target sign before unlocking live camera capture',
+  })
+  @Post('revalidation/tasks/:taskId/check-in')
+  checkInEligibility(
+    @Param('taskId', ParseUUIDPipe) taskId: string,
+    @CurrentUser() user: any,
+    @Body() dto: CheckInEligibilityDto,
+  ) {
+    return this.svc.checkInEligibility(taskId, user.id, dto);
+  }
+
+  @ApiBearerAuth()
+  @Roles('SURVEYOR', 'ADMIN')
+  @ApiOperation({
+    summary: 'Query on-site check-in eligibility via GET',
+    description: 'Poll whether current device coordinates are within allowed proximity of target sign to enable camera capture button',
+  })
+  @Get('revalidation/tasks/:taskId/check-in')
+  queryCheckInEligibility(
+    @Param('taskId', ParseUUIDPipe) taskId: string,
+    @CurrentUser() user: any,
+    @Query('lat') lat: string,
+    @Query('lon') lon: string,
+    @Query('accuracyMeters') accuracyMeters?: string,
+  ) {
+    const parsedLat = parseFloat(lat);
+    const parsedLon = parseFloat(lon);
+    if (Number.isNaN(parsedLat) || Number.isNaN(parsedLon) || parsedLat < -90 || parsedLat > 90 || parsedLon < -180 || parsedLon > 180) {
+      throw new BadRequestException('lat and lon query parameters must be valid GPS coordinates');
+    }
+    const parsedAcc = accuracyMeters ? parseFloat(accuracyMeters) : undefined;
+    return this.svc.checkInEligibility(taskId, user.id, {
+      latitude: parsedLat,
+      longitude: parsedLon,
+      accuracyMeters: parsedAcc && !Number.isNaN(parsedAcc) ? parsedAcc : undefined,
+    });
+  }
 
   @ApiBearerAuth()
   @Roles('SURVEYOR', 'ADMIN')
