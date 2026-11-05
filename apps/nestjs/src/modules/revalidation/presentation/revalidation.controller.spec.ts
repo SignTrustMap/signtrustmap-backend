@@ -17,6 +17,7 @@ describe('RevalidationController', () => {
     listDecisions: jest.Mock;
     triggerEarlyClassification: jest.Mock;
     requestEvidenceRecapture: jest.Mock;
+    checkInEligibility: jest.Mock;
   };
 
   const mockUser = { id: 'u-user', role: 'SURVEYOR' };
@@ -35,6 +36,7 @@ describe('RevalidationController', () => {
       listDecisions: jest.fn().mockResolvedValue([]),
       triggerEarlyClassification: jest.fn().mockResolvedValue({ taskId: 'task-1', classification: { className: 'No_entry' } }),
       requestEvidenceRecapture: jest.fn().mockResolvedValue({ success: true }),
+      checkInEligibility: jest.fn().mockResolvedValue({ eligible: true, canCaptureLive: true, isWithinProximity: true }),
     };
 
     controller = new RevalidationController(service as unknown as RevalidationService);
@@ -159,6 +161,28 @@ describe('RevalidationController', () => {
       const res = await controller.requestEvidenceRecapture('ev-1', mockUser, dto);
       expect(res).toEqual({ success: true });
       expect(service.requestEvidenceRecapture).toHaveBeenCalledWith('ev-1', mockUser.id, dto);
+    });
+
+    it('checkInEligibility delegates to service.checkInEligibility via POST', async () => {
+      const dto = { latitude: 10.77689, longitude: 106.70090, accuracyMeters: 4.5 };
+      const res = await controller.checkInEligibility('task-1', mockUser, dto);
+      expect(res).toEqual({ eligible: true, canCaptureLive: true, isWithinProximity: true });
+      expect(service.checkInEligibility).toHaveBeenCalledWith('task-1', mockUser.id, dto);
+    });
+
+    it('queryCheckInEligibility delegates to service.checkInEligibility via GET query params', async () => {
+      const res = await controller.queryCheckInEligibility('task-1', mockUser, '10.77689', '106.70090', '5.0');
+      expect(res).toEqual({ eligible: true, canCaptureLive: true, isWithinProximity: true });
+      expect(service.checkInEligibility).toHaveBeenCalledWith('task-1', mockUser.id, {
+        latitude: 10.77689,
+        longitude: 106.70090,
+        accuracyMeters: 5.0,
+      });
+    });
+
+    it('queryCheckInEligibility throws BadRequestException for invalid coordinates', () => {
+      expect(() => controller.queryCheckInEligibility('task-1', mockUser, 'abc', '106.70090'))
+        .toThrow(BadRequestException);
     });
   });
 });

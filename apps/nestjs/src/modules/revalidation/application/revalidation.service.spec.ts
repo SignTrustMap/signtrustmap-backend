@@ -250,6 +250,26 @@ describe('RevalidationService', () => {
       );
     });
 
+    it('records on-site live capture metadata (isLiveCapture, accuracyMeters, headingDegrees)', async () => {
+      const { service, query } = proximityHarness(15.2);
+      const result = await service.submitEvidence('task-id', 'surveyor-id', {
+        latitude: 21.02851,
+        longitude: 105.83419,
+        mediaUrl: 'revalidation/task-id/live-camera.jpg',
+        isLiveCapture: true,
+        accuracyMeters: 4.8,
+        headingDegrees: 180,
+      });
+
+      expect(result.isLiveCapture).toBe(true);
+      expect(result.accuracyMeters).toBe(4.8);
+      expect(result.headingDegrees).toBe(180);
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining('is_live_capture'),
+        expect.arrayContaining([true, 4.8, 180]),
+      );
+    });
+
     it('accepts evidence within proximity guardrail with evidenceType CHANGED', async () => {
       const { service, query } = proximityHarness(20);
       const result = await service.submitEvidence('task-id', 'surveyor-id', {
@@ -400,6 +420,98 @@ describe('RevalidationService', () => {
         signId: 'sign-id',
         taskId: 'task-id',
       });
+    });
+  });
+
+  describe('checkInEligibility (GPS Check-in pre-flight guardrail)', () => {
+    function checkInHarness(
+      distanceMeters: number,
+      recentCount = 0,
+      taskStatus = TaskStatus.OPEN,
+    ) {
+      const task = { id: 'task-100', verifiedSignId: 'sign-100', status: taskStatus, freshnessRuleId: null } as RevalidationTask;
+      const tasks = { findOne: jest.fn().mockResolvedValue(task) } as unknown as Repository<RevalidationTask>;
+      const query = jest.fn(async (sql: string) => {
+        if (sql.includes('ST_DistanceSphere')) {
+          return [{
+            distance_meters: distanceMeters,
+            target_lat: 10.77689,
+            target_lon: 106.70090,
+            verified_sign_id: 'sign-100',
+          }];
+        }
+        if (sql.includes('COUNT(*)')) return [{ cnt: recentCount }];
+        return [];
+      });
+      const dataSource = { query } as unknown as DataSource;
+      const service = new RevalidationService(
+        tasks,
+        {} as any,
+        {} as any,
+        dataSource,
+        {} as any,
+        {} as any,
+        {} as any,
+      );
+      return { service, tasks, query };
+    }
+
+    it('returns eligible=true and canCaptureLive=true when surveyor is within 50m and below daily limit', async () => {
+      const { service } = checkInHarness(18.5, 1);
+      const result = await service.checkInEligibility('task-100', 'surveyor-1', {
+        latitude: 10.77680,
+        longitude: 106.70085,
+        accuracyMeters: 4.2,
+      });
+
+      expect(result.eligible).toBe(true);
+      expect(result.canCaptureLive).toBe(true);
+      expect(result.isWithinProximity).toBe(true);
+      expect(result.distanceMeters).toBe(18.5);
+      expect(result.remainingDistanceMeters).toBe(0);
+      expect(result.dailyLimitReached).toBe(false);
+      expect(result.remainingSubmissionsToday).toBe(2);
+      expect(result.message).toContain('Vị trí hợp lệ để chụp ảnh');
+    });
+
+    it('returns eligible=false and remainingDistanceMeters when surveyor is farther than 50m', async () => {
+      const { service } = checkInHarness(85.0, 0);
+      const result = await service.checkInEligibility('task-100', 'surveyor-1', {
+        latitude: 10.77600,
+        longitude: 106.70000,
+      });
+
+      expect(result.eligible).toBe(false);
+      expect(result.canCaptureLive).toBe(false);
+      expect(result.isWithinProximity).toBe(false);
+      expect(result.distanceMeters).toBe(85.0);
+      expect(result.remainingDistanceMeters).toBe(35.0);
+      expect(result.message).toContain('Bạn đang cách biển báo 85m');
+    });
+
+    it('returns eligible=false when 24h daily submission limit is reached', async () => {
+      const { service } = checkInHarness(10.0, 3);
+      const result = await service.checkInEligibility('task-100', 'surveyor-1', {
+        latitude: 10.77689,
+        longitude: 106.70090,
+      });
+
+      expect(result.eligible).toBe(false);
+      expect(result.dailyLimitReached).toBe(true);
+      expect(result.remainingSubmissionsToday).toBe(0);
+      expect(result.message).toContain('đã đạt giới hạn nộp bằng chứng');
+    });
+
+    it('returns eligible=false when task is completed or closed', async () => {
+      const { service } = checkInHarness(10.0, 0, TaskStatus.COMPLETED);
+      const result = await service.checkInEligibility('task-100', 'surveyor-1', {
+        latitude: 10.77689,
+        longitude: 106.70090,
+      });
+
+      expect(result.eligible).toBe(false);
+      expect(result.canCaptureLive).toBe(false);
+      expect(result.message).toContain('không nhận bằng chứng mới');
     });
   });
 
