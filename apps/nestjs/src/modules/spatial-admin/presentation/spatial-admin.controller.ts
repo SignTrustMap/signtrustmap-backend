@@ -48,12 +48,20 @@ export class SpatialAdminController {
     description:
       'Runs batch backfill on verified signs missing display address or commune code using internal PostGIS.',
   })
-  @ApiQuery({ name: 'batchSize', type: Number, required: false, example: 50 })
-  @ApiQuery({ name: 'maxTotal', type: Number, required: false, example: 5000 })
+  @ApiQuery({ name: 'batchSize', schema: { type: 'integer', minimum: 1, maximum: 500 }, required: false, example: 50 })
+  @ApiQuery({ name: 'maxTotal', schema: { type: 'integer', minimum: 1, maximum: 5000 }, required: false, example: 5000 })
   @Post('backfill')
   async backfill(@Query('batchSize') batchSize?: string, @Query('maxTotal') maxTotal?: string) {
-    const parsedBatch = Math.min(Math.max(1, Number(batchSize) || 50), 1000);
-    const parsedTotal = Math.min(Math.max(1, Number(maxTotal) || 5000), 50000);
+    const rawBatch = batchSize !== undefined ? Number(batchSize) : 50;
+    const rawTotal = maxTotal !== undefined ? Number(maxTotal) : 5000;
+    const parsedBatch = Math.min(
+      Math.max(1, !Number.isFinite(rawBatch) || rawBatch <= 0 ? 50 : Math.floor(rawBatch)),
+      1000,
+    );
+    const parsedTotal = Math.min(
+      Math.max(1, !Number.isFinite(rawTotal) || rawTotal <= 0 ? 5000 : Math.floor(rawTotal)),
+      5000,
+    );
     return this.backfillService.runBackfill(parsedBatch, parsedTotal);
   }
 }
