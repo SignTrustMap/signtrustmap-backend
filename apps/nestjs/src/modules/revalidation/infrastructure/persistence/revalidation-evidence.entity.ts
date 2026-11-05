@@ -29,6 +29,15 @@ export class RevalidationEvidence {
   @Column({ name: 'evidence_type', type: 'varchar', length: 32, default: 'STILL_ACTIVE' })
   evidenceType: string;
 
+  @Column({ name: 'is_live_capture', type: 'boolean', default: false })
+  isLiveCapture: boolean;
+
+  @Column({ name: 'accuracy_meters', type: 'float', nullable: true })
+  accuracyMeters?: number | null;
+
+  @Column({ name: 'heading_degrees', type: 'float', nullable: true })
+  headingDegrees?: number | null;
+
   @CreateDateColumn({ name: 'submitted_at', type: 'timestamptz' })
   submittedAt: Date;
 }

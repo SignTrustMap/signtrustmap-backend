@@ -4,6 +4,7 @@ import {
   Patch,
   Post,
   Put,
+  Delete,
   Body,
   Param,
   Query,
@@ -12,7 +13,7 @@ import {
   Req,
   Res,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags, ApiQuery } from '@nestjs/swagger';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AdminService } from './admin.service';
@@ -24,6 +25,9 @@ import {
   UpdateConsensusConfigDto,
   UpdateRouteMatrixDto,
   TriggerRetrainDto,
+  CreateFreshnessRuleDto,
+  UpdateFreshnessRuleDto,
+  UpdateRewardRuleDto,
 } from './dto/admin.dto';
 import { WalletService } from '../wallet/application/wallet.service';
 
@@ -37,11 +41,54 @@ export class AdminController {
     private readonly walletService: WalletService,
   ) { }
 
-  @ApiOperation({ summary: 'List platform users', description: 'Admin operation to search and paginate all users with role and status filtering' })
+  @ApiOperation({
+    summary: 'List platform users',
+    description: 'Admin operation to search and paginate all users with role, status filtering, and attached activity statistics',
+  })
+  @ApiQuery({ name: 'role', required: false, type: String })
+  @ApiQuery({ name: 'status', required: false, type: String })
+  @ApiQuery({ name: 'search', required: false, type: String })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'pageSize', required: false, type: Number })
+  @ApiQuery({ name: 'includeStats', required: false, type: Boolean, description: 'Include user performance statistics (default: true)' })
   @Get('users')
-  listUsers(@Query('role') role?: string, @Query('status') status?: string, @Query('search') search?: string, @Query('page') page?: string, @Query('pageSize') pageSize?: string) {
-    const p = page ? parseInt(page, 10) : 1; const ps = pageSize ? parseInt(pageSize, 10) : 20;
-    return this.svc.listUsers({ role, status, search, page: Number.isNaN(p) ? 1 : p, pageSize: Number.isNaN(ps) ? 20 : ps });
+  listUsers(
+    @Query('role') role?: string,
+    @Query('status') status?: string,
+    @Query('search') search?: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+    @Query('includeStats') includeStats?: string,
+  ) {
+    const p = page ? parseInt(page, 10) : 1;
+    const ps = pageSize ? parseInt(pageSize, 10) : 20;
+    const stats = includeStats === undefined ? true : includeStats !== 'false' && includeStats !== '0';
+    return this.svc.listUsers({
+      role,
+      status,
+      search,
+      page: Number.isNaN(p) ? 1 : p,
+      pageSize: Number.isNaN(ps) ? 20 : ps,
+      includeStats: stats,
+    });
+  }
+
+  @ApiOperation({
+    summary: 'Get platform-wide users statistics summary',
+    description: 'Admin operation to retrieve overall platform metrics: total users, review accuracy, survey acceptance rate, active contributors',
+  })
+  @Get('users/statistics/summary')
+  getUsersSummaryStatistics() {
+    return this.svc.getUsersSummaryStatistics();
+  }
+
+  @ApiOperation({
+    summary: 'Get detailed user statistics',
+    description: 'Admin operation to retrieve comprehensive statistics breakdown for a specific user: reviews, surveys, hazards, navigation, wallet, activity',
+  })
+  @Get('users/:id/statistics')
+  getUserStatistics(@Param('id', ParseUUIDPipe) id: string) {
+    return this.svc.getUserStatistics(id);
   }
 
   @ApiOperation({ summary: 'Update user account status', description: 'Admin operation to suspend, activate, or ban a user account with recorded audit reason' })
@@ -156,6 +203,108 @@ export class AdminController {
   ) {
     const ip = req.ip || req.headers['x-forwarded-for'] || null;
     return this.svc.updateRouteMatrix(id, dto, user.id, ip);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Freshness Rules Parameters Management
+  // ---------------------------------------------------------------------------
+
+  @ApiOperation({
+    summary: 'Get all freshness rules and field security parameters',
+    description: 'Admin operation to view GPS proximity limits, daily submission limits, and freshness period per category',
+  })
+  @Get('freshness-rules')
+  listFreshnessRules() {
+    return this.svc.listFreshnessRules();
+  }
+
+  @ApiOperation({
+    summary: 'Get freshness rule by ID',
+    description: 'Admin operation to view specific category freshness and proximity guardrails',
+  })
+  @Get('freshness-rules/:id')
+  getFreshnessRule(@Param('id', ParseIntPipe) id: number) {
+    return this.svc.getFreshnessRule(id);
+  }
+
+  @ApiOperation({
+    summary: 'Create freshness rule for a sign category',
+    description: 'Admin operation to establish category freshness period, GPS proximity limit, and daily submission limit',
+  })
+  @Post('freshness-rules')
+  createFreshnessRule(
+    @Body() dto: CreateFreshnessRuleDto,
+    @CurrentUser() user: any,
+    @Req() req: any,
+  ) {
+    const ip = req.ip || req.headers['x-forwarded-for'] || null;
+    return this.svc.createFreshnessRule(dto, user.id, ip);
+  }
+
+  @ApiOperation({
+    summary: 'Update freshness rule and field security parameters',
+    description: 'Admin operation to update GPS max proximity metres, daily submissions limit, or priority with audit logging',
+  })
+  @Put('freshness-rules/:id')
+  updateFreshnessRule(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateFreshnessRuleDto,
+    @CurrentUser() user: any,
+    @Req() req: any,
+  ) {
+    const ip = req.ip || req.headers['x-forwarded-for'] || null;
+    return this.svc.updateFreshnessRule(id, dto, user.id, ip);
+  }
+
+  @ApiOperation({
+    summary: 'Deactivate freshness rule',
+    description: 'Admin operation to deactivate category freshness rule with audit logging',
+  })
+  @Delete('freshness-rules/:id')
+  deleteFreshnessRule(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: any,
+    @Req() req: any,
+  ) {
+    const ip = req.ip || req.headers['x-forwarded-for'] || null;
+    return this.svc.deleteFreshnessRule(id, user.id, ip);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Reward Rules Parameters Management
+  // ---------------------------------------------------------------------------
+
+  @ApiOperation({
+    summary: 'Get all reward rules and credit disbursement parameters',
+    description: 'Admin operation to view base reward credits and daily limits for all system activities',
+  })
+  @Get('reward-rules')
+  listRewardRules() {
+    return this.svc.listRewardRules();
+  }
+
+  @ApiOperation({
+    summary: 'Get reward rule by activity type',
+    description: 'Admin operation to view specific activity reward parameters (e.g. REVALIDATION_REWARD, REVIEW_REWARD)',
+  })
+  @Get('reward-rules/:activityType')
+  getRewardRule(@Param('activityType') activityType: string) {
+    return this.svc.getRewardRule(activityType);
+  }
+
+  @ApiOperation({
+    summary: 'Update reward rule parameters',
+    description: 'Admin operation to update base credit amount, daily limits, and multiplier config with audit logging',
+  })
+  @Put('reward-rules/:activityType')
+  updateRewardRule(
+    @Param('activityType') activityType: string,
+    @Body() dto: UpdateRewardRuleDto,
+    @CurrentUser() user: any,
+    @Req() req: any,
+  ) {
+    const ip = req.ip || req.headers['x-forwarded-for'] || null;
+    return this.svc.updateRewardRule(activityType, dto, user.id, ip);
   }
 
   @ApiOperation({
