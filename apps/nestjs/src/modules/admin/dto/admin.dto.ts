@@ -352,6 +352,7 @@ export class DemoModeToggleDto {
 }
 
 export * from './user-statistics.dto';
+export * from './task-history.dto';
 
 
 

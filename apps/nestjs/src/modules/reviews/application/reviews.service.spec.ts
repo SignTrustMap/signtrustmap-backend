@@ -725,7 +725,7 @@ describe('ReviewsService', () => {
       );
 
       const res = await service.getRecapturesForCandidate('cand-1');
-      expect(res).toEqual([{ id: 'req-1', reason: 'BLURRY' }]);
+      expect(res[0]).toMatchObject({ id: 'req-1', reason: 'BLURRY' });
       expect(recaptureRepo.find).toHaveBeenCalledWith({
         where: { candidateId: 'cand-1' },
         order: { createdAt: 'DESC' },

@@ -664,13 +664,76 @@ export class ReviewsService {
     let submissionExtra: any = null;
     try {
       const rows: any[] = await (this.candidateRepo.manager as any).query(
-        `SELECT s.surveyor_id, s.captured_at, s.submission_type, s.status AS submission_status, s.note
-         FROM survey_submissions s WHERE s.id = $1`, [candidate.submissionId]);
-      if (rows.length) submissionExtra = rows[0];
+        `SELECT s.surveyor_id, u.full_name AS surveyor_name, u.email AS surveyor_email,
+                s.captured_at, s.submission_type, s.status AS submission_status, s.note
+         FROM survey_submissions s
+         LEFT JOIN users u ON u.id = s.surveyor_id
+         WHERE s.id = $1`, [candidate.submissionId]);
+      if (rows.length) {
+        const r = rows[0];
+        const surveyorId = r.surveyor_id;
+        const surveyorName = r.surveyor_name || (surveyorId ? `Surveyor #${surveyorId.slice(0, 8)}` : null);
+        const surveyorEmail = r.surveyor_email || null;
+        submissionExtra = {
+          ...r,
+          surveyorId,
+          surveyor_id: surveyorId,
+          surveyorName,
+          surveyor_name: surveyorName,
+          surveyorEmail,
+          surveyor_email: surveyorEmail,
+          surveyor: surveyorId ? { id: surveyorId, fullName: surveyorName, email: surveyorEmail } : null,
+        };
+      }
     } catch {}
 
     let voteCount = 0;
     try { voteCount = await this.reviewRepo.count({ where: { candidateId } }); } catch {}
+
+    let reviews: any[] = [];
+    try {
+      const revRows: any[] = await (this.candidateRepo.manager as any).query(
+        `SELECT cr.id, cr.candidate_id, cr.reviewer_id, u.full_name AS reviewer_name, u.email AS reviewer_email,
+                cr.vote, cr.suggested_sign_type_id, cr.confidence, cr.comment, cr.reviewed_at,
+                tst.sign_code AS suggested_sign_code, tst.name_vi AS suggested_sign_name
+         FROM candidate_reviews cr
+         LEFT JOIN users u ON u.id = cr.reviewer_id
+         LEFT JOIN traffic_sign_types tst ON tst.id = cr.suggested_sign_type_id
+         WHERE cr.candidate_id = $1
+         ORDER BY cr.reviewed_at ASC`,
+        [candidateId],
+      );
+      reviews = revRows.map((r: any) => {
+        const revId = r.reviewer_id;
+        const revName = r.reviewer_name || (revId ? `Reviewer #${revId.slice(0, 8)}` : null);
+        const revEmail = r.reviewer_email || null;
+        return {
+          id: r.id,
+          candidateId: r.candidate_id,
+          candidate_id: r.candidate_id,
+          reviewerId: revId,
+          reviewer_id: revId,
+          reviewerName: revName,
+          reviewer_name: revName,
+          reviewerEmail: revEmail,
+          reviewer_email: revEmail,
+          reviewer: revId ? { id: revId, fullName: revName, email: revEmail } : null,
+          vote: r.vote,
+          suggestedSignTypeId: r.suggested_sign_type_id != null ? Number(r.suggested_sign_type_id) : null,
+          suggestedSignCode: r.suggested_sign_code || null,
+          suggestedSignName: r.suggested_sign_name || null,
+          confidence: r.confidence != null ? Number(r.confidence) : null,
+          comment: r.comment,
+          reviewedAt: r.reviewed_at,
+          reviewed_at: r.reviewed_at,
+        };
+      });
+    } catch {}
+
+    let recaptures: any[] = [];
+    try {
+      recaptures = await this.getRecapturesForCandidate(candidateId);
+    } catch {}
 
     let locationContext: {
       coordinates: { latitude: number; longitude: number } | null;
@@ -726,6 +789,13 @@ export class ReviewsService {
     (candidate as any).top5 = possibleSigns;
     (candidate as any).remedySigns = possibleSigns;
     (candidate as any).predictedSignTypes = possibleSigns;
+    (candidate as any).surveyorId = submissionExtra?.surveyorId || null;
+    (candidate as any).surveyor_id = submissionExtra?.surveyorId || null;
+    (candidate as any).surveyorName = submissionExtra?.surveyorName || null;
+    (candidate as any).surveyor_name = submissionExtra?.surveyor_name || null;
+    (candidate as any).surveyor = submissionExtra?.surveyor || null;
+    (candidate as any).reviews = reviews;
+    (candidate as any).recaptures = recaptures;
 
     return {
       candidate,
@@ -735,7 +805,14 @@ export class ReviewsService {
       predictedSignTypes: possibleSigns,
       submission: submissionExtra,
       voteCount,
+      reviews,
+      recaptures,
       locationContext,
+      surveyorId: submissionExtra?.surveyorId || null,
+      surveyor_id: submissionExtra?.surveyorId || null,
+      surveyorName: submissionExtra?.surveyorName || null,
+      surveyor_name: submissionExtra?.surveyor_name || null,
+      surveyor: submissionExtra?.surveyor || null,
     };
   }
 
@@ -762,7 +839,65 @@ export class ReviewsService {
       qb.andWhere('(pst.nameEn ILIKE :s OR pst.nameVi ILIKE :s OR pst.signCode ILIKE :s)', { s: `%${search}%` });
     }
     const [items, total] = await qb.getManyAndCount();
-    return { items, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
+
+    const surveyorIds = Array.from(new Set(
+      items.map((it: any) => it.candidate?.submission?.surveyorId).filter(Boolean),
+    ));
+    const userMap = new Map<string, any>();
+    if (surveyorIds.length > 0) {
+      try {
+        const uRows: any[] = await (this.candidateRepo.manager as any).query(
+          `SELECT id, full_name, email FROM users WHERE id = ANY($1::uuid[])`,
+          [surveyorIds],
+        );
+        for (const u of uRows) {
+          userMap.set(u.id, u);
+        }
+      } catch {}
+    }
+
+    const enrichedItems = items.map((it: any) => {
+      const survId = it.candidate?.submission?.surveyorId;
+      const survUser = survId ? userMap.get(survId) : null;
+      const survName = survUser?.full_name || (survId ? `Surveyor #${survId.slice(0, 8)}` : null);
+      const survEmail = survUser?.email || null;
+      const surveyorObj = survId ? { id: survId, fullName: survName, email: survEmail } : null;
+
+      const rev = it.reviewer;
+      const revName = rev?.fullName || rev?.full_name || (rev?.id ? `Reviewer #${rev.id.slice(0, 8)}` : null);
+      const revEmail = rev?.email || null;
+      const reviewerObj = rev ? { id: rev.id, fullName: revName, email: revEmail } : null;
+
+      if (it.candidate?.submission) {
+        it.candidate.submission.surveyorName = survName;
+        it.candidate.submission.surveyor_name = survName;
+        it.candidate.submission.surveyorEmail = survEmail;
+        it.candidate.submission.surveyor = surveyorObj;
+      }
+      if (it.candidate) {
+        it.candidate.surveyorId = survId || null;
+        it.candidate.surveyor_id = survId || null;
+        it.candidate.surveyorName = survName;
+        it.candidate.surveyor_name = survName;
+        it.candidate.surveyor = surveyorObj;
+      }
+
+      return {
+        ...it,
+        surveyorId: survId || null,
+        surveyor_id: survId || null,
+        surveyorName: survName,
+        surveyor_name: survName,
+        surveyor: surveyorObj,
+        reviewerId: it.reviewerId || rev?.id || null,
+        reviewer_id: it.reviewerId || rev?.id || null,
+        reviewerName: revName,
+        reviewer_name: revName,
+        reviewer: reviewerObj,
+      };
+    });
+
+    return { items: enrichedItems, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
   }
 
   normalizeStatusTag(raw?: string): 'ALL' | 'PENDING_REVIEW' | 'IN_CONSENSUS' | 'RESOLVED' {
@@ -982,11 +1117,45 @@ export class ReviewsService {
     }
 
     // 3. Map to candidate-centric items enriched with review data
+    const surveyorIds = Array.from(new Set(
+      reviews.map((r) => r.candidate?.submission?.surveyorId).filter(Boolean),
+    ));
+    const userMap = new Map<string, any>();
+    if (surveyorIds.length > 0) {
+      try {
+        const uRows: any[] = await (this.candidateRepo.manager as any).query(
+          `SELECT id, full_name, email FROM users WHERE id = ANY($1::uuid[])`,
+          [surveyorIds],
+        );
+        for (const u of uRows) {
+          userMap.set(u.id, u);
+        }
+      } catch {}
+    }
+
     const items = await Promise.all(
       reviews.map(async (review) => {
         const candidate = review.candidate || ({} as any);
         const statusTag = this.getCandidateStatusTag(candidate.status);
         const statusTagVi = this.getCandidateStatusTagVi(statusTag);
+
+        const survId = candidate.submission?.surveyorId;
+        const survUser = survId ? userMap.get(survId) : null;
+        const survName = survUser?.full_name || (survId ? `Surveyor #${survId.slice(0, 8)}` : null);
+        const survEmail = survUser?.email || null;
+        const surveyorObj = survId ? { id: survId, fullName: survName, email: survEmail } : null;
+
+        if (candidate.submission) {
+          candidate.submission.surveyorName = survName;
+          candidate.submission.surveyor_name = survName;
+          candidate.submission.surveyorEmail = survEmail;
+          candidate.submission.surveyor = surveyorObj;
+        }
+        candidate.surveyorId = survId || null;
+        candidate.surveyor_id = survId || null;
+        candidate.surveyorName = survName;
+        candidate.surveyor_name = survName;
+        candidate.surveyor = surveyorObj;
 
         let possibleSigns = candidate.possibleSigns ?? candidate.top5 ?? candidate.remedySigns;
         if (!possibleSigns && typeof (this as any).resolveTopPossibleSigns === 'function') {
@@ -994,6 +1163,16 @@ export class ReviewsService {
             possibleSigns = await (this as any).resolveTopPossibleSigns(candidate, { allowNetwork: false });
           } catch {}
         }
+
+        const revName = (review.reviewer as any)?.fullName ?? (review.reviewer as any)?.full_name ?? (review.reviewerId ? `Reviewer #${review.reviewerId.slice(0, 8)}` : null);
+        const revEmail = review.reviewer?.email ?? null;
+        const reviewerObj = review.reviewer
+          ? {
+              id: review.reviewer.id,
+              email: revEmail,
+              fullName: revName,
+            }
+          : (review.reviewerId ? { id: review.reviewerId, fullName: revName, email: revEmail } : null);
 
         return {
           id: candidate.id,
@@ -1011,6 +1190,11 @@ export class ReviewsService {
           createdAt: candidate.createdAt,
           predictedSignType: candidate.predictedSignType,
           submission: candidate.submission,
+          surveyorId: survId || null,
+          surveyor_id: survId || null,
+          surveyorName: survName,
+          surveyor_name: survName,
+          surveyor: surveyorObj,
           possibleSigns: possibleSigns ?? [],
           top5: possibleSigns ?? [],
           remedySigns: possibleSigns ?? [],
@@ -1023,22 +1207,16 @@ export class ReviewsService {
             declineNote: review.declineNote,
             reviewedAt: review.reviewedAt,
             reviewerId: review.reviewerId,
-            reviewer: review.reviewer
-              ? {
-                  id: review.reviewer.id,
-                  email: review.reviewer.email,
-                  fullName: (review.reviewer as any).fullName ?? null,
-                }
-              : null,
+            reviewer_id: review.reviewerId,
+            reviewerName: revName,
+            reviewer_name: revName,
+            reviewer: reviewerObj,
           },
           reviewerId: review.reviewerId,
-          reviewer: review.reviewer
-            ? {
-                id: review.reviewer.id,
-                email: review.reviewer.email,
-                fullName: (review.reviewer as any).fullName ?? null,
-              }
-            : null,
+          reviewer_id: review.reviewerId,
+          reviewerName: revName,
+          reviewer_name: revName,
+          reviewer: reviewerObj,
           myVote: review.vote,
           reviewedAt: review.reviewedAt,
           candidate,
@@ -1453,11 +1631,45 @@ export class ReviewsService {
       );
       if (existingRows.length === 1) {
         const existing = existingRows[0];
+        let surveyorName: string | null = null;
+        let surveyorEmail: string | null = null;
+        let reviewerName: string | null = null;
+        let reviewerEmail: string | null = null;
+        const userIds = [existing.reviewer_id, existing.surveyor_id].filter(Boolean) as string[];
+        if (userIds.length > 0) {
+          try {
+            const uRows: any[] = await (this.candidateRepo.manager as any).query(
+              `SELECT id, full_name, email FROM users WHERE id = ANY($1::uuid[])`,
+              [userIds],
+            );
+            for (const u of uRows) {
+              if (u.id === existing.surveyor_id) {
+                surveyorName = u.full_name;
+                surveyorEmail = u.email;
+              }
+              if (u.id === existing.reviewer_id) {
+                reviewerName = u.full_name;
+                reviewerEmail = u.email;
+              }
+            }
+          } catch {}
+        }
         return {
           success: true,
           candidateId: existing.candidate_id,
           status: CandidateStatus.RECAPTURE_REQUESTED,
           surveyorId: existing.surveyor_id,
+          surveyor_id: existing.surveyor_id,
+          surveyorName: surveyorName || (existing.surveyor_id ? `Surveyor #${existing.surveyor_id.slice(0, 8)}` : null),
+          surveyor_name: surveyorName || (existing.surveyor_id ? `Surveyor #${existing.surveyor_id.slice(0, 8)}` : null),
+          surveyorEmail,
+          surveyor: existing.surveyor_id ? { id: existing.surveyor_id, fullName: surveyorName, email: surveyorEmail } : null,
+          reviewerId: existing.reviewer_id,
+          reviewer_id: existing.reviewer_id,
+          reviewerName: reviewerName || (existing.reviewer_id ? `Reviewer #${existing.reviewer_id.slice(0, 8)}` : null),
+          reviewer_name: reviewerName || (existing.reviewer_id ? `Reviewer #${existing.reviewer_id.slice(0, 8)}` : null),
+          reviewerEmail,
+          reviewer: existing.reviewer_id ? { id: existing.reviewer_id, fullName: reviewerName, email: reviewerEmail } : null,
           missingTypeReportId: existing.missing_type_report_id,
           recaptureRequest: existing,
           notificationSent: false,
@@ -1530,11 +1742,45 @@ export class ReviewsService {
           );
           if (existingRows.length === 1) {
             const existing = existingRows[0];
+            let surveyorName: string | null = null;
+            let surveyorEmail: string | null = null;
+            let reviewerName: string | null = null;
+            let reviewerEmail: string | null = null;
+            const userIds = [existing.reviewer_id, existing.surveyor_id].filter(Boolean) as string[];
+            if (userIds.length > 0) {
+              try {
+                const uRows: any[] = await (this.candidateRepo.manager as any).query(
+                  `SELECT id, full_name, email FROM users WHERE id = ANY($1::uuid[])`,
+                  [userIds],
+                );
+                for (const u of uRows) {
+                  if (u.id === existing.surveyor_id) {
+                    surveyorName = u.full_name;
+                    surveyorEmail = u.email;
+                  }
+                  if (u.id === existing.reviewer_id) {
+                    reviewerName = u.full_name;
+                    reviewerEmail = u.email;
+                  }
+                }
+              } catch {}
+            }
             return {
               success: true,
               candidateId: existing.candidate_id,
               status: CandidateStatus.RECAPTURE_REQUESTED,
               surveyorId: existing.surveyor_id,
+              surveyor_id: existing.surveyor_id,
+              surveyorName: surveyorName || (existing.surveyor_id ? `Surveyor #${existing.surveyor_id.slice(0, 8)}` : null),
+              surveyor_name: surveyorName || (existing.surveyor_id ? `Surveyor #${existing.surveyor_id.slice(0, 8)}` : null),
+              surveyorEmail,
+              surveyor: existing.surveyor_id ? { id: existing.surveyor_id, fullName: surveyorName, email: surveyorEmail } : null,
+              reviewerId: existing.reviewer_id,
+              reviewer_id: existing.reviewer_id,
+              reviewerName: reviewerName || (existing.reviewer_id ? `Reviewer #${existing.reviewer_id.slice(0, 8)}` : null),
+              reviewer_name: reviewerName || (existing.reviewer_id ? `Reviewer #${existing.reviewer_id.slice(0, 8)}` : null),
+              reviewerEmail,
+              reviewer: existing.reviewer_id ? { id: existing.reviewer_id, fullName: reviewerName, email: reviewerEmail } : null,
               missingTypeReportId: existing.missing_type_report_id,
               recaptureRequest: existing,
               notificationSent: false,
@@ -1580,11 +1826,46 @@ export class ReviewsService {
       this.dailyTasksService.recordProgress(reviewerId, 'REVIEW', 1).catch(() => {});
     }
 
+    let surveyorName: string | null = null;
+    let surveyorEmail: string | null = null;
+    let reviewerName: string | null = null;
+    let reviewerEmail: string | null = null;
+    const userIds = [reviewerId, surveyorId].filter(Boolean) as string[];
+    if (userIds.length > 0) {
+      try {
+        const uRows: any[] = await (this.candidateRepo.manager as any).query(
+          `SELECT id, full_name, email FROM users WHERE id = ANY($1::uuid[])`,
+          [userIds],
+        );
+        for (const u of uRows) {
+          if (u.id === surveyorId) {
+            surveyorName = u.full_name;
+            surveyorEmail = u.email;
+          }
+          if (u.id === reviewerId) {
+            reviewerName = u.full_name;
+            reviewerEmail = u.email;
+          }
+        }
+      } catch {}
+    }
+
     return {
       success: true,
       candidateId,
       status: CandidateStatus.RECAPTURE_REQUESTED,
       surveyorId,
+      surveyor_id: surveyorId,
+      surveyorName: surveyorName || (surveyorId ? `Surveyor #${surveyorId.slice(0, 8)}` : null),
+      surveyor_name: surveyorName || (surveyorId ? `Surveyor #${surveyorId.slice(0, 8)}` : null),
+      surveyorEmail,
+      surveyor: surveyorId ? { id: surveyorId, fullName: surveyorName, email: surveyorEmail } : null,
+      reviewerId,
+      reviewer_id: reviewerId,
+      reviewerName: reviewerName || (reviewerId ? `Reviewer #${reviewerId.slice(0, 8)}` : null),
+      reviewer_name: reviewerName || (reviewerId ? `Reviewer #${reviewerId.slice(0, 8)}` : null),
+      reviewerEmail,
+      reviewer: reviewerId ? { id: reviewerId, fullName: reviewerName, email: reviewerEmail } : null,
       missingTypeReportId: savedRequest.missing_type_report_id ?? savedRequest.missingTypeReportId,
       recaptureRequest: savedRequest,
       notificationSent,
@@ -1796,16 +2077,73 @@ export class ReviewsService {
   }
 
   async getRecapturesForCandidate(candidateId: string) {
-    if (this.recaptureRepo) {
-      return this.recaptureRepo.find({
-        where: { candidateId },
-        order: { createdAt: 'DESC' },
-      });
+    let rows: any[] = [];
+    if (this.candidateRepo?.manager) {
+      try {
+        rows = await (this.candidateRepo.manager as any).query(
+          `SELECT crr.id, crr.candidate_id, crr.reason, crr.note,
+                  crr.reviewer_id, u_rev.full_name AS reviewer_name, u_rev.email AS reviewer_email,
+                  crr.surveyor_id, u_surv.full_name AS surveyor_name, u_surv.email AS surveyor_email,
+                  COALESCE(crr.missing_type_report_id, crr.new_sign_type_report_id) AS missing_type_report_id,
+                  COALESCE(crr.new_sign_type_report_id, crr.missing_type_report_id) AS new_sign_type_report_id,
+                  crr.completed_at, crr.created_at
+           FROM candidate_recapture_requests crr
+           LEFT JOIN users u_rev ON u_rev.id = crr.reviewer_id
+           LEFT JOIN users u_surv ON u_surv.id = crr.surveyor_id
+           WHERE crr.candidate_id = $1
+           ORDER BY crr.created_at DESC`,
+          [candidateId],
+        );
+      } catch {}
     }
-    return (this.candidateRepo.manager as any).query(
-      `SELECT * FROM candidate_recapture_requests WHERE candidate_id = $1 ORDER BY created_at DESC`,
-      [candidateId],
-    );
+    if (rows.length === 0 && this.recaptureRepo) {
+      try {
+        rows = await this.recaptureRepo.find({
+          where: { candidateId },
+          order: { createdAt: 'DESC' },
+        });
+      } catch {}
+    }
+
+    return rows.map((r: any) => {
+      const revId = r.reviewer_id || r.reviewerId || null;
+      const revName = r.reviewer_name || r.reviewerName || (revId ? `Reviewer #${revId.slice(0, 8)}` : null);
+      const revEmail = r.reviewer_email || r.reviewerEmail || null;
+
+      const survId = r.surveyor_id || r.surveyorId || null;
+      const survName = r.surveyor_name || r.surveyorName || (survId ? `Surveyor #${survId.slice(0, 8)}` : null);
+      const survEmail = r.surveyor_email || r.surveyorEmail || null;
+
+      return {
+        id: r.id,
+        candidateId: r.candidate_id || r.candidateId,
+        candidate_id: r.candidate_id || r.candidateId,
+        reason: r.reason,
+        note: r.note,
+        reviewerId: revId,
+        reviewer_id: revId,
+        reviewerName: revName,
+        reviewer_name: revName,
+        reviewerEmail: revEmail,
+        reviewer_email: revEmail,
+        reviewer: revId ? { id: revId, fullName: revName, email: revEmail } : null,
+        surveyorId: survId,
+        surveyor_id: survId,
+        surveyorName: survName,
+        surveyor_name: survName,
+        surveyorEmail: survEmail,
+        surveyor_email: survEmail,
+        surveyor: survId ? { id: survId, fullName: survName, email: survEmail } : null,
+        missingTypeReportId: r.missing_type_report_id || r.missingTypeReportId || null,
+        missing_type_report_id: r.missing_type_report_id || r.missingTypeReportId || null,
+        newSignTypeReportId: r.new_sign_type_report_id || r.newSignTypeReportId || null,
+        new_sign_type_report_id: r.new_sign_type_report_id || r.newSignTypeReportId || null,
+        completedAt: r.completed_at || r.completedAt || null,
+        completed_at: r.completed_at || r.completedAt || null,
+        createdAt: r.created_at || r.createdAt,
+        created_at: r.created_at || r.createdAt,
+      };
+    });
   }
 
   async getMyRecaptures(
@@ -1886,6 +2224,12 @@ export class ReviewsService {
          crr.candidate_id,
          crr.reason,
          crr.note,
+         crr.reviewer_id,
+         u_rev.full_name AS reviewer_name,
+         u_rev.email AS reviewer_email,
+         crr.surveyor_id,
+         u_surv.full_name AS surveyor_name,
+         u_surv.email AS surveyor_email,
          COALESCE(crr.missing_type_report_id, crr.new_sign_type_report_id) AS missing_type_report_id,
          COALESCE(crr.new_sign_type_report_id, crr.missing_type_report_id) AS new_sign_type_report_id,
          crr.completed_at,
@@ -1902,6 +2246,8 @@ export class ReviewsService {
        JOIN unverified_sign_candidates c ON c.id = crr.candidate_id
        LEFT JOIN traffic_sign_types tst ON tst.id = c.predicted_sign_type_id
        LEFT JOIN candidate_geo_estimations cge ON cge.candidate_id = c.id
+       LEFT JOIN users u_rev ON u_rev.id = crr.reviewer_id
+       LEFT JOIN users u_surv ON u_surv.id = crr.surveyor_id
        WHERE crr.completed_at IS NULL
          AND (
            (
@@ -1932,12 +2278,41 @@ export class ReviewsService {
       [surveyorId, longitudeValue, latitudeValue, radiusMeters, isGeofenceBypassed, ps, (p - 1) * ps],
     );
 
+    const mappedItems = items.map((r: any) => {
+      const revId = r.reviewer_id;
+      const revName = r.reviewer_name || (revId ? `Reviewer #${revId.slice(0, 8)}` : null);
+      const revEmail = r.reviewer_email || null;
+
+      const survId = r.surveyor_id;
+      const survName = r.surveyor_name || (survId ? `Surveyor #${survId.slice(0, 8)}` : null);
+      const survEmail = r.surveyor_email || null;
+
+      return {
+        ...r,
+        reviewerId: revId,
+        reviewer_id: revId,
+        reviewerName: revName,
+        reviewer_name: revName,
+        reviewerEmail: revEmail,
+        reviewer_email: revEmail,
+        reviewer: revId ? { id: revId, fullName: revName, email: revEmail } : null,
+        surveyorId: survId,
+        surveyor_id: survId,
+        surveyorName: survName,
+        surveyor_name: survName,
+        surveyorEmail: survEmail,
+        surveyor_email: survEmail,
+        surveyor: survId ? { id: survId, fullName: survName, email: survEmail } : null,
+      };
+    });
+
     return {
-      items,
+      items: mappedItems,
       total,
       page: p,
       pageSize: ps,
       totalPages: Math.ceil(total / ps),
     };
+  }
   }
 }

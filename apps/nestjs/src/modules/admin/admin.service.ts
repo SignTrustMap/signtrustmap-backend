@@ -22,6 +22,11 @@ import {
   UserStatisticsDto,
   UserDetailedStatisticsDto,
   PlatformUsersSummaryDto,
+  TaskHistoryResponseDto,
+  AdminTaskHistoryQueryDto,
+  TaskSurveyorRequestItemDto,
+  TaskReviewItemDto,
+  TaskTimelineEventDto,
 } from './dto/admin.dto';
 
 @Injectable()
@@ -1957,6 +1962,501 @@ export class AdminService {
     );
 
     return merged;
+  }
+
+  // ── Task History: Requests to Surveyors & Review Decisions ────────────────
+
+  /**
+   * Retrieves comprehensive history of requests sent to surveyors (evidences, recaptures)
+   * and reviews/decisions made to accomplish a specific task (Revalidation task or Candidate).
+   * Always returns the user ID and full name of all participating surveyors and reviewers.
+   */
+  async getTaskHistory(taskId: string): Promise<TaskHistoryResponseDto> {
+    if (!taskId || typeof taskId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(taskId)) {
+      throw new BadRequestException('Invalid task ID format: must be a valid UUID');
+    }
+
+    // 1. Try finding as a RevalidationTask
+    const revalTaskRows = await this.dataSource.query(
+      `SELECT rt.id, rt.verified_sign_id, rt.freshness_rule_id, rt.priority, rt.reward_credits,
+              rt.status, rt.urgency, rt.route_classification_id, rt.created_at, rt.expired_at,
+              vts.sign_type_id, vts.status AS sign_status, vts.freshness_score,
+              ST_X(vts.location::geometry) AS longitude, ST_Y(vts.location::geometry) AS latitude,
+              vts.sign_crop_url, tst.sign_code, tst.name_en, tst.name_vi
+       FROM revalidation_tasks rt
+       JOIN verified_traffic_signs vts ON vts.id = rt.verified_sign_id
+       LEFT JOIN traffic_sign_types tst ON tst.id = vts.sign_type_id
+       WHERE rt.id = $1`,
+      [taskId],
+    ).catch(() => []);
+
+    if (revalTaskRows.length > 0) {
+      const task = revalTaskRows[0];
+
+      // Query surveyor evidences submitted for this revalidation task
+      const evidenceRows = await this.dataSource.query(
+        `SELECT ev.id, ev.task_id, ev.user_id, u.full_name AS surveyor_name, u.email AS surveyor_email,
+                ev.media_url, ev.evidence_type, ev.is_live_capture, ev.accuracy_meters, ev.heading_degrees,
+                ev.submitted_at, ST_AsText(ev.location) AS location_wkt
+         FROM revalidation_evidences ev
+         LEFT JOIN users u ON u.id = ev.user_id
+         WHERE ev.task_id = $1
+         ORDER BY ev.submitted_at ASC`,
+        [taskId],
+      ).catch(() => []);
+
+      const evidenceIds = evidenceRows.map((e: any) => e.id);
+
+      // Query reviewer decisions/votes on these evidences
+      let decisionRows: any[] = [];
+      if (evidenceIds.length > 0) {
+        decisionRows = await this.dataSource.query(
+          `SELECT rd.id, rd.evidence_id, rd.reviewer_id, u.full_name AS reviewer_name, u.email AS reviewer_email,
+                  rd.decision, rd.suggested_sign_type_id, rd.note, rd.decided_at,
+                  tst.sign_code AS suggested_sign_code, tst.name_vi AS suggested_sign_name
+           FROM revalidation_decisions rd
+           LEFT JOIN users u ON u.id = rd.reviewer_id
+           LEFT JOIN traffic_sign_types tst ON tst.id = rd.suggested_sign_type_id
+           WHERE rd.evidence_id = ANY($1::uuid[])
+           ORDER BY rd.decided_at ASC`,
+          [evidenceIds],
+        ).catch(() => []);
+      }
+
+      // Map evidence submissions and recapture requests into surveyorRequests
+      const surveyorRequests: TaskSurveyorRequestItemDto[] = [];
+      const reviews: TaskReviewItemDto[] = [];
+      const timeline: TaskTimelineEventDto[] = [
+        {
+          eventId: `event-created-${task.id}`,
+          eventType: 'TASK_CREATED',
+          timestamp: task.created_at ? new Date(task.created_at).toISOString() : new Date().toISOString(),
+          actor: {
+            id: 'system',
+            fullName: 'System Revalidation Engine',
+            email: 'system@stm.dev',
+            role: 'SYSTEM',
+          },
+          description: `Revalidation task created for sign ${task.sign_code || 'unknown'} with priority ${task.priority} (+${task.reward_credits} Credits)`,
+          details: {
+            verifiedSignId: task.verified_sign_id,
+            bounty: task.reward_credits,
+            urgency: task.urgency,
+          },
+        },
+      ];
+
+      for (const ev of evidenceRows) {
+        const survName = ev.surveyor_name || `Surveyor #${ev.user_id.slice(0, 8)}`;
+        const survEmail = ev.surveyor_email || undefined;
+        const surveyorObj = { id: ev.user_id, fullName: survName, email: survEmail, role: 'SURVEYOR' };
+
+        surveyorRequests.push({
+          id: ev.id,
+          type: 'EVIDENCE_SUBMISSION',
+          status: 'SUBMITTED',
+          mediaUrl: ev.media_url,
+          surveyorId: ev.user_id,
+          surveyorName: survName,
+          surveyorEmail: survEmail,
+          surveyor: surveyorObj,
+          submittedAt: ev.submitted_at ? new Date(ev.submitted_at).toISOString() : undefined,
+        });
+
+        timeline.push({
+          eventId: `event-evidence-${ev.id}`,
+          eventType: 'EVIDENCE_SUBMISSION',
+          timestamp: ev.submitted_at ? new Date(ev.submitted_at).toISOString() : new Date().toISOString(),
+          actor: surveyorObj,
+          description: `Surveyor ${survName} (${ev.user_id}) submitted ${ev.evidence_type} on-site evidence photo`,
+          details: {
+            evidenceId: ev.id,
+            mediaUrl: ev.media_url,
+            isLiveCapture: ev.is_live_capture,
+            accuracyMeters: ev.accuracy_meters,
+          },
+        });
+      }
+
+      for (const rd of decisionRows) {
+        const revName = rd.reviewer_name || `Reviewer #${rd.reviewer_id.slice(0, 8)}`;
+        const revEmail = rd.reviewer_email || undefined;
+        const reviewerObj = { id: rd.reviewer_id, fullName: revName, email: revEmail, role: 'REVIEWER' };
+
+        const isRecapture = rd.decision === 'UNCLEAR' || (rd.note && rd.note.toLowerCase().includes('recapture'));
+
+        reviews.push({
+          id: String(rd.id),
+          evidenceId: rd.evidence_id,
+          reviewerId: rd.reviewer_id,
+          reviewerName: revName,
+          reviewerEmail: revEmail,
+          reviewer: reviewerObj,
+          decision: rd.decision,
+          note: rd.note,
+          suggestedSignTypeId: rd.suggested_sign_type_id,
+          decidedAt: rd.decided_at ? new Date(rd.decided_at).toISOString() : undefined,
+        });
+
+        if (isRecapture) {
+          const matchingEv = evidenceRows.find((e: any) => e.id === rd.evidence_id);
+          const targetSurvId = matchingEv?.user_id || 'unassigned';
+          const targetSurvName = matchingEv?.surveyor_name || (matchingEv?.user_id ? `Surveyor #${matchingEv.user_id.slice(0, 8)}` : 'Surveyor');
+
+          surveyorRequests.push({
+            id: `recapture-decision-${rd.id}`,
+            type: 'RECAPTURE_REQUEST',
+            status: 'REQUESTED',
+            reason: rd.note ? rd.note.replace(/^Recapture requested:\s*/i, '') : 'UNCLEAR',
+            note: rd.note,
+            mediaUrl: matchingEv?.media_url,
+            surveyorId: targetSurvId,
+            surveyorName: targetSurvName,
+            surveyorEmail: matchingEv?.surveyor_email,
+            surveyor: { id: targetSurvId, fullName: targetSurvName, email: matchingEv?.surveyor_email, role: 'SURVEYOR' },
+            reviewerId: rd.reviewer_id,
+            reviewerName: revName,
+            reviewerEmail: revEmail,
+            reviewer: reviewerObj,
+            requestedAt: rd.decided_at ? new Date(rd.decided_at).toISOString() : undefined,
+          });
+
+          timeline.push({
+            eventId: `event-recapture-${rd.id}`,
+            eventType: 'RECAPTURE_REQUESTED',
+            timestamp: rd.decided_at ? new Date(rd.decided_at).toISOString() : new Date().toISOString(),
+            actor: reviewerObj,
+            description: `Reviewer ${revName} (${rd.reviewer_id}) requested surveyor ${targetSurvName} (${targetSurvId}) to recapture photo (${rd.note})`,
+            details: {
+              decisionId: rd.id,
+              evidenceId: rd.evidence_id,
+              reason: rd.note,
+              targetSurveyorId: targetSurvId,
+            },
+          });
+        } else {
+          timeline.push({
+            eventId: `event-decision-${rd.id}`,
+            eventType: 'REVIEW_DECIDED',
+            timestamp: rd.decided_at ? new Date(rd.decided_at).toISOString() : new Date().toISOString(),
+            actor: reviewerObj,
+            description: `Reviewer ${revName} (${rd.reviewer_id}) decided verdict ${rd.decision} on evidence #${rd.evidence_id.slice(0, 8)}`,
+            details: {
+              decisionId: rd.id,
+              evidenceId: rd.evidence_id,
+              decision: rd.decision,
+              note: rd.note,
+            },
+          });
+        }
+      }
+
+      timeline.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+      return {
+        taskId: task.id,
+        taskType: 'REVALIDATION',
+        task: {
+          id: task.id,
+          verifiedSignId: task.verified_sign_id,
+          signCode: task.sign_code,
+          nameVi: task.name_vi,
+          nameEn: task.name_en,
+          signCropUrl: task.sign_crop_url,
+          status: task.status,
+          priority: task.priority,
+          urgency: task.urgency,
+          rewardCredits: task.reward_credits,
+          bounty: task.reward_credits,
+          location: { lat: Number(task.latitude), lon: Number(task.longitude) },
+          createdAt: task.created_at,
+          expiredAt: task.expired_at,
+        },
+        surveyorRequests,
+        reviews,
+        timeline,
+      };
+    }
+
+    // 2. Try finding as Candidate verification task (UnverifiedSignCandidate)
+    const candidateRows = await this.dataSource.query(
+      `SELECT c.id, c.submission_id, c.predicted_sign_type_id, c.confidence_score,
+              c.best_frame_url, c.sign_crop_url, c.status, c.created_at,
+              tst.sign_code, tst.name_vi, tst.name_en,
+              s.surveyor_id, u.full_name AS surveyor_name, u.email AS surveyor_email, s.captured_at
+       FROM unverified_sign_candidates c
+       LEFT JOIN traffic_sign_types tst ON tst.id = c.predicted_sign_type_id
+       LEFT JOIN survey_submissions s ON s.id = c.submission_id
+       LEFT JOIN users u ON u.id = s.surveyor_id
+       WHERE c.id = $1`,
+      [taskId],
+    ).catch(() => []);
+
+    if (candidateRows.length > 0) {
+      const candidate = candidateRows[0];
+      const initialSurvName = candidate.surveyor_name || (candidate.surveyor_id ? `Surveyor #${candidate.surveyor_id.slice(0, 8)}` : 'Surveyor');
+      const initialSurvEmail = candidate.surveyor_email || undefined;
+      const initialSurvObj = candidate.surveyor_id
+        ? { id: candidate.surveyor_id, fullName: initialSurvName, email: initialSurvEmail, role: 'SURVEYOR' }
+        : { id: 'anonymous', fullName: 'Khảo sát viên ẩn danh', role: 'SURVEYOR' };
+
+      // Query candidate recapture requests sent to surveyor
+      const recaptureRows = await this.dataSource.query(
+        `SELECT crr.id, crr.candidate_id, crr.reviewer_id, crr.surveyor_id,
+                crr.reason, crr.note, crr.created_at, crr.completed_at,
+                rev.full_name AS reviewer_name, rev.email AS reviewer_email,
+                surv.full_name AS surveyor_name, surv.email AS surveyor_email
+         FROM candidate_recapture_requests crr
+         LEFT JOIN users rev ON rev.id = crr.reviewer_id
+         LEFT JOIN users surv ON surv.id = crr.surveyor_id
+         WHERE crr.candidate_id = $1
+         ORDER BY crr.created_at ASC`,
+        [taskId],
+      ).catch(() => []);
+
+      // Query candidate reviews cast by reviewers
+      const reviewRows = await this.dataSource.query(
+        `SELECT cr.id, cr.candidate_id, cr.reviewer_id, cr.vote,
+                cr.suggested_sign_type_id, cr.decline_reason, cr.decline_note, cr.reviewed_at,
+                rev.full_name AS reviewer_name, rev.email AS reviewer_email,
+                tst.sign_code AS suggested_sign_code, tst.name_vi AS suggested_sign_name
+         FROM candidate_reviews cr
+         LEFT JOIN users rev ON rev.id = cr.reviewer_id
+         LEFT JOIN traffic_sign_types tst ON tst.id = cr.suggested_sign_type_id
+         WHERE cr.candidate_id = $1
+         ORDER BY cr.reviewed_at ASC`,
+        [taskId],
+      ).catch(() => []);
+
+      const surveyorRequests: TaskSurveyorRequestItemDto[] = [
+        {
+          id: candidate.submission_id || `sub-${candidate.id}`,
+          type: 'EVIDENCE_SUBMISSION',
+          status: 'COMPLETED',
+          mediaUrl: candidate.sign_crop_url,
+          surveyorId: candidate.surveyor_id || 'anonymous',
+          surveyorName: initialSurvName,
+          surveyorEmail: initialSurvEmail,
+          surveyor: initialSurvObj,
+          submittedAt: candidate.captured_at ? new Date(candidate.captured_at).toISOString() : (candidate.created_at ? new Date(candidate.created_at).toISOString() : undefined),
+        },
+      ];
+
+      const reviews: TaskReviewItemDto[] = [];
+      const timeline: TaskTimelineEventDto[] = [
+        {
+          eventId: `event-cand-created-${candidate.id}`,
+          eventType: 'TASK_CREATED',
+          timestamp: candidate.created_at ? new Date(candidate.created_at).toISOString() : new Date().toISOString(),
+          actor: initialSurvObj,
+          description: `Candidate sign extracted from survey by Surveyor ${initialSurvName} (${candidate.surveyor_id || 'n/a'})`,
+          details: {
+            candidateId: candidate.id,
+            signCode: candidate.sign_code,
+            confidenceScore: candidate.confidence_score,
+          },
+        },
+      ];
+
+      for (const crr of recaptureRows) {
+        const revName = crr.reviewer_name || `Reviewer #${crr.reviewer_id.slice(0, 8)}`;
+        const revEmail = crr.reviewer_email || undefined;
+        const revObj = { id: crr.reviewer_id, fullName: revName, email: revEmail, role: 'REVIEWER' };
+
+        const survName = crr.surveyor_name || (crr.surveyor_id ? `Surveyor #${crr.surveyor_id.slice(0, 8)}` : initialSurvName);
+        const survEmail = crr.surveyor_email || initialSurvEmail;
+        const survObj = { id: crr.surveyor_id || candidate.surveyor_id || 'unassigned', fullName: survName, email: survEmail, role: 'SURVEYOR' };
+
+        surveyorRequests.push({
+          id: crr.id,
+          type: 'RECAPTURE_REQUEST',
+          status: crr.completed_at ? 'COMPLETED' : 'PENDING',
+          reason: crr.reason,
+          note: crr.note,
+          surveyorId: survObj.id,
+          surveyorName: survName,
+          surveyorEmail: survEmail,
+          surveyor: survObj,
+          reviewerId: crr.reviewer_id,
+          reviewerName: revName,
+          reviewerEmail: revEmail,
+          reviewer: revObj,
+          requestedAt: crr.created_at ? new Date(crr.created_at).toISOString() : undefined,
+          completedAt: crr.completed_at ? new Date(crr.completed_at).toISOString() : undefined,
+        });
+
+        timeline.push({
+          eventId: `event-cand-recapture-${crr.id}`,
+          eventType: 'RECAPTURE_REQUESTED',
+          timestamp: crr.created_at ? new Date(crr.created_at).toISOString() : new Date().toISOString(),
+          actor: revObj,
+          description: `Reviewer ${revName} (${crr.reviewer_id}) requested surveyor ${survName} (${survObj.id}) to recapture image (Reason: ${crr.reason}${crr.note ? ' - ' + crr.note : ''})`,
+          details: {
+            requestId: crr.id,
+            reason: crr.reason,
+            note: crr.note,
+            targetSurveyorId: survObj.id,
+            targetSurveyorName: survName,
+          },
+        });
+      }
+
+      for (const cr of reviewRows) {
+        const revName = cr.reviewer_name || `Reviewer #${cr.reviewer_id.slice(0, 8)}`;
+        const revEmail = cr.reviewer_email || undefined;
+        const revObj = { id: cr.reviewer_id, fullName: revName, email: revEmail, role: 'REVIEWER' };
+
+        reviews.push({
+          id: cr.id,
+          candidateId: cr.candidate_id,
+          reviewerId: cr.reviewer_id,
+          reviewerName: revName,
+          reviewerEmail: revEmail,
+          reviewer: revObj,
+          vote: cr.vote,
+          note: cr.decline_note,
+          declineReason: cr.decline_reason,
+          declineNote: cr.decline_note,
+          suggestedSignTypeId: cr.suggested_sign_type_id,
+          reviewedAt: cr.reviewed_at ? new Date(cr.reviewed_at).toISOString() : undefined,
+        });
+
+        const voteStr = cr.vote === 1 ? 'Approved (+1)' : (cr.vote === -1 ? `Rejected (-1, ${cr.decline_reason || 'Declined'})` : 'Skipped/Unsure (0)');
+
+        timeline.push({
+          eventId: `event-cand-review-${cr.id}`,
+          eventType: 'REVIEW_DECIDED',
+          timestamp: cr.reviewed_at ? new Date(cr.reviewed_at).toISOString() : new Date().toISOString(),
+          actor: revObj,
+          description: `Reviewer ${revName} (${cr.reviewer_id}) evaluated sign: ${voteStr}`,
+          details: {
+            reviewId: cr.id,
+            vote: cr.vote,
+            declineReason: cr.decline_reason,
+            declineNote: cr.decline_note,
+          },
+        });
+      }
+
+      timeline.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+      return {
+        taskId: candidate.id,
+        taskType: 'CANDIDATE',
+        task: {
+          id: candidate.id,
+          signCode: candidate.sign_code,
+          nameVi: candidate.name_vi,
+          nameEn: candidate.name_en,
+          signCropUrl: candidate.sign_crop_url,
+          bestFrameUrl: candidate.best_frame_url,
+          status: candidate.status,
+          confidenceScore: candidate.confidence_score,
+          createdAt: candidate.created_at,
+          surveyorId: candidate.surveyor_id,
+          surveyorName: initialSurvName,
+        },
+        surveyorRequests,
+        reviews,
+        timeline,
+      };
+    }
+
+    throw new NotFoundException(`Task or Candidate with ID '${taskId}' was not found`);
+  }
+
+  /**
+   * Paginated cross-task list of surveyor requests (recaptures, evidence submissions)
+   * and reviews, returning full name and user id of every involved user.
+   */
+  async listTaskHistory(q: AdminTaskHistoryQueryDto) {
+    const page = Math.max(1, q?.page ?? 1);
+    const pageSize = Math.min(Math.max(1, q?.pageSize ?? 20), 100);
+    const offset = (page - 1) * pageSize;
+
+    const unionQuery = `
+      SELECT
+        crr.id AS request_id,
+        'CANDIDATE_RECAPTURE' AS activity_type,
+        crr.candidate_id AS task_id,
+        crr.reason,
+        crr.note,
+        crr.created_at AS occurred_at,
+        crr.surveyor_id,
+        surv.full_name AS surveyor_name,
+        surv.email AS surveyor_email,
+        crr.reviewer_id,
+        rev.full_name AS reviewer_name,
+        rev.email AS reviewer_email,
+        crr.completed_at
+      FROM candidate_recapture_requests crr
+      LEFT JOIN users surv ON surv.id = crr.surveyor_id
+      LEFT JOIN users rev ON rev.id = crr.reviewer_id
+
+      UNION ALL
+
+      SELECT
+        ev.id AS request_id,
+        'REVALIDATION_EVIDENCE' AS activity_type,
+        ev.task_id AS task_id,
+        ev.evidence_type AS reason,
+        ev.media_url AS note,
+        ev.submitted_at AS occurred_at,
+        ev.user_id AS surveyor_id,
+        surv.full_name AS surveyor_name,
+        surv.email AS surveyor_email,
+        NULL AS reviewer_id,
+        NULL AS reviewer_name,
+        NULL AS reviewer_email,
+        ev.submitted_at AS completed_at
+      FROM revalidation_evidences ev
+      LEFT JOIN users surv ON surv.id = ev.user_id
+    `;
+
+    const countRows: any[] = await this.dataSource.query(
+      `SELECT COUNT(*)::int AS cnt FROM (${unionQuery}) t`,
+    ).catch(() => [{ cnt: 0 }]);
+    const total = countRows[0]?.cnt ?? 0;
+
+    const rows: any[] = await this.dataSource.query(
+      `SELECT * FROM (${unionQuery}) t
+       ORDER BY occurred_at DESC
+       LIMIT $1 OFFSET $2`,
+      [pageSize, offset],
+    ).catch(() => []);
+
+    const items = rows.map((r: any) => ({
+      requestId: r.request_id,
+      activityType: r.activity_type,
+      taskId: r.task_id,
+      reason: r.reason,
+      note: r.note,
+      occurredAt: r.occurred_at,
+      surveyor: r.surveyor_id ? {
+        id: r.surveyor_id,
+        fullName: r.surveyor_name || `Surveyor #${r.surveyor_id.slice(0, 8)}`,
+        email: r.surveyor_email,
+      } : null,
+      surveyorId: r.surveyor_id,
+      surveyorName: r.surveyor_name || (r.surveyor_id ? `Surveyor #${r.surveyor_id.slice(0, 8)}` : null),
+      reviewer: r.reviewer_id ? {
+        id: r.reviewer_id,
+        fullName: r.reviewer_name || `Reviewer #${r.reviewer_id.slice(0, 8)}`,
+        email: r.reviewer_email,
+      } : null,
+      reviewerId: r.reviewer_id,
+      reviewerName: r.reviewer_name || (r.reviewer_id ? `Reviewer #${r.reviewer_id.slice(0, 8)}` : null),
+      isCompleted: Boolean(r.completed_at),
+      completedAt: r.completed_at,
+    }));
+
+    return {
+      items,
+      total,
+      page,
+      pageSize,
+      totalPages: Math.ceil(total / pageSize),
+    };
   }
 }
 

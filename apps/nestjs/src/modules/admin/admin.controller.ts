@@ -30,6 +30,7 @@ import {
   UpdateRewardRuleDto,
   UpdateSystemFeatureFlagDto,
   DemoModeToggleDto,
+  AdminTaskHistoryQueryDto,
 } from './dto/admin.dto';
 import { WalletService } from '../wallet/application/wallet.service';
 import { SystemSwitchService } from './system-switch.service';
@@ -460,6 +461,26 @@ export class AdminController {
       dto?.reason || 'Admin reset system to strict production standards',
       ip,
     );
+  }
+
+  // ── Task History: Surveyor Requests & Review Decisions ─────────────────────
+
+  @ApiOperation({
+    summary: 'Get task history with surveyor requests and reviews',
+    description: 'Admin operation to view comprehensive history of requests sent to surveyors (evidences, recaptures) and reviews/decisions made to accomplish task X, returning full name and user id of every participant so the admin knows who is doing what.',
+  })
+  @Get('tasks/:taskId/history')
+  getTaskHistory(@Param('taskId', ParseUUIDPipe) taskId: string) {
+    return this.svc.getTaskHistory(taskId);
+  }
+
+  @ApiOperation({
+    summary: 'List cross-task requests and reviews history',
+    description: 'Admin operation to view paginated cross-task activity log of surveyor requests, evidence submissions, and reviewer decisions with user names and IDs',
+  })
+  @Get('tasks/history')
+  listTaskHistory(@Query() query: AdminTaskHistoryQueryDto) {
+    return this.svc.listTaskHistory(query);
   }
 }
 

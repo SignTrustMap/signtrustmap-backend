@@ -31,6 +31,8 @@ describe('AdminController (Phase 1 Ledger Adjustments & Admin Operations)', () =
       updateRewardRule: jest.fn(),
       getUserStatistics: jest.fn(),
       getUsersSummaryStatistics: jest.fn(),
+      getTaskHistory: jest.fn(),
+      listTaskHistory: jest.fn(),
     } as unknown as jest.Mocked<AdminService>;
 
     walletService = {
@@ -383,6 +385,40 @@ describe('AdminController (Phase 1 Ledger Adjustments & Admin Operations)', () =
 
       const disabledResult = await controller.disableDemoMode(dto, mockAdmin, mockReq);
       expect(Array.isArray(disabledResult)).toBe(true);
+    });
+
+    it('getTaskHistory delegates to adminService.getTaskHistory', async () => {
+      const taskId = '7b925b4b-8486-4ba2-b2ee-1ff7d1cfae33';
+      const expected = {
+        taskId,
+        taskType: 'REVALIDATION',
+        status: 'OPEN',
+        surveyor: { id: 'user-1', fullName: 'Nguyen Van A', email: 'a@stm.dev' },
+        surveyorRequests: [],
+        reviews: [],
+        timeline: [],
+      };
+      (adminService.getTaskHistory as jest.Mock).mockResolvedValue(expected as any);
+
+      const result = await controller.getTaskHistory(taskId);
+      expect(adminService.getTaskHistory).toHaveBeenCalledWith(taskId);
+      expect(result).toBe(expected);
+    });
+
+    it('listTaskHistory delegates to adminService.listTaskHistory', async () => {
+      const query = { page: 1, pageSize: 10, taskType: 'REVALIDATION' as const };
+      const expected = {
+        items: [],
+        total: 0,
+        page: 1,
+        pageSize: 10,
+        totalPages: 0,
+      };
+      (adminService.listTaskHistory as jest.Mock).mockResolvedValue(expected as any);
+
+      const result = await controller.listTaskHistory(query);
+      expect(adminService.listTaskHistory).toHaveBeenCalledWith(query);
+      expect(result).toBe(expected);
     });
   });
 });

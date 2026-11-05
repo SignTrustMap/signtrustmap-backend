@@ -684,4 +684,223 @@ describe('AdminService', () => {
       expect(summary.usersByRole.reviewer).toBe(6);
     });
   });
+
+  describe('getTaskHistory', () => {
+    const validTaskId = '7b925b4b-8486-4ba2-b2ee-1ff7d1cfae33';
+
+    it('throws BadRequestException for invalid UUID format', async () => {
+      await expect(service.getTaskHistory('not-a-uuid')).rejects.toThrow(BadRequestException);
+    });
+
+    it('throws NotFoundException when task is not in revalidation or candidate tables', async () => {
+      dataSource.query.mockResolvedValue([]);
+      await expect(service.getTaskHistory(validTaskId)).rejects.toThrow(NotFoundException);
+    });
+
+    it('returns full participant history for a REVALIDATION task', async () => {
+      dataSource.query.mockImplementation((sql: string) => {
+        if (sql.includes('FROM revalidation_tasks rt')) {
+          return Promise.resolve([
+            {
+              id: validTaskId,
+              status: 'OPEN',
+              priority: 'HIGH',
+              reward_credits: 50,
+              created_at: new Date('2026-03-01T10:00:00Z'),
+              updated_at: new Date('2026-03-01T12:00:00Z'),
+              verified_sign_id: 'sign-1',
+              sign_code: 'W.201',
+              sign_name_vi: 'Chỗ ngoặt nguy hiểm vòng bên trái',
+            },
+          ]);
+        }
+        if (sql.includes('FROM revalidation_evidences ev')) {
+          return Promise.resolve([
+            {
+              id: 'ev-1',
+              evidence_type: 'STILL_ACTIVE',
+              media_url: 'https://s3/evidence-1.jpg',
+              user_id: 'surveyor-uuid-1',
+              surveyor_name: 'Nguyen Van Surveyor',
+              surveyor_email: 'surveyor@stm.dev',
+              submitted_at: new Date('2026-03-01T10:30:00Z'),
+            },
+          ]);
+        }
+        if (sql.includes('FROM revalidation_decisions rd')) {
+          return Promise.resolve([
+            {
+              id: 'dec-1',
+              evidence_id: 'ev-1',
+              decision: 'STILL_ACTIVE',
+              note: 'Sign is clearly visible and undamaged',
+              reviewer_id: 'reviewer-uuid-1',
+              reviewer_name: 'Tran Reviewer',
+              reviewer_email: 'reviewer@stm.dev',
+              decided_at: new Date('2026-03-01T11:00:00Z'),
+            },
+          ]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const result = await service.getTaskHistory(validTaskId);
+
+      expect(result.taskId).toBe(validTaskId);
+      expect(result.taskType).toBe('REVALIDATION');
+      expect(result.status).toBe('OPEN');
+      expect(result.surveyor).toEqual({
+        id: 'surveyor-uuid-1',
+        fullName: 'Nguyen Van Surveyor',
+        email: 'surveyor@stm.dev',
+      });
+      expect(result.surveyorName).toBe('Nguyen Van Surveyor');
+      expect(result.surveyorId).toBe('surveyor-uuid-1');
+      expect(result.reviewer).toEqual({
+        id: 'reviewer-uuid-1',
+        fullName: 'Tran Reviewer',
+        email: 'reviewer@stm.dev',
+      });
+      expect(result.reviewerName).toBe('Tran Reviewer');
+      expect(result.reviewerId).toBe('reviewer-uuid-1');
+      expect(result.surveyorRequests).toHaveLength(1);
+      expect(result.reviews).toHaveLength(1);
+      expect(result.timeline).toHaveLength(2);
+      expect(result.timeline[0].actorRole).toBe('SURVEYOR');
+      expect(result.timeline[1].actorRole).toBe('REVIEWER');
+    });
+
+    it('returns full participant history for a CANDIDATE verification task', async () => {
+      dataSource.query.mockImplementation((sql: string) => {
+        if (sql.includes('FROM revalidation_tasks rt')) {
+          return Promise.resolve([]);
+        }
+        if (sql.includes('FROM unverified_sign_candidates c')) {
+          return Promise.resolve([
+            {
+              id: validTaskId,
+              status: 'PENDING_REVIEW',
+              confidence_score: 0.95,
+              created_at: new Date('2026-03-02T08:00:00Z'),
+              submission_id: 'sub-1',
+              surveyor_id: 'surveyor-uuid-2',
+              surveyor_name: 'Le Surveyor',
+              surveyor_email: 'le@stm.dev',
+            },
+          ]);
+        }
+        if (sql.includes('FROM candidate_recapture_requests crr')) {
+          return Promise.resolve([
+            {
+              id: 'crr-1',
+              reason: 'BLURRY',
+              note: 'Capture too dark',
+              reviewer_id: 'reviewer-uuid-2',
+              reviewer_name: 'Pham Reviewer',
+              reviewer_email: 'pham@stm.dev',
+              surveyor_id: 'surveyor-uuid-2',
+              surveyor_name: 'Le Surveyor',
+              surveyor_email: 'le@stm.dev',
+              created_at: new Date('2026-03-02T09:00:00Z'),
+              completed_at: null,
+            },
+          ]);
+        }
+        if (sql.includes('FROM candidate_reviews cr')) {
+          return Promise.resolve([
+            {
+              id: 'cr-1',
+              vote: 1,
+              comment: 'Approved candidate',
+              reviewer_id: 'reviewer-uuid-2',
+              reviewer_name: 'Pham Reviewer',
+              reviewer_email: 'pham@stm.dev',
+              reviewed_at: new Date('2026-03-02T10:00:00Z'),
+            },
+          ]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const result = await service.getTaskHistory(validTaskId);
+
+      expect(result.taskId).toBe(validTaskId);
+      expect(result.taskType).toBe('CANDIDATE');
+      expect(result.surveyor).toEqual({
+        id: 'surveyor-uuid-2',
+        fullName: 'Le Surveyor',
+        email: 'le@stm.dev',
+      });
+      expect(result.reviewer).toEqual({
+        id: 'reviewer-uuid-2',
+        fullName: 'Pham Reviewer',
+        email: 'pham@stm.dev',
+      });
+      expect(result.surveyorRequests).toHaveLength(2); // initial submission + recapture request
+      expect(result.reviews).toHaveLength(1);
+    });
+  });
+
+  describe('listTaskHistory', () => {
+    it('aggregates and paginates history across candidate and revalidation tasks', async () => {
+      dataSource.query.mockImplementation((sql: string) => {
+        if (sql.includes('candidate_recapture_requests crr')) {
+          return Promise.resolve([
+            {
+              id: 'req-1',
+              task_id: 'cand-uuid-1',
+              task_type: 'CANDIDATE',
+              action_type: 'RECAPTURE_REQUEST',
+              reason: 'BLURRY',
+              note: 'Request recapture',
+              created_at: new Date('2026-03-01T12:00:00Z'),
+              surveyor_id: 'surv-1',
+              surveyor_name: 'Surveyor One',
+              surveyor_email: 'surv1@stm.dev',
+              reviewer_id: 'rev-1',
+              reviewer_name: 'Reviewer One',
+              reviewer_email: 'rev1@stm.dev',
+            },
+          ]);
+        }
+        if (sql.includes('revalidation_evidences ev')) {
+          return Promise.resolve([
+            {
+              id: 'ev-1',
+              task_id: 'reval-uuid-1',
+              task_type: 'REVALIDATION',
+              action_type: 'EVIDENCE_SUBMISSION',
+              reason: null,
+              note: null,
+              created_at: new Date('2026-03-01T11:00:00Z'),
+              surveyor_id: 'surv-2',
+              surveyor_name: 'Surveyor Two',
+              surveyor_email: 'surv2@stm.dev',
+              reviewer_id: null,
+              reviewer_name: null,
+              reviewer_email: null,
+            },
+          ]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const result = await service.listTaskHistory({ page: 1, pageSize: 10 });
+
+      expect(result.total).toBe(2);
+      expect(result.items).toHaveLength(2);
+      expect(result.items[0].surveyor).toEqual({
+        id: 'surv-1',
+        fullName: 'Surveyor One',
+        email: 'surv1@stm.dev',
+      });
+      expect(result.items[0].reviewer).toEqual({
+        id: 'rev-1',
+        fullName: 'Reviewer One',
+        email: 'rev1@stm.dev',
+      });
+      expect(result.items[0].surveyorName).toBe('Surveyor One');
+      expect(result.items[0].reviewerName).toBe('Reviewer One');
+    });
+  });
 });
