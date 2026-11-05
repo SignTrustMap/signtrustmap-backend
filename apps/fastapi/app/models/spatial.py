@@ -26,8 +26,30 @@ from datetime import datetime
 
 from geoalchemy2 import Geometry
 from sqlalchemy import BigInteger, String, Text, func
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM, UUID as PG_UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+
+SIGN_LIFECYCLE_STATUS_ENUM = PG_ENUM(
+    "ACTIVE",
+    "STALE",
+    "RETIRED",
+    "MODERATED_OVERRIDE",
+    "NEEDS_REVALIDATION",
+    "REVALIDATION_REQUIRED",
+    "INACTIVE",
+    "DECOMMISSIONED",
+    name="sign_lifecycle_status",
+    create_type=False,
+)
+
+NAV_SESSION_STATUS_ENUM = PG_ENUM(
+    "ACTIVE",
+    "COMPLETED",
+    "CANCELED",
+    name="nav_session_status",
+    create_type=False,
+)
 
 
 class Base(DeclarativeBase):
@@ -53,7 +75,7 @@ class VerifiedTrafficSign(Base):
     location: Mapped[object] = mapped_column(Geometry("POINT", srid=4326))
     traffic_direction: Mapped[float | None] = mapped_column()
     sign_crop_url: Mapped[str] = mapped_column(String(500))
-    status: Mapped[str] = mapped_column(String(30), default="ACTIVE")
+    status: Mapped[str] = mapped_column(SIGN_LIFECYCLE_STATUS_ENUM, default="ACTIVE")
     freshness_score: Mapped[float] = mapped_column(default=1.0)
     route_classification_id: Mapped[int | None] = mapped_column(nullable=True)
     road_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -73,7 +95,7 @@ class NavigationSession(Base):
     origin: Mapped[object] = mapped_column(Geometry("POINT", srid=4326))
     destination: Mapped[object] = mapped_column(Geometry("POINT", srid=4326))
     credits_deducted: Mapped[int] = mapped_column(default=0)
-    status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
+    status: Mapped[str] = mapped_column(NAV_SESSION_STATUS_ENUM, default="ACTIVE")
     started_at: Mapped[datetime] = mapped_column(server_default=func.now())
     ended_at: Mapped[datetime | None] = mapped_column(default=None)
 

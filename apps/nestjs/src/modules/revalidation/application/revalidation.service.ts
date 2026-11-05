@@ -86,8 +86,10 @@ export class RevalidationService {
     sort?: string,
     spatial?: { lat: number; lon: number; radiusMeters?: number },
   ) {
-    const p = Math.max(1, page),
+    const p = Math.min(Math.max(1, page), 100000),
       ps = Math.min(Math.max(1, pageSize), 100);
+
+    const validTaskStatuses = ['OPEN', 'EVALUATING', 'COMPLETED', 'EXPIRED', 'ESCALATED_MODERATION'];
 
     if (spatial && spatial.lat != null && spatial.lon != null) {
       const radius = spatial.radiusMeters ?? 5000;
@@ -98,8 +100,12 @@ export class RevalidationService {
       );
 
       if (status && status.toUpperCase() !== 'ALL') {
+        const normStatus = status.toUpperCase();
+        if (!validTaskStatuses.includes(normStatus)) {
+          return { items: [], total: 0, page: p, pageSize: ps, totalPages: 0 };
+        }
         conditions.push(`rt.status = $${params.length + 1}::task_status`);
-        params.push(status);
+        params.push(normStatus);
       } else if (!status) {
         conditions.push(`rt.status IN ('OPEN', 'EVALUATING')`);
       }
@@ -161,8 +167,12 @@ export class RevalidationService {
     const params: any[] = [];
     let idx = 1;
     if (status && status.toUpperCase() !== 'ALL') {
+      const normStatus = status.toUpperCase();
+      if (!validTaskStatuses.includes(normStatus)) {
+        return { items: [], total: 0, page: p, pageSize: ps, totalPages: 0 };
+      }
       conditions.push(`rt.status = $${idx++}::task_status`);
-      params.push(status);
+      params.push(normStatus);
     } else if (!status) {
       conditions.push(`rt.status IN ('OPEN', 'EVALUATING')`);
     }

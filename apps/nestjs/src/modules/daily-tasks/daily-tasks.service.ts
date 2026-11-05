@@ -136,6 +136,9 @@ export class DailyTasksService {
    * List completion records for the current user
    */
   async listCompletions(userId: string, date?: string): Promise<DailyTaskCompletion[]> {
+    if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      throw new BadRequestException('Invalid date format. Expected YYYY-MM-DD');
+    }
     const targetDate = date || new Date().toISOString().slice(0, 10);
     return this.completionRepo.find({
       where: { userId, completionDate: targetDate },
@@ -693,6 +696,9 @@ export class DailyTasksService {
    * Protected with Redis Redlock distributed mutex to eliminate double-claim race conditions.
    */
   async claim(userId: string, taskId: number) {
+    if (!Number.isInteger(taskId) || taskId > 2147483647 || taskId < 1) {
+      throw new NotFoundException(`Daily task #${taskId} not found`);
+    }
     const today = new Date().toISOString().slice(0, 10);
     const lockKey = `lock:daily_task_claim:${userId}:${taskId}:${today}`;
 

@@ -96,6 +96,7 @@ services:
       SYNC_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-stm_user}:${POSTGRES_PASSWORD:-stm_password}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-signtrustmap}
       REDIS_URL: redis://${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/1
       CELERY_BROKER_URL: redis://${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/2
+      CELERY_RESULT_BACKEND: redis://${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/3
       MINIO_ENDPOINT: ${MINIO_HOST:-minio}:${MINIO_API_PORT:-9000}
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-stm_minio}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-stm_minio_secret_123}

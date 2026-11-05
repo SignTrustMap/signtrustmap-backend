@@ -453,6 +453,7 @@ describe('ReviewsService', () => {
           submission: { surveyorId: 'surv-1' },
         }),
         manager: { query: jest.fn()
+          .mockResolvedValueOnce([])
           .mockResolvedValueOnce([{ status: CandidateStatus.MISSING_TYPE_HOLD }])
           .mockResolvedValueOnce([])
           .mockResolvedValueOnce([{ id: 'r1' }, { id: 'r2' }]) },

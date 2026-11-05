@@ -30,6 +30,7 @@ SUBMISSION_TYPE_ENUM = ENUM(name="submission_type", create_type=False)
 COORDINATE_SOURCE_ENUM = ENUM(name="coordinate_source", create_type=False)
 TASK_PRIORITY_ENUM = ENUM(name="task_priority", create_type=False)
 TASK_STATUS_ENUM = ENUM(name="task_status", create_type=False)
+MEDIA_FILE_TYPE_ENUM = ENUM(name="media_file_type", create_type=False)
 
 
 class SurveySubmission(Base):
@@ -64,7 +65,7 @@ class SubmissionMediaFile(Base):
     )
     submission_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True))
     upload_session_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
-    media_type: Mapped[str] = mapped_column(String(50))
+    media_type: Mapped[str] = mapped_column(MEDIA_FILE_TYPE_ENUM)
     file_url: Mapped[str] = mapped_column(String(500))
     file_size_bytes: Mapped[int | None] = mapped_column(BigInteger)
     duration_seconds: Mapped[float | None] = mapped_column()
@@ -281,7 +282,7 @@ class SignTypeAiPrompt(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     sign_type_id: Mapped[int] = mapped_column(Integer)
-    target_model: Mapped[str] = mapped_column(String(50))
+    target_model: Mapped[str] = mapped_column(AI_MODEL_TYPE_ENUM)
     prompt_text: Mapped[str] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 

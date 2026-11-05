@@ -1,14 +1,17 @@
-import { IsInt, IsOptional, IsPositive, IsString, MaxLength } from 'class-validator';
+import { IsInt, IsOptional, IsPositive, IsString, Max, MaxLength } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateMomoPaymentDto {
   @ApiPropertyOptional({
     description: 'Predefined top-up package ID to purchase',
     example: 1,
+    minimum: 1,
+    maximum: 2147483647,
   })
   @IsOptional()
   @IsInt()
   @IsPositive()
+  @Max(2147483647)
   packageId?: number;
 
   @ApiPropertyOptional({

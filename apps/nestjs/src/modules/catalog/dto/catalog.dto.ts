@@ -302,11 +302,12 @@ export class UpsertSystemParameterDto {
 }
 
 export class ListSignTypesQueryDto {
-  @ApiPropertyOptional({ description: 'Filter by category ID', example: 1 })
+  @ApiPropertyOptional({ description: 'Filter by category ID', example: 1, maximum: 2147483647 })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
+  @Max(2147483647)
   categoryId?: number;
 
   @ApiPropertyOptional({ description: 'Filter by active status', enum: ['true', 'false'] })
@@ -328,11 +329,12 @@ export class ListSignTypesQueryDto {
   @MaxLength(255)
   q?: string;
 
-  @ApiPropertyOptional({ description: 'Page number (0-based)', default: 0 })
+  @ApiPropertyOptional({ description: 'Page number (0-based)', default: 0, maximum: 100000 })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(0)
+  @Max(100000)
   page?: number;
 
   @ApiPropertyOptional({ description: 'Page size limit', default: 20 })

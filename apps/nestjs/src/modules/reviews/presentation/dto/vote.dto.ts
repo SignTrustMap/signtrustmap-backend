@@ -88,13 +88,13 @@ export class SelectSignRemedyDto {
 }
 
 export class TestReviewDto {
-  @ApiProperty({ description: 'Candidate UUID', example: '123e4567-e89b-12d3-a456-426614174000' })
-  @IsString()
+  @ApiProperty({ description: 'Candidate UUID', example: '123e4567-e89b-12d3-a456-426614174000', format: 'uuid' })
+  @IsUUID()
   candidateId: string;
 
-  @ApiPropertyOptional({ description: 'Optional Reviewer UUID (defaults to current authenticated user)' })
+  @ApiPropertyOptional({ description: 'Optional Reviewer UUID (defaults to current authenticated user)', format: 'uuid' })
   @IsOptional()
-  @IsString()
+  @IsUUID()
   reviewerId?: string;
 
   @ApiProperty({ description: 'Vote value: 1 for approve, -1 for reject', example: 1 })
@@ -120,13 +120,15 @@ export class TestReviewDto {
 }
 
 export class TestAssignDto {
-  @ApiPropertyOptional({ description: 'Reviewer UUID (defaults to current authenticated user)' })
+  @ApiPropertyOptional({ description: 'Reviewer UUID (defaults to current authenticated user)', format: 'uuid' })
   @IsOptional()
-  @IsString()
+  @IsUUID()
   reviewerId?: string;
 
   @ApiPropertyOptional({ description: 'Optional list of Candidate UUIDs to assign', type: [String] })
   @IsOptional()
+  @IsArray()
+  @IsUUID(undefined, { each: true })
   candidateIds?: string[];
 }
 

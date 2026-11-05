@@ -98,6 +98,9 @@ export class CatalogService {
   }
 
   async getCategory(id: number) {
+    if (!Number.isInteger(id) || id > 2147483647 || id < 1) {
+      throw new NotFoundException(`SignCategory #${id} not found`);
+    }
     const category = await this.categories.findOne({ where: { id } });
     if (!category) throw new NotFoundException(`SignCategory #${id} not found`);
     return category;
@@ -121,6 +124,9 @@ export class CatalogService {
   }
 
   async updateCategory(id: number, dto: UpdateSignCategoryDto) {
+    if (!Number.isInteger(id) || id > 2147483647 || id < 1) {
+      throw new NotFoundException(`SignCategory #${id} not found`);
+    }
     const category = await this.categories.findOne({ where: { id } });
     if (!category) throw new NotFoundException(`SignCategory #${id} not found`);
     if (dto.code) {
@@ -142,6 +148,9 @@ export class CatalogService {
   }
 
   async deleteCategory(id: number) {
+    if (!Number.isInteger(id) || id > 2147483647 || id < 1) {
+      throw new NotFoundException(`SignCategory #${id} not found`);
+    }
     const category = await this.categories.findOne({ where: { id } });
     if (!category) throw new NotFoundException(`SignCategory #${id} not found`);
     const referenceCount = await this.signTypes.count({ where: { categoryId: id } });
@@ -166,7 +175,7 @@ export class CatalogService {
   async listSignTypes(
     options: ListSignTypesOptions = {},
   ): Promise<PageResponse<CatalogSignType>> {
-    const page = Math.max(0, Math.trunc(options.page ?? 0));
+    const page = Math.min(Math.max(0, Math.trunc(options.page ?? 0)), 100000);
     const size = Math.min(Math.max(1, Math.trunc(options.size ?? 20)), 100);
     const query = this.signTypes
       .createQueryBuilder('signType')
@@ -199,6 +208,9 @@ export class CatalogService {
   }
 
   async getSignType(id: number): Promise<CatalogSignType> {
+    if (!Number.isInteger(id) || id > 2147483647 || id < 1) {
+      throw new NotFoundException(`TrafficSignType #${id} not found`);
+    }
     const signType = await this.signTypes.findOne({
       where: { id },
       relations: ['category'],

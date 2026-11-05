@@ -1394,7 +1394,9 @@ export class ReviewsService {
       );
     }
 
-    const canSelfReview = allowSelfReview || process.env.ALLOW_SELF_REVIEW === 'true' || process.env.DEMO_MODE !== 'false';
+    const canSelfReview = allowSelfReview !== undefined
+      ? allowSelfReview
+      : (process.env.ALLOW_SELF_REVIEW === 'true' || process.env.DEMO_MODE === 'true');
     if (!canSelfReview && candidate.submission && candidate.submission.surveyorId === reviewerId) {
       throw new ForbiddenException('You cannot request recapture on sign candidates from your own survey submission');
     }
