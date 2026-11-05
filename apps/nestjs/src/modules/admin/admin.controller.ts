@@ -13,7 +13,7 @@ import {
   Req,
   Res,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags, ApiQuery } from '@nestjs/swagger';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AdminService } from './admin.service';
@@ -41,11 +41,54 @@ export class AdminController {
     private readonly walletService: WalletService,
   ) { }
 
-  @ApiOperation({ summary: 'List platform users', description: 'Admin operation to search and paginate all users with role and status filtering' })
+  @ApiOperation({
+    summary: 'List platform users',
+    description: 'Admin operation to search and paginate all users with role, status filtering, and attached activity statistics',
+  })
+  @ApiQuery({ name: 'role', required: false, type: String })
+  @ApiQuery({ name: 'status', required: false, type: String })
+  @ApiQuery({ name: 'search', required: false, type: String })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'pageSize', required: false, type: Number })
+  @ApiQuery({ name: 'includeStats', required: false, type: Boolean, description: 'Include user performance statistics (default: true)' })
   @Get('users')
-  listUsers(@Query('role') role?: string, @Query('status') status?: string, @Query('search') search?: string, @Query('page') page?: string, @Query('pageSize') pageSize?: string) {
-    const p = page ? parseInt(page, 10) : 1; const ps = pageSize ? parseInt(pageSize, 10) : 20;
-    return this.svc.listUsers({ role, status, search, page: Number.isNaN(p) ? 1 : p, pageSize: Number.isNaN(ps) ? 20 : ps });
+  listUsers(
+    @Query('role') role?: string,
+    @Query('status') status?: string,
+    @Query('search') search?: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+    @Query('includeStats') includeStats?: string,
+  ) {
+    const p = page ? parseInt(page, 10) : 1;
+    const ps = pageSize ? parseInt(pageSize, 10) : 20;
+    const stats = includeStats === undefined ? true : includeStats !== 'false' && includeStats !== '0';
+    return this.svc.listUsers({
+      role,
+      status,
+      search,
+      page: Number.isNaN(p) ? 1 : p,
+      pageSize: Number.isNaN(ps) ? 20 : ps,
+      includeStats: stats,
+    });
+  }
+
+  @ApiOperation({
+    summary: 'Get platform-wide users statistics summary',
+    description: 'Admin operation to retrieve overall platform metrics: total users, review accuracy, survey acceptance rate, active contributors',
+  })
+  @Get('users/statistics/summary')
+  getUsersSummaryStatistics() {
+    return this.svc.getUsersSummaryStatistics();
+  }
+
+  @ApiOperation({
+    summary: 'Get detailed user statistics',
+    description: 'Admin operation to retrieve comprehensive statistics breakdown for a specific user: reviews, surveys, hazards, navigation, wallet, activity',
+  })
+  @Get('users/:id/statistics')
+  getUserStatistics(@Param('id', ParseUUIDPipe) id: string) {
+    return this.svc.getUserStatistics(id);
   }
 
   @ApiOperation({ summary: 'Update user account status', description: 'Admin operation to suspend, activate, or ban a user account with recorded audit reason' })

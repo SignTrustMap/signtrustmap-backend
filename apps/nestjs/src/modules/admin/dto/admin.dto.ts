@@ -321,5 +321,7 @@ export class UpdateRewardRuleDto {
   reason?: string;
 }
 
+export * from './user-statistics.dto';
+
 
 
