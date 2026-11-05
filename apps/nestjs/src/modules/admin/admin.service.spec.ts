@@ -233,6 +233,7 @@ describe('AdminService', () => {
       const config = await service.getConsensusConfig();
       expect(config.approvalThreshold).toBe(2.0);
       expect(config.minVotesRequired).toBe(3);
+      expect(config.maxVotesLimit).toBe(9);
     });
 
     it('returns existing consensus config when present', async () => {
@@ -412,6 +413,195 @@ describe('AdminService', () => {
       const json: any = await service.exportSigns('json');
       expect(Array.isArray(json)).toBe(true);
       expect(json[0].id).toBe('sign-1');
+    });
+  });
+
+  describe('Freshness Rules Management', () => {
+    it('listFreshnessRules returns mapped rules with category info', async () => {
+      dataSource.query.mockResolvedValueOnce([
+        {
+          id: 1,
+          signCategoryId: 2,
+          categoryCode: 'WARNING',
+          categoryNameEn: 'Warning Signs',
+          categoryNameVi: 'Biển cảnh báo',
+          freshnessPeriodDays: 30,
+          defaultPriority: 'MEDIUM',
+          maxProximityMeters: 50,
+          dailySubmissionLimit: 3,
+          isActive: true,
+          createdAt: new Date(),
+        },
+      ]);
+
+      const rules = await service.listFreshnessRules();
+      expect(rules.length).toBe(1);
+      expect(rules[0].id).toBe(1);
+      expect(rules[0].categoryCode).toBe('WARNING');
+      expect(rules[0].maxProximityMeters).toBe(50);
+      expect(rules[0].dailySubmissionLimit).toBe(3);
+    });
+
+    it('getFreshnessRule returns rule by ID or throws NotFoundException', async () => {
+      dataSource.query.mockResolvedValueOnce([
+        {
+          id: 1,
+          signCategoryId: 2,
+          categoryCode: 'WARNING',
+          freshnessPeriodDays: 30,
+          defaultPriority: 'MEDIUM',
+          maxProximityMeters: 50,
+          dailySubmissionLimit: 3,
+          isActive: true,
+          createdAt: new Date(),
+        },
+      ]);
+
+      const rule = await service.getFreshnessRule(1);
+      expect(rule.id).toBe(1);
+
+      dataSource.query.mockResolvedValueOnce([]);
+      await expect(service.getFreshnessRule(999)).rejects.toThrow(NotFoundException);
+    });
+
+    it('createFreshnessRule inserts new rule and records audit log', async () => {
+      dataSource.query
+        .mockResolvedValueOnce([
+          {
+            id: 2,
+            sign_category_id: 3,
+            freshness_period_days: 60,
+            default_priority: 'HIGH',
+            max_proximity_meters: 60,
+            daily_submission_limit: 5,
+            is_active: true,
+            created_at: new Date(),
+          },
+        ]) // insert returning
+        .mockResolvedValueOnce([]); // audit log
+
+      const result = await service.createFreshnessRule(
+        {
+          signCategoryId: 3,
+          freshnessPeriodDays: 60,
+          defaultPriority: 'HIGH' as any,
+          maxProximityMeters: 60,
+          dailySubmissionLimit: 5,
+        },
+        'admin-1',
+        '127.0.0.1',
+      );
+
+      expect(result.id).toBe(2);
+      expect(result.freshnessPeriodDays).toBe(60);
+      expect(result.maxProximityMeters).toBe(60);
+      expect(result.dailySubmissionLimit).toBe(5);
+    });
+
+    it('updateFreshnessRule updates parameters and records audit log', async () => {
+      dataSource.query
+        .mockResolvedValueOnce([
+          {
+            id: 1,
+            sign_category_id: 2,
+            freshness_period_days: 30,
+            default_priority: 'MEDIUM',
+            max_proximity_meters: 50,
+            daily_submission_limit: 3,
+            is_active: true,
+          },
+        ]) // select current
+        .mockResolvedValueOnce([]) // update
+        .mockResolvedValueOnce([]); // audit log
+
+      const result = await service.updateFreshnessRule(
+        1,
+        { maxProximityMeters: 75, dailySubmissionLimit: 4 },
+        'admin-1',
+        '127.0.0.1',
+      );
+
+      expect(result.updated).toBe(true);
+      expect(result.maxProximityMeters).toBe(75);
+      expect(result.dailySubmissionLimit).toBe(4);
+    });
+
+    it('deleteFreshnessRule deactivates rule and records audit log', async () => {
+      dataSource.query
+        .mockResolvedValueOnce([{ id: 1, is_active: true }])
+        .mockResolvedValueOnce([]) // update is_active = false
+        .mockResolvedValueOnce([]); // audit log
+
+      const result = await service.deleteFreshnessRule(1, 'admin-1', '127.0.0.1');
+      expect(result.deactivated).toBe(true);
+    });
+  });
+
+  describe('Reward Rules Management', () => {
+    it('listRewardRules returns mapped reward items', async () => {
+      dataSource.query.mockResolvedValueOnce([
+        {
+          id: 1,
+          activity_type: 'REVALIDATION_REWARD',
+          base_amount: 20,
+          daily_limit: 10,
+          multiplier_config: { urgency_bonus: true },
+          is_active: true,
+          created_at: new Date(),
+          updated_at: new Date(),
+        },
+      ]);
+
+      const rules = await service.listRewardRules();
+      expect(rules.length).toBe(1);
+      expect(rules[0].activityType).toBe('REVALIDATION_REWARD');
+      expect(rules[0].baseAmount).toBe(20);
+    });
+
+    it('getRewardRule returns rule by activity type or throws NotFoundException', async () => {
+      dataSource.query.mockResolvedValueOnce([
+        {
+          id: 1,
+          activity_type: 'REVALIDATION_REWARD',
+          base_amount: 20,
+          daily_limit: 10,
+          multiplier_config: {},
+          is_active: true,
+        },
+      ]);
+
+      const rule = await service.getRewardRule('REVALIDATION_REWARD');
+      expect(rule.activityType).toBe('REVALIDATION_REWARD');
+
+      dataSource.query.mockResolvedValueOnce([]);
+      await expect(service.getRewardRule('NON_EXISTENT')).rejects.toThrow(NotFoundException);
+    });
+
+    it('updateRewardRule updates rule and records audit log', async () => {
+      dataSource.query
+        .mockResolvedValueOnce([
+          {
+            id: 1,
+            activity_type: 'REVALIDATION_REWARD',
+            base_amount: 20,
+            daily_limit: 10,
+            multiplier_config: {},
+            is_active: true,
+          },
+        ]) // select current
+        .mockResolvedValueOnce([]) // update
+        .mockResolvedValueOnce([]); // audit log
+
+      const result = await service.updateRewardRule(
+        'REVALIDATION_REWARD',
+        { baseAmount: 25, dailyLimit: 15 },
+        'admin-1',
+        '127.0.0.1',
+      );
+
+      expect(result.updated).toBe(true);
+      expect(result.baseAmount).toBe(25);
+      expect(result.dailyLimit).toBe(15);
     });
   });
 });
