@@ -21,6 +21,14 @@ describe('AdminController (Phase 1 Ledger Adjustments & Admin Operations)', () =
       updateConsensusConfig: jest.fn(),
       getRouteMatrix: jest.fn(),
       updateRouteMatrix: jest.fn(),
+      listFreshnessRules: jest.fn(),
+      getFreshnessRule: jest.fn(),
+      createFreshnessRule: jest.fn(),
+      updateFreshnessRule: jest.fn(),
+      deleteFreshnessRule: jest.fn(),
+      listRewardRules: jest.fn(),
+      getRewardRule: jest.fn(),
+      updateRewardRule: jest.fn(),
     } as unknown as jest.Mocked<AdminService>;
 
     walletService = {
@@ -223,5 +231,92 @@ describe('AdminController (Phase 1 Ledger Adjustments & Admin Operations)', () =
       '127.0.0.1',
     );
     expect(result).toBe(expected);
+  });
+
+  describe('Freshness Rules Management', () => {
+    it('listFreshnessRules delegates to adminService.listFreshnessRules', async () => {
+      const expected = [{ id: 1, freshnessPeriodDays: 30, maxProximityMeters: 50, dailySubmissionLimit: 3 }];
+      adminService.listFreshnessRules.mockResolvedValue(expected as any);
+
+      const result = await controller.listFreshnessRules();
+
+      expect(adminService.listFreshnessRules).toHaveBeenCalled();
+      expect(result).toBe(expected);
+    });
+
+    it('getFreshnessRule delegates to adminService.getFreshnessRule', async () => {
+      const expected = { id: 1, freshnessPeriodDays: 30 };
+      adminService.getFreshnessRule.mockResolvedValue(expected as any);
+
+      const result = await controller.getFreshnessRule(1);
+
+      expect(adminService.getFreshnessRule).toHaveBeenCalledWith(1);
+      expect(result).toBe(expected);
+    });
+
+    it('createFreshnessRule delegates to adminService.createFreshnessRule', async () => {
+      const dto = { freshnessPeriodDays: 30, maxProximityMeters: 60 };
+      const expected = { id: 2, ...dto };
+      adminService.createFreshnessRule.mockResolvedValue(expected as any);
+
+      const result = await controller.createFreshnessRule(dto as any, mockAdmin, mockReq);
+
+      expect(adminService.createFreshnessRule).toHaveBeenCalledWith(dto, mockAdmin.id, '127.0.0.1');
+      expect(result).toBe(expected);
+    });
+
+    it('updateFreshnessRule delegates to adminService.updateFreshnessRule', async () => {
+      const dto = { maxProximityMeters: 75 };
+      const expected = { id: 1, maxProximityMeters: 75, updated: true };
+      adminService.updateFreshnessRule.mockResolvedValue(expected as any);
+
+      const result = await controller.updateFreshnessRule(1, dto, mockAdmin, mockReq);
+
+      expect(adminService.updateFreshnessRule).toHaveBeenCalledWith(1, dto, mockAdmin.id, '127.0.0.1');
+      expect(result).toBe(expected);
+    });
+
+    it('deleteFreshnessRule delegates to adminService.deleteFreshnessRule', async () => {
+      const expected = { id: 1, deactivated: true };
+      adminService.deleteFreshnessRule.mockResolvedValue(expected as any);
+
+      const result = await controller.deleteFreshnessRule(1, mockAdmin, mockReq);
+
+      expect(adminService.deleteFreshnessRule).toHaveBeenCalledWith(1, mockAdmin.id, '127.0.0.1');
+      expect(result).toBe(expected);
+    });
+  });
+
+  describe('Reward Rules Management', () => {
+    it('listRewardRules delegates to adminService.listRewardRules', async () => {
+      const expected = [{ id: 1, activityType: 'REVALIDATION_REWARD', baseAmount: 20 }];
+      adminService.listRewardRules.mockResolvedValue(expected as any);
+
+      const result = await controller.listRewardRules();
+
+      expect(adminService.listRewardRules).toHaveBeenCalled();
+      expect(result).toBe(expected);
+    });
+
+    it('getRewardRule delegates to adminService.getRewardRule', async () => {
+      const expected = { id: 1, activityType: 'REVALIDATION_REWARD', baseAmount: 20 };
+      adminService.getRewardRule.mockResolvedValue(expected as any);
+
+      const result = await controller.getRewardRule('REVALIDATION_REWARD');
+
+      expect(adminService.getRewardRule).toHaveBeenCalledWith('REVALIDATION_REWARD');
+      expect(result).toBe(expected);
+    });
+
+    it('updateRewardRule delegates to adminService.updateRewardRule', async () => {
+      const dto = { baseAmount: 25, dailyLimit: 15 };
+      const expected = { id: 1, activityType: 'REVALIDATION_REWARD', baseAmount: 25, updated: true };
+      adminService.updateRewardRule.mockResolvedValue(expected as any);
+
+      const result = await controller.updateRewardRule('REVALIDATION_REWARD', dto, mockAdmin, mockReq);
+
+      expect(adminService.updateRewardRule).toHaveBeenCalledWith('REVALIDATION_REWARD', dto, mockAdmin.id, '127.0.0.1');
+      expect(result).toBe(expected);
+    });
   });
 });

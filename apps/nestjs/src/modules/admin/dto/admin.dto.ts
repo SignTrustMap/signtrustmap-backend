@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsString, IsOptional, IsEnum, MaxLength, IsBoolean, IsNumber, Min } from 'class-validator';
+import { IsString, IsOptional, IsEnum, MaxLength, IsBoolean, IsNumber, IsInt, Min, Max, IsObject } from 'class-validator';
+import { RulePriority } from '../../revalidation/infrastructure/persistence/freshness-rule.entity';
 
 export class UpdateUserStatusDto {
   @ApiProperty({ enum: ['ACTIVE', 'SUSPENDED', 'BANNED'], description: 'Target user status' })
@@ -47,6 +48,13 @@ export class UpdateConsensusConfigDto {
   @IsNumber()
   @Min(1)
   minVotesRequired?: number;
+
+  @ApiPropertyOptional({ description: 'Maximum reviewer votes allowed per task', example: 9, minimum: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  maxVotesLimit?: number;
 
   @ApiPropertyOptional({ description: 'Alpha smoothing factor' })
   @IsOptional()
@@ -186,6 +194,131 @@ export class ActiveLearningConfigDto {
   @Type(() => Number)
   @IsNumber()
   defaultTopK?: number;
+}
+
+export class CreateFreshnessRuleDto {
+  @ApiPropertyOptional({ description: 'ID of sign category', example: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  signCategoryId?: number;
+
+  @ApiProperty({ description: 'Freshness period in days before sign becomes stale', example: 30 })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  freshnessPeriodDays: number;
+
+  @ApiPropertyOptional({ enum: RulePriority, description: 'Default task priority', default: RulePriority.MEDIUM })
+  @IsOptional()
+  @IsEnum(RulePriority)
+  defaultPriority?: RulePriority;
+
+  @ApiPropertyOptional({ description: 'Maximum GPS proximity distance in metres', default: 50, example: 50 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(5)
+  @Max(500)
+  maxProximityMeters?: number;
+
+  @ApiPropertyOptional({ description: 'Maximum evidence submissions per task in 24 hours', default: 3, example: 3 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(50)
+  dailySubmissionLimit?: number;
+
+  @ApiPropertyOptional({ description: 'Whether this freshness rule is active', default: true })
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+
+  @ApiPropertyOptional({ description: 'Audit reason for rule creation', maxLength: 500 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
+}
+
+export class UpdateFreshnessRuleDto {
+  @ApiPropertyOptional({ description: 'ID of sign category', example: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  signCategoryId?: number;
+
+  @ApiPropertyOptional({ description: 'Freshness period in days before sign becomes stale', example: 30 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  freshnessPeriodDays?: number;
+
+  @ApiPropertyOptional({ enum: RulePriority, description: 'Default task priority' })
+  @IsOptional()
+  @IsEnum(RulePriority)
+  defaultPriority?: RulePriority;
+
+  @ApiPropertyOptional({ description: 'Maximum GPS proximity distance in metres', example: 50 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(5)
+  @Max(500)
+  maxProximityMeters?: number;
+
+  @ApiPropertyOptional({ description: 'Maximum evidence submissions per task in 24 hours', example: 3 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(50)
+  dailySubmissionLimit?: number;
+
+  @ApiPropertyOptional({ description: 'Whether this freshness rule is active' })
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+
+  @ApiPropertyOptional({ description: 'Audit reason for rule update', maxLength: 500 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
+}
+
+export class UpdateRewardRuleDto {
+  @ApiPropertyOptional({ description: 'Base reward amount in credits', example: 20 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  baseAmount?: number;
+
+  @ApiPropertyOptional({ description: 'Daily limit of reward disbursements per user', example: 20 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  dailyLimit?: number;
+
+  @ApiPropertyOptional({ description: 'Multiplier config as JSON object', example: { urgency_bonus: true } })
+  @IsOptional()
+  @IsObject()
+  multiplierConfig?: Record<string, any>;
+
+  @ApiPropertyOptional({ description: 'Whether this reward rule is active' })
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+
+  @ApiPropertyOptional({ description: 'Audit reason for reward rule update', maxLength: 500 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
 }
 
 

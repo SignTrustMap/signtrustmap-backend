@@ -12,6 +12,8 @@ import { AiModelVersion } from './ai-model-version.entity';
 import { ModelTrainingJob } from './model-training-job.entity';
 import { UserStatusHistory } from './user-status-history.entity';
 import { ConsensusConfig } from '../consensus/infrastructure/persistence/consensus-config.entity';
+import { FreshnessRule } from '../revalidation/infrastructure/persistence/freshness-rule.entity';
+import { RewardRule } from '../rewards/infrastructure/persistence/reward-rule.entity';
 
 @Module({
   imports: [
@@ -25,6 +27,8 @@ import { ConsensusConfig } from '../consensus/infrastructure/persistence/consens
       ModelTrainingJob,
       UserStatusHistory,
       ConsensusConfig,
+      FreshnessRule,
+      RewardRule,
     ]),
   ],
   controllers: [AdminController, MlopsController],

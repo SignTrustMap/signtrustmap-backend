@@ -9,11 +9,16 @@ import { AiModelVersion } from './ai-model-version.entity';
 import { ModelTrainingJob } from './model-training-job.entity';
 import { UserStatusHistory } from './user-status-history.entity';
 import { ConsensusConfig } from '../consensus/infrastructure/persistence/consensus-config.entity';
+import { FreshnessRule } from '../revalidation/infrastructure/persistence/freshness-rule.entity';
+import { RewardRule } from '../rewards/infrastructure/persistence/reward-rule.entity';
 import {
   UpdateConsensusConfigDto,
   UpdateRouteMatrixDto,
   TriggerRetrainDto,
   ActiveLearningConfigDto,
+  CreateFreshnessRuleDto,
+  UpdateFreshnessRuleDto,
+  UpdateRewardRuleDto,
 } from './dto/admin.dto';
 
 @Injectable()
@@ -28,6 +33,8 @@ export class AdminService {
     @Optional() @InjectRepository(ModelTrainingJob) private readonly modelTrainingJobRepo?: Repository<ModelTrainingJob>,
     @Optional() @InjectRepository(UserStatusHistory) private readonly userStatusHistoryRepo?: Repository<UserStatusHistory>,
     @Optional() @InjectRepository(ConsensusConfig) private readonly consensusConfigRepo?: Repository<ConsensusConfig>,
+    @Optional() @InjectRepository(FreshnessRule) private readonly freshnessRuleRepo?: Repository<FreshnessRule>,
+    @Optional() @InjectRepository(RewardRule) private readonly rewardRuleRepo?: Repository<RewardRule>,
   ) {}
   async listUsers(q: { role?: string; status?: string; search?: string; page?: number; pageSize?: number }) {
     const page = Math.max(1, q.page ?? 1);
@@ -362,6 +369,7 @@ export class AdminService {
           approvalThreshold: 2.0,
           rejectionThreshold: -2.0,
           minVotesRequired: 3,
+          maxVotesLimit: 9,
           alphaSmoothingFactor: 0.1,
           weightCorrect: 1.0,
           penaltyFalse: 2.0,
@@ -378,6 +386,7 @@ export class AdminService {
         approvalThreshold: Number(c.approvalThreshold),
         rejectionThreshold: Number(c.rejectionThreshold),
         minVotesRequired: Number(c.minVotesRequired),
+        maxVotesLimit: Number(c.maxVotesLimit ?? 9),
         alphaSmoothingFactor: Number(c.alphaSmoothingFactor),
         weightCorrect: Number(c.weightCorrect),
         penaltyFalse: Number(c.penaltyFalse),
@@ -400,6 +409,7 @@ export class AdminService {
         approvalThreshold: 2.0,
         rejectionThreshold: -2.0,
         minVotesRequired: 3,
+        maxVotesLimit: 9,
         alphaSmoothingFactor: 0.1,
         weightCorrect: 1.0,
         penaltyFalse: 2.0,
@@ -417,6 +427,7 @@ export class AdminService {
       approvalThreshold: Number(c.approval_threshold),
       rejectionThreshold: Number(c.rejection_threshold),
       minVotesRequired: Number(c.min_votes_required),
+      maxVotesLimit: Number(c.max_votes_limit ?? 9),
       alphaSmoothingFactor: Number(c.alpha_smoothing_factor),
       weightCorrect: Number(c.weight_correct),
       penaltyFalse: Number(c.penalty_false),
@@ -439,6 +450,7 @@ export class AdminService {
     const approvalThreshold = dto.approvalThreshold ?? current.approvalThreshold;
     const rejectionThreshold = dto.rejectionThreshold ?? current.rejectionThreshold;
     const minVotesRequired = dto.minVotesRequired ?? current.minVotesRequired;
+    const maxVotesLimit = dto.maxVotesLimit ?? current.maxVotesLimit ?? 9;
     const alphaSmoothingFactor = dto.alphaSmoothingFactor ?? current.alphaSmoothingFactor;
     const weightCorrect = dto.weightCorrect ?? current.weightCorrect;
     const penaltyFalse = dto.penaltyFalse ?? current.penaltyFalse;
@@ -454,6 +466,7 @@ export class AdminService {
         approvalThreshold,
         rejectionThreshold,
         minVotesRequired,
+        maxVotesLimit,
         alphaSmoothingFactor,
         weightCorrect,
         penaltyFalse,
@@ -483,6 +496,7 @@ export class AdminService {
         approvalThreshold: Number(inserted.approvalThreshold),
         rejectionThreshold: Number(inserted.rejectionThreshold),
         minVotesRequired: Number(inserted.minVotesRequired),
+        maxVotesLimit: Number(inserted.maxVotesLimit ?? 9),
         alphaSmoothingFactor: Number(inserted.alphaSmoothingFactor),
         weightCorrect: Number(inserted.weightCorrect),
         penaltyFalse: Number(inserted.penaltyFalse),
@@ -502,16 +516,17 @@ export class AdminService {
 
     const result = await this.dataSource.query(
       `INSERT INTO consensus_configs (
-        approval_threshold, rejection_threshold, min_votes_required, alpha_smoothing_factor,
+        approval_threshold, rejection_threshold, min_votes_required, max_votes_limit, alpha_smoothing_factor,
         weight_correct, penalty_false, min_sample_baseline, min_reliability_threshold,
         consecutive_error_limit, suspension_cooldown_days, provisional_vote_weight,
         created_by, is_active, effective_from
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, true, NOW())
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, true, NOW())
       RETURNING *`,
       [
         approvalThreshold,
         rejectionThreshold,
         minVotesRequired,
+        maxVotesLimit,
         alphaSmoothingFactor,
         weightCorrect,
         penaltyFalse,
@@ -542,6 +557,7 @@ export class AdminService {
       approvalThreshold: Number(inserted.approval_threshold),
       rejectionThreshold: Number(inserted.rejection_threshold),
       minVotesRequired: Number(inserted.min_votes_required),
+      maxVotesLimit: Number(inserted.max_votes_limit ?? 9),
       alphaSmoothingFactor: Number(inserted.alpha_smoothing_factor),
       weightCorrect: Number(inserted.weight_correct),
       penaltyFalse: Number(inserted.penalty_false),
@@ -620,6 +636,269 @@ export class AdminService {
       defaultLifetimeDays,
       revalidationThresholdDays,
       spatialBufferMeters,
+      updated: true,
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // FRESHNESS RULES PARAMETERS MANAGEMENT
+  // ---------------------------------------------------------------------------
+
+  async listFreshnessRules() {
+    const rows = await this.dataSource.query(
+      `SELECT fr.id, fr.sign_category_id AS "signCategoryId",
+              sc.code AS "categoryCode", sc.name_en AS "categoryNameEn", sc.name_vi AS "categoryNameVi",
+              fr.freshness_period_days AS "freshnessPeriodDays",
+              fr.default_priority AS "defaultPriority",
+              fr.max_proximity_meters AS "maxProximityMeters",
+              fr.daily_submission_limit AS "dailySubmissionLimit",
+              fr.is_active AS "isActive",
+              fr.created_at AS "createdAt"
+       FROM freshness_rules fr
+       LEFT JOIN sign_categories sc ON sc.id = fr.sign_category_id
+       ORDER BY fr.id ASC`,
+    );
+    return rows.map((r: any) => ({
+      id: Number(r.id),
+      signCategoryId: r.signCategoryId != null ? Number(r.signCategoryId) : null,
+      categoryCode: r.categoryCode ?? null,
+      categoryNameEn: r.categoryNameEn ?? null,
+      categoryNameVi: r.categoryNameVi ?? null,
+      freshnessPeriodDays: Number(r.freshnessPeriodDays),
+      defaultPriority: r.defaultPriority,
+      maxProximityMeters: Number(r.maxProximityMeters ?? 50),
+      dailySubmissionLimit: Number(r.dailySubmissionLimit ?? 3),
+      isActive: Boolean(r.isActive),
+      createdAt: r.createdAt,
+    }));
+  }
+
+  async getFreshnessRule(id: number) {
+    const rows = await this.dataSource.query(
+      `SELECT fr.id, fr.sign_category_id AS "signCategoryId",
+              sc.code AS "categoryCode", sc.name_en AS "categoryNameEn", sc.name_vi AS "categoryNameVi",
+              fr.freshness_period_days AS "freshnessPeriodDays",
+              fr.default_priority AS "defaultPriority",
+              fr.max_proximity_meters AS "maxProximityMeters",
+              fr.daily_submission_limit AS "dailySubmissionLimit",
+              fr.is_active AS "isActive",
+              fr.created_at AS "createdAt"
+       FROM freshness_rules fr
+       LEFT JOIN sign_categories sc ON sc.id = fr.sign_category_id
+       WHERE fr.id = $1`,
+      [id],
+    );
+    if (!rows.length) {
+      throw new NotFoundException(`FreshnessRule #${id} not found`);
+    }
+    const r = rows[0];
+    return {
+      id: Number(r.id),
+      signCategoryId: r.signCategoryId != null ? Number(r.signCategoryId) : null,
+      categoryCode: r.categoryCode ?? null,
+      categoryNameEn: r.categoryNameEn ?? null,
+      categoryNameVi: r.categoryNameVi ?? null,
+      freshnessPeriodDays: Number(r.freshnessPeriodDays),
+      defaultPriority: r.defaultPriority,
+      maxProximityMeters: Number(r.maxProximityMeters ?? 50),
+      dailySubmissionLimit: Number(r.dailySubmissionLimit ?? 3),
+      isActive: Boolean(r.isActive),
+      createdAt: r.createdAt,
+    };
+  }
+
+  async createFreshnessRule(dto: CreateFreshnessRuleDto, adminUserId: string, ip?: string) {
+    const signCategoryId = dto.signCategoryId ?? null;
+    const freshnessPeriodDays = dto.freshnessPeriodDays;
+    const defaultPriority = dto.defaultPriority ?? 'MEDIUM';
+    const maxProximityMeters = dto.maxProximityMeters ?? 50;
+    const dailySubmissionLimit = dto.dailySubmissionLimit ?? 3;
+    const isActive = dto.isActive ?? true;
+
+    const res = await this.dataSource.query(
+      `INSERT INTO freshness_rules (
+        sign_category_id, freshness_period_days, default_priority,
+        max_proximity_meters, daily_submission_limit, is_active, created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, NOW())
+      RETURNING *`,
+      [signCategoryId, freshnessPeriodDays, defaultPriority, maxProximityMeters, dailySubmissionLimit, isActive],
+    );
+    const inserted = res[0];
+
+    await this.dataSource.query(
+      `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, old_values, new_values, ip_address)
+       VALUES ($1, 'CREATE_FRESHNESS_RULE', 'freshness_rules', $2, NULL, $3, $4)`,
+      [
+        adminUserId,
+        String(inserted.id),
+        JSON.stringify({ ...dto, id: inserted.id }),
+        ip ?? null,
+      ],
+    );
+
+    return {
+      id: Number(inserted.id),
+      signCategoryId: inserted.sign_category_id ? Number(inserted.sign_category_id) : null,
+      freshnessPeriodDays: Number(inserted.freshness_period_days),
+      defaultPriority: inserted.default_priority,
+      maxProximityMeters: Number(inserted.max_proximity_meters),
+      dailySubmissionLimit: Number(inserted.daily_submission_limit),
+      isActive: Boolean(inserted.is_active),
+      createdAt: inserted.created_at,
+    };
+  }
+
+  async updateFreshnessRule(id: number, dto: UpdateFreshnessRuleDto, adminUserId: string, ip?: string) {
+    const rows = await this.dataSource.query(`SELECT * FROM freshness_rules WHERE id = $1`, [id]);
+    if (!rows.length) {
+      throw new NotFoundException(`FreshnessRule #${id} not found`);
+    }
+    const current = rows[0];
+
+    const signCategoryId = dto.signCategoryId !== undefined ? dto.signCategoryId : current.sign_category_id;
+    const freshnessPeriodDays = dto.freshnessPeriodDays ?? current.freshness_period_days;
+    const defaultPriority = dto.defaultPriority ?? current.default_priority;
+    const maxProximityMeters = dto.maxProximityMeters ?? current.max_proximity_meters;
+    const dailySubmissionLimit = dto.dailySubmissionLimit ?? current.daily_submission_limit;
+    const isActive = dto.isActive !== undefined ? dto.isActive : current.is_active;
+
+    await this.dataSource.query(
+      `UPDATE freshness_rules
+       SET sign_category_id = $1, freshness_period_days = $2, default_priority = $3,
+           max_proximity_meters = $4, daily_submission_limit = $5, is_active = $6
+       WHERE id = $7`,
+      [signCategoryId, freshnessPeriodDays, defaultPriority, maxProximityMeters, dailySubmissionLimit, isActive, id],
+    );
+
+    await this.dataSource.query(
+      `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, old_values, new_values, ip_address)
+       VALUES ($1, 'UPDATE_FRESHNESS_RULE', 'freshness_rules', $2, $3, $4, $5)`,
+      [
+        adminUserId,
+        String(id),
+        JSON.stringify(current),
+        JSON.stringify(dto),
+        ip ?? null,
+      ],
+    );
+
+    return {
+      id,
+      signCategoryId: signCategoryId != null ? Number(signCategoryId) : null,
+      freshnessPeriodDays: Number(freshnessPeriodDays),
+      defaultPriority,
+      maxProximityMeters: Number(maxProximityMeters),
+      dailySubmissionLimit: Number(dailySubmissionLimit),
+      isActive: Boolean(isActive),
+      updated: true,
+    };
+  }
+
+  async deleteFreshnessRule(id: number, adminUserId: string, ip?: string) {
+    const rows = await this.dataSource.query(`SELECT * FROM freshness_rules WHERE id = $1`, [id]);
+    if (!rows.length) {
+      throw new NotFoundException(`FreshnessRule #${id} not found`);
+    }
+    const current = rows[0];
+    await this.dataSource.query(`UPDATE freshness_rules SET is_active = false WHERE id = $1`, [id]);
+    await this.dataSource.query(
+      `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, old_values, new_values, ip_address)
+       VALUES ($1, 'DEACTIVATE_FRESHNESS_RULE', 'freshness_rules', $2, $3, $4, $5)`,
+      [adminUserId, String(id), JSON.stringify(current), JSON.stringify({ is_active: false }), ip ?? null],
+    );
+    return { id, deactivated: true };
+  }
+
+  // ---------------------------------------------------------------------------
+  // REWARD RULES PARAMETERS MANAGEMENT
+  // ---------------------------------------------------------------------------
+
+  async listRewardRules() {
+    const rows = await this.dataSource.query(
+      `SELECT id, activity_type, base_amount, daily_limit, multiplier_config, is_active, effective_from, effective_to, created_at, updated_at
+       FROM reward_rules
+       ORDER BY id ASC`,
+    );
+    return rows.map((r: any) => ({
+      id: Number(r.id),
+      activityType: r.activity_type,
+      baseAmount: Number(r.base_amount),
+      dailyLimit: Number(r.daily_limit),
+      multiplierConfig: r.multiplier_config ?? {},
+      isActive: Boolean(r.is_active),
+      effectiveFrom: r.effective_from,
+      effectiveTo: r.effective_to,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    }));
+  }
+
+  async getRewardRule(activityType: string) {
+    const rows = await this.dataSource.query(
+      `SELECT id, activity_type, base_amount, daily_limit, multiplier_config, is_active, effective_from, effective_to, created_at, updated_at
+       FROM reward_rules
+       WHERE UPPER(activity_type) = UPPER($1)`,
+      [activityType],
+    );
+    if (!rows.length) {
+      throw new NotFoundException(`RewardRule for activity '${activityType}' not found`);
+    }
+    const r = rows[0];
+    return {
+      id: Number(r.id),
+      activityType: r.activity_type,
+      baseAmount: Number(r.base_amount),
+      dailyLimit: Number(r.daily_limit),
+      multiplierConfig: r.multiplier_config ?? {},
+      isActive: Boolean(r.is_active),
+      effectiveFrom: r.effective_from,
+      effectiveTo: r.effective_to,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    };
+  }
+
+  async updateRewardRule(activityType: string, dto: UpdateRewardRuleDto, adminUserId: string, ip?: string) {
+    const rows = await this.dataSource.query(
+      `SELECT * FROM reward_rules WHERE UPPER(activity_type) = UPPER($1)`,
+      [activityType],
+    );
+    if (!rows.length) {
+      throw new NotFoundException(`RewardRule for activity '${activityType}' not found`);
+    }
+    const current = rows[0];
+
+    const baseAmount = dto.baseAmount !== undefined ? dto.baseAmount : current.base_amount;
+    const dailyLimit = dto.dailyLimit !== undefined ? dto.dailyLimit : current.daily_limit;
+    const multiplierConfig = dto.multiplierConfig !== undefined ? dto.multiplierConfig : current.multiplier_config;
+    const isActive = dto.isActive !== undefined ? dto.isActive : current.is_active;
+
+    await this.dataSource.query(
+      `UPDATE reward_rules
+       SET base_amount = $1, daily_limit = $2, multiplier_config = $3, is_active = $4, updated_at = NOW()
+       WHERE id = $5`,
+      [baseAmount, dailyLimit, JSON.stringify(multiplierConfig), isActive, current.id],
+    );
+
+    await this.dataSource.query(
+      `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, old_values, new_values, ip_address)
+       VALUES ($1, 'UPDATE_REWARD_RULE', 'reward_rules', $2, $3, $4, $5)`,
+      [
+        adminUserId,
+        String(current.id),
+        JSON.stringify(current),
+        JSON.stringify(dto),
+        ip ?? null,
+      ],
+    );
+
+    return {
+      id: Number(current.id),
+      activityType: current.activity_type,
+      baseAmount: Number(baseAmount),
+      dailyLimit: Number(dailyLimit),
+      multiplierConfig,
+      isActive: Boolean(isActive),
       updated: true,
     };
   }
