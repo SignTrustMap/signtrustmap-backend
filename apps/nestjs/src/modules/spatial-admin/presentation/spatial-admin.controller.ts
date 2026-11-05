@@ -39,8 +39,8 @@ export class SpatialAdminController {
   @ApiQuery({ name: 'limit', type: Number, required: false, example: 10 })
   @Get('search')
   async search(@Query('q') query: string, @Query('limit') limit?: string) {
-    const parsedLimit = limit ? Number(limit) : 10;
-    return this.spatialService.search(query, Number.isFinite(parsedLimit) ? parsedLimit : 10);
+    const parsedLimit = Math.min(Math.max(1, Number(limit) || 10), 100);
+    return this.spatialService.search(query, parsedLimit);
   }
 
   @ApiOperation({
@@ -52,11 +52,8 @@ export class SpatialAdminController {
   @ApiQuery({ name: 'maxTotal', type: Number, required: false, example: 5000 })
   @Post('backfill')
   async backfill(@Query('batchSize') batchSize?: string, @Query('maxTotal') maxTotal?: string) {
-    const parsedBatch = batchSize ? Number(batchSize) : 50;
-    const parsedTotal = maxTotal ? Number(maxTotal) : 5000;
-    return this.backfillService.runBackfill(
-      Number.isFinite(parsedBatch) ? parsedBatch : 50,
-      Number.isFinite(parsedTotal) ? parsedTotal : 5000,
-    );
+    const parsedBatch = Math.min(Math.max(1, Number(batchSize) || 50), 1000);
+    const parsedTotal = Math.min(Math.max(1, Number(maxTotal) || 5000), 50000);
+    return this.backfillService.runBackfill(parsedBatch, parsedTotal);
   }
 }
