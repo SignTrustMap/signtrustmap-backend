@@ -883,7 +883,7 @@ describe('ReviewsService', () => {
       );
       expect(txQuery).toHaveBeenCalledWith(
         expect.stringContaining('completed_at = NOW()'),
-        ['req-1', null, 'surveyor-2'],
+        ['req-1', null, 'surveyor-2', false],
       );
     });
 
@@ -909,11 +909,11 @@ describe('ReviewsService', () => {
       expect(result.success).toBe(true);
       expect(txQuery).toHaveBeenCalledWith(
         expect.stringContaining('crr.surveyor_id IS NULL'),
-        ['cand-1', 'req-1', 'surveyor-3'],
+        ['cand-1', 'req-1', 'surveyor-3', false],
       );
       expect(txQuery).toHaveBeenCalledWith(
         expect.stringContaining('SET surveyor_id = $3, completed_at = NOW()'),
-        ['req-1', null, 'surveyor-3'],
+        ['req-1', null, 'surveyor-3', false],
       );
     });
 

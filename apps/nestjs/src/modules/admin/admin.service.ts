@@ -2037,6 +2037,7 @@ export class AdminService {
             email: 'system@stm.dev',
             role: 'SYSTEM',
           },
+          actorRole: 'SYSTEM',
           description: `Revalidation task created for sign ${task.sign_code || 'unknown'} with priority ${task.priority} (+${task.reward_credits} Credits)`,
           details: {
             verifiedSignId: task.verified_sign_id,
