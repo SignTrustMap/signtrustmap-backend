@@ -453,7 +453,6 @@ describe('ReviewsService', () => {
           submission: { surveyorId: 'surv-1' },
         }),
         manager: { query: jest.fn()
-          .mockResolvedValueOnce([])
           .mockResolvedValueOnce([{ status: CandidateStatus.MISSING_TYPE_HOLD }])
           .mockResolvedValueOnce([])
           .mockResolvedValueOnce([{ id: 'r1' }, { id: 'r2' }]) },
@@ -465,7 +464,6 @@ describe('ReviewsService', () => {
 
     it('successfully creates recapture request, updates candidate status, and dispatches notification', async () => {
       const rawQuery = jest.fn()
-        .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ status: CandidateStatus.PENDING_REVIEW }])
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ id: 'report-1', status: 'INCOMPLETE' }])
@@ -538,7 +536,6 @@ describe('ReviewsService', () => {
 
     it('translates the active-request unique constraint into a domain conflict', async () => {
       const rawQuery = jest.fn()
-        .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ status: CandidateStatus.PENDING_REVIEW }])
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ id: 'report-1', status: 'INCOMPLETE' }])
@@ -562,7 +559,6 @@ describe('ReviewsService', () => {
         }),
         update: jest.fn().mockResolvedValue({ affected: 1 }),
         manager: { query: jest.fn()
-          .mockResolvedValueOnce([])
           .mockResolvedValueOnce([{ status: CandidateStatus.PENDING_REVIEW }])
           .mockResolvedValueOnce([])
           .mockResolvedValueOnce([{ id: 'report-admin', status: 'INCOMPLETE' }])

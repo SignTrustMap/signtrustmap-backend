@@ -2156,8 +2156,20 @@ export class AdminService {
 
       timeline.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
-      const primarySurv = surveyorRequests[0]?.surveyor;
-      const primaryRev = reviews[0]?.reviewer;
+      const primarySurv = surveyorRequests[0]?.surveyor
+        ? {
+            id: surveyorRequests[0].surveyor.id,
+            fullName: surveyorRequests[0].surveyor.fullName,
+            email: surveyorRequests[0].surveyor.email,
+          }
+        : undefined;
+      const primaryRev = reviews[0]?.reviewer
+        ? {
+            id: reviews[0].reviewer.id,
+            fullName: reviews[0].reviewer.fullName,
+            email: reviews[0].reviewer.email,
+          }
+        : undefined;
 
       return {
         taskId: task.id,
@@ -2356,13 +2368,26 @@ export class AdminService {
 
       timeline.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
-      const primaryRev = reviews[0]?.reviewer;
+      const primaryRev = reviews[0]?.reviewer
+        ? {
+            id: reviews[0].reviewer.id,
+            fullName: reviews[0].reviewer.fullName,
+            email: reviews[0].reviewer.email,
+          }
+        : undefined;
+      const primarySurv = initialSurvObj
+        ? {
+            id: initialSurvObj.id,
+            fullName: initialSurvObj.fullName,
+            email: initialSurvObj.email,
+          }
+        : undefined;
 
       return {
         taskId: candidate.id,
         taskType: 'CANDIDATE',
         status: candidate.status,
-        surveyor: initialSurvObj,
+        surveyor: primarySurv,
         surveyorName: initialSurvName,
         surveyorId: candidate.surveyor_id || undefined,
         reviewer: primaryRev,
@@ -2441,7 +2466,7 @@ export class AdminService {
     const countRows: any[] = await this.dataSource.query(
       `SELECT COUNT(*)::int AS cnt FROM (${unionQuery}) t`,
     ).catch(() => [{ cnt: 0 }]);
-    const total = countRows[0]?.cnt ?? 0;
+    const total = Number(countRows[0]?.cnt ?? countRows[0]?.count ?? (countRows[0]?.id ? countRows.length : 0));
 
     const rows: any[] = await this.dataSource.query(
       `SELECT * FROM (${unionQuery}) t

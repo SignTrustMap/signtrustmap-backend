@@ -844,16 +844,18 @@ describe('AdminService', () => {
   describe('listTaskHistory', () => {
     it('aggregates and paginates history across candidate and revalidation tasks', async () => {
       dataSource.query.mockImplementation((sql: string) => {
+        if (sql.includes('COUNT(*)')) {
+          return Promise.resolve([{ cnt: 2 }]);
+        }
         if (sql.includes('candidate_recapture_requests crr')) {
           return Promise.resolve([
             {
-              id: 'req-1',
+              request_id: 'req-1',
+              activity_type: 'CANDIDATE_RECAPTURE',
               task_id: 'cand-uuid-1',
-              task_type: 'CANDIDATE',
-              action_type: 'RECAPTURE_REQUEST',
               reason: 'BLURRY',
               note: 'Request recapture',
-              created_at: new Date('2026-03-01T12:00:00Z'),
+              occurred_at: new Date('2026-03-01T12:00:00Z'),
               surveyor_id: 'surv-1',
               surveyor_name: 'Surveyor One',
               surveyor_email: 'surv1@stm.dev',
@@ -861,18 +863,13 @@ describe('AdminService', () => {
               reviewer_name: 'Reviewer One',
               reviewer_email: 'rev1@stm.dev',
             },
-          ]);
-        }
-        if (sql.includes('revalidation_evidences ev')) {
-          return Promise.resolve([
             {
-              id: 'ev-1',
+              request_id: 'ev-1',
+              activity_type: 'REVALIDATION_EVIDENCE',
               task_id: 'reval-uuid-1',
-              task_type: 'REVALIDATION',
-              action_type: 'EVIDENCE_SUBMISSION',
               reason: null,
               note: null,
-              created_at: new Date('2026-03-01T11:00:00Z'),
+              occurred_at: new Date('2026-03-01T11:00:00Z'),
               surveyor_id: 'surv-2',
               surveyor_name: 'Surveyor Two',
               surveyor_email: 'surv2@stm.dev',
