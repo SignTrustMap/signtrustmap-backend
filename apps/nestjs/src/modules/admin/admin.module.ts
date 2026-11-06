@@ -16,7 +16,6 @@ import { FreshnessRule } from '../revalidation/infrastructure/persistence/freshn
 import { RewardRule } from '../rewards/infrastructure/persistence/reward-rule.entity';
 import { SystemFeatureFlag } from './system-feature-flag.entity';
 import { SystemSwitchModule } from './system-switch.module';
-import { SystemSwitchService } from './system-switch.service';
 
 @Module({
   imports: [

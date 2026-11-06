@@ -2314,5 +2314,4 @@ export class ReviewsService {
       totalPages: Math.ceil(total / ps),
     };
   }
-  }
 }
