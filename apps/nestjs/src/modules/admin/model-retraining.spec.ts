@@ -18,10 +18,18 @@ describe('ModelRetrainingSpec (MLOps Flow 14 & Req 1.5)', () => {
     freezeWallet: jest.fn(),
   };
 
+  const mockSystemSwitchService = {
+    getAllFlags: jest.fn().mockResolvedValue([]),
+    setFlag: jest.fn(),
+    enableDemoMode: jest.fn(),
+    disableDemoMode: jest.fn(),
+    isFeatureEnabled: jest.fn().mockResolvedValue(false),
+  };
+
   beforeEach(() => {
     jest.clearAllMocks();
     adminService = new AdminService(mockDataSource as any);
-    adminController = new AdminController(adminService, mockWalletService as any);
+    adminController = new AdminController(adminService, mockWalletService as any, mockSystemSwitchService as any);
     mlopsController = new MlopsController(adminService);
   });
 

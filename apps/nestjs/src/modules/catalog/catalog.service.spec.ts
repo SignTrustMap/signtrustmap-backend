@@ -598,6 +598,40 @@ describe('CatalogService', () => {
       expect(storage.removeObject).toHaveBeenCalledTimes(1);
       expect(storage.removeObject.mock.calls[0][0].bucket).toBe('stm-sign-crops');
     });
+    it('listCategories excludes mock traffic sign categories', async () => {
+      categories.find.mockResolvedValueOnce([
+        entity<SignCategory>({ id: 2, code: 'WARNING', nameVi: 'Cảnh báo' }),
+      ]);
+      const result = await service.listCategories();
+      expect(categories.find).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            code: expect.anything(),
+          }),
+        }),
+      );
+      expect(result).toHaveLength(1);
+      expect(result[0].code).toBe('WARNING');
+    });
+
+    it('deleteCategory cleans up foreign key references before deleting', async () => {
+      categories.findOne.mockResolvedValueOnce(entity<SignCategory>({ id: 99, code: 'OLD_CAT' }));
+      signTypes.count.mockResolvedValueOnce(0);
+      dataSource.query = jest.fn().mockResolvedValue([]);
+      categories.delete.mockResolvedValueOnce({ raw: [], affected: 1 } as any);
+
+      const result = await service.deleteCategory(99);
+      expect(result).toEqual({ deleted: true, id: 99 });
+      expect(dataSource.query).toHaveBeenCalledWith(
+        expect.stringContaining('new_sign_type_reports'),
+        [99],
+      );
+      expect(dataSource.query).toHaveBeenCalledWith(
+        expect.stringContaining('freshness_rules'),
+        [99],
+      );
+      expect(categories.delete).toHaveBeenCalledWith(99);
+    });
   });
 
   function repository<T>(): jest.Mocked<Repository<T>> {

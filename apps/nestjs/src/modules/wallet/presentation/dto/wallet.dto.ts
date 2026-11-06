@@ -15,7 +15,9 @@ import {
   Min,
   Max,
   IsDateString,
+  IsEnum,
 } from 'class-validator';
+import { TransactionType } from '../../infrastructure/persistence/credit-transaction.entity';
 
 export class ListTransactionsQueryDto {
   @ApiPropertyOptional({ default: 1, description: 'Page number (1-based)' })
@@ -23,6 +25,7 @@ export class ListTransactionsQueryDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
+  @Max(100000)
   page?: number = 1;
 
   @ApiPropertyOptional({ default: 20, description: 'Page size (1-100)' })
@@ -33,11 +36,10 @@ export class ListTransactionsQueryDto {
   @Max(100)
   pageSize?: number = 20;
 
-  @ApiPropertyOptional({ description: 'Filter by transaction type' })
+  @ApiPropertyOptional({ description: 'Filter by transaction type', enum: TransactionType })
   @IsOptional()
-  @IsString()
-  @MaxLength(50)
-  type?: string;
+  @IsEnum(TransactionType)
+  type?: TransactionType;
 
   @ApiPropertyOptional({ description: 'Filter from ISO date (YYYY-MM-DD)', example: '2026-01-01' })
   @IsOptional()
@@ -58,11 +60,17 @@ export class TopUpDto {
   @Max(2147483647)
   packageId: number;
 
-  @ApiPropertyOptional({ description: 'Payment gateway (e.g. MOCK, MOMO)', example: 'MOCK' })
+  @ApiPropertyOptional({ description: 'Payment gateway (e.g. MOCK, MOMO, VIETQR)', example: 'VIETQR' })
   @IsOptional()
   @IsString()
   @MaxLength(50)
   gateway?: string;
+
+  @ApiPropertyOptional({ description: 'Payment method alias (e.g. vietqr, momo, mock)', example: 'vietqr' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  paymentMethod?: string;
 
   @ApiPropertyOptional({ description: 'Unique idempotency key', maxLength: 128 })
   @IsOptional()
@@ -86,11 +94,17 @@ export class CustomTopUpDto {
   @MaxLength(500)
   description?: string;
 
-  @ApiPropertyOptional({ description: 'Payment gateway (e.g. MOCK, MOMO)', example: 'MOCK' })
+  @ApiPropertyOptional({ description: 'Payment gateway (e.g. MOCK, MOMO, VIETQR)', example: 'VIETQR' })
   @IsOptional()
   @IsString()
   @MaxLength(50)
   gateway?: string;
+
+  @ApiPropertyOptional({ description: 'Payment method alias (e.g. vietqr, momo, mock)', example: 'vietqr' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  paymentMethod?: string;
 
   @ApiPropertyOptional({ description: 'Unique idempotency key', maxLength: 128 })
   @IsOptional()

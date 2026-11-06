@@ -28,7 +28,7 @@ describe('RoutePreviewService', () => {
         steps: [
           {
             type: 'turn',
-            instruction: 'Turn right onto Le Loi',
+            instruction: 'Rẽ phải vào Le Loi',
             edgeId: null,
             fromNodeId: null,
             toNodeId: null,
@@ -83,7 +83,7 @@ describe('RoutePreviewService', () => {
       steps: [
         {
           type: 'turn',
-          instruction: 'Turn right onto Le Loi',
+          instruction: 'Rẽ phải vào Le Loi',
           distanceMeters: 120,
         },
       ],

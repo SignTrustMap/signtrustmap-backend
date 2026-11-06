@@ -26,6 +26,7 @@ import { PaymentsModule } from './modules/payments/payments.module';
 import { ConsensusModule } from './modules/consensus/consensus.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { AdminModule } from './modules/admin/admin.module';
+import { SystemSwitchModule } from './modules/admin/system-switch.module';
 import { LeaderboardModule } from './modules/leaderboard/leaderboard.module';
 import { PlacesModule } from './modules/places/places.module';
 import { GeolocationModule } from './modules/geolocation/geolocation.module';
@@ -34,7 +35,8 @@ import { SignMapModule } from './modules/sign-map/sign-map.module';
 import { HealthModule } from './modules/health/health.module';
 import { SpatialAdminModule } from './modules/spatial-admin/spatial-admin.module';
 import { RewardsModule } from './modules/rewards/rewards.module';
-import { HazardsModule } from './modules/hazards/hazards.module';
+// TEMPORARILY DISABLED: Road hazard reporting feature
+// import { HazardsModule } from './modules/hazards/hazards.module';
 
 @Module({
   imports: [
@@ -90,6 +92,7 @@ import { HazardsModule } from './modules/hazards/hazards.module';
     NotificationsModule,
     RevalidationModule,
     PaymentsModule,
+    SystemSwitchModule,
     AdminModule,
     LeaderboardModule,
     PlacesModule,
@@ -98,7 +101,7 @@ import { HazardsModule } from './modules/hazards/hazards.module';
     NavigationModule,
     SpatialAdminModule,
     RewardsModule,
-    HazardsModule,
+    // HazardsModule, // TEMPORARILY DISABLED: Road hazard reporting feature
     HealthModule,
   ],
   providers: [

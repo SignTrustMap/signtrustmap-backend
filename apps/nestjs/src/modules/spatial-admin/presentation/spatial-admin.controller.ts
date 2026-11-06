@@ -39,8 +39,8 @@ export class SpatialAdminController {
   @ApiQuery({ name: 'limit', type: Number, required: false, example: 10 })
   @Get('search')
   async search(@Query('q') query: string, @Query('limit') limit?: string) {
-    const parsedLimit = limit ? Number(limit) : 10;
-    return this.spatialService.search(query, Number.isFinite(parsedLimit) ? parsedLimit : 10);
+    const parsedLimit = Math.min(Math.max(1, Number(limit) || 10), 100);
+    return this.spatialService.search(query, parsedLimit);
   }
 
   @ApiOperation({
@@ -48,15 +48,20 @@ export class SpatialAdminController {
     description:
       'Runs batch backfill on verified signs missing display address or commune code using internal PostGIS.',
   })
-  @ApiQuery({ name: 'batchSize', type: Number, required: false, example: 50 })
-  @ApiQuery({ name: 'maxTotal', type: Number, required: false, example: 5000 })
+  @ApiQuery({ name: 'batchSize', schema: { type: 'integer', minimum: 1, maximum: 500 }, required: false, example: 50 })
+  @ApiQuery({ name: 'maxTotal', schema: { type: 'integer', minimum: 1, maximum: 5000 }, required: false, example: 5000 })
   @Post('backfill')
   async backfill(@Query('batchSize') batchSize?: string, @Query('maxTotal') maxTotal?: string) {
-    const parsedBatch = batchSize ? Number(batchSize) : 50;
-    const parsedTotal = maxTotal ? Number(maxTotal) : 5000;
-    return this.backfillService.runBackfill(
-      Number.isFinite(parsedBatch) ? parsedBatch : 50,
-      Number.isFinite(parsedTotal) ? parsedTotal : 5000,
+    const rawBatch = batchSize !== undefined ? Number(batchSize) : 50;
+    const rawTotal = maxTotal !== undefined ? Number(maxTotal) : 5000;
+    const parsedBatch = Math.min(
+      Math.max(1, !Number.isFinite(rawBatch) || rawBatch <= 0 ? 50 : Math.floor(rawBatch)),
+      1000,
     );
+    const parsedTotal = Math.min(
+      Math.max(1, !Number.isFinite(rawTotal) || rawTotal <= 0 ? 5000 : Math.floor(rawTotal)),
+      5000,
+    );
+    return this.backfillService.runBackfill(parsedBatch, parsedTotal);
   }
 }

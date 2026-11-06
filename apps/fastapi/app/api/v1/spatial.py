@@ -7,6 +7,7 @@ GET /spatial/signs/{sign_id}  -> Full sign detail (joined with traffic_sign_type
 from __future__ import annotations
 
 import logging
+import math
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -36,12 +37,30 @@ def _validate_bbox_area(
     max_lat: float,
     max_lon: float,
 ) -> None:
-    """Reject zero-area / inverted bounding boxes before PostGIS is invoked.
+    """Reject non-finite / zero-area / inverted bounding boxes before PostGIS is invoked.
 
-    Coordinates of 0.0 are geographically valid; a box with min == max is not.
+    Coordinates of 0.0 are geographically valid; NaN/Inf or a box with min >= max is not.
     Matches NestJS verified-sign behaviour and BoundingBoxParams.
     """
     errors: list[dict] = []
+    for val, name in [
+        (min_lat, "min_lat"),
+        (min_lon, "min_lon"),
+        (max_lat, "max_lat"),
+        (max_lon, "max_lon"),
+    ]:
+        if not math.isfinite(val):
+            errors.append(
+                {
+                    "type": "value_error",
+                    "loc": ("query", name),
+                    "msg": f"{name} must be a finite floating-point number",
+                    "input": val,
+                }
+            )
+    if errors:
+        raise RequestValidationError(errors)
+
     if min_lat >= max_lat:
         errors.append(
             {
@@ -164,7 +183,18 @@ def _sign_by_id_query(sign_id: UUID):
         "Unknown query parameters are ignored."
     ),
     tags=["Spatial GIS"],
+    operation_id="query_spatial_signs",
     responses={
+        200: {
+            "description": "GeoJSON FeatureCollection of verified signs within bounding box",
+            "links": {
+                "GetSignDetail": {
+                    "operationId": "get_sign_detail",
+                    "parameters": {"sign_id": "$response.body#/features/0/properties/id"},
+                    "description": "The `id` property from any feature in the collection can be used as `sign_id`.",
+                }
+            },
+        },
         422: {"description": "Validation error (range, type, or zero-area / inverted bbox)"},
     },
 )
@@ -215,8 +245,15 @@ async def get_signs_in_viewport(
     # Contract: positive-area bbox (same rule as BoundingBoxParams / NestJS).
     _validate_bbox_area(min_lat, min_lon, max_lat, max_lon)
     stmt = _signs_in_bbox_query(min_lon, min_lat, max_lon, max_lat, sign_type_id, category_id)
-    result = await db.execute(stmt)
-    rows = result.mappings().all()
+    try:
+        result = await db.execute(stmt)
+        rows = result.mappings().all()
+    except Exception as exc:
+        logger.error("Spatial signs query failed: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Database error occurred while processing spatial signs query",
+        ) from exc
     features: list[GeoJSONFeature] = [
         GeoJSONFeature(
             geometry={
@@ -254,6 +291,7 @@ async def get_signs_in_viewport(
 @router.get(
     "/signs/{sign_id}",
     response_model=SignDetailResponse,
+    operation_id="get_sign_detail",
     summary="Get full details of a single verified sign",
     description=(
         "Returns all sign fields plus joined traffic_sign_type metadata "
@@ -266,8 +304,15 @@ async def get_sign_detail(
     db: AsyncSession = Depends(get_db),
 ) -> SignDetailResponse:
     stmt = _sign_by_id_query(sign_id)
-    result = await db.execute(stmt)
-    row = result.mappings().first()
+    try:
+        result = await db.execute(stmt)
+        row = result.mappings().first()
+    except Exception as exc:
+        logger.error("Spatial sign detail query failed for %s: %s", sign_id, exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Database error occurred while retrieving sign detail",
+        ) from exc
     if row is None:
         raise HTTPException(status_code=404, detail=f"Sign {sign_id} not found")
     return SignDetailResponse(

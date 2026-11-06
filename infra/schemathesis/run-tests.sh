@@ -33,21 +33,35 @@ echo "  Reports Dir:    $REPORTS_DIR"
 echo "================================================================="
 
 # -----------------------------------------------------------------------------
-# 1. NestJS JWT (optional) + FastAPI internal token (optional)
+# 1. NestJS JWT (authenticated) + FastAPI internal token
 # -----------------------------------------------------------------------------
-TEST_USER_EMAIL="${TEST_USER_EMAIL:-${SCHEMATHESIS_TEST_EMAIL:-}}"
-TEST_USER_PASSWORD="${TEST_USER_PASSWORD:-${SCHEMATHESIS_TEST_PASSWORD:-}}"
+TEST_USER_EMAIL="${TEST_USER_EMAIL:-${SCHEMATHESIS_TEST_EMAIL:-demo@stm.dev}}"
+TEST_USER_PASSWORD="${TEST_USER_PASSWORD:-${SCHEMATHESIS_TEST_PASSWORD:-Demo@123}}"
+INTERNAL_API_TOKEN="${INTERNAL_API_TOKEN:-stm_internal_secret_dev}"
 
 AUTH_HEADER=""
 if [ -n "$TEST_USER_EMAIL" ] && [ -n "$TEST_USER_PASSWORD" ]; then
   echo "Attempting to obtain authentication token from $NESTJS_HOST/api/v1/auth/login..."
-  LOGIN_RESP=$(wget -qO- --header="Content-Type: application/json" \
-    --post-data="{\"email\":\"$TEST_USER_EMAIL\",\"password\":\"$TEST_USER_PASSWORD\"}" \
-    "$NESTJS_HOST/api/v1/auth/login" 2>/dev/null || true)
+  LOGIN_RESP=""
+  for i in 1 2 3; do
+    if command -v curl >/dev/null 2>&1; then
+      LOGIN_RESP=$(curl -s -X POST -H "Content-Type: application/json" \
+        -d "{\"email\":\"$TEST_USER_EMAIL\",\"password\":\"$TEST_USER_PASSWORD\"}" \
+        "$NESTJS_HOST/api/v1/auth/login" 2>/dev/null || true)
+    elif command -v wget >/dev/null 2>&1; then
+      LOGIN_RESP=$(wget -qO- --header="Content-Type: application/json" \
+        --post-data="{\"email\":\"$TEST_USER_EMAIL\",\"password\":\"$TEST_USER_PASSWORD\"}" \
+        "$NESTJS_HOST/api/v1/auth/login" 2>/dev/null || true)
+    fi
+    TOKEN=$(echo "$LOGIN_RESP" | grep -o '"accessToken":"[^"]*' | cut -d'"' -f4 || true)
+    if [ -n "$TOKEN" ]; then
+      break
+    fi
+    sleep 2
+  done
 
-  TOKEN=$(echo "$LOGIN_RESP" | grep -o '"accessToken":"[^"]*' | cut -d'"' -f4 || true)
   if [ -n "$TOKEN" ]; then
-    AUTH_HEADER="-H Authorization:Bearer $TOKEN"
+    AUTH_HEADER="Authorization:Bearer $TOKEN"
     echo "Successfully acquired JWT authentication token."
   else
     echo "Warning: Could not obtain token, continuing with unauthenticated NestJS testing."
@@ -59,7 +73,7 @@ fi
 
 FASTAPI_AUTH_HEADER=""
 if [ -n "${INTERNAL_API_TOKEN:-}" ]; then
-  FASTAPI_AUTH_HEADER="-H X-Internal-Token:$INTERNAL_API_TOKEN"
+  FASTAPI_AUTH_HEADER="X-Internal-Token:$INTERNAL_API_TOKEN"
   echo "FastAPI internal token header configured for catalog/service endpoints."
 else
   echo "Info: INTERNAL_API_TOKEN unset — FastAPI catalog endpoints will return 401 (expected when protected)."
@@ -88,20 +102,36 @@ NESTJS_JUNIT="$REPORTS_DIR/nestjs/junit-$TIMESTAMP.xml"
 NESTJS_HTML="$REPORTS_DIR/nestjs/report-$TIMESTAMP.html"
 
 # shellcheck disable=SC2086
-st run "$NESTJS_HOST/docs-json" \
-  -u "$NESTJS_HOST" \
-  --wait-for-schema 30 \
-  -c not_a_server_error \
-  -n "$MAX_EXAMPLES" \
-  --stateful=links \
-  --hypothesis-seed "$HYPOTHESIS_SEED" \
-  --exclude-method DELETE \
-  --suppress-health-check=filter_too_much \
-  --report junit="$NESTJS_JUNIT" \
-  --report html="$NESTJS_HTML" \
-  $EXCLUDE_ARGS \
-  $AUTH_HEADER \
-  --no-color > "$NESTJS_LOG" 2>&1
+if [ -n "$AUTH_HEADER" ]; then
+  st run "$NESTJS_HOST/docs-json" \
+    -u "$NESTJS_HOST" \
+    --wait-for-schema 30 \
+    -c not_a_server_error \
+    -n "$MAX_EXAMPLES" \
+    --seed "$HYPOTHESIS_SEED" \
+    --exclude-method DELETE \
+    --suppress-health-check filter_too_much \
+    --report junit,html \
+    --report-junit-path "$NESTJS_JUNIT" \
+    --report-html-path "$NESTJS_HTML" \
+    -H "$AUTH_HEADER" \
+    $EXCLUDE_ARGS \
+    --no-color > "$NESTJS_LOG" 2>&1
+else
+  st run "$NESTJS_HOST/docs-json" \
+    -u "$NESTJS_HOST" \
+    --wait-for-schema 30 \
+    -c not_a_server_error \
+    -n "$MAX_EXAMPLES" \
+    --seed "$HYPOTHESIS_SEED" \
+    --exclude-method DELETE \
+    --suppress-health-check filter_too_much \
+    --report junit,html \
+    --report-junit-path "$NESTJS_JUNIT" \
+    --report-html-path "$NESTJS_HTML" \
+    $EXCLUDE_ARGS \
+    --no-color > "$NESTJS_LOG" 2>&1
+fi
 NESTJS_EXIT=$?
 
 # Keep a stable "latest" pointer for operators
@@ -128,20 +158,36 @@ FASTAPI_JUNIT="$REPORTS_DIR/fastapi/junit-$TIMESTAMP.xml"
 FASTAPI_HTML="$REPORTS_DIR/fastapi/report-$TIMESTAMP.html"
 
 # shellcheck disable=SC2086
-st run "$FASTAPI_HOST/openapi.json" \
-  -u "$FASTAPI_HOST" \
-  --wait-for-schema 30 \
-  -c not_a_server_error \
-  -n "$MAX_EXAMPLES" \
-  --stateful=links \
-  --hypothesis-seed "$HYPOTHESIS_SEED" \
-  --exclude-method DELETE \
-  --suppress-health-check=filter_too_much \
-  --report junit="$FASTAPI_JUNIT" \
-  --report html="$FASTAPI_HTML" \
-  $EXCLUDE_ARGS \
-  $FASTAPI_AUTH_HEADER \
-  --no-color > "$FASTAPI_LOG" 2>&1
+if [ -n "$FASTAPI_AUTH_HEADER" ]; then
+  st run "$FASTAPI_HOST/openapi.json" \
+    -u "$FASTAPI_HOST" \
+    --wait-for-schema 30 \
+    -c not_a_server_error \
+    -n "$MAX_EXAMPLES" \
+    --seed "$HYPOTHESIS_SEED" \
+    --exclude-method DELETE \
+    --suppress-health-check filter_too_much \
+    --report junit,html \
+    --report-junit-path "$FASTAPI_JUNIT" \
+    --report-html-path "$FASTAPI_HTML" \
+    -H "$FASTAPI_AUTH_HEADER" \
+    $EXCLUDE_ARGS \
+    --no-color > "$FASTAPI_LOG" 2>&1
+else
+  st run "$FASTAPI_HOST/openapi.json" \
+    -u "$FASTAPI_HOST" \
+    --wait-for-schema 30 \
+    -c not_a_server_error \
+    -n "$MAX_EXAMPLES" \
+    --seed "$HYPOTHESIS_SEED" \
+    --exclude-method DELETE \
+    --suppress-health-check filter_too_much \
+    --report junit,html \
+    --report-junit-path "$FASTAPI_JUNIT" \
+    --report-html-path "$FASTAPI_HTML" \
+    $EXCLUDE_ARGS \
+    --no-color > "$FASTAPI_LOG" 2>&1
+fi
 FASTAPI_EXIT=$?
 
 cp -f "$FASTAPI_LOG" "$REPORTS_DIR/fastapi/latest.log" 2>/dev/null || true
@@ -169,9 +215,9 @@ if [ -n "$AUTH_HEADER" ]; then
     --wait-for-schema 30 \
     -c not_a_server_error \
     -n 5 \
-    --hypothesis-seed "$HYPOTHESIS_SEED" \
+    --seed "$HYPOTHESIS_SEED" \
     --exclude-method DELETE \
-    --suppress-health-check=filter_too_much \
+    --suppress-health-check filter_too_much \
     --no-color > "$NESTJS_NEG_LOG" 2>&1
   NESTJS_NEG_EXIT=$?
   cp -f "$NESTJS_NEG_LOG" "$REPORTS_DIR/nestjs/latest-unauth.log" 2>/dev/null || true
@@ -182,6 +228,34 @@ if [ -n "$AUTH_HEADER" ]; then
     python3 "$NOTIFIER" "NestJS Core API (unauth)" "FAILED" "$NESTJS_NEG_LOG" || true
   else
     echo "✅ NestJS unauthenticated scan: no 500s (401/403 expected on secured ops)."
+  fi
+fi
+
+# -----------------------------------------------------------------------------
+# 5. Unauthenticated negative security pass (FastAPI) — expect 401/403, fail on 500
+# -----------------------------------------------------------------------------
+if [ -n "$FASTAPI_AUTH_HEADER" ]; then
+  echo ""
+  echo "--> FastAPI negative auth scan (no X-Internal-Token header)..."
+  FASTAPI_NEG_LOG="$LOG_DIR/fastapi-unauth.log"
+  st run "$FASTAPI_HOST/openapi.json" \
+    -u "$FASTAPI_HOST" \
+    --wait-for-schema 30 \
+    -c not_a_server_error \
+    -n 5 \
+    --seed "$HYPOTHESIS_SEED" \
+    --exclude-method DELETE \
+    --suppress-health-check filter_too_much \
+    --no-color > "$FASTAPI_NEG_LOG" 2>&1
+  FASTAPI_NEG_EXIT=$?
+  cp -f "$FASTAPI_NEG_LOG" "$REPORTS_DIR/fastapi/latest-unauth.log" 2>/dev/null || true
+  if [ $FASTAPI_NEG_EXIT -ne 0 ]; then
+    echo "❌ FastAPI unauthenticated scan found server errors:"
+    cat "$FASTAPI_NEG_LOG"
+    FASTAPI_EXIT=1
+    python3 "$NOTIFIER" "FastAPI Spatial Engine (unauth)" "FAILED" "$FASTAPI_NEG_LOG" || true
+  else
+    echo "✅ FastAPI unauthenticated scan: no 500s (401/403 expected on secured ops)."
   fi
 fi
 

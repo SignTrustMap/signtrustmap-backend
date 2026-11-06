@@ -1,5 +1,6 @@
 import { ReviewsController } from './reviews.controller';
 import { ReviewsService } from '../application/reviews.service';
+import { ROLES_KEY } from '../../../common/decorators/roles.decorator';
 
 describe('ReviewsController', () => {
   let controller: ReviewsController;
@@ -18,12 +19,11 @@ describe('ReviewsController', () => {
     setActiveLearningPriority: jest.Mock;
     setBulkActiveLearningPriorities: jest.Mock;
     vote: jest.Mock;
-    testReviewCandidate: jest.Mock;
-    directCandidatesToReviewer: jest.Mock;
     requestRecapture: jest.Mock;
     submitRecapture: jest.Mock;
     getRecapturesForCandidate: jest.Mock;
     getMyRecaptures: jest.Mock;
+    getReviewedCandidates: jest.Mock;
   };
 
   const mockUser = { id: 'rev-1', email: 'reviewer@stm.dev' };
@@ -44,12 +44,11 @@ describe('ReviewsController', () => {
       setActiveLearningPriority: jest.fn(),
       setBulkActiveLearningPriorities: jest.fn(),
       vote: jest.fn(),
-      testReviewCandidate: jest.fn(),
-      directCandidatesToReviewer: jest.fn(),
       requestRecapture: jest.fn(),
       submitRecapture: jest.fn(),
       getRecapturesForCandidate: jest.fn(),
       getMyRecaptures: jest.fn(),
+      getReviewedCandidates: jest.fn(),
     };
     controller = new ReviewsController(service as unknown as ReviewsService);
   });
@@ -152,30 +151,30 @@ describe('ReviewsController', () => {
     expect(service.setBulkActiveLearningPriorities).toHaveBeenCalledWith([{ candidateId: 'c1', priority: 0.9 }]);
   });
 
+  it('enforces REVIEWER and ADMIN roles for voting and review triage actions', () => {
+    expect(Reflect.getMetadata(ROLES_KEY, ReviewsController.prototype.vote)).toEqual([
+      'REVIEWER',
+      'ADMIN',
+    ]);
+    expect(Reflect.getMetadata(ROLES_KEY, ReviewsController.prototype.undoVote)).toEqual([
+      'REVIEWER',
+      'ADMIN',
+    ]);
+    expect(Reflect.getMetadata(ROLES_KEY, ReviewsController.prototype.skipCandidate)).toEqual([
+      'REVIEWER',
+      'ADMIN',
+    ]);
+    expect(Reflect.getMetadata(ROLES_KEY, ReviewsController.prototype.canNotIdentify)).toEqual([
+      'REVIEWER',
+      'ADMIN',
+    ]);
+  });
+
   it('vote calls service.vote with vote DTO', async () => {
     service.vote.mockResolvedValue({ status: 'CONFIRMED' });
     const res = await controller.vote(mockUser, 'cand-1', { vote: 1 });
     expect(res).toEqual({ status: 'CONFIRMED' });
     expect(service.vote).toHaveBeenCalledWith(mockUser.id, 'cand-1', { vote: 1 });
-  });
-
-  it('testReview calls service.testReviewCandidate', async () => {
-    service.testReviewCandidate.mockResolvedValue({ success: true });
-    const res = await controller.testReview(mockUser, { candidateId: 'cand-1', vote: 1 });
-    expect(res).toEqual({ success: true });
-    expect(service.testReviewCandidate).toHaveBeenCalledWith('cand-1', mockUser.id, {
-      vote: 1,
-      suggestedSignTypeId: undefined,
-      declineReason: undefined,
-      declineNote: undefined,
-    });
-  });
-
-  it('testAssign calls service.directCandidatesToReviewer', async () => {
-    service.directCandidatesToReviewer.mockResolvedValue({ success: true, count: 5 });
-    const res = await controller.testAssign(mockUser, { candidateIds: ['cand-1'] });
-    expect(res).toEqual({ success: true, count: 5 });
-    expect(service.directCandidatesToReviewer).toHaveBeenCalledWith(mockUser.id, ['cand-1']);
   });
 
   it('requestRecapture calls service.requestRecapture with reviewer and dto', async () => {
@@ -230,5 +229,148 @@ describe('ReviewsController', () => {
       10.7,
       106.6,
     );
+  });
+
+  describe('getReviewedCandidates and getMyReviewedCandidates', () => {
+    const mockReviewedResult = {
+      items: [
+        {
+          id: 'cand-1',
+          status: 'IN_CONSENSUS',
+          lifecycleStatus: 'IN_CONSENSUS',
+          statusTag: 'IN_CONSENSUS',
+          statusTagVi: 'Đang xem xét',
+          review: { vote: 1, reviewedAt: new Date() },
+        },
+      ],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+      totalPages: 1,
+      counts: {
+        ALL: 1,
+        PENDING_REVIEW: 0,
+        IN_CONSENSUS: 1,
+        RESOLVED: 0,
+        all: 1,
+        unprocessed: 0,
+        inReview: 1,
+        reviewed: 0,
+      },
+      categories: [
+        { id: 'ALL', label: 'Tất cả trạng thái', count: 1 },
+        { id: 'PENDING_REVIEW', label: 'Chưa xử lý', count: 0 },
+        { id: 'IN_CONSENSUS', label: 'Đang xem xét', count: 1 },
+        { id: 'RESOLVED', label: 'Đã giải quyết', count: 0 },
+      ],
+    };
+
+    it('getReviewedCandidates delegates to service with parsed query parameters', async () => {
+      service.getReviewedCandidates.mockResolvedValue(mockReviewedResult);
+
+      const res = await controller.getReviewedCandidates(mockUser, {
+        page: 2,
+        pageSize: 15,
+        status: 'in_review',
+        search: 'P.102',
+        surveyorId: 'surv-1',
+        sortBy: 'reviewedAt',
+        sortOrder: 'DESC',
+      });
+
+      expect(res).toEqual(mockReviewedResult);
+      expect(service.getReviewedCandidates).toHaveBeenCalledWith(
+        mockUser.id,
+        2,
+        15,
+        'in_review',
+        'P.102',
+        'surv-1',
+        'reviewedAt',
+        'DESC',
+      );
+    });
+
+    it('supports Vietnamese status tags (Đang xem xét, Chưa xử lý, Đã giải quyết, Tất cả trạng thái)', async () => {
+      service.getReviewedCandidates.mockResolvedValue(mockReviewedResult);
+
+      await controller.getReviewedCandidates(mockUser, {
+        status: 'Đang xem xét',
+      });
+
+      expect(service.getReviewedCandidates).toHaveBeenCalledWith(
+        mockUser.id,
+        1,
+        20,
+        'Đang xem xét',
+        undefined,
+        undefined,
+        'reviewedAt',
+        'DESC',
+      );
+    });
+
+    it('allows ADMIN to query specific reviewerId', async () => {
+      const adminUser = { id: 'admin-1', role: 'ADMIN' };
+      service.getReviewedCandidates.mockResolvedValue({ items: [], total: 0 });
+
+      await controller.getReviewedCandidates(adminUser, {
+        reviewerId: 'rev-target',
+        status: 'reviewed',
+      });
+
+      expect(service.getReviewedCandidates).toHaveBeenCalledWith(
+        'rev-target',
+        1,
+        20,
+        'reviewed',
+        undefined,
+        undefined,
+        'reviewedAt',
+        'DESC',
+      );
+    });
+
+    it('allows ADMIN to query all candidates regardless of reviewer when reviewerId is omitted', async () => {
+      const adminUser = { id: 'admin-1', role: 'ADMIN' };
+      service.getReviewedCandidates.mockResolvedValue({ items: [], total: 0 });
+
+      await controller.getReviewedCandidates(adminUser, {
+        status: 'reviewed',
+      });
+
+      expect(service.getReviewedCandidates).toHaveBeenCalledWith(
+        undefined,
+        1,
+        20,
+        'reviewed',
+        undefined,
+        undefined,
+        'reviewedAt',
+        'DESC',
+      );
+    });
+
+    it('getMyReviewedCandidates calls getReviewedCandidates', async () => {
+      service.getReviewedCandidates.mockResolvedValue(mockReviewedResult);
+
+      const res = await controller.getMyReviewedCandidates(mockUser, {
+        page: 1,
+        pageSize: 20,
+        status: 'unprocessed',
+      });
+
+      expect(res).toEqual(mockReviewedResult);
+      expect(service.getReviewedCandidates).toHaveBeenCalledWith(
+        mockUser.id,
+        1,
+        20,
+        'unprocessed',
+        undefined,
+        undefined,
+        'reviewedAt',
+        'DESC',
+      );
+    });
   });
 });

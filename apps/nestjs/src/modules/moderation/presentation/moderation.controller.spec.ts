@@ -139,6 +139,6 @@ describe('ModerationController', () => {
     const dto = { resolution: 'DISMISSED', resolutionNotes: 'False report' } as any;
     const res = await controller.resolveCase('case-1', mockUser, dto);
     expect(res).toEqual({ id: 'case-1', status: 'RESOLVED' });
-    expect(service.resolveCase).toHaveBeenCalledWith('case-1', mockUser.id, dto);
+    expect(service.resolveCase).toHaveBeenCalledWith('case-1', mockUser.id, dto, mockUser.role);
   });
 });

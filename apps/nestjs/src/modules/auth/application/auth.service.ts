@@ -128,12 +128,26 @@ export class AuthService {
   }
 
   async googleTokenLogin(token: string) {
-    const clientId = this.configService?.get<string>('jwt.googleClientId');
-    if (!clientId) throw new UnauthorizedException('Google login is not configured');
-    const client = new OAuth2Client(clientId);
+    const rawClientId = this.configService?.get<string>('jwt.googleClientId') || process.env.GOOGLE_CLIENT_ID || '';
+    const rawAndroidClientId =
+      this.configService?.get<string>('jwt.googleAndroidClientId') ||
+      process.env.GOOGLE_ANDROID_CLIENT_ID ||
+      '';
+    const clientIds = [
+      ...rawClientId.split(','),
+      ...rawAndroidClientId.split(','),
+    ]
+      .map((id) => id.trim())
+      .filter(Boolean);
+
+    if (clientIds.length === 0) throw new UnauthorizedException('Google login is not configured');
+    const client = new OAuth2Client(clientIds[0]);
     let payload;
     try {
-      const ticket = await client.verifyIdToken({ idToken: token, audience: clientId });
+      const ticket = await client.verifyIdToken({
+        idToken: token,
+        audience: clientIds.length === 1 ? clientIds[0] : clientIds,
+      });
       payload = ticket.getPayload();
     } catch {
       throw new UnauthorizedException('Invalid or expired Google token');
@@ -475,8 +489,7 @@ export class AuthService {
       await this.dataSource.query(`UPDATE auth_otp_tokens SET used = true WHERE email = $1 AND used = false`, [email]);
       await this.dataSource.query(`INSERT INTO auth_otp_tokens (email, otp, expires_at) VALUES ($1,$2,$3)`, [email, otp, new Date(Date.now()+10*60*1000)]);
     }
-    const isDev = process.env.NODE_ENV !== 'production';
-    return isDev ? { sent: true, otp, expiresAt: new Date(Date.now()+10*60*1000) } : { sent: true, message: 'OTP sent to email' };
+    return { sent: true, message: 'OTP sent to email' };
   }
 
   async verifyOtp(email: string, otp: string) {

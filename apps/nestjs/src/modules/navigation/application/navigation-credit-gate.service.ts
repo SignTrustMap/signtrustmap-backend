@@ -38,9 +38,15 @@ export class NavigationCreditGateService {
    * Atomically verifies balance, deducts NAVIGATION_FEE from wallet, and starts navigation session.
    */
   async initiateSession(driverId: string, dto: InitiateNavigationSessionDto) {
-    const { origin, destination, idempotencyKey } = dto;
+    const { origin, destination, idempotencyKey } = dto || {};
 
     if (
+      !origin ||
+      !destination ||
+      typeof origin.latitude !== 'number' ||
+      typeof origin.longitude !== 'number' ||
+      typeof destination.latitude !== 'number' ||
+      typeof destination.longitude !== 'number' ||
       origin.latitude < -90 ||
       origin.latitude > 90 ||
       origin.longitude < -180 ||
@@ -174,7 +180,7 @@ export class NavigationCreditGateService {
    * List recent navigation sessions for driver
    */
   async listSessions(driverId: string, page = 1, pageSize = 20) {
-    const p = Math.max(1, page);
+    const p = Math.min(Math.max(1, page), 100000);
     const ps = Math.min(Math.max(1, pageSize), 100);
     const [items, total] = await this.sessionRepo.findAndCount({
       where: { driverId },

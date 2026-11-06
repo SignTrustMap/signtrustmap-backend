@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, ConflictException, Logger, Optional } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ConflictException, ForbiddenException, Logger, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, In, ILike } from 'typeorm';
 import { randomUUID } from 'crypto';
@@ -24,6 +24,7 @@ import { MinioStorageService, STM_BUCKETS } from '../../../integrations/minio/mi
 import { VEHICLE_TYPES } from '../../../common/vehicle-types';
 import { validateFileSignature } from '../../survey/domain/media-validator';
 import { MediaFileType } from '../../survey/domain/submission-contract';
+import { SystemSwitchService } from '../../admin/system-switch.service';
 
 export interface CandidateEnriched {
   id: string;
@@ -63,6 +64,7 @@ export class ModerationService {
     @Optional() @InjectRepository(SignTypeImage) private readonly signTypeImageRepo?: Repository<SignTypeImage>,
     @Optional() @InjectRepository(UserStatusHistory) private readonly userStatusHistoryRepo?: Repository<UserStatusHistory>,
     @Optional() @InjectRepository(AuditLog) private readonly auditLogRepo?: Repository<AuditLog>,
+    @Optional() private readonly systemSwitchService?: SystemSwitchService,
   ) {}
 
   /**
@@ -148,7 +150,7 @@ export class ModerationService {
           const updateRes = await manager.getRepository(UnverifiedSignCandidate)
             .createQueryBuilder()
             .update(UnverifiedSignCandidate)
-            .set({ status: CandidateStatus.MISSING_TYPE_HOLD })
+            .set({ status: CandidateStatus.NEW_TYPE_HOLD })
             .where('id = :id AND status IN (:...statuses)', {
               id: dto.candidateId,
               statuses: [CandidateStatus.PENDING_REVIEW, CandidateStatus.IN_CONSENSUS],
@@ -161,14 +163,14 @@ export class ModerationService {
              SET status = $2
              WHERE id = $1 AND status IN ('PENDING_REVIEW', 'IN_CONSENSUS')
              RETURNING id`,
-            [dto.candidateId, CandidateStatus.MISSING_TYPE_HOLD],
+            [dto.candidateId, CandidateStatus.NEW_TYPE_HOLD],
           );
           affected = getAffectedRowCount(updatedCandidates);
         }
         if (affected !== 1) {
           throw new ConflictException('Candidate ' + dto.candidateId + ' changed state while reporting a new sign');
         }
-        this.logger.log('Parked candidate ' + dto.candidateId + ' on MISSING_TYPE_HOLD (report ' + saved.id + ')');
+        this.logger.log('Parked candidate ' + dto.candidateId + ' on NEW_TYPE_HOLD (report ' + saved.id + ')');
       }
       return saved;
     });
@@ -366,8 +368,8 @@ export class ModerationService {
           candidate = candidates[0] ?? null;
         }
         if (!candidate) throw new NotFoundException('Candidate ' + report.candidateId + ' not found');
-        if (candidate.status !== CandidateStatus.MISSING_TYPE_HOLD) {
-          throw new ConflictException('Candidate must be on MISSING_TYPE_HOLD to resolve this report');
+        if (candidate.status !== CandidateStatus.NEW_TYPE_HOLD) {
+          throw new ConflictException('Candidate must be on NEW_TYPE_HOLD to resolve this report');
         }
       }
 
@@ -416,7 +418,7 @@ export class ModerationService {
             })
             .where('id = :id AND status = :status', {
               id: report.candidateId,
-              status: CandidateStatus.MISSING_TYPE_HOLD,
+              status: CandidateStatus.NEW_TYPE_HOLD,
             })
             .execute();
           updateCandAffected = res.affected ?? 0;
@@ -426,7 +428,7 @@ export class ModerationService {
              SET status = $2, predicted_sign_type_id = COALESCE($3, predicted_sign_type_id)
              WHERE id = $1 AND status = $4
              RETURNING id`,
-            [report.candidateId, candidateStatus, signTypeId, CandidateStatus.MISSING_TYPE_HOLD],
+            [report.candidateId, candidateStatus, signTypeId, CandidateStatus.NEW_TYPE_HOLD],
           );
           updateCandAffected = getAffectedRowCount(candidateUpdate);
         }
@@ -701,7 +703,7 @@ export class ModerationService {
           candidate = candidates[0] ?? null;
         }
         if (!candidate) throw new NotFoundException('Candidate ' + report.candidateId + ' not found');
-        if (![CandidateStatus.MISSING_TYPE_HOLD, CandidateStatus.RECAPTURE_REQUESTED].includes(candidate.status)) {
+        if (![CandidateStatus.NEW_TYPE_HOLD, CandidateStatus.RECAPTURE_REQUESTED].includes(candidate.status)) {
           throw new ConflictException('Candidate is not in a state that can be rejected with this report');
         }
 
@@ -985,7 +987,7 @@ export class ModerationService {
           candidate = candidates[0] ?? null;
         }
         if (!candidate) throw new NotFoundException('Candidate ' + report.candidateId + ' not found');
-        if (![CandidateStatus.MISSING_TYPE_HOLD, CandidateStatus.RECAPTURE_REQUESTED].includes(candidate.status)) {
+        if (![CandidateStatus.NEW_TYPE_HOLD, CandidateStatus.RECAPTURE_REQUESTED].includes(candidate.status)) {
           throw new ConflictException('Candidate is not in a state that can be rejected with this report');
         }
 
@@ -1268,8 +1270,8 @@ export class ModerationService {
         candidate = candidateRows[0] ?? null;
       }
       if (!candidate) throw new NotFoundException('Candidate ' + report.candidateId + ' not found');
-      if (candidate.status !== CandidateStatus.MISSING_TYPE_HOLD) {
-        throw new BadRequestException('Candidate must be on MISSING_TYPE_HOLD to request recapture');
+      if (candidate.status !== CandidateStatus.NEW_TYPE_HOLD) {
+        throw new BadRequestException('Candidate must be on NEW_TYPE_HOLD to request recapture');
       }
 
       let activeRequestsCount = 0;
@@ -1291,7 +1293,22 @@ export class ModerationService {
       if (activeRequestsCount > 0) {
         throw new ConflictException('An active recapture request already exists for candidate ' + candidate.id);
       }
-      // Open quest; eligible Surveyors discover nearby requests through GET /reviews/me/recaptures.
+      let surveyorId: string | null = null;
+      const isAutoAssignRecapture = this.systemSwitchService
+        ? await this.systemSwitchService.isEnabled('AUTO_ASSIGN_RECAPTURE_EMAIL')
+        : false;
+
+      if (isAutoAssignRecapture && typeof manager.getRepository === 'function') {
+        const meta = await this.systemSwitchService?.getMetadata<{ targetEmail?: string }>('AUTO_ASSIGN_RECAPTURE_EMAIL');
+        const targetEmail = meta?.targetEmail || 'demo@stm.dev';
+        try {
+          const demoSurveyorRows: Array<{ id: string }> = await manager.query(
+            `SELECT id FROM users WHERE email = $1 AND status = 'ACTIVE' LIMIT 1`,
+            [targetEmail],
+          );
+          if (demoSurveyorRows[0]?.id) surveyorId = demoSurveyorRows[0].id;
+        } catch {}
+      }
 
       let updateReportAffected = 0;
       if (typeof manager.getRepository === 'function') {
@@ -1325,7 +1342,7 @@ export class ModerationService {
           .createQueryBuilder()
           .update(UnverifiedSignCandidate)
           .set({ status: CandidateStatus.RECAPTURE_REQUESTED })
-          .where('id = :id AND status = :status', { id: candidate.id, status: CandidateStatus.MISSING_TYPE_HOLD })
+          .where('id = :id AND status = :status', { id: candidate.id, status: CandidateStatus.NEW_TYPE_HOLD })
           .execute();
         updateCandAffected = res.affected ?? 0;
       } else if (typeof manager.query === 'function') {
@@ -1334,7 +1351,7 @@ export class ModerationService {
            SET status = $2
            WHERE id = $1 AND status = $3
            RETURNING id`,
-          [candidate.id, CandidateStatus.RECAPTURE_REQUESTED, CandidateStatus.MISSING_TYPE_HOLD],
+          [candidate.id, CandidateStatus.RECAPTURE_REQUESTED, CandidateStatus.NEW_TYPE_HOLD],
         );
         updateCandAffected = getAffectedRowCount(updatedCandidates);
       }
@@ -1348,17 +1365,27 @@ export class ModerationService {
           await recRepo.save(recRepo.create({
             candidateId: candidate.id,
             reviewerId: staffId,
+            surveyorId: surveyorId ?? undefined,
             missingTypeReportId: reportId,
             reason: 'MISSING_TYPE_RECAPTURE_REQUESTED',
             note,
           }));
         } else if (typeof manager.query === 'function') {
-          await manager.query(
-            `INSERT INTO candidate_recapture_requests
-               (candidate_id, reviewer_id, missing_type_report_id, reason, note)
-             VALUES ($1, $2, $3, 'MISSING_TYPE_RECAPTURE_REQUESTED', $4)`,
-            [candidate.id, staffId, reportId, note],
-          );
+          if (surveyorId) {
+            await manager.query(
+              `INSERT INTO candidate_recapture_requests
+                 (candidate_id, reviewer_id, surveyor_id, missing_type_report_id, reason, note)
+               VALUES ($1, $2, $3, $4, 'MISSING_TYPE_RECAPTURE_REQUESTED', $5)`,
+              [candidate.id, staffId, surveyorId, reportId, note],
+            );
+          } else {
+            await manager.query(
+              `INSERT INTO candidate_recapture_requests
+                 (candidate_id, reviewer_id, missing_type_report_id, reason, note)
+               VALUES ($1, $2, $3, 'MISSING_TYPE_RECAPTURE_REQUESTED', $4)`,
+              [candidate.id, staffId, reportId, note],
+            );
+          }
         }
       } catch (error: any) {
         if (error?.code === '23505' || String(error?.detail ?? '').includes('uq_candidate_recapture_requests_one_active')) {
@@ -1439,8 +1466,23 @@ export class ModerationService {
           [moderationCaseId, staffId, note],
         );
       }
-      return { reporterId: report.reporterId, proposedName: report.proposedName, candidateId: candidate.id };
+      return { reporterId: report.reporterId, proposedName: report.proposedName, candidateId: candidate.id, surveyorId };
     });
+
+    if (result.surveyorId && this.notificationsService) {
+      try {
+        await this.notificationsService.create(
+          result.surveyorId,
+          'IMAGE_RECAPTURE_REQUESTED',
+          'Yêu cầu chụp lại ảnh biển báo',
+          'Quản trị viên yêu cầu chụp lại ảnh biển báo: ' + (note || 'Vui lòng chụp lại ảnh rõ nét tại vị trí biển báo'),
+          'candidate',
+          result.candidateId,
+        );
+      } catch (error: any) {
+        this.logger.warn('Surveyor recapture notification failed: ' + error?.message);
+      }
+    }
 
     if (result.reporterId) {
       try {
@@ -1500,7 +1542,7 @@ export class ModerationService {
     const category = categoryId != null ? await this.catRepo.findOne({ where: { id: categoryId } }) : null;
     const resolvedCategoryId = category?.id ?? (await this.requireFallbackCategory());
 
-    const reportName = report.proposedName?.trim() || 'Biá»ƒn bÃ¡o má»›i';
+    const reportName = report.proposedName?.trim() || 'Biển báo mới';
     const nameVi = dto.nameVi?.trim() || reportName;
     const nameEn = dto.nameEn?.trim() || reportName;
 
@@ -1565,7 +1607,7 @@ export class ModerationService {
     await this.missing.save(report);
 
     await this.reportSyncedBackend(created.id);
-    await this.notifyReporter(report, 'APPROVED', 'BÃ¡o cÃ¡o biá»ƒn bÃ¡o má»›i Ä‘Ã£ Ä‘Æ°á»£c cháº¥p thuáº­n', 'BÃ¡o cÃ¡o "' + (report.proposedName || 'biá»ƒn bÃ¡o má»›i') + '" Ä‘Ã£ Ä‘Æ°á»£c thÃªm vÃ o danh má»¥c vá»›i mÃ£ "' + signCode + '".');
+    await this.notifyReporter(report, 'APPROVED', 'Báo cáo biển báo mới đã được chấp thuận', 'Báo cáo "' + (report.proposedName || 'biển báo mới') + '" đã được thêm vào danh mục với mã "' + signCode + '".');
 
     const [enriched] = await this.enrichWithCandidates([report]);
     return { report: enriched, createdSignType: created };
@@ -1584,13 +1626,36 @@ export class ModerationService {
     const acts = await this.actions.find({ where: { caseId: id }, order: { performedAt: 'ASC' } });
     return { ...mc, actions: acts };
   }
-  async resolveCase(id: string, staffId: string, dto: ResolveCaseDto) {
+  async resolveCase(id: string, staffId: string, dto: ResolveCaseDto, userRole?: string) {
     const mc = await this.cases.findOne({ where: { id } });
     if (!mc) throw new NotFoundException('ModerationCase ' + id + ' not found');
     if (mc.status === ModerationStatus.RESOLVED) throw new BadRequestException('Case is already resolved');
     const actionType = (dto.actionType || 'RESOLVE').toUpperCase();
     const reportId: string | null = (dto as any).reportId ?? null;
     const targetTypeId: number | null = (dto as any).targetSignTypeId ?? (dto as any).mergedIntoSignTypeId ?? null;
+
+    if (actionType === 'APPROVED') {
+      let isCallerAdmin = userRole === 'ADMIN';
+      if (!isCallerAdmin) {
+        if (this.userRepo && typeof this.userRepo.findOne === 'function') {
+    const staffUser: any = await this.userRepo.findOne({ 
+      where: { id: staffId },
+      relations: ['userRoles'], 
+    });
+
+    if (staffUser?.role === 'ADMIN' || staffUser?.userRoles?.some((ur: any) => ur.role === 'ADMIN')) {
+      isCallerAdmin = true;
+    }
+        } else if (typeof this.dataSource?.query === 'function') {
+          const rows = await this.dataSource.query('SELECT role FROM users WHERE id = $1', [staffId]);
+          if (rows[0]?.role === 'ADMIN') isCallerAdmin = true;
+        }
+      }
+      if (!isCallerAdmin) {
+        throw new ForbiddenException('Admin role is required to approve and create catalog sign types');
+      }
+    }
+
     if (actionType === 'REQUEST_RECAPTURE' && mc.targetEntityType === 'candidate' && mc.targetEntityId) {
       return this.resolveRecaptureCase(id, staffId, dto);
     }
@@ -1625,8 +1690,8 @@ export class ModerationService {
       const relatedReportId = reportId || (mc.caseType === 'CATALOG_PROPOSAL' as any ? mc.targetEntityId : null);
       if (relatedReportId) {
         const rep: any = await this.missing.findOne({ where: { id: relatedReportId } as any });
-        const actionText: Record<string, string> = { APPROVED: 'Ä‘Ã£ Ä‘Æ°á»£c cháº¥p thuáº­n', MERGED: 'Ä‘Ã£ Ä‘Æ°á»£c gá»™p vÃ o loáº¡i biá»ƒn bÃ¡o hiá»‡n cÃ³', REJECTED: 'Ä‘Ã£ bá»‹ tá»« chá»‘i' };
-        if (rep?.reporterId) await this.notificationsService.create(rep.reporterId, 'MODERATION_RESOLVED', 'Cáº­p nháº­t bÃ¡o cÃ¡o biá»ƒn bÃ¡o má»›i', 'BÃ¡o cÃ¡o "' + (rep.proposedName || 'biá»ƒn bÃ¡o má»›i') + '" cá»§a báº¡n ' + (actionText[actionType] ?? 'Ä‘Ã£ Ä‘Æ°á»£c xá»­ lÃ½') + '.', 'moderation_case', mc.id);
+        const actionText: Record<string, string> = { APPROVED: 'đã được chấp thuận', MERGED: 'đã được gộp vào loại biển báo hiện có', REJECTED: 'đã bị từ chối' };
+        if (rep?.reporterId) await this.notificationsService.create(rep.reporterId, 'MODERATION_RESOLVED', 'Cập nhật báo cáo biển báo mới', 'Báo cáo "' + (rep.proposedName || 'biển báo mới') + '" của bạn ' + (actionText[actionType] ?? 'đã được xử lý') + '.', 'moderation_case', mc.id);
       }
     } catch {}
     return mc;
@@ -1715,6 +1780,22 @@ export class ModerationService {
         );
       }
       // Open quest; the first eligible nearby Surveyor claims it on submission.
+      let surveyorId: string | null = null;
+      const isAutoAssignRecapture = this.systemSwitchService
+        ? await this.systemSwitchService.isEnabled('AUTO_ASSIGN_RECAPTURE_EMAIL')
+        : false;
+
+      if (isAutoAssignRecapture && typeof manager.getRepository === 'function') {
+        const meta = await this.systemSwitchService?.getMetadata<{ targetEmail?: string }>('AUTO_ASSIGN_RECAPTURE_EMAIL');
+        const targetEmail = meta?.targetEmail || 'demo@stm.dev';
+        try {
+          const demoSurveyorRows: Array<{ id: string }> = await manager.query(
+            `SELECT id FROM users WHERE email = $1 AND status = 'ACTIVE' LIMIT 1`,
+            [targetEmail],
+          );
+          if (demoSurveyorRows[0]?.id) surveyorId = demoSurveyorRows[0].id;
+        } catch {}
+      }
 
       let updateCandAffected = 0;
       if (typeof manager.getRepository === 'function') {
@@ -1745,17 +1826,27 @@ export class ModerationService {
           await recRepo.save(recRepo.create({
             candidateId: candidate.id,
             reviewerId: staffId,
+            surveyorId: surveyorId ?? undefined,
             missingTypeReportId: reportRows[0].id,
             reason: 'MODERATION_RECAPTURE_REQUESTED',
             note: dto.resolutionNote ?? null,
           }));
         } else if (typeof manager.query === 'function') {
-          await manager.query(
-            `INSERT INTO candidate_recapture_requests
-               (candidate_id, reviewer_id, missing_type_report_id, reason, note)
-             VALUES ($1, $2, $3, 'MODERATION_RECAPTURE_REQUESTED', $4)`,
-            [candidate.id, staffId, reportRows[0].id, dto.resolutionNote ?? null],
-          );
+          if (surveyorId) {
+            await manager.query(
+              `INSERT INTO candidate_recapture_requests
+                 (candidate_id, reviewer_id, surveyor_id, missing_type_report_id, reason, note)
+               VALUES ($1, $2, $3, $4, 'MODERATION_RECAPTURE_REQUESTED', $5)`,
+              [candidate.id, staffId, surveyorId, reportRows[0].id, dto.resolutionNote ?? null],
+            );
+          } else {
+            await manager.query(
+              `INSERT INTO candidate_recapture_requests
+                 (candidate_id, reviewer_id, missing_type_report_id, reason, note)
+               VALUES ($1, $2, $3, 'MODERATION_RECAPTURE_REQUESTED', $4)`,
+              [candidate.id, staffId, reportRows[0].id, dto.resolutionNote ?? null],
+            );
+          }
         }
       } catch (error: any) {
         if (error?.code === '23505' || String(error?.detail ?? '').includes('uq_candidate_recapture_requests_one_active')) {
@@ -1796,8 +1887,21 @@ export class ModerationService {
         );
         updatedCaseResult = updatedCases[0];
       }
-      return updatedCaseResult;
+      return { ...updatedCaseResult, surveyorId, candidateId: candidate.id };
     });
+
+    if (resolved?.surveyorId && resolved?.candidateId && this.notificationsService) {
+      try {
+        await this.notificationsService.create(
+          resolved.surveyorId,
+          'IMAGE_RECAPTURE_REQUESTED',
+          'Yêu cầu chụp lại ảnh biển báo',
+          'Quản trị viên yêu cầu chụp lại ảnh biển báo: ' + (dto.resolutionNote || 'Vui lòng chụp lại ảnh rõ nét tại vị trí biển báo'),
+          'candidate',
+          resolved.candidateId,
+        );
+      } catch {}
+    }
 
     return resolved;
   }
@@ -1812,7 +1916,7 @@ export class ModerationService {
       if (!fallback) throw new BadRequestException('No sign category exists to assign the new sign type');
       categoryId = fallback.id;
     }
-    const reportName = report.proposedName?.trim() || 'Biá»ƒn bÃ¡o má»›i';
+    const reportName = report.proposedName?.trim() || 'Biển báo mới';
     const baseCode = (report.proposedName || 'NEW').toUpperCase().replace(/[^A-Z0-9]+/g, '_').slice(0, 20) || 'NEW_SIGN';
     let signCode = baseCode;
     let suffix = 0;
@@ -1966,14 +2070,14 @@ export class ModerationService {
     try {
       if (this.candRepo && typeof this.candRepo.update === 'function') {
         await this.candRepo.update(
-          { id: candidateId, status: CandidateStatus.MISSING_TYPE_HOLD },
+          { id: candidateId, status: CandidateStatus.NEW_TYPE_HOLD },
           { predictedSignTypeId: signTypeId, status: CandidateStatus.PENDING_REVIEW },
         );
       } else {
         await this.dataSource.query(
           `UPDATE unverified_sign_candidates
            SET predicted_sign_type_id = $1, status = 'PENDING_REVIEW'
-           WHERE id = $2::uuid AND status = 'MISSING_TYPE_HOLD'`,
+           WHERE id = $2::uuid AND status IN ('NEW_TYPE_HOLD', 'MISSING_TYPE_HOLD')`,
           [signTypeId, candidateId],
         );
       }
@@ -2009,33 +2113,41 @@ export class ModerationService {
     const byId = new Map<string, CandidateEnriched>();
     if (ids.length > 0) {
       let rows: any[] = [];
-      if (this.candRepo && typeof this.candRepo.createQueryBuilder === 'function') {
-        rows = await this.candRepo
-          .createQueryBuilder('c')
-          .leftJoin(CandidateGeoEstimation, 'ge', 'ge.candidateId = c.id')
-          .select([
-            'c.id AS id',
-            'c.predictedSignTypeId AS predicted_sign_type_id',
-            'c.confidenceScore AS confidence_score',
-            'c.bestFrameUrl AS best_frame_url',
-            'c.signCropUrl AS sign_crop_url',
-            'c.status AS status',
-            'ST_X(ge.signLocation::geometry) AS longitude',
-            'ST_Y(ge.signLocation::geometry) AS latitude',
-          ])
-          .where('c.id IN (:...ids)', { ids })
-          .getRawMany();
+      try {
+        if (this.candRepo && typeof this.candRepo.createQueryBuilder === 'function') {
+          rows = await this.candRepo
+            .createQueryBuilder('c')
+            .leftJoin(CandidateGeoEstimation, 'ge', 'ge.candidateId = c.id')
+            .select([
+              'c.id AS id',
+              'c.predictedSignTypeId AS predicted_sign_type_id',
+              'c.confidenceScore AS confidence_score',
+              'c.bestFrameUrl AS best_frame_url',
+              'c.signCropUrl AS sign_crop_url',
+              'c.status AS status',
+              'ST_X(ge.sign_location::geometry) AS longitude',
+              'ST_Y(ge.sign_location::geometry) AS latitude',
+            ])
+            .where('c.id IN (:...ids)', { ids })
+            .getRawMany();
+        }
+      } catch (err) {
+        this.logger.warn('Failed to enrich candidates via query builder: ' + (err as any)?.message);
       }
       if (rows.length === 0 && typeof this.dataSource?.query === 'function') {
-        rows = await this.dataSource.query(
-          `SELECT c.id, c.predicted_sign_type_id, c.confidence_score, c.best_frame_url, c.sign_crop_url, c.status,
-                  ST_X(ge.sign_location::geometry) AS longitude,
-                  ST_Y(ge.sign_location::geometry) AS latitude
-           FROM unverified_sign_candidates c
-           LEFT JOIN candidate_geo_estimations ge ON ge.candidate_id = c.id
-           WHERE c.id = ANY($1)`,
-          [ids],
-        );
+        try {
+          rows = await this.dataSource.query(
+            `SELECT c.id, c.predicted_sign_type_id, c.confidence_score, c.best_frame_url, c.sign_crop_url, c.status,
+                    ST_X(ge.sign_location::geometry) AS longitude,
+                    ST_Y(ge.sign_location::geometry) AS latitude
+             FROM unverified_sign_candidates c
+             LEFT JOIN candidate_geo_estimations ge ON ge.candidate_id = c.id
+             WHERE c.id = ANY($1::uuid[])`,
+            [ids],
+          );
+        } catch (err) {
+          this.logger.warn('Failed to enrich candidates via raw query: ' + (err as any)?.message);
+        }
       }
       for (const row of rows) {
         byId.set(row.id, {

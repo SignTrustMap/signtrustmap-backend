@@ -9,8 +9,9 @@ works automatically when running outside docker-compose.
 from __future__ import annotations
 
 from functools import lru_cache
+from typing_extensions import Self
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -90,6 +91,15 @@ class Settings(BaseSettings):
         elif v.startswith("postgresql://") and not v.startswith("postgresql+"):
             v = v.replace("postgresql://", "postgresql+psycopg://", 1)
         return v
+
+    @model_validator(mode="after")
+    def _sync_celery_backend(self) -> Self:
+        if "localhost" in self.CELERY_RESULT_BACKEND and "localhost" not in self.CELERY_BROKER_URL:
+            if self.CELERY_BROKER_URL.endswith("/2"):
+                self.CELERY_RESULT_BACKEND = self.CELERY_BROKER_URL[:-2] + "/3"
+            else:
+                self.CELERY_RESULT_BACKEND = self.CELERY_BROKER_URL
+        return self
 
 
 @lru_cache(maxsize=1)

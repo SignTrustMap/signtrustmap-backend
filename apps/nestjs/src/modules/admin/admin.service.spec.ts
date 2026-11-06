@@ -68,6 +68,24 @@ describe('AdminService', () => {
       expect(result.pageSize).toBe(20);
       expect(result.items[0].roles).toEqual(['ADMIN']);
       expect(result.items[1].roles).toEqual(['DRIVER']);
+      expect(result.items[0].statistics).toBeDefined();
+      expect(result.items[0].statistics.reviews.total).toBe(0);
+      expect(result.items[0].statistics.surveys.accepted).toBe(0);
+      expect(result.items[0].statistics.surveys.rejected).toBe(0);
+      expect(result.items[0].statistics.surveys.failed).toBe(0);
+      expect(result.items[0].statistics.surveys.noSignsDetected).toBe(0);
+    });
+
+    it('omits statistics when includeStats is false', async () => {
+      mockUserQueryBuilder.getManyAndCount.mockResolvedValueOnce([
+        [
+          { id: 'u1', email: 'user1@stm.dev', fullName: 'User 1', userRoles: [] },
+        ],
+        1,
+      ]);
+
+      const result = await service.listUsers({ includeStats: false });
+      expect(result.items[0].statistics).toBeUndefined();
     });
 
     it('applies status, search, and role filters', async () => {
@@ -233,6 +251,7 @@ describe('AdminService', () => {
       const config = await service.getConsensusConfig();
       expect(config.approvalThreshold).toBe(2.0);
       expect(config.minVotesRequired).toBe(3);
+      expect(config.maxVotesLimit).toBe(9);
     });
 
     it('returns existing consensus config when present', async () => {
@@ -412,6 +431,474 @@ describe('AdminService', () => {
       const json: any = await service.exportSigns('json');
       expect(Array.isArray(json)).toBe(true);
       expect(json[0].id).toBe('sign-1');
+    });
+  });
+
+  describe('Freshness Rules Management', () => {
+    it('listFreshnessRules returns mapped rules with category info', async () => {
+      dataSource.query.mockResolvedValueOnce([
+        {
+          id: 1,
+          signCategoryId: 2,
+          categoryCode: 'WARNING',
+          categoryNameEn: 'Warning Signs',
+          categoryNameVi: 'Biển cảnh báo',
+          freshnessPeriodDays: 30,
+          defaultPriority: 'MEDIUM',
+          maxProximityMeters: 50,
+          dailySubmissionLimit: 3,
+          isActive: true,
+          createdAt: new Date(),
+        },
+      ]);
+
+      const rules = await service.listFreshnessRules();
+      expect(rules.length).toBe(1);
+      expect(rules[0].id).toBe(1);
+      expect(rules[0].categoryCode).toBe('WARNING');
+      expect(rules[0].maxProximityMeters).toBe(50);
+      expect(rules[0].dailySubmissionLimit).toBe(3);
+    });
+
+    it('getFreshnessRule returns rule by ID or throws NotFoundException', async () => {
+      dataSource.query.mockResolvedValueOnce([
+        {
+          id: 1,
+          signCategoryId: 2,
+          categoryCode: 'WARNING',
+          freshnessPeriodDays: 30,
+          defaultPriority: 'MEDIUM',
+          maxProximityMeters: 50,
+          dailySubmissionLimit: 3,
+          isActive: true,
+          createdAt: new Date(),
+        },
+      ]);
+
+      const rule = await service.getFreshnessRule(1);
+      expect(rule.id).toBe(1);
+
+      dataSource.query.mockResolvedValueOnce([]);
+      await expect(service.getFreshnessRule(999)).rejects.toThrow(NotFoundException);
+    });
+
+    it('createFreshnessRule inserts new rule and records audit log', async () => {
+      dataSource.query
+        .mockResolvedValueOnce([
+          {
+            id: 2,
+            sign_category_id: 3,
+            freshness_period_days: 60,
+            default_priority: 'HIGH',
+            max_proximity_meters: 60,
+            daily_submission_limit: 5,
+            is_active: true,
+            created_at: new Date(),
+          },
+        ]) // insert returning
+        .mockResolvedValueOnce([]); // audit log
+
+      const result = await service.createFreshnessRule(
+        {
+          signCategoryId: 3,
+          freshnessPeriodDays: 60,
+          defaultPriority: 'HIGH' as any,
+          maxProximityMeters: 60,
+          dailySubmissionLimit: 5,
+        },
+        'admin-1',
+        '127.0.0.1',
+      );
+
+      expect(result.id).toBe(2);
+      expect(result.freshnessPeriodDays).toBe(60);
+      expect(result.maxProximityMeters).toBe(60);
+      expect(result.dailySubmissionLimit).toBe(5);
+    });
+
+    it('updateFreshnessRule updates parameters and records audit log', async () => {
+      dataSource.query
+        .mockResolvedValueOnce([
+          {
+            id: 1,
+            sign_category_id: 2,
+            freshness_period_days: 30,
+            default_priority: 'MEDIUM',
+            max_proximity_meters: 50,
+            daily_submission_limit: 3,
+            is_active: true,
+          },
+        ]) // select current
+        .mockResolvedValueOnce([]) // update
+        .mockResolvedValueOnce([]); // audit log
+
+      const result = await service.updateFreshnessRule(
+        1,
+        { maxProximityMeters: 75, dailySubmissionLimit: 4 },
+        'admin-1',
+        '127.0.0.1',
+      );
+
+      expect(result.updated).toBe(true);
+      expect(result.maxProximityMeters).toBe(75);
+      expect(result.dailySubmissionLimit).toBe(4);
+    });
+
+    it('deleteFreshnessRule deactivates rule and records audit log', async () => {
+      dataSource.query
+        .mockResolvedValueOnce([{ id: 1, is_active: true }])
+        .mockResolvedValueOnce([]) // update is_active = false
+        .mockResolvedValueOnce([]); // audit log
+
+      const result = await service.deleteFreshnessRule(1, 'admin-1', '127.0.0.1');
+      expect(result.deactivated).toBe(true);
+    });
+  });
+
+  describe('Reward Rules Management', () => {
+    it('listRewardRules returns mapped reward items', async () => {
+      dataSource.query.mockResolvedValueOnce([
+        {
+          id: 1,
+          activity_type: 'REVALIDATION_REWARD',
+          base_amount: 20,
+          daily_limit: 10,
+          multiplier_config: { urgency_bonus: true },
+          is_active: true,
+          created_at: new Date(),
+          updated_at: new Date(),
+        },
+      ]);
+
+      const rules = await service.listRewardRules();
+      expect(rules.length).toBe(1);
+      expect(rules[0].activityType).toBe('REVALIDATION_REWARD');
+      expect(rules[0].baseAmount).toBe(20);
+    });
+
+    it('getRewardRule returns rule by activity type or throws NotFoundException', async () => {
+      dataSource.query.mockResolvedValueOnce([
+        {
+          id: 1,
+          activity_type: 'REVALIDATION_REWARD',
+          base_amount: 20,
+          daily_limit: 10,
+          multiplier_config: {},
+          is_active: true,
+        },
+      ]);
+
+      const rule = await service.getRewardRule('REVALIDATION_REWARD');
+      expect(rule.activityType).toBe('REVALIDATION_REWARD');
+
+      dataSource.query.mockResolvedValueOnce([]);
+      await expect(service.getRewardRule('NON_EXISTENT')).rejects.toThrow(NotFoundException);
+    });
+
+    it('updateRewardRule updates rule and records audit log', async () => {
+      dataSource.query
+        .mockResolvedValueOnce([
+          {
+            id: 1,
+            activity_type: 'REVALIDATION_REWARD',
+            base_amount: 20,
+            daily_limit: 10,
+            multiplier_config: {},
+            is_active: true,
+          },
+        ]) // select current
+        .mockResolvedValueOnce([]) // update
+        .mockResolvedValueOnce([]); // audit log
+
+      const result = await service.updateRewardRule(
+        'REVALIDATION_REWARD',
+        { baseAmount: 25, dailyLimit: 15 },
+        'admin-1',
+        '127.0.0.1',
+      );
+
+      expect(result.updated).toBe(true);
+      expect(result.baseAmount).toBe(25);
+      expect(result.dailyLimit).toBe(15);
+    });
+  });
+
+  describe('getUserStatistics', () => {
+    it('throws NotFoundException if user does not exist', async () => {
+      dataSource.getRepository.mockReturnValueOnce({
+        findOne: jest.fn().mockResolvedValue(null),
+      });
+
+      await expect(service.getUserStatistics('missing-id')).rejects.toThrow(NotFoundException);
+    });
+
+    it('returns full user statistics breakdown when user exists', async () => {
+      const mockUser = {
+        id: 'u1',
+        fullName: 'Test User',
+        email: 'test@stm.dev',
+        status: 'ACTIVE',
+        userRoles: [{ isActive: true, role: { code: 'SURVEYOR' } }],
+        createdAt: new Date('2026-01-01'),
+      };
+      dataSource.getRepository.mockReturnValueOnce({
+        findOne: jest.fn().mockResolvedValue(mockUser),
+      });
+
+      dataSource.query.mockResolvedValue([]);
+
+      const result = await service.getUserStatistics('u1');
+      expect(result.userId).toBe('u1');
+      expect(result.fullName).toBe('Test User');
+      expect(result.roles).toEqual(['SURVEYOR']);
+      expect(result.reviews).toBeDefined();
+      expect(result.surveys).toBeDefined();
+      expect(result.hazards).toBeDefined();
+      expect(result.navigation).toBeDefined();
+    });
+  });
+
+  describe('getUsersSummaryStatistics', () => {
+    it('aggregates platform metrics across users, reviews, and surveys', async () => {
+      dataSource.query.mockImplementation((sql: string) => {
+        if (sql.includes('FROM users GROUP BY status')) {
+          return Promise.resolve([
+            { status: 'ACTIVE', cnt: 10 },
+            { status: 'SUSPENDED', cnt: 2 },
+          ]);
+        }
+        if (sql.includes('FROM user_roles ur')) {
+          return Promise.resolve([
+            { code: 'SURVEYOR', cnt: 5 },
+            { code: 'REVIEWER', cnt: 6 },
+          ]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const summary = await service.getUsersSummaryStatistics();
+      expect(summary.totalUsers).toBe(12);
+      expect(summary.usersByStatus.active).toBe(10);
+      expect(summary.usersByStatus.suspended).toBe(2);
+      expect(summary.usersByRole.surveyor).toBe(5);
+      expect(summary.usersByRole.reviewer).toBe(6);
+    });
+  });
+
+  describe('getTaskHistory', () => {
+    const validTaskId = '7b925b4b-8486-4ba2-b2ee-1ff7d1cfae33';
+
+    it('throws BadRequestException for invalid UUID format', async () => {
+      await expect(service.getTaskHistory('not-a-uuid')).rejects.toThrow(BadRequestException);
+    });
+
+    it('throws NotFoundException when task is not in revalidation or candidate tables', async () => {
+      dataSource.query.mockResolvedValue([]);
+      await expect(service.getTaskHistory(validTaskId)).rejects.toThrow(NotFoundException);
+    });
+
+    it('returns full participant history for a REVALIDATION task', async () => {
+      dataSource.query.mockImplementation((sql: string) => {
+        if (sql.includes('FROM revalidation_tasks rt')) {
+          return Promise.resolve([
+            {
+              id: validTaskId,
+              status: 'OPEN',
+              priority: 'HIGH',
+              reward_credits: 50,
+              created_at: new Date('2026-03-01T10:00:00Z'),
+              updated_at: new Date('2026-03-01T12:00:00Z'),
+              verified_sign_id: 'sign-1',
+              sign_code: 'W.201',
+              sign_name_vi: 'Chỗ ngoặt nguy hiểm vòng bên trái',
+            },
+          ]);
+        }
+        if (sql.includes('FROM revalidation_evidences ev')) {
+          return Promise.resolve([
+            {
+              id: 'ev-1',
+              evidence_type: 'STILL_ACTIVE',
+              media_url: 'https://s3/evidence-1.jpg',
+              user_id: 'surveyor-uuid-1',
+              surveyor_name: 'Nguyen Van Surveyor',
+              surveyor_email: 'surveyor@stm.dev',
+              submitted_at: new Date('2026-03-01T10:30:00Z'),
+            },
+          ]);
+        }
+        if (sql.includes('FROM revalidation_decisions rd')) {
+          return Promise.resolve([
+            {
+              id: 'dec-1',
+              evidence_id: 'ev-1',
+              decision: 'STILL_ACTIVE',
+              note: 'Sign is clearly visible and undamaged',
+              reviewer_id: 'reviewer-uuid-1',
+              reviewer_name: 'Tran Reviewer',
+              reviewer_email: 'reviewer@stm.dev',
+              decided_at: new Date('2026-03-01T11:00:00Z'),
+            },
+          ]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const result = await service.getTaskHistory(validTaskId);
+
+      expect(result.taskId).toBe(validTaskId);
+      expect(result.taskType).toBe('REVALIDATION');
+      expect(result.status).toBe('OPEN');
+      expect(result.surveyor).toEqual({
+        id: 'surveyor-uuid-1',
+        fullName: 'Nguyen Van Surveyor',
+        email: 'surveyor@stm.dev',
+      });
+      expect(result.surveyorName).toBe('Nguyen Van Surveyor');
+      expect(result.surveyorId).toBe('surveyor-uuid-1');
+      expect(result.reviewer).toEqual({
+        id: 'reviewer-uuid-1',
+        fullName: 'Tran Reviewer',
+        email: 'reviewer@stm.dev',
+      });
+      expect(result.reviewerName).toBe('Tran Reviewer');
+      expect(result.reviewerId).toBe('reviewer-uuid-1');
+      expect(result.surveyorRequests).toHaveLength(1);
+      expect(result.reviews).toHaveLength(1);
+      expect(result.timeline).toHaveLength(3);
+      expect(result.timeline[0].actorRole).toBe('SYSTEM');
+      expect(result.timeline[1].actorRole).toBe('SURVEYOR');
+      expect(result.timeline[2].actorRole).toBe('REVIEWER');
+    });
+
+    it('returns full participant history for a CANDIDATE verification task', async () => {
+      dataSource.query.mockImplementation((sql: string) => {
+        if (sql.includes('FROM revalidation_tasks rt')) {
+          return Promise.resolve([]);
+        }
+        if (sql.includes('FROM unverified_sign_candidates c')) {
+          return Promise.resolve([
+            {
+              id: validTaskId,
+              status: 'PENDING_REVIEW',
+              confidence_score: 0.95,
+              created_at: new Date('2026-03-02T08:00:00Z'),
+              submission_id: 'sub-1',
+              surveyor_id: 'surveyor-uuid-2',
+              surveyor_name: 'Le Surveyor',
+              surveyor_email: 'le@stm.dev',
+            },
+          ]);
+        }
+        if (sql.includes('FROM candidate_recapture_requests crr')) {
+          return Promise.resolve([
+            {
+              id: 'crr-1',
+              reason: 'BLURRY',
+              note: 'Capture too dark',
+              reviewer_id: 'reviewer-uuid-2',
+              reviewer_name: 'Pham Reviewer',
+              reviewer_email: 'pham@stm.dev',
+              surveyor_id: 'surveyor-uuid-2',
+              surveyor_name: 'Le Surveyor',
+              surveyor_email: 'le@stm.dev',
+              created_at: new Date('2026-03-02T09:00:00Z'),
+              completed_at: null,
+            },
+          ]);
+        }
+        if (sql.includes('FROM candidate_reviews cr')) {
+          return Promise.resolve([
+            {
+              id: 'cr-1',
+              vote: 1,
+              comment: 'Approved candidate',
+              reviewer_id: 'reviewer-uuid-2',
+              reviewer_name: 'Pham Reviewer',
+              reviewer_email: 'pham@stm.dev',
+              reviewed_at: new Date('2026-03-02T10:00:00Z'),
+            },
+          ]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const result = await service.getTaskHistory(validTaskId);
+
+      expect(result.taskId).toBe(validTaskId);
+      expect(result.taskType).toBe('CANDIDATE');
+      expect(result.surveyor).toEqual({
+        id: 'surveyor-uuid-2',
+        fullName: 'Le Surveyor',
+        email: 'le@stm.dev',
+      });
+      expect(result.reviewer).toEqual({
+        id: 'reviewer-uuid-2',
+        fullName: 'Pham Reviewer',
+        email: 'pham@stm.dev',
+      });
+      expect(result.surveyorRequests).toHaveLength(2); // initial submission + recapture request
+      expect(result.reviews).toHaveLength(1);
+    });
+  });
+
+  describe('listTaskHistory', () => {
+    it('aggregates and paginates history across candidate and revalidation tasks', async () => {
+      dataSource.query.mockImplementation((sql: string) => {
+        if (sql.includes('COUNT(*)')) {
+          return Promise.resolve([{ cnt: 2 }]);
+        }
+        if (sql.includes('candidate_recapture_requests crr')) {
+          return Promise.resolve([
+            {
+              request_id: 'req-1',
+              activity_type: 'CANDIDATE_RECAPTURE',
+              task_id: 'cand-uuid-1',
+              reason: 'BLURRY',
+              note: 'Request recapture',
+              occurred_at: new Date('2026-03-01T12:00:00Z'),
+              surveyor_id: 'surv-1',
+              surveyor_name: 'Surveyor One',
+              surveyor_email: 'surv1@stm.dev',
+              reviewer_id: 'rev-1',
+              reviewer_name: 'Reviewer One',
+              reviewer_email: 'rev1@stm.dev',
+            },
+            {
+              request_id: 'ev-1',
+              activity_type: 'REVALIDATION_EVIDENCE',
+              task_id: 'reval-uuid-1',
+              reason: null,
+              note: null,
+              occurred_at: new Date('2026-03-01T11:00:00Z'),
+              surveyor_id: 'surv-2',
+              surveyor_name: 'Surveyor Two',
+              surveyor_email: 'surv2@stm.dev',
+              reviewer_id: null,
+              reviewer_name: null,
+              reviewer_email: null,
+            },
+          ]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const result = await service.listTaskHistory({ page: 1, pageSize: 10 });
+
+      expect(result.total).toBe(2);
+      expect(result.items).toHaveLength(2);
+      expect(result.items[0].surveyor).toEqual({
+        id: 'surv-1',
+        fullName: 'Surveyor One',
+        email: 'surv1@stm.dev',
+      });
+      expect(result.items[0].reviewer).toEqual({
+        id: 'rev-1',
+        fullName: 'Reviewer One',
+        email: 'rev1@stm.dev',
+      });
+      expect(result.items[0].surveyorName).toBe('Surveyor One');
+      expect(result.items[0].reviewerName).toBe('Reviewer One');
     });
   });
 });

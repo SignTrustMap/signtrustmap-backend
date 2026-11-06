@@ -6,7 +6,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, ILike, In, Repository } from 'typeorm';
+import { DataSource, EntityManager, ILike, In, Not, Repository } from 'typeorm';
 import { PageResponse, pageResponse } from '../../common/pagination/page-response';
 import {
   CreateSignCategoryDto,
@@ -79,7 +79,10 @@ export class CatalogService {
   ) {}
 
   listCategories() {
-    return this.categories.find({ order: { sortOrder: 'ASC', id: 'ASC' } });
+    return this.categories.find({
+      where: { code: Not(In(['MOCK_TRAFFIC_SIGNS', 'MOCK'])) },
+      order: { sortOrder: 'ASC', id: 'ASC' },
+    });
   }
 
   async checkSignCodeAvailability(input: string) {
@@ -95,6 +98,9 @@ export class CatalogService {
   }
 
   async getCategory(id: number) {
+    if (!Number.isInteger(id) || id > 2147483647 || id < 1) {
+      throw new NotFoundException(`SignCategory #${id} not found`);
+    }
     const category = await this.categories.findOne({ where: { id } });
     if (!category) throw new NotFoundException(`SignCategory #${id} not found`);
     return category;
@@ -118,6 +124,9 @@ export class CatalogService {
   }
 
   async updateCategory(id: number, dto: UpdateSignCategoryDto) {
+    if (!Number.isInteger(id) || id > 2147483647 || id < 1) {
+      throw new NotFoundException(`SignCategory #${id} not found`);
+    }
     const category = await this.categories.findOne({ where: { id } });
     if (!category) throw new NotFoundException(`SignCategory #${id} not found`);
     if (dto.code) {
@@ -139,6 +148,9 @@ export class CatalogService {
   }
 
   async deleteCategory(id: number) {
+    if (!Number.isInteger(id) || id > 2147483647 || id < 1) {
+      throw new NotFoundException(`SignCategory #${id} not found`);
+    }
     const category = await this.categories.findOne({ where: { id } });
     if (!category) throw new NotFoundException(`SignCategory #${id} not found`);
     const referenceCount = await this.signTypes.count({ where: { categoryId: id } });
@@ -147,6 +159,15 @@ export class CatalogService {
         `Cannot delete: ${referenceCount} sign type(s) reference category #${id}.`,
       );
     }
+    // Clean up foreign key references from new_sign_type_reports and freshness_rules before deletion
+    await this.dataSource.query(
+      `UPDATE "new_sign_type_reports" SET "proposed_category_id" = NULL WHERE "proposed_category_id" = $1`,
+      [id],
+    );
+    await this.dataSource.query(
+      `DELETE FROM "freshness_rules" WHERE "sign_category_id" = $1`,
+      [id],
+    );
     await this.categories.delete(id);
     return { deleted: true, id };
   }
@@ -154,7 +175,7 @@ export class CatalogService {
   async listSignTypes(
     options: ListSignTypesOptions = {},
   ): Promise<PageResponse<CatalogSignType>> {
-    const page = Math.max(0, Math.trunc(options.page ?? 0));
+    const page = Math.min(Math.max(0, Math.trunc(options.page ?? 0)), 100000);
     const size = Math.min(Math.max(1, Math.trunc(options.size ?? 20)), 100);
     const query = this.signTypes
       .createQueryBuilder('signType')
@@ -187,6 +208,9 @@ export class CatalogService {
   }
 
   async getSignType(id: number): Promise<CatalogSignType> {
+    if (!Number.isInteger(id) || id > 2147483647 || id < 1) {
+      throw new NotFoundException(`TrafficSignType #${id} not found`);
+    }
     const signType = await this.signTypes.findOne({
       where: { id },
       relations: ['category'],
@@ -722,7 +746,7 @@ export class CatalogService {
         const qb = this.candidateRepo
           .createQueryBuilder('c')
           .select(['c.id AS id', 'c.submissionId AS submission_id', 'c.confidenceScore AS confidence_score', 'c.status AS status'])
-          .where("(c.status IN ('PENDING_REVIEW', 'MISSING_TYPE_HOLD') AND c.confidenceScore < 0.60)")
+          .where("(c.status IN ('PENDING_REVIEW', 'NEW_TYPE_HOLD', 'MISSING_TYPE_HOLD') AND c.confidenceScore < 0.60)")
           .orWhere("c.status = 'REJECTED'")
           .orderBy('c.createdAt', 'DESC')
           .limit(500);
@@ -730,7 +754,7 @@ export class CatalogService {
         candidates = res !== undefined && res !== null ? res : await this.dataSource.query(
           `SELECT c.id, c.submission_id, c.confidence_score, c.status
            FROM unverified_sign_candidates c
-           WHERE (c.status IN ('PENDING_REVIEW', 'MISSING_TYPE_HOLD') AND c.confidence_score < 0.60)
+           WHERE (c.status IN ('PENDING_REVIEW', 'NEW_TYPE_HOLD', 'MISSING_TYPE_HOLD') AND c.confidence_score < 0.60)
               OR (c.status = 'REJECTED')
            ORDER BY c.created_at DESC
            LIMIT 500`,
@@ -739,7 +763,7 @@ export class CatalogService {
         candidates = await this.dataSource.query(
           `SELECT c.id, c.submission_id, c.confidence_score, c.status
            FROM unverified_sign_candidates c
-           WHERE (c.status IN ('PENDING_REVIEW', 'MISSING_TYPE_HOLD') AND c.confidence_score < 0.60)
+           WHERE (c.status IN ('PENDING_REVIEW', 'NEW_TYPE_HOLD', 'MISSING_TYPE_HOLD') AND c.confidence_score < 0.60)
               OR (c.status = 'REJECTED')
            ORDER BY c.created_at DESC
            LIMIT 500`,
@@ -749,7 +773,7 @@ export class CatalogService {
       candidates = await this.dataSource.query(
         `SELECT c.id, c.submission_id, c.confidence_score, c.status
          FROM unverified_sign_candidates c
-         WHERE (c.status IN ('PENDING_REVIEW', 'MISSING_TYPE_HOLD') AND c.confidence_score < 0.60)
+         WHERE (c.status IN ('PENDING_REVIEW', 'NEW_TYPE_HOLD', 'MISSING_TYPE_HOLD') AND c.confidence_score < 0.60)
             OR (c.status = 'REJECTED')
          ORDER BY c.created_at DESC
          LIMIT 500`,

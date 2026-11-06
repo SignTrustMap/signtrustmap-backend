@@ -21,15 +21,55 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.spatial import Base
 
-SUBMISSION_STATUS_ENUM = ENUM(name="submission_status", create_type=False)
-SPATIAL_CONFIDENCE_ENUM = ENUM(name="spatial_confidence_level", create_type=False)
-CANDIDATE_STATUS_ENUM = ENUM(name="candidate_status", create_type=False)
-AI_MODEL_TYPE_ENUM = ENUM(name="ai_model_type", create_type=False)
-TRAINING_JOB_STATUS_ENUM = ENUM(name="training_job_status", create_type=False)
-SUBMISSION_TYPE_ENUM = ENUM(name="submission_type", create_type=False)
-COORDINATE_SOURCE_ENUM = ENUM(name="coordinate_source", create_type=False)
-TASK_PRIORITY_ENUM = ENUM(name="task_priority", create_type=False)
-TASK_STATUS_ENUM = ENUM(name="task_status", create_type=False)
+SUBMISSION_STATUS_ENUM = ENUM(
+    "DRAFT",
+    "QUEUED",
+    "SYNCHRONIZING",
+    "DETECTING",
+    "TRACKING",
+    "ESTIMATING",
+    "CLASSIFYING",
+    "COMPLETED",
+    "PARTIALLY_PROCESSED",
+    "FAILED",
+    "PENDING_CORRECTION",
+    "NO_SIGN_DETECTED",
+    "REJECTED",
+    name="submission_status",
+    create_type=False,
+)
+SPATIAL_CONFIDENCE_ENUM = ENUM("HIGH", "LOW", name="spatial_confidence_level", create_type=False)
+CANDIDATE_STATUS_ENUM = ENUM(
+    "PENDING_REVIEW",
+    "IN_CONSENSUS",
+    "VERIFIED",
+    "REJECTED",
+    "ESCALATED_MODERATION",
+    "MISSING_TYPE_HOLD",
+    "RECAPTURE_REQUESTED",
+    "NEW_TYPE_HOLD",
+    name="candidate_status",
+    create_type=False,
+)
+AI_MODEL_TYPE_ENUM = ENUM(
+    "YOLO12", "CLIP", "BOTSORT", "YOLO26", "TRACKER", name="ai_model_type", create_type=False
+)
+TRAINING_JOB_STATUS_ENUM = ENUM(
+    "QUEUED", "RUNNING", "COMPLETED", "FAILED", "REJECTED", name="training_job_status", create_type=False
+)
+SUBMISSION_TYPE_ENUM = ENUM(
+    "VIDEO_GPX", "SINGLE_IMAGE", "LIVE_TRIP", "FRAME_BATCH", name="submission_type", create_type=False
+)
+COORDINATE_SOURCE_ENUM = ENUM(
+    "IMAGE_EXIF", "DEVICE_GPS", "MANUAL", "GPX_FILE", "LIVE_STREAM", name="coordinate_source", create_type=False
+)
+TASK_PRIORITY_ENUM = ENUM("LOW", "MEDIUM", "HIGH", name="task_priority", create_type=False)
+TASK_STATUS_ENUM = ENUM(
+    "OPEN", "EVALUATING", "COMPLETED", "EXPIRED", "ESCALATED_MODERATION", name="task_status", create_type=False
+)
+MEDIA_FILE_TYPE_ENUM = ENUM(
+    "VIDEO", "GPX", "IMAGE", "FRAME_SEQUENCE", name="media_file_type", create_type=False
+)
 
 
 class SurveySubmission(Base):
@@ -64,7 +104,7 @@ class SubmissionMediaFile(Base):
     )
     submission_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True))
     upload_session_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
-    media_type: Mapped[str] = mapped_column(String(50))
+    media_type: Mapped[str] = mapped_column(MEDIA_FILE_TYPE_ENUM)
     file_url: Mapped[str] = mapped_column(String(500))
     file_size_bytes: Mapped[int | None] = mapped_column(BigInteger)
     duration_seconds: Mapped[float | None] = mapped_column()
@@ -281,7 +321,7 @@ class SignTypeAiPrompt(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     sign_type_id: Mapped[int] = mapped_column(Integer)
-    target_model: Mapped[str] = mapped_column(String(50))
+    target_model: Mapped[str] = mapped_column(AI_MODEL_TYPE_ENUM)
     prompt_text: Mapped[str] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 

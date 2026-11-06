@@ -15,13 +15,13 @@ import { InternalTokenGuard } from '../../../common/guards/internal-token.guard'
 import { TransactionType } from '../infrastructure/persistence/credit-transaction.entity';
 
 @ApiTags('Wallet')
-@Controller('wallet')
+@Controller(['wallet', 'economy/wallet'])
 export class WalletController {
   constructor(private readonly walletService: WalletService) {}
 
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get wallet balance', description: 'Retrieve current credit balance and wallet status for the authenticated user' })
-  @Get()
+  @Get(['', 'balance'])
   async getWallet(@CurrentUser() user: any) { return this.walletService.getWallet(user.id); }
 
   @ApiBearerAuth()
@@ -66,17 +66,17 @@ export class WalletController {
 
   @Public()
   @ApiOperation({ summary: 'List top-up packages', description: 'Available credit top-up packages with bonuses and pricing' })
-  @Get('top-up/packages')
+  @Get(['top-up/packages', 'packages'])
   async listPackages() { return this.walletService.listPackages(); }
 
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Purchase top-up package', description: 'Initiate a credit purchase for a predefined top-up package' })
-  @Post('top-up')
+  @Post(['top-up', 'topup'])
   async topUp(@CurrentUser() user: any, @Body() dto: TopUpDto) { return this.walletService.topUp(user.id, dto); }
 
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Custom amount top-up', description: 'Top up credits with an arbitrary custom currency amount' })
-  @Post('top-up/custom')
+  @Post(['top-up/custom', 'topup/custom'])
   async topUpCustom(@CurrentUser() user: any, @Body() dto: CustomTopUpDto) {
     return this.walletService.topUpCustom(user.id, dto);
   }

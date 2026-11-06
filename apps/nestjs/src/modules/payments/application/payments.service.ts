@@ -47,18 +47,15 @@ export class PaymentsService {
   verifyWebhookSignature(dto: PaymentWebhookDto, signature?: string): boolean {
     const secret = process.env.PAYMENT_WEBHOOK_SECRET;
 
-    if (!secret && !signature) {
-      return true;
+    if (!secret) {
+      throw new UnauthorizedException('Missing PAYMENT_WEBHOOK_SECRET configuration');
     }
 
     if (!signature) {
-      if (secret) {
-        throw new UnauthorizedException('Missing webhook signature');
-      }
-      return true;
+      throw new UnauthorizedException('Missing webhook signature');
     }
 
-    const secretKey = secret || 'signtrustmap-webhook-secret';
+    const secretKey = secret;
     const cleanSig = signature.startsWith('sha256=') ? signature.slice(7) : signature;
 
     const payloadStr = JSON.stringify(dto);
@@ -91,7 +88,7 @@ export class PaymentsService {
   // POST /api/v1/payments/webhook — simulated gateway callback (FR 4.8 / Flow 11)
   // Idempotency: second SUCCESS callback on same orderCode is ignored (no double credit).
   async handleWebhook(dto: PaymentWebhookDto, signature?: string) {
-    this.verifyWebhookSignature(dto, signature);
+    const isValid = this.verifyWebhookSignature(dto, signature);
 
     const order = await this.orders.findOne({ where: { orderCode: dto.orderCode } });
     if (!order) throw new NotFoundException(`PaymentOrder with orderCode "${dto.orderCode}" not found`);
@@ -108,7 +105,6 @@ export class PaymentsService {
 
     // Always record the callback row first (audit)
     const normalizedStatus = dto.status.toUpperCase();
-    const isValid = true; // simulated gateway — treat as valid if order exists; optional signature check can be added later
 
     // Write callback row (outside tx so it is never rolled back even if later logic fails)
     const cb = this.callbacks.create({ paymentOrderId: order.id, rawPayload, isValid });

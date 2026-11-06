@@ -113,7 +113,7 @@ describe('OsrmRoutingClient', () => {
     expect(response.shortestPath.steps[0].roadName).toBe('Shortest Road');
     expect(response.shortestPath.steps[0]).toMatchObject({
       type: 'turn',
-      instruction: 'Turn right onto Shortest Road',
+      instruction: 'Rẽ phải vào Shortest Road',
     });
     expect(response.alternatives).toHaveLength(1);
     expect(response.alternatives[0].distanceMeters).toBe(1200);
@@ -383,5 +383,42 @@ describe('OsrmRoutingClient', () => {
         JSON.stringify({ code: 'NoRoute', message: 'No route found' }),
       ),
     ).toThrow(new NotFoundException('OSRM routing failed: No route found'));
+  });
+
+  describe('Vietnamese turn-by-turn instructions', () => {
+    it('formats maneuvers in Vietnamese correctly', () => {
+      const c = client() as any;
+      expect(c.instruction('depart', 'straight', 'Le Loi', null)).toBe('Đi thẳng vào Le Loi');
+      expect(c.instruction('depart', 'south', 'Nguyen Hue', null)).toBe('Đi về hướng nam vào Nguyen Hue');
+      expect(c.instruction('depart', null, 'Nguyen Hue', null)).toBe('Đi vào Nguyen Hue');
+      expect(c.instruction('depart', null, null, null)).toBe('Bắt đầu xuất phát');
+
+      expect(c.instruction('arrive', 'left', null, null)).toBe('Đến điểm đến ở bên trái của bạn');
+      expect(c.instruction('arrive', 'right', null, null)).toBe('Đến điểm đến ở bên phải của bạn');
+      expect(c.instruction('arrive', null, null, null)).toBe('Đến điểm đến của bạn');
+
+      expect(c.instruction('turn', 'right', 'Shortest Road', null)).toBe('Rẽ phải vào Shortest Road');
+      expect(c.instruction('turn', 'left', 'Le Loi', null)).toBe('Rẽ trái vào Le Loi');
+      expect(c.instruction('turn', 'slight right', 'Pasteur', null)).toBe('Rẽ chếch sang phải vào Pasteur');
+      expect(c.instruction('turn', 'slight left', 'Pasteur', null)).toBe('Rẽ chếch sang trái vào Pasteur');
+      expect(c.instruction('turn', 'sharp right', null, null)).toBe('Rẽ ngoặt sang phải');
+      expect(c.instruction('turn', 'sharp left', null, null)).toBe('Rẽ ngoặt sang trái');
+      expect(c.instruction('turn', 'uturn', 'Vo Van Kiet', null)).toBe('Quay đầu xe vào Vo Van Kiet');
+
+      expect(c.instruction('continue', 'straight', 'Cong Quynh', null)).toBe('Tiếp tục đi thẳng vào Cong Quynh');
+      expect(c.instruction('new name', null, 'Dien Bien Phu', null)).toBe('Tiếp tục đi vào Dien Bien Phu');
+
+      expect(c.instruction('merge', 'left', 'Xa Lo Ha Noi', null)).toBe('Nhập làn sang trái vào Xa Lo Ha Noi');
+      expect(c.instruction('fork', 'right', 'Cau Sai Gon', null)).toBe('Giữ bên phải vào Cau Sai Gon');
+      expect(c.instruction('on ramp', null, 'Cao Toc', null)).toBe('Đi vào nhánh rẽ vào Cao Toc');
+      expect(c.instruction('off ramp', null, 'Nguyen Van Linh', null)).toBe('Đi theo lối ra vào Nguyen Van Linh');
+
+      expect(c.instruction('roundabout', null, 'Nguyen Tri Phuong', 2)).toBe(
+        'Đi vào vòng xuyến và đi theo lối ra thứ 2 vào Nguyen Tri Phuong',
+      );
+      expect(c.instruction('exit roundabout', null, 'Nguyen Tri Phuong', null)).toBe(
+        'Rời khỏi vòng xuyến vào Nguyen Tri Phuong',
+      );
+    });
   });
 });

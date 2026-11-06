@@ -8,7 +8,9 @@ export enum CandidateStatus {
   VERIFIED = 'VERIFIED',
   REJECTED = 'REJECTED',
   ESCALATED_MODERATION = 'ESCALATED_MODERATION',
-  MISSING_TYPE_HOLD = 'MISSING_TYPE_HOLD',
+  NEW_TYPE_HOLD = 'NEW_TYPE_HOLD',
+  // eslint-disable-next-line @typescript-eslint/no-duplicate-enum-values
+  MISSING_TYPE_HOLD = 'NEW_TYPE_HOLD',
   RECAPTURE_REQUESTED = 'RECAPTURE_REQUESTED',
 }
 

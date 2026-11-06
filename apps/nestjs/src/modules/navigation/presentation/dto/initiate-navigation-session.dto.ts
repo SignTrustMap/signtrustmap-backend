@@ -1,4 +1,4 @@
-import { IsNumber, Min, Max, IsOptional, IsString, ValidateNested } from 'class-validator';
+import { IsNumber, Min, Max, IsOptional, IsString, ValidateNested, IsDefined, IsNotEmptyObject } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
@@ -18,11 +18,15 @@ export class CoordinatesDto {
 
 export class InitiateNavigationSessionDto {
   @ApiProperty({ description: 'Origin coordinates' })
+  @IsDefined()
+  @IsNotEmptyObject()
   @ValidateNested()
   @Type(() => CoordinatesDto)
   origin: CoordinatesDto;
 
   @ApiProperty({ description: 'Destination coordinates' })
+  @IsDefined()
+  @IsNotEmptyObject()
   @ValidateNested()
   @Type(() => CoordinatesDto)
   destination: CoordinatesDto;

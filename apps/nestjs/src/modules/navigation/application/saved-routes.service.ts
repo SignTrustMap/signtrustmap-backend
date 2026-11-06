@@ -102,10 +102,10 @@ export class SavedRoutesService {
   ): Promise<SavedRoute> {
     const route = await this.getById(userId, id);
 
-    if (dto.title !== undefined) {
+    if (dto.title !== undefined && dto.title !== null && typeof dto.title === 'string') {
       route.title = dto.title.trim();
     }
-    if (dto.vehicleMode !== undefined) {
+    if (dto.vehicleMode !== undefined && dto.vehicleMode !== null && typeof dto.vehicleMode === 'string') {
       route.vehicleMode = dto.vehicleMode.toUpperCase();
     }
     if (dto.filterRules !== undefined) {

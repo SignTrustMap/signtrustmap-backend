@@ -88,25 +88,31 @@ export class SelectSignRemedyDto {
 }
 
 export class TestReviewDto {
-  @IsString()
+  @ApiProperty({ description: 'Candidate UUID', example: '123e4567-e89b-12d3-a456-426614174000', format: 'uuid' })
+  @IsUUID()
   candidateId: string;
 
+  @ApiPropertyOptional({ description: 'Optional Reviewer UUID (defaults to current authenticated user)', format: 'uuid' })
   @IsOptional()
-  @IsString()
+  @IsUUID()
   reviewerId?: string;
 
+  @ApiProperty({ description: 'Vote value: 1 for approve, -1 for reject', example: 1 })
   @IsIn([1, -1], { message: 'vote must be 1 (approve) or -1 (reject)' })
   vote: number;
 
+  @ApiPropertyOptional({ description: 'Suggested Sign Type ID' })
   @IsOptional()
   @IsInt({ message: 'suggestedSignTypeId must be an integer' })
   suggestedSignTypeId?: number;
 
+  @ApiPropertyOptional({ description: 'Decline reason' })
   @IsOptional()
   @IsString()
   @MaxLength(50)
   declineReason?: string;
 
+  @ApiPropertyOptional({ description: 'Decline note' })
   @IsOptional()
   @IsString()
   @MaxLength(500)
@@ -114,11 +120,15 @@ export class TestReviewDto {
 }
 
 export class TestAssignDto {
+  @ApiPropertyOptional({ description: 'Reviewer UUID (defaults to current authenticated user)', format: 'uuid' })
   @IsOptional()
-  @IsString()
+  @IsUUID()
   reviewerId?: string;
 
+  @ApiPropertyOptional({ description: 'Optional list of Candidate UUIDs to assign', type: [String] })
   @IsOptional()
+  @IsArray()
+  @IsUUID(undefined, { each: true })
   candidateIds?: string[];
 }
 
@@ -180,4 +190,84 @@ export class CanNotIdentifyDto {
   @MaxLength(500)
   note?: string;
 }
+
+export class ReviewerCandidatesQueryDto {
+  @ApiPropertyOptional({ required: false, default: 1, description: 'Page number (1-based)' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number = 1;
+
+  @ApiPropertyOptional({ required: false, default: 20, description: 'Page size (1-100)' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  pageSize?: number = 20;
+
+  @ApiPropertyOptional({
+    required: false,
+    default: 'ALL',
+    enum: ['ALL', 'PENDING_REVIEW', 'IN_CONSENSUS', 'RESOLVED'],
+    description:
+      'Filter by consensus lifecycle status: ALL, PENDING_REVIEW (Chưa xử lý), IN_CONSENSUS (Đang xem xét), RESOLVED (Đã giải quyết). Also accepts aliases: unprocessed, in_review, reviewed and Vietnamese labels.',
+  })
+  @IsOptional()
+  @IsString()
+  status?: string;
+
+  @ApiPropertyOptional({
+    required: false,
+    description: 'Alias for status',
+  })
+  @IsOptional()
+  @IsString()
+  tag?: string;
+
+  @ApiPropertyOptional({
+    required: false,
+    default: 'reviewedAt',
+    description: 'Field to sort by: reviewedAt, createdAt, confidence, status',
+  })
+  @IsOptional()
+  @IsString()
+  sortBy?: string = 'reviewedAt';
+
+  @ApiPropertyOptional({
+    required: false,
+    default: 'DESC',
+    enum: ['ASC', 'DESC', 'asc', 'desc'],
+    description: 'Sort order: ASC or DESC',
+  })
+  @IsOptional()
+  @IsString()
+  sortOrder?: 'ASC' | 'DESC' | 'asc' | 'desc' = 'DESC';
+
+  @ApiPropertyOptional({
+    required: false,
+    description: 'Search by sign name (Vi/En) or standard code',
+  })
+  @IsOptional()
+  @IsString()
+  search?: string;
+
+  @ApiPropertyOptional({
+    required: false,
+    description: 'Filter by surveyor ID',
+  })
+  @IsOptional()
+  @IsString()
+  surveyorId?: string;
+
+  @ApiPropertyOptional({
+    required: false,
+    description: 'Filter by specific reviewer ID (Admin/Staff only, omit or set to "all" to view all history across all reviewers regardless of the person involved)',
+  })
+  @IsOptional()
+  @IsString()
+  reviewerId?: string;
+}
+
 

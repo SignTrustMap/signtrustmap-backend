@@ -63,7 +63,7 @@ celery_app.conf.update(
         "app.tasks.ai_pipeline.*": {"queue": "ai_pipeline"},
         "app.tasks.catalog_sync.*": {"queue": "default"},
         "app.tasks.daily_tasks.*": {"queue": "default"},
-        "app.tasks.hazards.*": {"queue": "default"},
+        # "app.tasks.hazards.*": {"queue": "default"}, # TEMPORARILY DISABLED: Road hazard reporting feature
     },
     # Reliability — acknowledge late so a crashing worker re-queues the task.
     task_acks_late=True,
@@ -77,7 +77,7 @@ celery_app.conf.update(
         "app.tasks.ai_pipeline",
         "app.tasks.catalog_sync",
         "app.tasks.daily_tasks",
-        "app.tasks.hazards",
+        # "app.tasks.hazards", # TEMPORARILY DISABLED: Road hazard reporting feature
     ],
 )
 
@@ -116,9 +116,10 @@ celery_app.conf.beat_schedule = {
         "options": {"queue": "default"},
     },
     # Flow 8 & Phase 6 — sweeps expired or dismissed roadside hazards every 5 minutes.
-    "hazard-decay-sweeper-every-5min": {
-        "task": "app.tasks.hazards.task_decay_hazard_events",
-        "schedule": crontab(minute="*/5"),
-        "options": {"queue": "default"},
-    },
+    # TEMPORARILY DISABLED: Road hazard reporting feature
+    # "hazard-decay-sweeper-every-5min": {
+    #     "task": "app.tasks.hazards.task_decay_hazard_events",
+    #     "schedule": crontab(minute="*/5"),
+    #     "options": {"queue": "default"},
+    # },
 }

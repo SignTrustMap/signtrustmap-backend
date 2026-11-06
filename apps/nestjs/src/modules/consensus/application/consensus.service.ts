@@ -23,6 +23,7 @@ import { SurveySubmission } from '../../survey/infrastructure/persistence/survey
 import { SurveyorProfile } from '../../survey/infrastructure/persistence/surveyor-profile.entity';
 import { ModerationCase } from '../../moderation/infrastructure/persistence/moderation-case.entity';
 import { RevalidationTask, TaskStatus } from '../../revalidation/infrastructure/persistence/revalidation-task.entity';
+import { SystemSwitchService } from '../../admin/system-switch.service';
 
 @Injectable()
 export class ConsensusService {
@@ -48,6 +49,7 @@ export class ConsensusService {
     @Optional() @InjectRepository(SurveyorProfile) private readonly surveyorProfileRepo?: Repository<SurveyorProfile>,
     @Optional() @InjectRepository(ModerationCase) private readonly moderationCaseRepo?: Repository<ModerationCase>,
     @Optional() @InjectRepository(ReviewerReliabilityHistory) private readonly reviewerHistoryRepo?: Repository<ReviewerReliabilityHistory>,
+    @Optional() private readonly systemSwitchService?: SystemSwitchService,
   ) {}
 
   async evaluate(candidateId: string): Promise<ConsensusLog | null> {
@@ -57,7 +59,7 @@ export class ConsensusService {
       candidate.status === CandidateStatus.VERIFIED ||
       candidate.status === CandidateStatus.REJECTED ||
       candidate.status === CandidateStatus.ESCALATED_MODERATION ||
-      candidate.status === CandidateStatus.MISSING_TYPE_HOLD ||
+      candidate.status === CandidateStatus.NEW_TYPE_HOLD ||
       candidate.status === CandidateStatus.RECAPTURE_REQUESTED
     ) {
       return null;
@@ -69,7 +71,7 @@ export class ConsensusService {
         id: 0,
         approvalThreshold: 0.5,
         rejectionThreshold: -0.5,
-        minVotesRequired: 1,
+        minVotesRequired: 3,
         alphaSmoothingFactor: 0.1,
         weightCorrect: 1.0,
         penaltyFalse: 2.0,
@@ -129,11 +131,17 @@ export class ConsensusService {
       voterDetails.push({ reviewerId: r.reviewerId, weight: w, vote: r.vote, suggestedSignTypeId: r.suggestedSignTypeId });
     }
 
-    const maxVotes = Math.max(config.minVotesRequired * 2, 9);
+    const maxVotes = config.maxVotesLimit ?? Math.max(config.minVotesRequired * 2, 9);
     let outcome: ConsensusOutcome | null = null;
     let winningVote: number | null = null;
 
-    if (config.minVotesRequired === 1 && reviews.length >= 1) {
+    const isSingleVoteConsensus =
+      config.minVotesRequired === 1 ||
+      (this.systemSwitchService
+        ? await this.systemSwitchService.isEnabled('SINGLE_VOTE_CONSENSUS')
+        : process.env.DEMO_MODE === 'true');
+
+    if (isSingleVoteConsensus && reviews.length >= 1) {
       const lastReview = reviews[reviews.length - 1];
       if (lastReview.vote === 1 || score > 0) {
         outcome = ConsensusOutcome.APPROVED;
@@ -232,8 +240,8 @@ export class ConsensusService {
       if (this.geoEstimationRepo && typeof this.geoEstimationRepo.createQueryBuilder === 'function') {
         geoRow = await this.geoEstimationRepo
           .createQueryBuilder('g')
-          .select('ST_AsText(g.signLocation)', 'sign_wkt')
-          .addSelect('ST_AsText(g.vehicleLocation)', 'vehicle_wkt')
+          .select('ST_AsText(g.sign_location)', 'sign_wkt')
+          .addSelect('ST_AsText(g.vehicle_location)', 'vehicle_wkt')
           .addSelect('g.trafficDirection', 'traffic_direction')
           .where('g.candidateId = :cid', { cid: candidate.id })
           .getRawOne();

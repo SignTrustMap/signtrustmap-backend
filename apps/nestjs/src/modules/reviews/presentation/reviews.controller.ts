@@ -1,10 +1,11 @@
-import { Controller, Body, Param, ParseUUIDPipe, Post, Query, Get, Patch, Delete, UseGuards, UseInterceptors, UploadedFiles } from '@nestjs/common';
+import { Controller, Body, Param, ParseUUIDPipe, Post, Query, Get, Patch, Delete, UseGuards, UseInterceptors, UploadedFiles, ForbiddenException, Optional } from '@nestjs/common';
 import { FileFieldsInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { Public } from '../../../common/decorators/public.decorator';
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { ReviewsService } from '../application/reviews.service';
+import { SystemSwitchService } from '../../admin/system-switch.service';
 import {
   VoteDto,
   ReportDto,
@@ -17,13 +18,17 @@ import {
   SetBulkActiveLearningPrioritiesDto,
   ReviewQueueQueryDto,
   CanNotIdentifyDto,
+  ReviewerCandidatesQueryDto,
 } from './dto/vote.dto';
 import { InternalTokenGuard } from '../../../common/guards/internal-token.guard';
 
 @ApiTags('Reviews')
 @Controller('reviews')
 export class ReviewsController {
-  constructor(private readonly reviewsService: ReviewsService) {}
+  constructor(
+    private readonly reviewsService: ReviewsService,
+    @Optional() private readonly systemSwitchService?: SystemSwitchService,
+  ) {}
 
   @ApiBearerAuth()
   @ApiOperation({
@@ -48,7 +53,7 @@ export class ReviewsController {
   }
 
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Get my review history', description: 'Paginated list of previous sign reviews and consensus verdicts submitted by current reviewer' })
+  @ApiOperation({ summary: 'Get my review history', description: 'Paginated list of previous sign reviews and consensus verdicts. For Admin/Staff, omitting reviewerId returns history across all users regardless of the person involved.' })
   @Get('me/history')
   async myHistory(
     @CurrentUser() user: any,
@@ -57,10 +62,38 @@ export class ReviewsController {
     @Query('status') status?: string,
     @Query('search') search?: string,
     @Query('surveyorId') surveyorId?: string,
+    @Query('reviewerId') reviewerId?: string,
   ) {
     const p = page ? parseInt(page, 10) : 1;
     const ps = pageSize ? parseInt(pageSize, 10) : 20;
-    return this.reviewsService.getMyHistory(user.id, Number.isNaN(p) ? 1 : p, Number.isNaN(ps) ? 20 : ps, status, search, surveyorId);
+    const isAdmin =
+      user?.role === 'ADMIN' ||
+      user?.role === 'STAFF' ||
+      (Array.isArray(user?.roles) && (user.roles.includes('ADMIN') || user.roles.includes('STAFF')));
+
+    const targetReviewerId = isAdmin
+      ? (reviewerId && reviewerId !== 'all' ? reviewerId : undefined)
+      : user?.id;
+
+    return this.reviewsService.getMyHistory(targetReviewerId, Number.isNaN(p) ? 1 : p, Number.isNaN(ps) ? 20 : ps, status, search, surveyorId);
+  }
+
+  @ApiBearerAuth()
+  @Roles('ADMIN', 'STAFF')
+  @ApiOperation({ summary: 'Get global review history (Admin/Staff)', description: 'Review history of candidates across all reviewers and surveyors regardless of the person involved.' })
+  @Get('history')
+  async allHistory(
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+    @Query('status') status?: string,
+    @Query('search') search?: string,
+    @Query('surveyorId') surveyorId?: string,
+    @Query('reviewerId') reviewerId?: string,
+  ) {
+    const p = page ? parseInt(page, 10) : 1;
+    const ps = pageSize ? parseInt(pageSize, 10) : 20;
+    const targetReviewerId = reviewerId && reviewerId !== 'all' ? reviewerId : undefined;
+    return this.reviewsService.getMyHistory(targetReviewerId, Number.isNaN(p) ? 1 : p, Number.isNaN(ps) ? 20 : ps, status, search, surveyorId);
   }
 
   @ApiBearerAuth()
@@ -78,6 +111,58 @@ export class ReviewsController {
   }
 
   @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Get reviewed candidates history for reviewer',
+    description:
+      'Paginated list of candidates reviewed by the reviewer, filterable and sortable by 4 status tags: all, unprocessed (Chưa xử lý), in_review (Đang xem xét), reviewed (Đã giải quyết). For ADMIN / STAFF, omitting reviewerId returns candidates across all users regardless of the person involved.',
+  })
+  @Get('candidates')
+  async getReviewedCandidates(
+    @CurrentUser() user: any,
+    @Query() query?: ReviewerCandidatesQueryDto,
+  ) {
+    const isAdmin =
+      user?.role === 'ADMIN' ||
+      user?.role === 'STAFF' ||
+      (Array.isArray(user?.roles) && (user.roles.includes('ADMIN') || user.roles.includes('STAFF')));
+
+    const targetReviewerId = isAdmin
+      ? (query?.reviewerId && query.reviewerId !== 'all' ? query.reviewerId : undefined)
+      : user?.id;
+
+    const p = query?.page ? parseInt(String(query.page), 10) : 1;
+    const ps = query?.pageSize ? parseInt(String(query.pageSize), 10) : 20;
+    const status = query?.status || query?.tag;
+    const sortBy = query?.sortBy || 'reviewedAt';
+    const sortOrder = (query?.sortOrder?.toUpperCase() === 'ASC' ? 'ASC' : 'DESC') as 'ASC' | 'DESC';
+
+    return this.reviewsService.getReviewedCandidates(
+      targetReviewerId,
+      Number.isNaN(p) ? 1 : p,
+      Number.isNaN(ps) ? 20 : ps,
+      status,
+      query?.search,
+      query?.surveyorId,
+      sortBy,
+      sortOrder,
+    );
+  }
+
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Get my reviewed candidates history',
+    description:
+      'Paginated list of candidates reviewed by current reviewer, filterable and sortable by 4 status tags: all, unprocessed (Chưa xử lý), in_review (Đang xem xét), reviewed (Đã giải quyết)',
+  })
+  @Get('me/candidates')
+  async getMyReviewedCandidates(
+    @CurrentUser() user: any,
+    @Query() query?: ReviewerCandidatesQueryDto,
+  ) {
+    return this.getReviewedCandidates(user, query);
+  }
+
+  @ApiBearerAuth()
   @ApiOperation({ summary: 'Get candidate sign detail', description: 'Retrieve crop image, AI confidence, and sign classification for review' })
   @Get('candidates/:candidateId')
   async getCandidate(@Param('candidateId', ParseUUIDPipe) candidateId: string) {
@@ -92,6 +177,7 @@ export class ReviewsController {
   }
 
   @ApiBearerAuth()
+  @Roles('REVIEWER', 'ADMIN')
   @ApiOperation({ summary: 'Skip candidate sign', description: 'Skip a difficult or ambiguous candidate without voting, temporarily removing it from queue' })
   @Post('candidates/:candidateId/skip')
   async skipCandidate(@CurrentUser() user: any, @Param('candidateId', ParseUUIDPipe) candidateId: string) {
@@ -99,6 +185,7 @@ export class ReviewsController {
   }
 
   @ApiBearerAuth()
+  @Roles('REVIEWER', 'ADMIN')
   @ApiOperation({ summary: 'Mark sign as unidentifiable', description: 'Skip candidate and mark as cannot identify when sign is obscured or ambiguous' })
   @Post('candidates/:candidateId/can-not-identify')
   async canNotIdentify(@CurrentUser() user: any, @Param('candidateId', ParseUUIDPipe) candidateId: string, @Body() body?: CanNotIdentifyDto) {
@@ -117,7 +204,10 @@ export class ReviewsController {
     @Param('candidateId', ParseUUIDPipe) candidateId: string,
     @Body() dto: RequestRecaptureDto,
   ) {
-    const allowSelf = user?.role === 'ADMIN';
+    const isSelfAllowed = this.systemSwitchService
+      ? await this.systemSwitchService.isEnabled('ALLOW_SELF_REVIEW')
+      : process.env.ALLOW_SELF_REVIEW === 'true';
+    const allowSelf = user?.role === 'ADMIN' || isSelfAllowed;
     return this.reviewsService.requestRecapture(user.id, candidateId, dto, allowSelf);
   }
 
@@ -178,6 +268,7 @@ export class ReviewsController {
   }
 
   @ApiBearerAuth()
+  @Roles('REVIEWER', 'ADMIN')
   @ApiOperation({ summary: 'Undo vote on candidate', description: 'Retract a previously cast vote on an unresolved candidate sign' })
   @Delete(':candidateId/vote')
   async undoVote(@CurrentUser() user: any, @Param('candidateId', ParseUUIDPipe) candidateId: string) {
@@ -200,14 +291,22 @@ export class ReviewsController {
     if (typeof queryDto === 'string' || typeof queryDto === 'number') {
       p = parseInt(String(queryDto), 10);
       ps = legacyPageSize ? parseInt(legacyPageSize, 10) : 20;
-      allowSelf = legacyIncludeOwnSubmissions === 'true' || legacyIncludeOwnSubmissions === '1';
+      allowSelf = legacyIncludeOwnSubmissions === 'true' || legacyIncludeOwnSubmissions === '1' || user?.role === 'ADMIN';
     } else if (queryDto && typeof queryDto === 'object') {
       p = queryDto.page ? Number(queryDto.page) : 1;
       ps = queryDto.pageSize ? Number(queryDto.pageSize) : 20;
-      allowSelf = queryDto.includeOwnSubmissions === true ||
+      allowSelf = (
+        queryDto.includeOwnSubmissions === true ||
         queryDto.includeOwnSubmissions === 'true' ||
-        queryDto.includeOwnSubmissions === '1';
+        queryDto.includeOwnSubmissions === '1' ||
+        user?.role === 'ADMIN'
+      );
     }
+
+    const isSelfAllowed = this.systemSwitchService
+      ? await this.systemSwitchService.isEnabled('ALLOW_SELF_REVIEW')
+      : false;
+    allowSelf = allowSelf || isSelfAllowed;
 
     return this.reviewsService.queue(
       user?.id,
@@ -218,12 +317,16 @@ export class ReviewsController {
   }
 
   @ApiBearerAuth()
+  @Roles('ADMIN')
   @ApiOperation({
-    summary: 'Test review candidate sign (Testing/Development)',
-    description: 'Submit review for a candidate with 1 specific reviewer and immediately evaluate consensus. Bypasses surveyor check.',
+    summary: 'Test review candidate sign (Admin Testing)',
+    description: 'Submit review for a candidate with 1 specific reviewer and immediately evaluate consensus. Gated by ENABLE_TEST_UTILITY_ENDPOINTS.',
   })
   @Post('test-review')
   async testReview(@CurrentUser() user: any, @Body() dto: TestReviewDto) {
+    if (this.systemSwitchService && !(await this.systemSwitchService.isEnabled('ENABLE_TEST_UTILITY_ENDPOINTS'))) {
+      throw new ForbiddenException('Testing utility endpoints are disabled in production mode. Enable via Admin System Switches.');
+    }
     const targetReviewerId = dto.reviewerId || user.id;
     return this.reviewsService.testReviewCandidate(dto.candidateId, targetReviewerId, {
       vote: dto.vote,
@@ -234,12 +337,16 @@ export class ReviewsController {
   }
 
   @ApiBearerAuth()
+  @Roles('ADMIN')
   @ApiOperation({
-    summary: 'Direct/Assign candidates to 1 specific reviewer for testing',
-    description: 'Clear previous skipped/reviewed flags or prepare pending candidates for a specific reviewer queue',
+    summary: 'Direct/Assign candidates to 1 specific reviewer for testing (Admin Testing)',
+    description: 'Clear previous skipped/reviewed flags or prepare pending candidates for a specific reviewer queue. Gated by ENABLE_TEST_UTILITY_ENDPOINTS.',
   })
   @Post('test-assign')
   async testAssign(@CurrentUser() user: any, @Body() dto: TestAssignDto) {
+    if (this.systemSwitchService && !(await this.systemSwitchService.isEnabled('ENABLE_TEST_UTILITY_ENDPOINTS'))) {
+      throw new ForbiddenException('Testing utility endpoints are disabled in production mode. Enable via Admin System Switches.');
+    }
     const targetReviewerId = dto.reviewerId || user.id;
     return this.reviewsService.directCandidatesToReviewer(targetReviewerId, dto.candidateIds);
   }
@@ -276,6 +383,7 @@ export class ReviewsController {
   }
 
   @ApiBearerAuth()
+  @Roles('REVIEWER', 'ADMIN')
   @ApiOperation({ summary: 'Cast vote on candidate sign', description: 'Submit confirmation or correction vote for a traffic sign candidate' })
   @Post(':candidateId/vote')
   async vote(@CurrentUser() user: any, @Param('candidateId', ParseUUIDPipe) candidateId: string, @Body() dto: VoteDto) {

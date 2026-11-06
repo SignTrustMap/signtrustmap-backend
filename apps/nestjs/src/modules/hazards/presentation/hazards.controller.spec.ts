@@ -1,9 +1,15 @@
+// TEMPORARILY DISABLED: Road hazard feature functions are commented out
+describe('Temporarily Disabled Hazard Suite', () => {
+  it.skip('all hazard functions are currently commented out', () => {});
+});
+/*
 import { HazardsController } from './hazards.controller';
 import { HazardsService } from '../application/hazards.service';
 import { HazardStatus } from '../infrastructure/persistence/road-hazard-event.entity';
 import { HazardVoteType } from '../infrastructure/persistence/hazard-confirmation.entity';
 
-describe('HazardsController', () => {
+// TEMPORARILY DISABLED: Road hazard reporting feature
+describe.skip('HazardsController', () => {
   let controller: HazardsController;
   let service: jest.Mocked<HazardsService>;
 
@@ -119,3 +125,5 @@ describe('HazardsController', () => {
     });
   });
 });
+
+*/

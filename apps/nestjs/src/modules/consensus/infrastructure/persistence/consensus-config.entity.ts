@@ -14,6 +14,9 @@ export class ConsensusConfig {
   @Column({ name: 'min_votes_required', type: 'int', default: 3 })
   minVotesRequired: number;
 
+  @Column({ name: 'max_votes_limit', type: 'int', default: 9 })
+  maxVotesLimit: number;
+
   @Column({ name: 'alpha_smoothing_factor', type: 'float', default: 0.1 })
   alphaSmoothingFactor: number;
 

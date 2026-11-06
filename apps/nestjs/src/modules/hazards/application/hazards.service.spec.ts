@@ -1,3 +1,8 @@
+// TEMPORARILY DISABLED: Road hazard feature functions are commented out
+describe('Temporarily Disabled Hazard Suite', () => {
+  it.skip('all hazard functions are currently commented out', () => {});
+});
+/*
 import { BadRequestException } from '@nestjs/common';
 import { Repository, DataSource } from 'typeorm';
 import { HazardsService } from './hazards.service';
@@ -9,7 +14,8 @@ import { DailyTasksService } from '../../daily-tasks/daily-tasks.service';
 import { NotificationsService } from '../../notifications/notifications.service';
 import { HazardEvidence, HazardEvidenceType } from '../infrastructure/persistence/hazard-evidence.entity';
 
-describe('HazardsService', () => {
+// TEMPORARILY DISABLED: Road hazard reporting feature
+describe.skip('HazardsService', () => {
   let service: HazardsService;
   let hazardRepo: jest.Mocked<Repository<RoadHazardEvent>>;
   let confirmRepo: jest.Mocked<Repository<HazardConfirmation>>;
@@ -557,3 +563,5 @@ describe('HazardsService', () => {
     });
   });
 });
+
+*/

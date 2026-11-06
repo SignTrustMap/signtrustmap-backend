@@ -28,6 +28,7 @@ export interface EarlyClassificationResult {
   confidence?: number;
   detectConfidence?: number | null;
   classifyConfidence?: number | null;
+  allPredictions?: any[];
   category?: string | null;
   nameVi?: string | null;
   nameEn?: string | null;
@@ -51,7 +52,7 @@ export class AiInferenceService {
     const cfg = config.get<{ baseUrl: string; timeoutMs: number; internalToken: string }>('aiInference') ?? ({} as any);
     this.baseUrl = (cfg.baseUrl || process.env.AI_INFERENCE_URL || 'https://ai.signmap.site').replace(/\/+$/, '');
     this.timeoutMs = cfg.timeoutMs || 30000;
-    this.internalToken = cfg.internalToken || process.env.INTERNAL_TOKEN || 'stm_internal_secret_dev';
+    this.internalToken = cfg.internalToken || process.env.INTERNAL_TOKEN || process.env.INTERNAL_API_TOKEN || '';
   }
 
   /**
@@ -119,6 +120,7 @@ export class AiInferenceService {
           confidence: data.confidence,
           detectConfidence: data.detect_confidence,
           classifyConfidence: data.classify_confidence,
+          allPredictions: data.all_predictions ?? data.allPredictions ?? [],
           category: data.category,
           nameVi: data.name_vi,
           nameEn: data.name_en,
