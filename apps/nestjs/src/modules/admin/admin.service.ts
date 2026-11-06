@@ -2068,6 +2068,7 @@ export class AdminService {
           eventType: 'EVIDENCE_SUBMISSION',
           timestamp: ev.submitted_at ? new Date(ev.submitted_at).toISOString() : new Date().toISOString(),
           actor: surveyorObj,
+          actorRole: 'SURVEYOR',
           description: `Surveyor ${survName} (${ev.user_id}) submitted ${ev.evidence_type} on-site evidence photo`,
           details: {
             evidenceId: ev.id,
@@ -2126,6 +2127,7 @@ export class AdminService {
             eventType: 'RECAPTURE_REQUESTED',
             timestamp: rd.decided_at ? new Date(rd.decided_at).toISOString() : new Date().toISOString(),
             actor: reviewerObj,
+            actorRole: 'REVIEWER',
             description: `Reviewer ${revName} (${rd.reviewer_id}) requested surveyor ${targetSurvName} (${targetSurvId}) to recapture photo (${rd.note})`,
             details: {
               decisionId: rd.id,
@@ -2140,6 +2142,7 @@ export class AdminService {
             eventType: 'REVIEW_DECIDED',
             timestamp: rd.decided_at ? new Date(rd.decided_at).toISOString() : new Date().toISOString(),
             actor: reviewerObj,
+            actorRole: 'REVIEWER',
             description: `Reviewer ${revName} (${rd.reviewer_id}) decided verdict ${rd.decision} on evidence #${rd.evidence_id.slice(0, 8)}`,
             details: {
               decisionId: rd.id,
@@ -2153,9 +2156,19 @@ export class AdminService {
 
       timeline.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
+      const primarySurv = surveyorRequests[0]?.surveyor;
+      const primaryRev = reviews[0]?.reviewer;
+
       return {
         taskId: task.id,
         taskType: 'REVALIDATION',
+        status: task.status,
+        surveyor: primarySurv,
+        surveyorName: primarySurv?.fullName,
+        surveyorId: primarySurv?.id,
+        reviewer: primaryRev,
+        reviewerName: primaryRev?.fullName,
+        reviewerId: primaryRev?.id,
         task: {
           id: task.id,
           verifiedSignId: task.verified_sign_id,
@@ -2249,6 +2262,7 @@ export class AdminService {
           eventType: 'TASK_CREATED',
           timestamp: candidate.created_at ? new Date(candidate.created_at).toISOString() : new Date().toISOString(),
           actor: initialSurvObj,
+          actorRole: 'SURVEYOR',
           description: `Candidate sign extracted from survey by Surveyor ${initialSurvName} (${candidate.surveyor_id || 'n/a'})`,
           details: {
             candidateId: candidate.id,
@@ -2290,6 +2304,7 @@ export class AdminService {
           eventType: 'RECAPTURE_REQUESTED',
           timestamp: crr.created_at ? new Date(crr.created_at).toISOString() : new Date().toISOString(),
           actor: revObj,
+          actorRole: 'REVIEWER',
           description: `Reviewer ${revName} (${crr.reviewer_id}) requested surveyor ${survName} (${survObj.id}) to recapture image (Reason: ${crr.reason}${crr.note ? ' - ' + crr.note : ''})`,
           details: {
             requestId: crr.id,
@@ -2328,6 +2343,7 @@ export class AdminService {
           eventType: 'REVIEW_DECIDED',
           timestamp: cr.reviewed_at ? new Date(cr.reviewed_at).toISOString() : new Date().toISOString(),
           actor: revObj,
+          actorRole: 'REVIEWER',
           description: `Reviewer ${revName} (${cr.reviewer_id}) evaluated sign: ${voteStr}`,
           details: {
             reviewId: cr.id,
@@ -2340,9 +2356,18 @@ export class AdminService {
 
       timeline.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
+      const primaryRev = reviews[0]?.reviewer;
+
       return {
         taskId: candidate.id,
         taskType: 'CANDIDATE',
+        status: candidate.status,
+        surveyor: initialSurvObj,
+        surveyorName: initialSurvName,
+        surveyorId: candidate.surveyor_id || undefined,
+        reviewer: primaryRev,
+        reviewerName: primaryRev?.fullName,
+        reviewerId: primaryRev?.id,
         task: {
           id: candidate.id,
           signCode: candidate.sign_code,

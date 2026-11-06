@@ -129,6 +129,9 @@ export class TaskTimelineEventDto {
   @ApiProperty({ type: () => TaskParticipantUserDto, description: 'User actor who performed the action' })
   actor: TaskParticipantUserDto;
 
+  @ApiPropertyOptional({ description: 'Role of the actor', example: 'SURVEYOR' })
+  actorRole?: string;
+
   @ApiProperty({ description: 'Human-readable action description', example: 'Surveyor Nguyen Van A submitted evidence' })
   description: string;
 
@@ -142,6 +145,27 @@ export class TaskHistoryResponseDto {
 
   @ApiProperty({ description: 'Task type category', enum: ['REVALIDATION', 'CANDIDATE'], example: 'REVALIDATION' })
   taskType: 'REVALIDATION' | 'CANDIDATE';
+
+  @ApiPropertyOptional({ description: 'Task lifecycle status', example: 'OPEN' })
+  status?: string;
+
+  @ApiPropertyOptional({ type: () => TaskParticipantUserDto, description: 'Primary surveyor identity' })
+  surveyor?: TaskParticipantUserDto;
+
+  @ApiPropertyOptional({ description: 'Primary surveyor full name' })
+  surveyorName?: string;
+
+  @ApiPropertyOptional({ description: 'Primary surveyor user ID' })
+  surveyorId?: string;
+
+  @ApiPropertyOptional({ type: () => TaskParticipantUserDto, description: 'Primary reviewer identity' })
+  reviewer?: TaskParticipantUserDto;
+
+  @ApiPropertyOptional({ description: 'Primary reviewer full name' })
+  reviewerName?: string;
+
+  @ApiPropertyOptional({ description: 'Primary reviewer user ID' })
+  reviewerId?: string;
 
   @ApiProperty({ description: 'Task summary metadata' })
   task: Record<string, any>;
