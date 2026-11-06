@@ -765,9 +765,10 @@ describe('AdminService', () => {
       expect(result.reviewerId).toBe('reviewer-uuid-1');
       expect(result.surveyorRequests).toHaveLength(1);
       expect(result.reviews).toHaveLength(1);
-      expect(result.timeline).toHaveLength(2);
-      expect(result.timeline[0].actorRole).toBe('SURVEYOR');
-      expect(result.timeline[1].actorRole).toBe('REVIEWER');
+      expect(result.timeline).toHaveLength(3);
+      expect(result.timeline[0].actorRole).toBe('SYSTEM');
+      expect(result.timeline[1].actorRole).toBe('SURVEYOR');
+      expect(result.timeline[2].actorRole).toBe('REVIEWER');
     });
 
     it('returns full participant history for a CANDIDATE verification task', async () => {

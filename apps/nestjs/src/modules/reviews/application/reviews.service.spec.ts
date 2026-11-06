@@ -759,7 +759,7 @@ describe('ReviewsService', () => {
       expect(res.items[0].reason).toBe('POOR_LIGHTING');
       expect(rawQuery).toHaveBeenCalledWith(
         expect.stringContaining('crr.surveyor_id = $1'),
-        ['surv-1', null, null, 5000, 10, 0],
+        ['surv-1', null, null, 5000, false, 10, 0],
       );
     });
 
@@ -778,7 +778,7 @@ describe('ReviewsService', () => {
 
       expect(rawQuery).toHaveBeenCalledWith(
         expect.stringContaining('ST_DistanceSphere'),
-        ['surv-1', 106.6, 10.7, 5000, 10, 0],
+        ['surv-1', 106.6, 10.7, 5000, false, 10, 0],
       );
       expect(rawQuery.mock.calls[1][0]).toContain('crr.surveyor_id IS NULL');
     });
@@ -1453,7 +1453,7 @@ describe('ReviewsService', () => {
       expect(res.total).toBe(1);
       expect(res.items[0].id).toBe('cand-all-1');
       expect(res.items[0].reviewerId).toBe('reviewer-99');
-      expect(res.items[0].reviewer).toEqual({ id: 'reviewer-99', email: 'rev99@stm.dev', fullName: null });
+      expect(res.items[0].reviewer).toEqual({ id: 'reviewer-99', email: 'rev99@stm.dev', fullName: 'Reviewer #reviewer' });
       expect(countQb.where).not.toHaveBeenCalled();
       expect(mainQb.where).not.toHaveBeenCalled();
     });
