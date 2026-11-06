@@ -48,11 +48,14 @@ export class SpatialAdminBackfillService implements OnApplicationBootstrap, OnAp
     this.isRunning = true;
     let totalProcessed = 0;
     let totalSuccess = 0;
+    const processedIds = new Set<string>();
 
     try {
       this.logger.log('Starting spatial address backfill via PostGIS...');
 
       while (totalProcessed < maxTotal) {
+        const remainingLimit = Math.min(batchSize, maxTotal - totalProcessed);
+        const hasProcessedIds = processedIds.size > 0;
         const rows: Array<{ id: string; longitude: number; latitude: number }> =
           await this.dataSource.query(
             `SELECT
@@ -65,9 +68,12 @@ export class SpatialAdminBackfillService implements OnApplicationBootstrap, OnAp
                  commune_code IS NULL
                  OR display_address IS NULL
                )
+               ${hasProcessedIds ? 'AND id != ALL($2::uuid[])' : ''}
              ORDER BY created_at DESC
              LIMIT $1`,
-            [batchSize],
+            hasProcessedIds
+              ? [remainingLimit, Array.from(processedIds)]
+              : [remainingLimit],
           );
 
         if (!rows || rows.length === 0) {
@@ -76,6 +82,9 @@ export class SpatialAdminBackfillService implements OnApplicationBootstrap, OnAp
         }
 
         for (const row of rows) {
+          processedIds.add(row.id);
+          totalProcessed++;
+
           try {
             const resolved = await this.spatialAdminService.resolveLocation(
               Number(row.latitude),
@@ -98,12 +107,9 @@ export class SpatialAdminBackfillService implements OnApplicationBootstrap, OnAp
           } catch (err: any) {
             this.logger.warn(`Failed to backfill sign ${row.id}: ${err?.message}`);
           }
-          totalProcessed++;
-
-          await new Promise((resolve) => setTimeout(resolve, 20));
         }
 
-        if (rows.length < batchSize) break;
+        if (rows.length < remainingLimit) break;
       }
 
       if (totalProcessed > 0) {

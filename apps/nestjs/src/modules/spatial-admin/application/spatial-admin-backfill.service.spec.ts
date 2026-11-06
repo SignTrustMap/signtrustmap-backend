@@ -87,4 +87,26 @@ describe('SpatialAdminBackfillService', () => {
     expect(result.success).toBe(0);
     expect(spatialAdminService.resolveLocation).not.toHaveBeenCalled();
   });
+
+  it('excludes already processed sign IDs across successive batches', async () => {
+    (dataSource.query as jest.Mock).mockResolvedValueOnce([
+      { id: 'sign-1', latitude: 10.84, longitude: 106.82 },
+    ]);
+    (dataSource.query as jest.Mock).mockResolvedValueOnce([]);
+
+    (spatialAdminService.resolveLocation as jest.Mock).mockResolvedValueOnce({
+      communeCode: null,
+      displayAddress: null,
+    });
+
+    const result = await service.runBackfill(1, 100);
+
+    expect(result.processed).toBe(1);
+    expect(result.success).toBe(0);
+    expect(dataSource.query).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining('AND id != ALL($2::uuid[])'),
+      [1, ['sign-1']],
+    );
+  });
 });

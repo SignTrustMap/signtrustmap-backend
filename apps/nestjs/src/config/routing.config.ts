@@ -4,10 +4,10 @@ import { durationMilliseconds } from './duration';
 export default registerAs('routing', () => ({
   provider: process.env.ROUTING_PROVIDER || 'OSRM',
   osrm: {
-    baseUrl: process.env.ROUTING_OSRM_BASE_URL || 'https://router.project-osrm.org',
+    baseUrl: process.env.ROUTING_OSRM_BASE_URL || 'http://osrm-routed:5000',
     profile: process.env.ROUTING_OSRM_PROFILE || 'driving',
     motorcycleProfile: process.env.ROUTING_OSRM_MOTORCYCLE_PROFILE || 'motorcycle',
-    timeoutMs: durationMilliseconds(process.env.ROUTING_OSRM_TIMEOUT, 5_000),
+    timeoutMs: durationMilliseconds(process.env.ROUTING_OSRM_TIMEOUT, 10_000),
     motorcycleDurationFactor: numberInRange(
       process.env.ROUTING_OSRM_MOTORCYCLE_FACTOR,
       0.95,
