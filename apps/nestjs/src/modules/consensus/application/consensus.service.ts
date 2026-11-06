@@ -23,6 +23,7 @@ import { SurveySubmission } from '../../survey/infrastructure/persistence/survey
 import { SurveyorProfile } from '../../survey/infrastructure/persistence/surveyor-profile.entity';
 import { ModerationCase } from '../../moderation/infrastructure/persistence/moderation-case.entity';
 import { RevalidationTask, TaskStatus } from '../../revalidation/infrastructure/persistence/revalidation-task.entity';
+import { SystemSwitchService } from '../../admin/system-switch.service';
 
 @Injectable()
 export class ConsensusService {
@@ -48,6 +49,7 @@ export class ConsensusService {
     @Optional() @InjectRepository(SurveyorProfile) private readonly surveyorProfileRepo?: Repository<SurveyorProfile>,
     @Optional() @InjectRepository(ModerationCase) private readonly moderationCaseRepo?: Repository<ModerationCase>,
     @Optional() @InjectRepository(ReviewerReliabilityHistory) private readonly reviewerHistoryRepo?: Repository<ReviewerReliabilityHistory>,
+    @Optional() private readonly systemSwitchService?: SystemSwitchService,
   ) {}
 
   async evaluate(candidateId: string): Promise<ConsensusLog | null> {
@@ -133,20 +135,39 @@ export class ConsensusService {
     let outcome: ConsensusOutcome | null = null;
     let winningVote: number | null = null;
 
-    if (score >= config.approvalThreshold) {
-      outcome = ConsensusOutcome.APPROVED;
-      winningVote = 1;
-    } else if (score <= config.rejectionThreshold) {
-      outcome = ConsensusOutcome.REJECTED;
-      winningVote = -1;
-    } else if (reviews.length >= maxVotes) {
-      outcome = ConsensusOutcome.ESCALATED;
-      winningVote = score >= 0 ? 1 : -1;
-    } else {
-      if (candidate.status === CandidateStatus.PENDING_REVIEW) {
-        await this.candidateRepo.update(candidateId, { status: CandidateStatus.IN_CONSENSUS });
+    const isSingleVoteConsensus =
+      config.minVotesRequired === 1 ||
+      (this.systemSwitchService
+        ? await this.systemSwitchService.isEnabled('SINGLE_VOTE_CONSENSUS')
+        : process.env.DEMO_MODE === 'true');
+
+    if (isSingleVoteConsensus && reviews.length >= 1) {
+      const lastReview = reviews[reviews.length - 1];
+      if (lastReview.vote === 1 || score > 0) {
+        outcome = ConsensusOutcome.APPROVED;
+        winningVote = 1;
+      } else if (lastReview.vote === -1 || score < 0) {
+        outcome = ConsensusOutcome.REJECTED;
+        winningVote = -1;
       }
-      return null;
+    }
+
+    if (!outcome) {
+      if (score >= config.approvalThreshold) {
+        outcome = ConsensusOutcome.APPROVED;
+        winningVote = 1;
+      } else if (score <= config.rejectionThreshold) {
+        outcome = ConsensusOutcome.REJECTED;
+        winningVote = -1;
+      } else if (reviews.length >= maxVotes) {
+        outcome = ConsensusOutcome.ESCALATED;
+        winningVote = score >= 0 ? 1 : -1;
+      } else {
+        if (candidate.status === CandidateStatus.PENDING_REVIEW) {
+          await this.candidateRepo.update(candidateId, { status: CandidateStatus.IN_CONSENSUS });
+        }
+        return null;
+      }
     }
 
     return this.executeOutcome(candidate, config, score, outcome, winningVote, voterDetails);

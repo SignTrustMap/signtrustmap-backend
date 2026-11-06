@@ -72,13 +72,17 @@ export class WalletService {
 
   async listTransactions(userId: string, q: { page?: number; pageSize?: number; type?: string; from?: string; to?: string }) {
     const wallet = await this.ensureWallet(userId);
-    const p = Math.max(1, q.page ?? 1);
+    const p = Math.min(Math.max(1, q.page ?? 1), 100000);
     const ps = Math.min(Math.max(1, q.pageSize ?? 20), 100);
     const qb = this.txRepo.createQueryBuilder('t')
       .where('t.walletId = :walletId', { walletId: wallet.id })
       .orderBy('t.createdAt', 'DESC')
       .skip((p - 1) * ps).take(ps);
-    if (q.type) qb.andWhere('t.transactionType = :type', { type: q.type });
+    if (q.type && Object.values(TransactionType).includes(q.type as TransactionType)) {
+      qb.andWhere('t.transactionType = :type', { type: q.type });
+    } else if (q.type) {
+      return { items: [], total: 0, page: p, pageSize: ps };
+    }
     if (q.from) {
       const fromDate = new Date(q.from);
       if (!isNaN(fromDate.getTime())) {

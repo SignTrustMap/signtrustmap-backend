@@ -26,6 +26,7 @@ import { PaymentsModule } from './modules/payments/payments.module';
 import { ConsensusModule } from './modules/consensus/consensus.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { AdminModule } from './modules/admin/admin.module';
+import { SystemSwitchModule } from './modules/admin/system-switch.module';
 import { LeaderboardModule } from './modules/leaderboard/leaderboard.module';
 import { PlacesModule } from './modules/places/places.module';
 import { GeolocationModule } from './modules/geolocation/geolocation.module';
@@ -91,6 +92,7 @@ import { RewardsModule } from './modules/rewards/rewards.module';
     NotificationsModule,
     RevalidationModule,
     PaymentsModule,
+    SystemSwitchModule,
     AdminModule,
     LeaderboardModule,
     PlacesModule,

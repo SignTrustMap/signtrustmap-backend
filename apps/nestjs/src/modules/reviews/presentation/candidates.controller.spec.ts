@@ -74,5 +74,25 @@ describe('CandidatesController', () => {
       'DESC',
     );
   });
+
+  it('allows ADMIN to view all candidates regardless of person involved when reviewerId is omitted', async () => {
+    const adminUser = { id: 'admin-1', role: 'ADMIN' };
+    service.getReviewedCandidates.mockResolvedValue({ items: [], total: 0 });
+
+    await controller.getCandidates(adminUser, {
+      status: 'Chưa xử lý',
+    });
+
+    expect(service.getReviewedCandidates).toHaveBeenCalledWith(
+      undefined,
+      1,
+      20,
+      'Chưa xử lý',
+      undefined,
+      undefined,
+      'reviewedAt',
+      'DESC',
+    );
+  });
 });
 

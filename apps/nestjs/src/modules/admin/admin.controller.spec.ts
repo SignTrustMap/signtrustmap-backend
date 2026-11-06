@@ -31,6 +31,8 @@ describe('AdminController (Phase 1 Ledger Adjustments & Admin Operations)', () =
       updateRewardRule: jest.fn(),
       getUserStatistics: jest.fn(),
       getUsersSummaryStatistics: jest.fn(),
+      getTaskHistory: jest.fn(),
+      listTaskHistory: jest.fn(),
     } as unknown as jest.Mocked<AdminService>;
 
     walletService = {
@@ -38,7 +40,14 @@ describe('AdminController (Phase 1 Ledger Adjustments & Admin Operations)', () =
       freezeWallet: jest.fn(),
     } as unknown as jest.Mocked<WalletService>;
 
-    controller = new AdminController(adminService, walletService);
+    const systemSwitchService = {
+      getAllFlags: jest.fn().mockResolvedValue([]),
+      setFlag: jest.fn().mockResolvedValue({ key: 'DEMO_MODE_ACTIVE', isEnabled: true }),
+      enableDemoMode: jest.fn().mockResolvedValue([]),
+      disableDemoMode: jest.fn().mockResolvedValue([]),
+    } as any;
+
+    controller = new AdminController(adminService, walletService, systemSwitchService);
   });
 
   it('enforces ADMIN role restriction on AdminController', () => {
@@ -355,6 +364,60 @@ describe('AdminController (Phase 1 Ledger Adjustments & Admin Operations)', () =
       const result = await controller.updateRewardRule('REVALIDATION_REWARD', dto, mockAdmin, mockReq);
 
       expect(adminService.updateRewardRule).toHaveBeenCalledWith('REVALIDATION_REWARD', dto, mockAdmin.id, '127.0.0.1');
+      expect(result).toBe(expected);
+    });
+
+    it('listSystemSwitches delegates to systemSwitchService.getAllFlags', async () => {
+      const result = await controller.listSystemSwitches();
+      expect(Array.isArray(result)).toBe(true);
+    });
+
+    it('updateSystemSwitch delegates to systemSwitchService.setFlag', async () => {
+      const dto = { isEnabled: true, reason: 'Testing presentation' };
+      const result = await controller.updateSystemSwitch('DEMO_MODE_ACTIVE', dto, mockAdmin, mockReq);
+      expect(result).toEqual({ key: 'DEMO_MODE_ACTIVE', isEnabled: true });
+    });
+
+    it('enableDemoMode and disableDemoMode delegate to systemSwitchService', async () => {
+      const dto = { targetEmail: 'demo@stm.dev' };
+      const enabledResult = await controller.enableDemoMode(dto, mockAdmin, mockReq);
+      expect(Array.isArray(enabledResult)).toBe(true);
+
+      const disabledResult = await controller.disableDemoMode(dto, mockAdmin, mockReq);
+      expect(Array.isArray(disabledResult)).toBe(true);
+    });
+
+    it('getTaskHistory delegates to adminService.getTaskHistory', async () => {
+      const taskId = '7b925b4b-8486-4ba2-b2ee-1ff7d1cfae33';
+      const expected = {
+        taskId,
+        taskType: 'REVALIDATION',
+        status: 'OPEN',
+        surveyor: { id: 'user-1', fullName: 'Nguyen Van A', email: 'a@stm.dev' },
+        surveyorRequests: [],
+        reviews: [],
+        timeline: [],
+      };
+      (adminService.getTaskHistory as jest.Mock).mockResolvedValue(expected as any);
+
+      const result = await controller.getTaskHistory(taskId);
+      expect(adminService.getTaskHistory).toHaveBeenCalledWith(taskId);
+      expect(result).toBe(expected);
+    });
+
+    it('listTaskHistory delegates to adminService.listTaskHistory', async () => {
+      const query = { page: 1, pageSize: 10, taskType: 'REVALIDATION' as const };
+      const expected = {
+        items: [],
+        total: 0,
+        page: 1,
+        pageSize: 10,
+        totalPages: 0,
+      };
+      (adminService.listTaskHistory as jest.Mock).mockResolvedValue(expected as any);
+
+      const result = await controller.listTaskHistory(query);
+      expect(adminService.listTaskHistory).toHaveBeenCalledWith(query);
       expect(result).toBe(expected);
     });
   });

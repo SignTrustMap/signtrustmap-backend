@@ -31,13 +31,15 @@ export class CreateSavedRouteDto {
   @MaxLength(120)
   title: string;
 
-  @ApiPropertyOptional({ description: 'Preferred vehicle mode (e.g. MOTORCYCLE, CAR, BICYCLE)', default: 'MOTORCYCLE' })
+  @ApiPropertyOptional({ description: 'Preferred vehicle mode (e.g. MOTORCYCLE, CAR, BICYCLE)', default: 'MOTORCYCLE', maxLength: 20 })
   @IsOptional()
   @IsString()
+  @MaxLength(20)
   vehicleMode?: string;
 
-  @ApiProperty({ description: 'Readable origin address or landmark name', example: '123 Nguyen Hue, Ben Nghe, Q1' })
+  @ApiProperty({ description: 'Readable origin address or landmark name', example: '123 Nguyen Hue, Ben Nghe, Q1', maxLength: 255 })
   @IsString()
+  @MaxLength(255)
   originName: string;
 
   @ApiProperty({ description: 'Origin GPS latitude', example: 10.7769 })
@@ -50,8 +52,9 @@ export class CreateSavedRouteDto {
   @IsNumber()
   originLongitude: number;
 
-  @ApiProperty({ description: 'Readable destination address or landmark name', example: 'Thu Duc Campus' })
+  @ApiProperty({ description: 'Readable destination address or landmark name', example: 'Thu Duc Campus', maxLength: 255 })
   @IsString()
+  @MaxLength(255)
   destinationName: string;
 
   @ApiProperty({ description: 'Destination GPS latitude', example: 10.8500 })
@@ -99,9 +102,10 @@ export class UpdateSavedRouteDto {
   @MaxLength(120)
   title?: string;
 
-  @ApiPropertyOptional({ description: 'Updated preferred vehicle mode (e.g. MOTORCYCLE, CAR)' })
+  @ApiPropertyOptional({ description: 'Updated preferred vehicle mode (e.g. MOTORCYCLE, CAR)', maxLength: 20 })
   @IsOptional()
   @IsString()
+  @MaxLength(20)
   vehicleMode?: string;
 
   @ApiPropertyOptional({ description: 'Updated filter rules for signs along this route' })

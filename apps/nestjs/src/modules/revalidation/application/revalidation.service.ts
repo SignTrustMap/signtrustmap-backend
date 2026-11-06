@@ -86,8 +86,10 @@ export class RevalidationService {
     sort?: string,
     spatial?: { lat: number; lon: number; radiusMeters?: number },
   ) {
-    const p = Math.max(1, page),
+    const p = Math.min(Math.max(1, page), 100000),
       ps = Math.min(Math.max(1, pageSize), 100);
+
+    const validTaskStatuses = ['OPEN', 'EVALUATING', 'COMPLETED', 'EXPIRED', 'ESCALATED_MODERATION'];
 
     if (spatial && spatial.lat != null && spatial.lon != null) {
       const radius = spatial.radiusMeters ?? 5000;
@@ -98,8 +100,12 @@ export class RevalidationService {
       );
 
       if (status && status.toUpperCase() !== 'ALL') {
+        const normStatus = status.toUpperCase();
+        if (!validTaskStatuses.includes(normStatus)) {
+          return { items: [], total: 0, page: p, pageSize: ps, totalPages: 0 };
+        }
         conditions.push(`rt.status = $${params.length + 1}::task_status`);
-        params.push(status);
+        params.push(normStatus);
       } else if (!status) {
         conditions.push(`rt.status IN ('OPEN', 'EVALUATING')`);
       }
@@ -161,8 +167,12 @@ export class RevalidationService {
     const params: any[] = [];
     let idx = 1;
     if (status && status.toUpperCase() !== 'ALL') {
+      const normStatus = status.toUpperCase();
+      if (!validTaskStatuses.includes(normStatus)) {
+        return { items: [], total: 0, page: p, pageSize: ps, totalPages: 0 };
+      }
       conditions.push(`rt.status = $${idx++}::task_status`);
-      params.push(status);
+      params.push(normStatus);
     } else if (!status) {
       conditions.push(`rt.status IN ('OPEN', 'EVALUATING')`);
     }
@@ -278,7 +288,21 @@ export class RevalidationService {
     const t = await this.tasks.findOne({ where: { id } });
     if (!t) throw new NotFoundException('RevalidationTask ' + id + ' not found');
     let evs: any[] = [];
-    if (this.evidences && typeof this.evidences.createQueryBuilder === 'function') {
+    if (typeof this.dataSource?.query === 'function') {
+      try {
+        evs = await this.dataSource.query(
+          `SELECT ev.id, ev.task_id, ev.user_id, u.full_name AS surveyor_name, u.email AS surveyor_email,
+                  ev.media_url, ev.evidence_type, ev.is_live_capture, ev.accuracy_meters, ev.heading_degrees,
+                  ev.submitted_at, ST_AsText(ev.location) AS location_wkt
+           FROM revalidation_evidences ev
+           LEFT JOIN users u ON u.id = ev.user_id
+           WHERE ev.task_id = $1
+           ORDER BY ev.submitted_at ASC`,
+          [id],
+        );
+      } catch {}
+    }
+    if (evs.length === 0 && this.evidences && typeof this.evidences.createQueryBuilder === 'function') {
       try {
         evs = await this.evidences
           .createQueryBuilder('e')
@@ -302,11 +326,76 @@ export class RevalidationService {
         [id],
       );
     }
-    const evsWithS3 = evs.map((e) => ({
-      ...e,
-      media_url: this.toS3Url(e.media_url, e.task_id),
-      mediaUrl: this.toS3Url(e.media_url, e.task_id),
-    }));
+
+    const evidenceIds = evs.map((e: any) => e.id);
+    const decisionsMap = new Map<string, any[]>();
+    if (evidenceIds.length > 0 && typeof this.dataSource?.query === 'function') {
+      try {
+        const dRows: any[] = await this.dataSource.query(
+          `SELECT rd.id, rd.evidence_id, rd.reviewer_id, u.full_name AS reviewer_name, u.email AS reviewer_email,
+                  rd.decision, rd.suggested_sign_type_id, rd.note, rd.decided_at,
+                  tst.sign_code AS suggested_sign_code, tst.name_vi AS suggested_sign_name
+           FROM revalidation_decisions rd
+           LEFT JOIN users u ON u.id = rd.reviewer_id
+           LEFT JOIN traffic_sign_types tst ON tst.id = rd.suggested_sign_type_id
+           WHERE rd.evidence_id = ANY($1::uuid[])
+           ORDER BY rd.decided_at ASC`,
+          [evidenceIds],
+        );
+        for (const row of dRows) {
+          const revId = row.reviewer_id;
+          const revName = row.reviewer_name || (revId ? `Reviewer #${revId.slice(0, 8)}` : 'Reviewer');
+          const revEmail = row.reviewer_email || null;
+          const decisionObj = {
+            id: row.id,
+            evidenceId: row.evidence_id,
+            reviewerId: revId,
+            reviewer_id: revId,
+            reviewerName: revName,
+            reviewer_name: revName,
+            reviewerEmail: revEmail,
+            reviewer_email: revEmail,
+            reviewer: revId ? { id: revId, fullName: revName, email: revEmail } : null,
+            decision: row.decision,
+            suggestedSignTypeId: row.suggested_sign_type_id != null ? Number(row.suggested_sign_type_id) : null,
+            suggestedSignCode: row.suggested_sign_code,
+            suggestedSignName: row.suggested_sign_name,
+            note: row.note,
+            decidedAt: row.decided_at,
+          };
+          if (!decisionsMap.has(row.evidence_id)) {
+            decisionsMap.set(row.evidence_id, []);
+          }
+          decisionsMap.get(row.evidence_id)!.push(decisionObj);
+        }
+      } catch {}
+    }
+
+    const evsWithS3 = evs.map((e) => {
+      const surveyorId = e.user_id || e.userId;
+      const surveyorName = e.surveyor_name || (surveyorId ? `Surveyor #${surveyorId.slice(0, 8)}` : null);
+      const surveyorEmail = e.surveyor_email || null;
+      const surveyorObj = surveyorId ? { id: surveyorId, fullName: surveyorName, email: surveyorEmail } : null;
+      const decisions = decisionsMap.get(e.id) || [];
+
+      return {
+        ...e,
+        userId: surveyorId,
+        user_id: surveyorId,
+        surveyorId,
+        surveyor_id: surveyorId,
+        surveyorName,
+        surveyor_name: surveyorName,
+        surveyorEmail,
+        surveyor_email: surveyorEmail,
+        surveyor: surveyorObj,
+        user: surveyorObj,
+        media_url: this.toS3Url(e.media_url, e.task_id),
+        mediaUrl: this.toS3Url(e.media_url, e.task_id),
+        decisions,
+      };
+    });
+
     let location: { lat: number; lon: number } | null = null;
     try {
       let sRow: any = null;
@@ -331,7 +420,20 @@ export class RevalidationService {
         location = { lat: Number(sRow.lat), lon: Number(sRow.lon) };
       }
     } catch {}
-    return { ...t, bounty: t.rewardCredits, location, evidences: evsWithS3 };
+
+    const latestEv = evsWithS3.length > 0 ? evsWithS3[evsWithS3.length - 1] : null;
+    const assignedSurveyor = latestEv?.surveyorName || 'Cộng đồng';
+
+    return {
+      ...t,
+      bounty: t.rewardCredits,
+      location,
+      assignedSurveyor,
+      surveyorName: latestEv?.surveyorName || null,
+      surveyorId: latestEv?.surveyorId || null,
+      surveyor: latestEv?.surveyor || null,
+      evidences: evsWithS3,
+    };
   }
   private assertDecision(v: string): RevalDecision {
     const allowed = Object.values(RevalDecision);
@@ -613,36 +715,141 @@ export class RevalidationService {
       }
       throw new NotFoundException('RevalidationTask ' + taskId + ' not found');
     }
-    const rows: any[] = await this.dataSource.query('SELECT id, task_id, user_id, media_url, evidence_type, is_live_capture, accuracy_meters, heading_degrees, submitted_at, ST_AsText(location) as location_wkt FROM revalidation_evidences WHERE task_id=$1 ORDER BY submitted_at ASC', [taskId]);
-    return rows.map((r) => ({
-      ...r,
-      isLiveCapture: Boolean(r.is_live_capture),
-      accuracyMeters: r.accuracy_meters != null ? Number(r.accuracy_meters) : null,
-      headingDegrees: r.heading_degrees != null ? Number(r.heading_degrees) : null,
-      media_url: this.toS3Url(r.media_url, r.task_id),
-      mediaUrl: this.toS3Url(r.media_url, r.task_id),
-    }));
+    let rows: any[] = [];
+    if (typeof this.dataSource?.query === 'function') {
+      try {
+        rows = await this.dataSource.query(
+          `SELECT ev.id, ev.task_id, ev.user_id, u.full_name AS surveyor_name, u.email AS surveyor_email,
+                  ev.media_url, ev.evidence_type, ev.is_live_capture, ev.accuracy_meters, ev.heading_degrees,
+                  ev.submitted_at, ST_AsText(ev.location) as location_wkt
+           FROM revalidation_evidences ev
+           LEFT JOIN users u ON u.id = ev.user_id
+           WHERE ev.task_id = $1
+           ORDER BY ev.submitted_at ASC`,
+          [taskId],
+        );
+      } catch {
+        rows = await this.dataSource.query(
+          'SELECT id, task_id, user_id, media_url, evidence_type, is_live_capture, accuracy_meters, heading_degrees, submitted_at, ST_AsText(location) as location_wkt FROM revalidation_evidences WHERE task_id=$1 ORDER BY submitted_at ASC',
+          [taskId],
+        ).catch(() => []);
+      }
+    }
+    const evIds = rows.map((r: any) => r.id);
+    const decisionsMap = new Map<string, any[]>();
+    if (evIds.length > 0 && typeof this.dataSource?.query === 'function') {
+      try {
+        const dRows: any[] = await this.dataSource.query(
+          `SELECT rd.id, rd.evidence_id, rd.reviewer_id, u.full_name AS reviewer_name, u.email AS reviewer_email,
+                  rd.decision, rd.suggested_sign_type_id, rd.note, rd.decided_at
+           FROM revalidation_decisions rd
+           LEFT JOIN users u ON u.id = rd.reviewer_id
+           WHERE rd.evidence_id = ANY($1::uuid[])
+           ORDER BY rd.decided_at ASC`,
+          [evIds],
+        );
+        for (const row of dRows) {
+          const revId = row.reviewer_id;
+          const revName = row.reviewer_name || (revId ? `Reviewer #${revId.slice(0, 8)}` : 'Reviewer');
+          const revObj = {
+            id: row.id,
+            evidenceId: row.evidence_id,
+            reviewerId: revId,
+            reviewer_id: revId,
+            reviewerName: revName,
+            reviewer_name: revName,
+            reviewerEmail: row.reviewer_email || null,
+            reviewer: revId ? { id: revId, fullName: revName, email: row.reviewer_email || null } : null,
+            decision: row.decision,
+            suggestedSignTypeId: row.suggested_sign_type_id,
+            note: row.note,
+            decidedAt: row.decided_at,
+          };
+          if (!decisionsMap.has(row.evidence_id)) decisionsMap.set(row.evidence_id, []);
+          decisionsMap.get(row.evidence_id)!.push(revObj);
+        }
+      } catch {}
+    }
+
+    return rows.map((r) => {
+      const survId = r.user_id;
+      const survName = r.surveyor_name || (survId ? `Surveyor #${survId.slice(0, 8)}` : null);
+      const survEmail = r.surveyor_email || null;
+      const surveyorObj = survId ? { id: survId, fullName: survName, email: survEmail } : null;
+      return {
+        ...r,
+        userId: survId,
+        user_id: survId,
+        surveyorId: survId,
+        surveyor_id: survId,
+        surveyorName: survName,
+        surveyor_name: survName,
+        surveyorEmail: survEmail,
+        surveyor_email: survEmail,
+        surveyor: surveyorObj,
+        user: surveyorObj,
+        isLiveCapture: Boolean(r.is_live_capture),
+        accuracyMeters: r.accuracy_meters != null ? Number(r.accuracy_meters) : null,
+        headingDegrees: r.heading_degrees != null ? Number(r.heading_degrees) : null,
+        media_url: this.toS3Url(r.media_url, r.task_id),
+        mediaUrl: this.toS3Url(r.media_url, r.task_id),
+        decisions: decisionsMap.get(r.id) || [],
+      };
+    });
   }
 
   async listEvidencesForSign(signId: string) {
     const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(signId);
     if (!isUuid) return [];
-    const rows: any[] = await this.dataSource.query(
-      `SELECT ev.id, ev.task_id, ev.user_id, ev.media_url, ev.evidence_type, ev.is_live_capture, ev.accuracy_meters, ev.heading_degrees, ev.submitted_at, ST_AsText(ev.location) as location_wkt
-       FROM revalidation_evidences ev
-       JOIN revalidation_tasks rt ON rt.id = ev.task_id
-       WHERE rt.verified_sign_id = $1
-       ORDER BY ev.submitted_at DESC`,
-      [signId],
-    );
-    return rows.map((r) => ({
-      ...r,
-      isLiveCapture: Boolean(r.is_live_capture),
-      accuracyMeters: r.accuracy_meters != null ? Number(r.accuracy_meters) : null,
-      headingDegrees: r.heading_degrees != null ? Number(r.heading_degrees) : null,
-      media_url: this.toS3Url(r.media_url, r.task_id),
-      mediaUrl: this.toS3Url(r.media_url, r.task_id),
-    }));
+    let rows: any[] = [];
+    if (typeof this.dataSource?.query === 'function') {
+      try {
+        rows = await this.dataSource.query(
+          `SELECT ev.id, ev.task_id, ev.user_id, u.full_name AS surveyor_name, u.email AS surveyor_email,
+                  ev.media_url, ev.evidence_type, ev.is_live_capture, ev.accuracy_meters, ev.heading_degrees,
+                  ev.submitted_at, ST_AsText(ev.location) as location_wkt
+           FROM revalidation_evidences ev
+           JOIN revalidation_tasks rt ON rt.id = ev.task_id
+           LEFT JOIN users u ON u.id = ev.user_id
+           WHERE rt.verified_sign_id = $1
+           ORDER BY ev.submitted_at DESC`,
+          [signId],
+        );
+      } catch {
+        rows = await this.dataSource.query(
+          `SELECT ev.id, ev.task_id, ev.user_id, ev.media_url, ev.evidence_type, ev.is_live_capture, ev.accuracy_meters, ev.heading_degrees, ev.submitted_at, ST_AsText(ev.location) as location_wkt
+           FROM revalidation_evidences ev
+           JOIN revalidation_tasks rt ON rt.id = ev.task_id
+           WHERE rt.verified_sign_id = $1
+           ORDER BY ev.submitted_at DESC`,
+          [signId],
+        ).catch(() => []);
+      }
+    }
+    return rows.map((r) => {
+      const survId = r.user_id;
+      const survName = r.surveyor_name || (survId ? `Surveyor #${survId.slice(0, 8)}` : null);
+      const survEmail = r.surveyor_email || null;
+      const surveyorObj = survId ? { id: survId, fullName: survName, email: survEmail } : null;
+      return {
+        ...r,
+        userId: survId,
+        user_id: survId,
+        surveyorId: survId,
+        surveyor_id: survId,
+        surveyorName: survName,
+        surveyor_name: survName,
+        surveyorEmail: survEmail,
+        surveyor_email: survEmail,
+        surveyor: surveyorObj,
+        user: surveyorObj,
+        isLiveCapture: Boolean(r.is_live_capture),
+        accuracyMeters: r.accuracy_meters != null ? Number(r.accuracy_meters) : null,
+        headingDegrees: r.heading_degrees != null ? Number(r.heading_degrees) : null,
+        media_url: this.toS3Url(r.media_url, r.task_id),
+        mediaUrl: this.toS3Url(r.media_url, r.task_id),
+      };
+    });
   }
 
   /**
@@ -770,8 +977,50 @@ export class RevalidationService {
     return { vote: saved, consensus };
   }
   async listDecisions(evidenceId: string) {
-    if (!await this.evidences.findOne({ where: { id: evidenceId } })) throw new NotFoundException('RevalidationEvidence ' + evidenceId + ' not found');
-    return this.decisions.find({ where: { evidenceId }, order: { decidedAt: 'ASC' } });
+    if (!await this.evidences.findOne({ where: { id: evidenceId } })) {
+      throw new NotFoundException('RevalidationEvidence ' + evidenceId + ' not found');
+    }
+    let rows: any[] = [];
+    if (typeof this.dataSource?.query === 'function') {
+      try {
+        rows = await this.dataSource.query(
+          `SELECT rd.id, rd.evidence_id, rd.reviewer_id, u.full_name AS reviewer_name, u.email AS reviewer_email,
+                  rd.decision, rd.suggested_sign_type_id, rd.note, rd.decided_at,
+                  tst.sign_code AS suggested_sign_code, tst.name_vi AS suggested_sign_name
+           FROM revalidation_decisions rd
+           LEFT JOIN users u ON u.id = rd.reviewer_id
+           LEFT JOIN traffic_sign_types tst ON tst.id = rd.suggested_sign_type_id
+           WHERE rd.evidence_id = $1
+           ORDER BY rd.decided_at ASC`,
+          [evidenceId],
+        );
+      } catch {}
+    }
+    if (rows.length === 0) {
+      rows = await this.decisions.find({ where: { evidenceId }, order: { decidedAt: 'ASC' } });
+    }
+    return rows.map((r: any) => {
+      const revId = r.reviewer_id || r.reviewerId;
+      const revName = r.reviewer_name || r.reviewerName || (revId ? `Reviewer #${revId.slice(0, 8)}` : null);
+      const revEmail = r.reviewer_email || r.reviewerEmail || null;
+      return {
+        id: r.id,
+        evidenceId: r.evidence_id || r.evidenceId,
+        reviewerId: revId,
+        reviewer_id: revId,
+        reviewerName: revName,
+        reviewer_name: revName,
+        reviewerEmail: revEmail,
+        reviewer_email: revEmail,
+        reviewer: revId ? { id: revId, fullName: revName, email: revEmail } : null,
+        decision: r.decision,
+        suggestedSignTypeId: r.suggested_sign_type_id != null ? Number(r.suggested_sign_type_id) : (r.suggestedSignTypeId ?? null),
+        suggestedSignCode: r.suggested_sign_code || r.suggestedSignCode || null,
+        suggestedSignName: r.suggested_sign_name || r.suggestedSignName || null,
+        note: r.note,
+        decidedAt: r.decided_at || r.decidedAt,
+      };
+    });
   }
 
   async requestEvidenceRecapture(evidenceId: string, reviewerId: string, dto: { reason: string; note?: string }) {
@@ -829,11 +1078,45 @@ export class RevalidationService {
       this.dailyTasksService.recordProgress(reviewerId, 'REVIEW', 1).catch(() => {});
     }
 
+    let surveyorName: string | null = null;
+    let surveyorEmail: string | null = null;
+    let reviewerName: string | null = null;
+    let reviewerEmail: string | null = null;
+    if (typeof this.dataSource?.query === 'function') {
+      try {
+        const userRows: any[] = await this.dataSource.query(
+          `SELECT id, full_name, email FROM users WHERE id = ANY($1::uuid[])`,
+          [[ev.userId, reviewerId]],
+        );
+        for (const u of userRows) {
+          if (u.id === ev.userId) {
+            surveyorName = u.full_name;
+            surveyorEmail = u.email;
+          }
+          if (u.id === reviewerId) {
+            reviewerName = u.full_name;
+            reviewerEmail = u.email;
+          }
+        }
+      } catch {}
+    }
+
     return {
       success: true,
       evidenceId,
       taskId: ev.taskId,
       surveyorId: ev.userId,
+      surveyor_id: ev.userId,
+      surveyorName: surveyorName || (ev.userId ? `Surveyor #${ev.userId.slice(0, 8)}` : null),
+      surveyor_name: surveyorName || (ev.userId ? `Surveyor #${ev.userId.slice(0, 8)}` : null),
+      surveyorEmail,
+      surveyor: ev.userId ? { id: ev.userId, fullName: surveyorName, email: surveyorEmail } : null,
+      reviewerId,
+      reviewer_id: reviewerId,
+      reviewerName: reviewerName || (reviewerId ? `Reviewer #${reviewerId.slice(0, 8)}` : null),
+      reviewer_name: reviewerName || (reviewerId ? `Reviewer #${reviewerId.slice(0, 8)}` : null),
+      reviewerEmail,
+      reviewer: reviewerId ? { id: reviewerId, fullName: reviewerName, email: reviewerEmail } : null,
       reason,
       note,
       notificationSent,

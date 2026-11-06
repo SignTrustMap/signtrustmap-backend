@@ -24,6 +24,7 @@ import { MinioStorageService, STM_BUCKETS } from '../../../integrations/minio/mi
 import { VEHICLE_TYPES } from '../../../common/vehicle-types';
 import { validateFileSignature } from '../../survey/domain/media-validator';
 import { MediaFileType } from '../../survey/domain/submission-contract';
+import { SystemSwitchService } from '../../admin/system-switch.service';
 
 export interface CandidateEnriched {
   id: string;
@@ -63,6 +64,7 @@ export class ModerationService {
     @Optional() @InjectRepository(SignTypeImage) private readonly signTypeImageRepo?: Repository<SignTypeImage>,
     @Optional() @InjectRepository(UserStatusHistory) private readonly userStatusHistoryRepo?: Repository<UserStatusHistory>,
     @Optional() @InjectRepository(AuditLog) private readonly auditLogRepo?: Repository<AuditLog>,
+    @Optional() private readonly systemSwitchService?: SystemSwitchService,
   ) {}
 
   /**
@@ -1291,7 +1293,22 @@ export class ModerationService {
       if (activeRequestsCount > 0) {
         throw new ConflictException('An active recapture request already exists for candidate ' + candidate.id);
       }
-      // Open quest; eligible Surveyors discover nearby requests through GET /reviews/me/recaptures.
+      let surveyorId: string | null = null;
+      const isAutoAssignRecapture = this.systemSwitchService
+        ? await this.systemSwitchService.isEnabled('AUTO_ASSIGN_RECAPTURE_EMAIL')
+        : false;
+
+      if (isAutoAssignRecapture && typeof manager.getRepository === 'function') {
+        const meta = await this.systemSwitchService?.getMetadata<{ targetEmail?: string }>('AUTO_ASSIGN_RECAPTURE_EMAIL');
+        const targetEmail = meta?.targetEmail || 'demo@stm.dev';
+        try {
+          const demoSurveyorRows: Array<{ id: string }> = await manager.query(
+            `SELECT id FROM users WHERE email = $1 AND status = 'ACTIVE' LIMIT 1`,
+            [targetEmail],
+          );
+          if (demoSurveyorRows[0]?.id) surveyorId = demoSurveyorRows[0].id;
+        } catch {}
+      }
 
       let updateReportAffected = 0;
       if (typeof manager.getRepository === 'function') {
@@ -1348,17 +1365,27 @@ export class ModerationService {
           await recRepo.save(recRepo.create({
             candidateId: candidate.id,
             reviewerId: staffId,
+            surveyorId: surveyorId ?? undefined,
             missingTypeReportId: reportId,
             reason: 'MISSING_TYPE_RECAPTURE_REQUESTED',
             note,
           }));
         } else if (typeof manager.query === 'function') {
-          await manager.query(
-            `INSERT INTO candidate_recapture_requests
-               (candidate_id, reviewer_id, missing_type_report_id, reason, note)
-             VALUES ($1, $2, $3, 'MISSING_TYPE_RECAPTURE_REQUESTED', $4)`,
-            [candidate.id, staffId, reportId, note],
-          );
+          if (surveyorId) {
+            await manager.query(
+              `INSERT INTO candidate_recapture_requests
+                 (candidate_id, reviewer_id, surveyor_id, missing_type_report_id, reason, note)
+               VALUES ($1, $2, $3, $4, 'MISSING_TYPE_RECAPTURE_REQUESTED', $5)`,
+              [candidate.id, staffId, surveyorId, reportId, note],
+            );
+          } else {
+            await manager.query(
+              `INSERT INTO candidate_recapture_requests
+                 (candidate_id, reviewer_id, missing_type_report_id, reason, note)
+               VALUES ($1, $2, $3, 'MISSING_TYPE_RECAPTURE_REQUESTED', $4)`,
+              [candidate.id, staffId, reportId, note],
+            );
+          }
         }
       } catch (error: any) {
         if (error?.code === '23505' || String(error?.detail ?? '').includes('uq_candidate_recapture_requests_one_active')) {
@@ -1439,8 +1466,23 @@ export class ModerationService {
           [moderationCaseId, staffId, note],
         );
       }
-      return { reporterId: report.reporterId, proposedName: report.proposedName, candidateId: candidate.id };
+      return { reporterId: report.reporterId, proposedName: report.proposedName, candidateId: candidate.id, surveyorId };
     });
+
+    if (result.surveyorId && this.notificationsService) {
+      try {
+        await this.notificationsService.create(
+          result.surveyorId,
+          'IMAGE_RECAPTURE_REQUESTED',
+          'Yêu cầu chụp lại ảnh biển báo',
+          'Quản trị viên yêu cầu chụp lại ảnh biển báo: ' + (note || 'Vui lòng chụp lại ảnh rõ nét tại vị trí biển báo'),
+          'candidate',
+          result.candidateId,
+        );
+      } catch (error: any) {
+        this.logger.warn('Surveyor recapture notification failed: ' + error?.message);
+      }
+    }
 
     if (result.reporterId) {
       try {
@@ -1738,6 +1780,22 @@ export class ModerationService {
         );
       }
       // Open quest; the first eligible nearby Surveyor claims it on submission.
+      let surveyorId: string | null = null;
+      const isAutoAssignRecapture = this.systemSwitchService
+        ? await this.systemSwitchService.isEnabled('AUTO_ASSIGN_RECAPTURE_EMAIL')
+        : false;
+
+      if (isAutoAssignRecapture && typeof manager.getRepository === 'function') {
+        const meta = await this.systemSwitchService?.getMetadata<{ targetEmail?: string }>('AUTO_ASSIGN_RECAPTURE_EMAIL');
+        const targetEmail = meta?.targetEmail || 'demo@stm.dev';
+        try {
+          const demoSurveyorRows: Array<{ id: string }> = await manager.query(
+            `SELECT id FROM users WHERE email = $1 AND status = 'ACTIVE' LIMIT 1`,
+            [targetEmail],
+          );
+          if (demoSurveyorRows[0]?.id) surveyorId = demoSurveyorRows[0].id;
+        } catch {}
+      }
 
       let updateCandAffected = 0;
       if (typeof manager.getRepository === 'function') {
@@ -1768,17 +1826,27 @@ export class ModerationService {
           await recRepo.save(recRepo.create({
             candidateId: candidate.id,
             reviewerId: staffId,
+            surveyorId: surveyorId ?? undefined,
             missingTypeReportId: reportRows[0].id,
             reason: 'MODERATION_RECAPTURE_REQUESTED',
             note: dto.resolutionNote ?? null,
           }));
         } else if (typeof manager.query === 'function') {
-          await manager.query(
-            `INSERT INTO candidate_recapture_requests
-               (candidate_id, reviewer_id, missing_type_report_id, reason, note)
-             VALUES ($1, $2, $3, 'MODERATION_RECAPTURE_REQUESTED', $4)`,
-            [candidate.id, staffId, reportRows[0].id, dto.resolutionNote ?? null],
-          );
+          if (surveyorId) {
+            await manager.query(
+              `INSERT INTO candidate_recapture_requests
+                 (candidate_id, reviewer_id, surveyor_id, missing_type_report_id, reason, note)
+               VALUES ($1, $2, $3, $4, 'MODERATION_RECAPTURE_REQUESTED', $5)`,
+              [candidate.id, staffId, surveyorId, reportRows[0].id, dto.resolutionNote ?? null],
+            );
+          } else {
+            await manager.query(
+              `INSERT INTO candidate_recapture_requests
+                 (candidate_id, reviewer_id, missing_type_report_id, reason, note)
+               VALUES ($1, $2, $3, 'MODERATION_RECAPTURE_REQUESTED', $4)`,
+              [candidate.id, staffId, reportRows[0].id, dto.resolutionNote ?? null],
+            );
+          }
         }
       } catch (error: any) {
         if (error?.code === '23505' || String(error?.detail ?? '').includes('uq_candidate_recapture_requests_one_active')) {
@@ -1819,8 +1887,21 @@ export class ModerationService {
         );
         updatedCaseResult = updatedCases[0];
       }
-      return updatedCaseResult;
+      return { ...updatedCaseResult, surveyorId, candidateId: candidate.id };
     });
+
+    if (resolved?.surveyorId && resolved?.candidateId && this.notificationsService) {
+      try {
+        await this.notificationsService.create(
+          resolved.surveyorId,
+          'IMAGE_RECAPTURE_REQUESTED',
+          'Yêu cầu chụp lại ảnh biển báo',
+          'Quản trị viên yêu cầu chụp lại ảnh biển báo: ' + (dto.resolutionNote || 'Vui lòng chụp lại ảnh rõ nét tại vị trí biển báo'),
+          'candidate',
+          resolved.candidateId,
+        );
+      } catch {}
+    }
 
     return resolved;
   }

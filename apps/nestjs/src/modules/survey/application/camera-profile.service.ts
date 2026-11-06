@@ -79,15 +79,15 @@ export class CameraProfileService {
       if (dto.isDefault === true && !profile.isDefault) {
         await manager.update(CameraCalibrationProfile, { userId }, { isDefault: false });
         profile.isDefault = true;
-      } else if (dto.isDefault !== undefined) {
-        profile.isDefault = dto.isDefault;
+      } else if (dto.isDefault !== undefined && dto.isDefault !== null) {
+        profile.isDefault = Boolean(dto.isDefault);
       }
 
-      if (dto.deviceModel !== undefined) profile.deviceModel = dto.deviceModel;
-      if (dto.cameraHeightMeters !== undefined) profile.cameraHeightMeters = dto.cameraHeightMeters;
-      if (dto.pitchAngleDegrees !== undefined) profile.pitchAngleDegrees = dto.pitchAngleDegrees;
-      if (dto.yawOffsetDegrees !== undefined) profile.yawOffsetDegrees = dto.yawOffsetDegrees;
-      if (dto.hfovDegrees !== undefined) profile.hfovDegrees = dto.hfovDegrees;
+      if (dto.deviceModel !== undefined && dto.deviceModel !== null) profile.deviceModel = dto.deviceModel;
+      if (dto.cameraHeightMeters !== undefined && dto.cameraHeightMeters !== null) profile.cameraHeightMeters = dto.cameraHeightMeters;
+      if (dto.pitchAngleDegrees !== undefined && dto.pitchAngleDegrees !== null) profile.pitchAngleDegrees = dto.pitchAngleDegrees;
+      if (dto.yawOffsetDegrees !== undefined && dto.yawOffsetDegrees !== null) profile.yawOffsetDegrees = dto.yawOffsetDegrees;
+      if (dto.hfovDegrees !== undefined && dto.hfovDegrees !== null) profile.hfovDegrees = dto.hfovDegrees;
       if (dto.focalLengthPx !== undefined) profile.focalLengthPx = dto.focalLengthPx;
 
       return manager.save(CameraCalibrationProfile, profile);

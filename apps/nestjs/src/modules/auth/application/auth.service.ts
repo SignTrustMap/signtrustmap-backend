@@ -128,12 +128,26 @@ export class AuthService {
   }
 
   async googleTokenLogin(token: string) {
-    const clientId = this.configService?.get<string>('jwt.googleClientId');
-    if (!clientId) throw new UnauthorizedException('Google login is not configured');
-    const client = new OAuth2Client(clientId);
+    const rawClientId = this.configService?.get<string>('jwt.googleClientId') || process.env.GOOGLE_CLIENT_ID || '';
+    const rawAndroidClientId =
+      this.configService?.get<string>('jwt.googleAndroidClientId') ||
+      process.env.GOOGLE_ANDROID_CLIENT_ID ||
+      '';
+    const clientIds = [
+      ...rawClientId.split(','),
+      ...rawAndroidClientId.split(','),
+    ]
+      .map((id) => id.trim())
+      .filter(Boolean);
+
+    if (clientIds.length === 0) throw new UnauthorizedException('Google login is not configured');
+    const client = new OAuth2Client(clientIds[0]);
     let payload;
     try {
-      const ticket = await client.verifyIdToken({ idToken: token, audience: clientId });
+      const ticket = await client.verifyIdToken({
+        idToken: token,
+        audience: clientIds.length === 1 ? clientIds[0] : clientIds,
+      });
       payload = ticket.getPayload();
     } catch {
       throw new UnauthorizedException('Invalid or expired Google token');

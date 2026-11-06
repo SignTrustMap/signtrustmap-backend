@@ -116,6 +116,21 @@ export function buildOpenApiConfig(): Omit<OpenAPIObject, 'paths'> {
   return builder.build();
 }
 
+function cleanArrayEnums(schema: any): void {
+  if (!schema || typeof schema !== 'object') return;
+  if (schema.type === 'array' && schema.enum && schema.items) {
+    delete schema.enum;
+  }
+  if (schema.properties && typeof schema.properties === 'object') {
+    for (const prop of Object.values(schema.properties)) {
+      cleanArrayEnums(prop);
+    }
+  }
+  if (schema.items && typeof schema.items === 'object') {
+    cleanArrayEnums(schema.items);
+  }
+}
+
 /**
  * Post-processes the OpenAPI document:
  * 1. Sets additionalProperties: false ONLY on standalone object schemas with explicit properties
@@ -123,11 +138,14 @@ export function buildOpenApiConfig(): Omit<OpenAPIObject, 'paths'> {
  *    schema validation mismatch errors in Schemathesis while avoiding composition conflicts.
  * 2. Enforces OpenAPI 3.0 contract requirements: path parameters MUST have required: true,
  *    and every operation MUST provide at least one response definition.
+ * 3. Removes conflicting top-level enum constraints from array schemas (where enum belongs on items),
+ *    preventing Schemathesis "Nothing satisfies type: array and enum" schema generation errors.
  */
 export function sanitizeOpenApiDocument(doc: OpenAPIObject): OpenAPIObject {
   if (doc.components?.schemas) {
     for (const schema of Object.values(doc.components.schemas) as any[]) {
       if (schema && typeof schema === 'object') {
+        cleanArrayEnums(schema);
         if (
           schema.type === 'object' &&
           schema.properties &&
@@ -158,6 +176,16 @@ export function sanitizeOpenApiDocument(doc: OpenAPIObject): OpenAPIObject {
             for (const param of operation.parameters) {
               if (param && param.in === 'path') {
                 param.required = true;
+              }
+              if (param?.schema) {
+                cleanArrayEnums(param.schema);
+              }
+            }
+          }
+          if (operation.requestBody?.content) {
+            for (const mediaType of Object.values(operation.requestBody.content) as any[]) {
+              if (mediaType?.schema) {
+                cleanArrayEnums(mediaType.schema);
               }
             }
           }

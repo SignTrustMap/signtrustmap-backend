@@ -331,6 +331,26 @@ describe('ReviewsController', () => {
       );
     });
 
+    it('allows ADMIN to query all candidates regardless of reviewer when reviewerId is omitted', async () => {
+      const adminUser = { id: 'admin-1', role: 'ADMIN' };
+      service.getReviewedCandidates.mockResolvedValue({ items: [], total: 0 });
+
+      await controller.getReviewedCandidates(adminUser, {
+        status: 'reviewed',
+      });
+
+      expect(service.getReviewedCandidates).toHaveBeenCalledWith(
+        undefined,
+        1,
+        20,
+        'reviewed',
+        undefined,
+        undefined,
+        'reviewedAt',
+        'DESC',
+      );
+    });
+
     it('getMyReviewedCandidates calls getReviewedCandidates', async () => {
       service.getReviewedCandidates.mockResolvedValue(mockReviewedResult);
 

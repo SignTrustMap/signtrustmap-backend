@@ -4,6 +4,7 @@ import { ConfigService } from "@nestjs/config";
 import { json, urlencoded } from "express";
 import { AppModule } from "./app.module";
 import { setupApiReference } from "./config/api-reference.config";
+import { TypeOrmExceptionFilter } from "./common/filters/typeorm-exception.filter";
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -24,6 +25,8 @@ async function bootstrap() {
       transformOptions: { enableImplicitConversion: true },
     }),
   );
+
+  app.useGlobalFilters(new TypeOrmExceptionFilter());
 
   app.enableCors({
     origin: true,

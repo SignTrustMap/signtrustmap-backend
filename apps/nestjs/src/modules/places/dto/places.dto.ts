@@ -17,10 +17,10 @@ export class AddSavedPlaceDto {
   @MaxLength(100)
   label: string;
 
-  @ApiProperty({ description: 'Full human-readable address', example: '123 Nguyen Hue, District 1, HCMC' })
+  @ApiProperty({ description: 'Full human-readable address', example: '123 Nguyen Hue, District 1, HCMC', maxLength: 255 })
   @IsString()
   @MinLength(1)
-  @MaxLength(500)
+  @MaxLength(255)
   address: string;
 
   @ApiProperty({ description: 'Latitude coordinate (-90 to 90)', example: 10.7769, minimum: -90, maximum: 90 })
@@ -37,10 +37,10 @@ export class AddSavedPlaceDto {
   @Max(180)
   longitude: number;
 
-  @ApiPropertyOptional({ description: 'Place category type (e.g. HOME, WORK, SAVED)', example: 'HOME' })
+  @ApiPropertyOptional({ description: 'Place category type (e.g. HOME, WORK, SAVED)', example: 'HOME', maxLength: 20 })
   @IsOptional()
   @IsString()
-  @MaxLength(50)
+  @MaxLength(20)
   placeType?: string;
 }
 
@@ -51,10 +51,10 @@ export class AddRecentSearchDto {
   @MaxLength(255)
   query: string;
 
-  @ApiPropertyOptional({ description: 'Resolved address string', example: '2 Hai Trieu, Ben Nghe, District 1, HCMC' })
+  @ApiPropertyOptional({ description: 'Resolved address string', example: '2 Hai Trieu, Ben Nghe, District 1, HCMC', maxLength: 255 })
   @IsOptional()
   @IsString()
-  @MaxLength(500)
+  @MaxLength(255)
   address?: string;
 
   @ApiPropertyOptional({ description: 'Latitude coordinate (-90 to 90)', example: 10.7716, minimum: -90, maximum: 90 })

@@ -1,5 +1,6 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, ManyToOne, JoinColumn } from 'typeorm';
 import { UnverifiedSignCandidate } from '../../../survey/infrastructure/persistence/unverified-sign-candidate.entity';
+import { User } from '../../../auth/infrastructure/persistence/user.entity';
 
 @Entity('candidate_recapture_requests')
 export class CandidateRecaptureRequest {
@@ -42,4 +43,12 @@ export class CandidateRecaptureRequest {
   @ManyToOne(() => UnverifiedSignCandidate, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'candidate_id' })
   candidate?: UnverifiedSignCandidate;
+
+  @ManyToOne(() => User, { onDelete: 'SET NULL', nullable: true })
+  @JoinColumn({ name: 'reviewer_id' })
+  reviewer?: User;
+
+  @ManyToOne(() => User, { onDelete: 'SET NULL', nullable: true })
+  @JoinColumn({ name: 'surveyor_id' })
+  surveyor?: User;
 }
