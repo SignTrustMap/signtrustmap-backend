@@ -211,9 +211,11 @@ export class WalletService {
     }
 
     if (gateway === 'MOMO') {
-      const payUrl = `https://test-payment.momo.vn/pay?orderId=${saved.orderCode}&amount=${amountVnd}`;
+      const appUrl = process.env.APP_URL ? process.env.APP_URL.replace(/\/$/, '') : 'http://localhost:3000';
+      const simulateBaseUrl = process.env.MOMO_SIMULATE_BASE_URL || `${appUrl}/api/v1`;
+      const payUrl = `${simulateBaseUrl}/payments/momo/simulate/${saved.orderCode}`;
       const deeplink = `momo://app?action=payWithApp&orderId=${saved.orderCode}&amount=${amountVnd}`;
-      const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(deeplink)}`;
+      const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(payUrl)}`;
       return {
         paymentOrder: {
           id: saved.id,
@@ -236,6 +238,8 @@ export class WalletService {
       };
     }
 
+    const defaultAppUrl = process.env.APP_URL ? process.env.APP_URL.replace(/\/$/, '') : 'http://localhost:3000';
+    const defaultSimUrl = process.env.MOMO_SIMULATE_BASE_URL || `${defaultAppUrl}/api/v1`;
     return {
       paymentOrder: {
         id: saved.id, orderCode: saved.orderCode, packageId: saved.packageId,
@@ -243,7 +247,7 @@ export class WalletService {
         creditAmount: pkg.creditAmount, gateway: saved.gateway,
         status: saved.status, createdAt: saved.createdAt,
       },
-      payUrl: `https://test-payment.momo.vn/pay?orderId=${saved.orderCode}&amount=${amountVnd}`,
+      payUrl: `${defaultSimUrl}/payments/momo/simulate/${saved.orderCode}`,
       qrCodeUrl: `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(saved.orderCode)}`,
       message: 'Payment order created. Complete via gateway callback.',
     };
@@ -367,9 +371,11 @@ export class WalletService {
     }
 
     if (gateway === 'MOMO') {
-      const payUrl = `https://test-payment.momo.vn/pay?orderId=${saved.orderCode}&amount=${numAmountVnd}`;
+      const appUrl = process.env.APP_URL ? process.env.APP_URL.replace(/\/$/, '') : 'http://localhost:3000';
+      const simulateBaseUrl = process.env.MOMO_SIMULATE_BASE_URL || `${appUrl}/api/v1`;
+      const payUrl = `${simulateBaseUrl}/payments/momo/simulate/${saved.orderCode}`;
       const deeplink = `momo://app?action=payWithApp&orderId=${saved.orderCode}&amount=${numAmountVnd}`;
-      const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(deeplink)}`;
+      const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(payUrl)}`;
       return {
         paymentOrder: {
           id: saved.id,
@@ -392,12 +398,14 @@ export class WalletService {
     }
 
     // Override credit amount for custom orders (stored in note / callback payload)
+    const customAppUrl = process.env.APP_URL ? process.env.APP_URL.replace(/\/$/, '') : 'http://localhost:3000';
+    const customSimUrl = process.env.MOMO_SIMULATE_BASE_URL || `${customAppUrl}/api/v1`;
     return {
       paymentOrder: {
         id: saved.id, orderCode: saved.orderCode, packageId: saved.packageId,
         customAmount: amount, amountVnd, gateway: saved.gateway, status: saved.status, createdAt: saved.createdAt,
       },
-      payUrl: `https://test-payment.momo.vn/pay?orderId=${saved.orderCode}&amount=${numAmountVnd}`,
+      payUrl: `${customSimUrl}/payments/momo/simulate/${saved.orderCode}`,
       qrCodeUrl: `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(saved.orderCode)}`,
       message: `Custom order: ${amount} credits for ${amountVnd} VND. Complete via payment gateway.`,
     };

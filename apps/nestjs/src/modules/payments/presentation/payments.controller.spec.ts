@@ -142,5 +142,48 @@ describe('PaymentsController (Payment Webhook & MoMo Sandbox Gateway)', () => {
         controllerWithoutMomo.queryMomoTransaction('STM-100'),
       ).toThrow(ServiceUnavailableException);
     });
+
+    it('renderSimulatePage renders html checkout page', async () => {
+      const mockRes = {
+        setHeader: jest.fn(),
+        send: jest.fn((content) => content),
+      };
+      (momoService as any).renderSimulationPage = jest.fn().mockResolvedValue('<html>checkout</html>');
+
+      await controller.renderSimulatePage('STM-MOMO-100', mockRes as any);
+
+      expect(mockRes.setHeader).toHaveBeenCalledWith('Content-Type', 'text/html; charset=utf-8');
+      expect(mockRes.send).toHaveBeenCalledWith('<html>checkout</html>');
+    });
+
+    it('completeSimulatedPayment completes order and redirects', async () => {
+      const mockRes = {
+        redirect: jest.fn(),
+        json: jest.fn(),
+      };
+      (momoService as any).completeSimulatedPayment = jest.fn().mockResolvedValue({
+        success: true,
+        redirectUrl: 'http://localhost:3979/wallet?payment=success',
+      });
+
+      await controller.completeSimulatedPayment('STM-MOMO-100', mockRes as any);
+
+      expect(mockRes.redirect).toHaveBeenCalledWith('http://localhost:3979/wallet?payment=success');
+    });
+
+    it('cancelSimulatedPayment cancels order and redirects', async () => {
+      const mockRes = {
+        redirect: jest.fn(),
+        json: jest.fn(),
+      };
+      (momoService as any).cancelSimulatedPayment = jest.fn().mockResolvedValue({
+        success: false,
+        redirectUrl: 'http://localhost:3979/wallet?payment=cancelled',
+      });
+
+      await controller.cancelSimulatedPayment('STM-MOMO-100', mockRes as any);
+
+      expect(mockRes.redirect).toHaveBeenCalledWith('http://localhost:3979/wallet?payment=cancelled');
+    });
   });
 });
