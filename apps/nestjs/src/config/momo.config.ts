@@ -6,11 +6,13 @@ export interface MomoConfig {
   queryEndpoint: string;
   redirectUrl: string;
   ipnUrl: string;
+  simulateBaseUrl: string;
   requestType: string;
   timeoutMs: number;
 }
 
 export function getMomoConfig(): MomoConfig {
+  const appUrl = process.env.APP_URL ? process.env.APP_URL.replace(/\/$/, '') : 'http://localhost:3000';
   return {
     partnerCode: process.env.MOMO_PARTNER_CODE || 'MOMO',
     accessKey: process.env.MOMO_ACCESS_KEY || 'F8BBA842ECF85',
@@ -26,6 +28,8 @@ export function getMomoConfig(): MomoConfig {
     ipnUrl:
       process.env.MOMO_IPN_URL ||
       'http://localhost:3000/api/v1/payments/momo/ipn',
+    simulateBaseUrl:
+      process.env.MOMO_SIMULATE_BASE_URL || `${appUrl}/api/v1`,
     requestType: process.env.MOMO_REQUEST_TYPE || 'captureWallet',
     timeoutMs: Number(process.env.MOMO_TIMEOUT_MS) || 4000,
   };

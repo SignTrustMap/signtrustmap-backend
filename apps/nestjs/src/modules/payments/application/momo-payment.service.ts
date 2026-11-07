@@ -215,14 +215,13 @@ export class MomoPaymentService {
       this.logger.warn(
         `Failed to reach MoMo gateway (${err?.message || 'timeout'}). Generating sandbox session.`,
       );
+      const simPayUrl = `${this.config.simulateBaseUrl}/payments/momo/simulate/${orderCode}`;
       data = {
         resultCode: 0,
         message: 'MoMo sandbox payment session created (fallback mode)',
-        payUrl: `https://test-payment.momo.vn/pay?orderId=${orderCode}&amount=${amountVnd}`,
+        payUrl: simPayUrl,
         deeplink: `momo://app?action=payWithApp&orderId=${orderCode}&amount=${amountVnd}`,
-        qrCodeUrl: `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(
-          `momo://app?action=payWithApp&orderId=${orderCode}&amount=${amountVnd}`,
-        )}`,
+        qrCodeUrl: `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(simPayUrl)}`,
         orderId: orderCode,
         requestId,
         amount: amountVnd,
@@ -241,14 +240,13 @@ export class MomoPaymentService {
       this.logger.warn(
         `MoMo gateway non-zero code ${data.resultCode} (${data.message}). Generating sandbox session.`,
       );
+      const simPayUrl = `${this.config.simulateBaseUrl}/payments/momo/simulate/${orderCode}`;
       data = {
         resultCode: 0,
         message: `MoMo sandbox payment session created (code ${data.resultCode} fallback)`,
-        payUrl: `https://test-payment.momo.vn/pay?orderId=${orderCode}&amount=${amountVnd}`,
+        payUrl: simPayUrl,
         deeplink: `momo://app?action=payWithApp&orderId=${orderCode}&amount=${amountVnd}`,
-        qrCodeUrl: `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(
-          `momo://app?action=payWithApp&orderId=${orderCode}&amount=${amountVnd}`,
-        )}`,
+        qrCodeUrl: `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(simPayUrl)}`,
         orderId: orderCode,
         requestId,
         amount: amountVnd,
@@ -457,5 +455,309 @@ export class MomoPaymentService {
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  /**
+   * Renders interactive HTML checkout page for MoMo sandbox simulation
+   */
+  async renderSimulationPage(orderCode: string): Promise<string> {
+    const order = await this.orderRepo.findOne({ where: { orderCode } });
+    if (!order) {
+      return `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Đơn hàng không tồn tại</title><style>body{font-family:sans-serif;text-align:center;padding:50px;background:#fdf2f4;color:#333}h1{color:#a50064}</style></head>
+<body><h1>404 - Không tìm thấy đơn thanh toán</h1><p>Mã đơn hàng <code>${orderCode}</code> không tồn tại trên hệ thống.</p><a href="${this.config.redirectUrl}" style="color:#a50064;font-weight:bold">Quay lại trang ví</a></body>
+</html>`;
+    }
+
+    const pkg = await this.packageRepo.findOne({ where: { id: order.packageId } });
+    let credits = pkg?.creditAmount;
+    if (!credits) {
+      credits = Math.floor(Number(order.amountVnd) / 1000);
+    }
+    const amountFormatted = Number(order.amountVnd).toLocaleString('vi-VN');
+    const isPaid = order.status === PaymentStatus.SUCCESS;
+    const isFailed = order.status === PaymentStatus.FAILED;
+    const completeUrl = `${this.config.simulateBaseUrl}/payments/momo/simulate/${orderCode}/complete`;
+    const cancelUrl = `${this.config.simulateBaseUrl}/payments/momo/simulate/${orderCode}/cancel`;
+    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(`${this.config.simulateBaseUrl}/payments/momo/simulate/${orderCode}`)}`;
+
+    return `<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cổng Thanh Toán MoMo Sandbox - SignTrustMap</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #fdf0f4;
+      color: #2d3748;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 16px;
+    }
+    .card {
+      background: #ffffff;
+      border-radius: 20px;
+      box-shadow: 0 10px 30px rgba(165, 0, 100, 0.12);
+      max-width: 440px;
+      width: 100%;
+      overflow: hidden;
+      border: 1px solid #f9d8e4;
+    }
+    .header {
+      background: linear-gradient(135deg, #a50064 0%, #d82d8b 100%);
+      color: #ffffff;
+      padding: 24px;
+      text-align: center;
+    }
+    .logo-badge {
+      display: inline-block;
+      background: rgba(255, 255, 255, 0.2);
+      padding: 4px 12px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      margin-bottom: 8px;
+    }
+    .header h1 { font-size: 20px; font-weight: 800; margin-bottom: 4px; }
+    .header p { font-size: 13px; opacity: 0.9; }
+    .content { padding: 24px; }
+    .qr-box {
+      text-align: center;
+      margin-bottom: 20px;
+      padding: 16px;
+      background: #fff;
+      border: 2px dashed #f9a8d4;
+      border-radius: 16px;
+    }
+    .qr-box img { width: 180px; height: 180px; display: block; margin: 0 auto 8px; }
+    .qr-box p { font-size: 12px; color: #718096; }
+    .detail-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 10px 0;
+      border-bottom: 1px solid #f1f5f9;
+      font-size: 14px;
+    }
+    .detail-label { color: #718096; }
+    .detail-val { font-weight: 700; color: #1a202c; font-family: monospace; }
+    .amount-val { font-size: 18px; color: #a50064; font-weight: 800; }
+    .status-badge {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .status-success { background: #d1fae5; color: #065f46; }
+    .status-pending { background: #fef3c7; color: #92400e; }
+    .status-failed { background: #fee2e2; color: #991b1b; }
+    .actions { margin-top: 24px; display: flex; flex-direction: column; gap: 10px; }
+    .btn {
+      display: block;
+      width: 100%;
+      padding: 14px;
+      border-radius: 12px;
+      font-size: 14px;
+      font-weight: 700;
+      text-align: center;
+      cursor: pointer;
+      text-decoration: none;
+      border: none;
+      transition: all 0.2s;
+    }
+    .btn-pay {
+      background: #a50064;
+      color: #ffffff;
+      box-shadow: 0 4px 12px rgba(165, 0, 100, 0.25);
+    }
+    .btn-pay:hover { background: #870052; }
+    .btn-cancel {
+      background: #f1f5f9;
+      color: #475569;
+    }
+    .btn-cancel:hover { background: #e2e8f0; }
+    .note {
+      text-align: center;
+      font-size: 11px;
+      color: #94a3b8;
+      margin-top: 16px;
+      line-height: 1.4;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="header">
+      <div class="logo-badge">MOMO SANDBOX TEST GATEWAY</div>
+      <h1>Cổng Thanh Toán Thử Nghiệm</h1>
+      <p>Hệ thống bản đồ số SignTrustMap</p>
+    </div>
+    <div class="content">
+      ${
+        isPaid
+          ? `<div style="text-align:center;padding:20px 0;">
+               <div style="font-size:48px;margin-bottom:8px">🎉</div>
+               <h2 style="color:#065f46;font-size:18px;margin-bottom:6px">Giao dịch đã thanh toán thành công!</h2>
+               <p style="font-size:13px;color:#64748b;margin-bottom:20px">+${credits} Credits đã được cộng vào ví của bạn.</p>
+               <a href="${this.config.redirectUrl}" class="btn btn-pay">Quay về ví SignTrustMap</a>
+             </div>`
+          : isFailed
+          ? `<div style="text-align:center;padding:20px 0;">
+               <div style="font-size:48px;margin-bottom:8px">❌</div>
+               <h2 style="color:#991b1b;font-size:18px;margin-bottom:6px">Giao dịch đã bị hủy hoặc thất bại</h2>
+               <p style="font-size:13px;color:#64748b;margin-bottom:20px">Đơn thanh toán này không thể tiếp tục.</p>
+               <a href="${this.config.redirectUrl}" class="btn btn-cancel">Quay về ví</a>
+             </div>`
+          : `
+            <div class="qr-box">
+              <img src="${qrUrl}" alt="MoMo Sandbox QR Code">
+              <p>Quét mã bằng app hoặc nhấn nút xác nhận bên dưới</p>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Mã đơn hàng</span>
+              <span class="detail-val">${order.orderCode}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Quy đổi</span>
+              <span class="detail-val" style="color:#d97706">+${credits} Credits</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Số tiền thanh toán</span>
+              <span class="amount-val">${amountFormatted} đ</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Trạng thái</span>
+              <span class="status-badge status-pending">CHỜ THANH TOÁN</span>
+            </div>
+            <div class="actions">
+              <form method="POST" action="${completeUrl}">
+                <button type="submit" class="btn btn-pay">
+                  ✅ Xác nhận thanh toán thành công (Mô phỏng)
+                </button>
+              </form>
+              <form method="POST" action="${cancelUrl}">
+                <button type="submit" class="btn btn-cancel">
+                  Hủy thanh toán
+                </button>
+              </form>
+            </div>
+            <p class="note">Môi trường giả lập MoMo Sandbox phục vụ kiểm thử đồ án. Không phát sinh trừ tiền thật.</p>
+          `
+      }
+    </div>
+  </div>
+</body>
+</html>`;
+  }
+
+  /**
+   * Completes MoMo sandbox simulated payment and settles user wallet
+   */
+  async completeSimulatedPayment(orderCode: string) {
+    const order = await this.orderRepo.findOne({ where: { orderCode } });
+    if (!order) {
+      throw new NotFoundException(`PaymentOrder with orderCode "${orderCode}" not found`);
+    }
+
+    if (order.status !== PaymentStatus.SUCCESS) {
+      const requestId = `${orderCode}-${Date.now()}`;
+      const amount = Math.round(Number(order.amountVnd));
+      const orderInfo = `SignTrustMap: Nạp credits (${orderCode})`;
+      const orderType = 'momo_wallet';
+      const transId = Date.now();
+      const resultCode = 0;
+      const message = 'Successful.';
+      const payType = 'qr';
+      const responseTime = Date.now();
+      const extraData = '';
+      const rawSignature = `accessKey=${this.config.accessKey}&amount=${amount}&extraData=${extraData}&message=${message}&orderId=${orderCode}&orderInfo=${orderInfo}&orderType=${orderType}&partnerCode=${this.config.partnerCode}&payType=${payType}&requestId=${requestId}&responseTime=${responseTime}&resultCode=${resultCode}&transId=${transId}`;
+      const signature = this.sign(rawSignature);
+
+      const ipnDto: MomoIpnDto = {
+        partnerCode: this.config.partnerCode,
+        orderId: orderCode,
+        requestId,
+        amount,
+        orderInfo,
+        orderType,
+        transId,
+        resultCode,
+        message,
+        payType,
+        responseTime,
+        extraData,
+        signature,
+      };
+
+      await this.handleIpn(ipnDto);
+    }
+
+    const redirectUrl = `${this.config.redirectUrl}?payment=success&orderId=${encodeURIComponent(orderCode)}&amount=${encodeURIComponent(order.amountVnd)}`;
+    return {
+      success: true,
+      orderCode,
+      status: PaymentStatus.SUCCESS,
+      message: 'MoMo sandbox simulated payment completed successfully',
+      redirectUrl,
+    };
+  }
+
+  /**
+   * Cancels MoMo sandbox simulated payment
+   */
+  async cancelSimulatedPayment(orderCode: string) {
+    const order = await this.orderRepo.findOne({ where: { orderCode } });
+    if (!order) {
+      throw new NotFoundException(`PaymentOrder with orderCode "${orderCode}" not found`);
+    }
+
+    if (order.status === PaymentStatus.PENDING) {
+      const requestId = `${orderCode}-${Date.now()}`;
+      const amount = Math.round(Number(order.amountVnd));
+      const orderInfo = `SignTrustMap: Nạp credits (${orderCode})`;
+      const orderType = 'momo_wallet';
+      const transId = Date.now();
+      const resultCode = 1006;
+      const message = 'Transaction cancelled by user.';
+      const payType = 'qr';
+      const responseTime = Date.now();
+      const extraData = '';
+      const rawSignature = `accessKey=${this.config.accessKey}&amount=${amount}&extraData=${extraData}&message=${message}&orderId=${orderCode}&orderInfo=${orderInfo}&orderType=${orderType}&partnerCode=${this.config.partnerCode}&payType=${payType}&requestId=${requestId}&responseTime=${responseTime}&resultCode=${resultCode}&transId=${transId}`;
+      const signature = this.sign(rawSignature);
+
+      const ipnDto: MomoIpnDto = {
+        partnerCode: this.config.partnerCode,
+        orderId: orderCode,
+        requestId,
+        amount,
+        orderInfo,
+        orderType,
+        transId,
+        resultCode,
+        message,
+        payType,
+        responseTime,
+        extraData,
+        signature,
+      };
+
+      await this.handleIpn(ipnDto);
+    }
+
+    const redirectUrl = `${this.config.redirectUrl}?payment=cancelled&orderId=${encodeURIComponent(orderCode)}`;
+    return {
+      success: false,
+      orderCode,
+      status: PaymentStatus.FAILED,
+      message: 'MoMo sandbox simulated payment was cancelled',
+      redirectUrl,
+    };
   }
 }
