@@ -128,4 +128,11 @@ export class ModerationController {
   @ApiOperation({ summary: 'Resolve moderation case', description: 'Staff/Admin reaches resolution verdict (Dismiss, Ban User, Remove Sign)' })
   @Put('moderation/cases/:id/resolve')
   resolveCase(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: any, @Body() dto: ResolveCaseDto) { return this.svc.resolveCase(id, user.id, dto, user?.roles || user?.role); }
+
+  @Roles('STAFF', 'ADMIN')
+  @ApiOperation({ summary: 'Get user detail by ID', description: 'Retrieve user identity and roles for moderation context' })
+  @Get('moderation/users/:id')
+  getUserProfile(@Param('id', ParseUUIDPipe) id: string) {
+    return this.svc.getUserProfile(id);
+  }
 }
