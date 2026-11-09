@@ -1616,7 +1616,15 @@ export class ModerationService {
   // ---- moderation cases (unchanged behaviour, enriched) ----
   async listCases(status?: string, page = 1, pageSize = 20) {
     const p = Math.max(1, page), ps = Math.min(Math.max(1, pageSize), 100);
-    const where: any = {}; if (status) where.status = status;
+    const where: any = {};
+    if (status) {
+      const normStatus = status.trim().toUpperCase();
+      if (normStatus === 'OPEN') {
+        where.status = ModerationStatus.PENDING;
+      } else if (Object.values(ModerationStatus).includes(normStatus as any)) {
+        where.status = normStatus as ModerationStatus;
+      }
+    }
     const [items, total] = await this.cases.findAndCount({ where, order: { createdAt: 'DESC' }, skip: (p - 1) * ps, take: ps });
     return { items, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
   }
@@ -1626,7 +1634,7 @@ export class ModerationService {
     const acts = await this.actions.find({ where: { caseId: id }, order: { performedAt: 'ASC' } });
     return { ...mc, actions: acts };
   }
-  async resolveCase(id: string, staffId: string, dto: ResolveCaseDto, userRole?: string) {
+  async resolveCase(id: string, staffId: string, dto: ResolveCaseDto, userRole?: string | string[]) {
     const mc = await this.cases.findOne({ where: { id } });
     if (!mc) throw new NotFoundException('ModerationCase ' + id + ' not found');
     if (mc.status === ModerationStatus.RESOLVED) throw new BadRequestException('Case is already resolved');
@@ -1635,20 +1643,43 @@ export class ModerationService {
     const targetTypeId: number | null = (dto as any).targetSignTypeId ?? (dto as any).mergedIntoSignTypeId ?? null;
 
     if (actionType === 'APPROVED') {
-      let isCallerAdmin = userRole === 'ADMIN';
+      let isCallerAdmin =
+        userRole === 'ADMIN' ||
+        (Array.isArray(userRole) && userRole.includes('ADMIN'));
+
       if (!isCallerAdmin) {
         if (this.userRepo && typeof this.userRepo.findOne === 'function') {
-    const staffUser: any = await this.userRepo.findOne({ 
-      where: { id: staffId },
-      relations: ['userRoles'], 
-    });
+          try {
+            const staffUser: any = await this.userRepo.findOne({
+              where: { id: staffId },
+              relations: ['userRoles', 'userRoles.role'],
+            });
 
-    if (staffUser?.role === 'ADMIN' || staffUser?.userRoles?.some((ur: any) => ur.role === 'ADMIN')) {
-      isCallerAdmin = true;
-    }
-        } else if (typeof this.dataSource?.query === 'function') {
-          const rows = await this.dataSource.query('SELECT role FROM users WHERE id = $1', [staffId]);
-          if (rows[0]?.role === 'ADMIN') isCallerAdmin = true;
+            if (
+              staffUser?.role === 'ADMIN' ||
+              staffUser?.userRoles?.some(
+                (ur: any) => ur.role?.code === 'ADMIN' || ur.role === 'ADMIN',
+              )
+            ) {
+              isCallerAdmin = true;
+            }
+          } catch {
+            // ignore findOne relation error if any
+          }
+        }
+        if (!isCallerAdmin && typeof this.dataSource?.query === 'function') {
+          try {
+            const rows = await this.dataSource.query(
+              `SELECT r.code 
+               FROM user_roles ur 
+               JOIN roles r ON ur.role_id = r.id 
+               WHERE ur.user_id = $1 AND ur.is_active = true`,
+              [staffId],
+            );
+            if (rows.some((r: any) => r.code === 'ADMIN')) isCallerAdmin = true;
+          } catch {
+            // ignore fallback query error
+          }
         }
       }
       if (!isCallerAdmin) {

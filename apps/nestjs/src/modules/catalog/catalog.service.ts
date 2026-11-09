@@ -482,7 +482,9 @@ export class CatalogService {
 
     return signTypes.map((signType) => {
       const dbImage = imageBySignType.get(signType.id);
-      const fallbackImage = `https://s3.signmap.site/stm-sign-crops/representative/${(signType.slug || signType.signCode).toUpperCase().trim()}.png`;
+      const signCodeRaw = signType.slug || signType.signCode || `SIGN_${signType.id}`;
+      const signCodeStr = String(signCodeRaw).toUpperCase().trim();
+      const fallbackImage = `https://s3.signmap.site/stm-sign-crops/representative/${signCodeStr}.png`;
       return {
         ...signType,
         aiLabelPrompt: promptBySignType.get(signType.id) ?? null,
