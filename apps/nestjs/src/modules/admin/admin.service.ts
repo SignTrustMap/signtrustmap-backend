@@ -555,6 +555,38 @@ export class AdminService {
     };
   }
 
+  async getUserById(userId: string) {
+    const user = await this.dataSource.getRepository(User).findOne({
+      where: { id: userId },
+      relations: ['userRoles', 'userRoles.role'],
+    });
+    if (!user) throw new NotFoundException('User ' + userId + ' not found');
+
+    const statsMap = await this.batchLoadUserStatistics([userId]);
+    const statistics = statsMap.get(userId) || this.defaultUserStatistics();
+    const roles = (user.userRoles || [])
+      .filter((ur) => ur.isActive)
+      .map((ur) => ur.role?.code)
+      .filter((code): code is string => Boolean(code));
+
+    return {
+      id: user.id,
+      email: user.email,
+      fullName: user.fullName,
+      full_name: user.fullName,
+      phone: user.phone,
+      avatarUrl: user.avatarUrl,
+      avatar_url: user.avatarUrl,
+      status: user.status,
+      roles,
+      createdAt: user.createdAt,
+      created_at: user.createdAt,
+      updatedAt: user.updatedAt,
+      updated_at: user.updatedAt,
+      statistics,
+    };
+  }
+
   async getUsersSummaryStatistics(): Promise<PlatformUsersSummaryDto> {
     let totalUsers = 0;
     const usersByStatus = { active: 0, suspended: 0, banned: 0 };

@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Delete, Body, Param, Query, ParseUUIDPipe, BadRequestException, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Delete, Body, Param, Query, Req, ParseUUIDPipe, BadRequestException, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { WalletService } from '../application/wallet.service';
 import {
@@ -15,18 +15,18 @@ import { InternalTokenGuard } from '../../../common/guards/internal-token.guard'
 import { TransactionType } from '../infrastructure/persistence/credit-transaction.entity';
 
 @ApiTags('Wallet')
-@Controller(['wallet', 'economy/wallet'])
+@Controller(['wallet', 'economy/wallet', 'economy'])
 export class WalletController {
   constructor(private readonly walletService: WalletService) {}
 
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get wallet balance', description: 'Retrieve current credit balance and wallet status for the authenticated user' })
-  @Get(['', 'balance'])
+  @Get(['', 'balance', 'wallet/balance'])
   async getWallet(@CurrentUser() user: any) { return this.walletService.getWallet(user.id); }
 
   @ApiBearerAuth()
   @ApiOperation({ summary: 'List transactions', description: 'Paginated list of credit transactions, top-ups, and navigation deductions' })
-  @Get('transactions')
+  @Get(['transactions', 'wallet/transactions'])
   async listTransactions(
     @CurrentUser() user: any,
     @Query() query?: ListTransactionsQueryDto | any,
@@ -66,19 +66,40 @@ export class WalletController {
 
   @Public()
   @ApiOperation({ summary: 'List top-up packages', description: 'Available credit top-up packages with bonuses and pricing' })
-  @Get(['top-up/packages', 'packages'])
+  @Get(['top-up/packages', 'packages', 'topup-packages', 'wallet/packages'])
   async listPackages() { return this.walletService.listPackages(); }
 
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Purchase top-up package', description: 'Initiate a credit purchase for a predefined top-up package' })
-  @Post(['top-up', 'topup'])
-  async topUp(@CurrentUser() user: any, @Body() dto: TopUpDto) { return this.walletService.topUp(user.id, dto); }
+  @Post(['top-up', 'topup', 'wallet/topup', 'wallet/top-up'])
+  async topUp(@CurrentUser() user: any, @Body() dto: TopUpDto, @Req() req?: any) {
+    if (!req) {
+      return this.walletService.topUp(user.id, dto);
+    }
+    const proto = req?.headers?.['x-forwarded-proto'] || req?.protocol || 'http';
+    const host = req?.headers?.['x-forwarded-host'] || req?.get?.('host') || 'localhost:3000';
+    const reqBaseUrl = `${proto}://${host}/api/v1`;
+    return this.walletService.topUp(user.id, dto, { baseUrl: reqBaseUrl });
+  }
 
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Custom amount top-up', description: 'Top up credits with an arbitrary custom currency amount' })
-  @Post(['top-up/custom', 'topup/custom'])
-  async topUpCustom(@CurrentUser() user: any, @Body() dto: CustomTopUpDto) {
-    return this.walletService.topUpCustom(user.id, dto);
+  @Post(['top-up/custom', 'topup/custom', 'wallet/topup/custom', 'wallet/top-up/custom'])
+  async topUpCustom(@CurrentUser() user: any, @Body() dto: CustomTopUpDto, @Req() req?: any) {
+    if (!req) {
+      return this.walletService.topUpCustom(user.id, dto);
+    }
+    const proto = req?.headers?.['x-forwarded-proto'] || req?.protocol || 'http';
+    const host = req?.headers?.['x-forwarded-host'] || req?.get?.('host') || 'localhost:3000';
+    const reqBaseUrl = `${proto}://${host}/api/v1`;
+    return this.walletService.topUpCustom(user.id, dto, { baseUrl: reqBaseUrl });
+  }
+
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Claim daily reward', description: 'Claim daily login / check-in bonus credits' })
+  @Post(['rewards/daily-claim', 'daily-claim', 'wallet/rewards/daily-claim'])
+  async claimDailyReward(@CurrentUser() user: any) {
+    return this.walletService.claimDailyReward(user.id);
   }
 
   @ApiBearerAuth()
