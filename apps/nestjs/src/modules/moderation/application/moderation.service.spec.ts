@@ -634,6 +634,29 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
       .rejects.toThrow(ForbiddenException);
   });
 
+  it('allows resolveCase with APPROVED actionType when userRole is array containing ADMIN', async () => {
+    const { service, cases, missing, catRepo, catalogService } = buildService();
+    cases.findOne.mockResolvedValue({ id: 'CASE1', status: 'IN_REVIEW', targetEntityType: 'missing_sign_type_report', targetEntityId: 'R1' });
+    missing.findOne.mockResolvedValue({ id: 'R1', status: MissingTypeStatus.PENDING, proposedCategoryId: 1 });
+    catRepo.findOne.mockResolvedValue({ id: 1, code: 'PROHIBITORY' });
+    catalogService.createSignType.mockResolvedValue({ id: 42, signCode: 'P.128a' });
+
+    await service.resolveCase('CASE1', 'ADMIN1', { actionType: 'APPROVED', reportId: 'R1' } as any, ['ADMIN', 'STAFF']);
+    expect(cases.save).toHaveBeenCalledWith(expect.objectContaining({ status: 'RESOLVED' }));
+  });
+
+  it('normalizes status OPEN to PENDING in listCases', async () => {
+    const { service, cases } = buildService();
+    cases.findAndCount.mockResolvedValue([[], 0]);
+
+    await service.listCases('OPEN', 1, 10);
+    expect(cases.findAndCount).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { status: 'PENDING' },
+      }),
+    );
+  });
+
   it('approve-and-create-type provisions the sign type, bumps catalog version, releases the held candidate and triggers AI label sync', async () => {
     const { service, missing, catRepo, signTypeRepo, candRepo, dataSource, notifications, catalogService, catalogSyncService, minioStorageService } = buildService();
     const report = { id: 'R1', status: MissingTypeStatus.PENDING, candidateId: 'C1', proposedName: 'No Horn', proposedCategoryId: 1, reporterId: 'U1', suggestedShape: 'CIRCLE', suggestedColorScheme: null };
