@@ -40,6 +40,14 @@ async function bootstrap() {
     res.redirect(301, '/docs');
   });
 
+  // Redirect payment/momo requests missing the /api/v1 global prefix
+  app.use(['/payments', '/wallet'], (req: any, res: any, next: any) => {
+    if (!req.originalUrl.startsWith('/api/v1/')) {
+      return res.redirect(307, `/api/v1${req.originalUrl}`);
+    }
+    return next();
+  });
+
   const port = configService.get<number>("PORT", 3000);
   await app.listen(port);
   console.log(`[STM-NestJS] Listening on http://localhost:${port}/api/v1`);

@@ -54,7 +54,11 @@ export class MomoPaymentService {
   /**
    * Initiates a payment request with MoMo Sandbox API
    */
-  async createPayment(userId: string, dto: CreateMomoPaymentDto): Promise<any> {
+  async createPayment(
+    userId: string,
+    dto: CreateMomoPaymentDto,
+    options?: { baseUrl?: string; redirectUrl?: string },
+  ): Promise<any> {
     const idempotencyKey = dto.idempotencyKey?.trim();
     if (idempotencyKey) {
       const existing = await this.orderRepo.findOne({ where: { userId, idempotencyKey } });
@@ -65,6 +69,9 @@ export class MomoPaymentService {
     let creditAmount = 0;
     let packageName = 'Custom credits';
     let packageId = 1;
+
+    const effectiveSimBaseUrl = (options?.baseUrl || this.config.simulateBaseUrl).replace(/\/$/, '');
+    const effectiveRedirectUrl = dto.redirectUrl || options?.redirectUrl || this.config.redirectUrl;
 
     if (dto.packageId) {
       pkg = await this.packageRepo.findOne({ where: { id: dto.packageId } });
@@ -215,7 +222,7 @@ export class MomoPaymentService {
       this.logger.warn(
         `Failed to reach MoMo gateway (${err?.message || 'timeout'}). Generating sandbox session.`,
       );
-      const simPayUrl = `${this.config.simulateBaseUrl}/payments/momo/simulate/${orderCode}`;
+      const simPayUrl = `${effectiveSimBaseUrl}/payments/momo/simulate/${orderCode}${effectiveRedirectUrl ? `?redirectUrl=${encodeURIComponent(effectiveRedirectUrl)}` : ''}`;
       data = {
         resultCode: 0,
         message: 'MoMo sandbox payment session created (fallback mode)',
@@ -240,7 +247,7 @@ export class MomoPaymentService {
       this.logger.warn(
         `MoMo gateway non-zero code ${data.resultCode} (${data.message}). Generating sandbox session.`,
       );
-      const simPayUrl = `${this.config.simulateBaseUrl}/payments/momo/simulate/${orderCode}`;
+      const simPayUrl = `${effectiveSimBaseUrl}/payments/momo/simulate/${orderCode}${effectiveRedirectUrl ? `?redirectUrl=${encodeURIComponent(effectiveRedirectUrl)}` : ''}`;
       data = {
         resultCode: 0,
         message: `MoMo sandbox payment session created (code ${data.resultCode} fallback)`,
@@ -266,6 +273,7 @@ export class MomoPaymentService {
         createdAt: savedOrder.createdAt,
       },
       payUrl: data.payUrl,
+      paymentUrl: data.payUrl,
       deeplink: data.deeplink,
       qrCodeUrl: data.qrCodeUrl,
       deeplinkMiniApp: data.deeplinkMiniApp,
@@ -460,13 +468,39 @@ export class MomoPaymentService {
   /**
    * Renders interactive HTML checkout page for MoMo sandbox simulation
    */
-  async renderSimulationPage(orderCode: string): Promise<string> {
+  async renderSimulationPage(
+    orderCode: string,
+    options?: { baseUrl?: string; overrideRedirectUrl?: string },
+  ): Promise<string> {
+    const effectiveBaseUrl = (options?.baseUrl || this.config.simulateBaseUrl).replace(/\/$/, '');
+    const redirectTarget = options?.overrideRedirectUrl || this.config.redirectUrl;
     const order = await this.orderRepo.findOne({ where: { orderCode } });
     if (!order) {
       return `<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><title>Đơn hàng không tồn tại</title><style>body{font-family:sans-serif;text-align:center;padding:50px;background:#fdf2f4;color:#333}h1{color:#a50064}</style></head>
-<body><h1>404 - Không tìm thấy đơn thanh toán</h1><p>Mã đơn hàng <code>${orderCode}</code> không tồn tại trên hệ thống.</p><a href="${this.config.redirectUrl}" style="color:#a50064;font-weight:bold">Quay lại trang ví</a></body>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Đơn hàng không tồn tại - SignTrustMap</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; padding: 40px 16px; background: #fdf2f4; color: #2d3748; }
+    .box { max-width: 440px; margin: 0 auto; background: #fff; padding: 32px 24px; border-radius: 20px; border: 1px solid #f9d8e4; box-shadow: 0 10px 30px rgba(165,0,100,0.1); }
+    h1 { color: #a50064; font-size: 20px; margin-bottom: 12px; }
+    p { font-size: 14px; color: #64748b; line-height: 1.5; margin-bottom: 20px; }
+    .btn { display: inline-block; padding: 12px 24px; background: #a50064; color: #fff; border-radius: 12px; text-decoration: none; font-weight: 700; font-size: 14px; }
+    .btn:hover { background: #870052; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h1>404 - Không tìm thấy đơn thanh toán</h1>
+    <p>Mã đơn hàng <code>${orderCode}</code> không tồn tại trên hệ thống.</p>
+    <a href="${redirectTarget}" class="btn">Quay lại trang ví</a>
+    <div style="margin-top:16px">
+      <button onclick="window.history.length > 1 ? window.history.back() : window.close()" style="border:none;background:none;color:#64748b;cursor:pointer;font-size:13px;text-decoration:underline">← Quay lại trang trước</button>
+    </div>
+  </div>
+</body>
 </html>`;
     }
 
@@ -478,9 +512,9 @@ export class MomoPaymentService {
     const amountFormatted = Number(order.amountVnd).toLocaleString('vi-VN');
     const isPaid = order.status === PaymentStatus.SUCCESS;
     const isFailed = order.status === PaymentStatus.FAILED;
-    const completeUrl = `${this.config.simulateBaseUrl}/payments/momo/simulate/${orderCode}/complete`;
-    const cancelUrl = `${this.config.simulateBaseUrl}/payments/momo/simulate/${orderCode}/cancel`;
-    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(`${this.config.simulateBaseUrl}/payments/momo/simulate/${orderCode}`)}`;
+    const completeUrl = `${effectiveBaseUrl}/payments/momo/simulate/${orderCode}/complete${options?.overrideRedirectUrl ? `?redirectUrl=${encodeURIComponent(options.overrideRedirectUrl)}` : ''}`;
+    const cancelUrl = `${effectiveBaseUrl}/payments/momo/simulate/${orderCode}/cancel${options?.overrideRedirectUrl ? `?redirectUrl=${encodeURIComponent(options.overrideRedirectUrl)}` : ''}`;
+    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(`${effectiveBaseUrl}/payments/momo/simulate/${orderCode}`)}`;
 
     return `<!DOCTYPE html>
 <html lang="vi">
@@ -660,7 +694,7 @@ export class MomoPaymentService {
   /**
    * Completes MoMo sandbox simulated payment and settles user wallet
    */
-  async completeSimulatedPayment(orderCode: string) {
+  async completeSimulatedPayment(orderCode: string, options?: { overrideRedirectUrl?: string }) {
     const order = await this.orderRepo.findOne({ where: { orderCode } });
     if (!order) {
       throw new NotFoundException(`PaymentOrder with orderCode "${orderCode}" not found`);
@@ -699,7 +733,9 @@ export class MomoPaymentService {
       await this.handleIpn(ipnDto);
     }
 
-    const redirectUrl = `${this.config.redirectUrl}?payment=success&orderId=${encodeURIComponent(orderCode)}&amount=${encodeURIComponent(order.amountVnd)}`;
+    const baseRedirect = options?.overrideRedirectUrl || this.config.redirectUrl;
+    const separator = baseRedirect.includes('?') ? '&' : '?';
+    const redirectUrl = `${baseRedirect}${separator}payment=success&orderId=${encodeURIComponent(orderCode)}&amount=${encodeURIComponent(order.amountVnd)}`;
     return {
       success: true,
       orderCode,
@@ -712,7 +748,7 @@ export class MomoPaymentService {
   /**
    * Cancels MoMo sandbox simulated payment
    */
-  async cancelSimulatedPayment(orderCode: string) {
+  async cancelSimulatedPayment(orderCode: string, options?: { overrideRedirectUrl?: string }) {
     const order = await this.orderRepo.findOne({ where: { orderCode } });
     if (!order) {
       throw new NotFoundException(`PaymentOrder with orderCode "${orderCode}" not found`);
@@ -751,12 +787,14 @@ export class MomoPaymentService {
       await this.handleIpn(ipnDto);
     }
 
-    const redirectUrl = `${this.config.redirectUrl}?payment=cancelled&orderId=${encodeURIComponent(orderCode)}`;
+    const baseRedirect = options?.overrideRedirectUrl || this.config.redirectUrl;
+    const separator = baseRedirect.includes('?') ? '&' : '?';
+    const redirectUrl = `${baseRedirect}${separator}payment=cancelled&orderId=${encodeURIComponent(orderCode)}`;
     return {
       success: false,
       orderCode,
       status: PaymentStatus.FAILED,
-      message: 'MoMo sandbox simulated payment was cancelled',
+      message: 'MoMo sandbox simulated payment cancelled',
       redirectUrl,
     };
   }
