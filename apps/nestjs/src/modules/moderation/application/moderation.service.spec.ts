@@ -1014,4 +1014,61 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
       resolutionNote: 'Need clearer field photo',
     }));
   });
+
+  it('strips leading # when searching listMissingReports and listCases by UUID or report name', async () => {
+    const { service, missing, cases, dataSource } = buildService();
+    const reportQb: any = {
+      andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getManyAndCount: jest.fn().mockResolvedValue([
+        [{ id: '288661b8-6eea-42af-8800-caf67895dbd3', status: MissingTypeStatus.PENDING, proposedName: 'TEst 6' }],
+        1,
+      ]),
+    };
+    (missing as any).createQueryBuilder = jest.fn(() => reportQb);
+
+    const caseQb: any = {
+      andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getManyAndCount: jest.fn().mockResolvedValue([
+        [{
+          id: 'case-1',
+          caseType: 'CATALOG_PROPOSAL',
+          targetEntityType: 'missing_sign_type_report',
+          targetEntityId: '288661b8-6eea-42af-8800-caf67895dbd3',
+          status: 'PENDING',
+        }],
+        1,
+      ]),
+    };
+    (cases as any).createQueryBuilder = jest.fn(() => caseQb);
+    dataSource.query.mockResolvedValue([
+      {
+        id: '288661b8-6eea-42af-8800-caf67895dbd3',
+        proposed_name: 'TEst 6',
+        status: 'ESCALATED_ADMIN',
+        reporter_id: 'u-1',
+        reporter_name: 'Demo User',
+        reporter_email: 'demo@stm.dev',
+      },
+    ]);
+
+    const repRes = await service.listMissingReports(undefined, 1, 20, '#288661b8');
+    expect(repRes.total).toBe(1);
+    expect(reportQb.andWhere).toHaveBeenCalledWith(expect.any(String), { pattern: '%288661b8%' });
+
+    const caseRes = await service.listCases(undefined, 1, 20, '#288661b8-6eea-42af-8800-caf67895dbd3');
+    expect(caseRes.total).toBe(1);
+    expect(caseQb.andWhere).toHaveBeenCalledWith(expect.any(String), {
+      pattern: '%288661b8-6eea-42af-8800-caf67895dbd3%',
+    });
+    expect(caseRes.items[0]).toMatchObject({
+      proposedName: 'TEst 6',
+      targetTitle: 'TEst 6',
+    });
+  });
 });

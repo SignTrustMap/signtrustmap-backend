@@ -180,30 +180,67 @@ export class ModerationService {
     return this.reportNewSign(reporterId, dto);
   }
 
-  async listNewSignReports(status?: string, page = 1, pageSize = 20) {
+  async listNewSignReports(status?: string, page = 1, pageSize = 20, search?: string) {
     const p = Math.max(1, page), ps = Math.min(Math.max(1, pageSize), 100);
     const where: any = {};
-    if (status) {
-      const upper = status.toUpperCase();
-      if (upper === 'OPEN') {
+    const upperStatus = status?.toUpperCase();
+    if (upperStatus) {
+      if (upperStatus === 'OPEN') {
         where.status = MissingTypeStatus.PENDING;
-      } else if (upper === 'APPROVED') {
+      } else if (upperStatus === 'APPROVED') {
         where.status = In([MissingTypeStatus.APPROVED, MissingTypeStatus.ESCALATED_ADMIN]);
-      } else if (upper === 'IN_REVIEW' || upper === 'ESCALATED') {
+      } else if (upperStatus === 'IN_REVIEW' || upperStatus === 'ESCALATED') {
         where.status = MissingTypeStatus.ESCALATED_ADMIN;
       } else {
         const allowed = Object.values(MissingTypeStatus);
-        if (!allowed.includes(upper as MissingTypeStatus)) throw new BadRequestException('status must be one of ' + allowed.join(', '));
-        where.status = upper;
+        if (!allowed.includes(upperStatus as MissingTypeStatus)) throw new BadRequestException('status must be one of ' + allowed.join(', '));
+        where.status = upperStatus;
       }
     }
+
+    const normalizedSearch = search?.trim().replace(/^#+/, '').trim() || '';
+    if (normalizedSearch && typeof this.missing?.createQueryBuilder === 'function') {
+      const pattern = `%${normalizedSearch.replace(/[%_\\]/g, '\\$&')}%`;
+      const qb = this.missing.createQueryBuilder('r');
+      if (where.status) {
+        if (upperStatus === 'APPROVED') {
+          qb.andWhere('r.status IN (:...statuses)', {
+            statuses: [MissingTypeStatus.APPROVED, MissingTypeStatus.ESCALATED_ADMIN],
+          });
+        } else {
+          qb.andWhere('r.status = :status', { status: where.status });
+        }
+      }
+      qb.andWhere(
+        `(
+          CAST(r.id AS text) ILIKE :pattern ESCAPE '\\'
+          OR CAST(r.candidate_id AS text) ILIKE :pattern ESCAPE '\\'
+          OR COALESCE(r.proposed_name, '') ILIKE :pattern ESCAPE '\\'
+          OR COALESCE(r.description, '') ILIKE :pattern ESCAPE '\\'
+          OR COALESCE(r.staff_notes, '') ILIKE :pattern ESCAPE '\\'
+          OR EXISTS (
+            SELECT 1 FROM users u
+            WHERE u.id = r.reporter_id
+              AND (COALESCE(u.full_name, '') ILIKE :pattern ESCAPE '\\' OR COALESCE(u.email, '') ILIKE :pattern ESCAPE '\\')
+          )
+        )`,
+        { pattern },
+      )
+        .orderBy('r.createdAt', 'DESC')
+        .skip((p - 1) * ps)
+        .take(ps);
+      const [items, total] = await qb.getManyAndCount();
+      const enriched = await this.enrichWithCandidates(items);
+      return { items: enriched, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
+    }
+
     const [items, total] = await this.missing.findAndCount({ where, order: { createdAt: 'DESC' }, skip: (p - 1) * ps, take: ps });
     const enriched = await this.enrichWithCandidates(items);
     return { items: enriched, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
   }
 
-  listMissingReports(status?: string, page = 1, pageSize = 20) {
-    return this.listNewSignReports(status, page, pageSize);
+  listMissingReports(status?: string, page = 1, pageSize = 20, search?: string) {
+    return this.listNewSignReports(status, page, pageSize, search);
   }
 
   async updateNewSignReport(reportId: string, reviewerId: string, dto: UpdateNewSignTypeReportDto) {
@@ -1691,7 +1728,7 @@ export class ModerationService {
   }
 
   // ---- moderation cases (unchanged behaviour, enriched) ----
-  async listCases(status?: string, page = 1, pageSize = 20) {
+  async listCases(status?: string, page = 1, pageSize = 20, search?: string) {
     const p = Math.max(1, page), ps = Math.min(Math.max(1, pageSize), 100);
     const where: any = {};
     if (status) {
@@ -1702,8 +1739,91 @@ export class ModerationService {
         where.status = normStatus as ModerationStatus;
       }
     }
-    const [items, total] = await this.cases.findAndCount({ where, order: { createdAt: 'DESC' }, skip: (p - 1) * ps, take: ps });
-    return { items, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
+
+    const normalizedSearch = search?.trim().replace(/^#+/, '').trim() || '';
+    let items: ModerationCase[] = [];
+    let total = 0;
+
+    if (normalizedSearch && typeof this.cases?.createQueryBuilder === 'function') {
+      const pattern = `%${normalizedSearch.replace(/[%_\\]/g, '\\$&')}%`;
+      const qb = this.cases.createQueryBuilder('mc');
+      if (where.status) {
+        qb.andWhere('mc.status = :status', { status: where.status });
+      }
+      qb.andWhere(
+        `(
+          CAST(mc.id AS text) ILIKE :pattern ESCAPE '\\'
+          OR CAST(mc.target_entity_id AS text) ILIKE :pattern ESCAPE '\\'
+          OR COALESCE(mc.target_entity_type, '') ILIKE :pattern ESCAPE '\\'
+          OR CAST(mc.case_type AS text) ILIKE :pattern ESCAPE '\\'
+          OR COALESCE(mc.resolution_note, '') ILIKE :pattern ESCAPE '\\'
+          OR EXISTS (
+            SELECT 1 FROM new_sign_type_reports r
+            LEFT JOIN users u ON u.id = r.reporter_id
+            WHERE r.id = mc.target_entity_id
+              AND (
+                COALESCE(r.proposed_name, '') ILIKE :pattern ESCAPE '\\'
+                OR COALESCE(r.description, '') ILIKE :pattern ESCAPE '\\'
+                OR COALESCE(u.full_name, '') ILIKE :pattern ESCAPE '\\'
+                OR COALESCE(u.email, '') ILIKE :pattern ESCAPE '\\'
+              )
+          )
+        )`,
+        { pattern },
+      )
+        .orderBy('mc.createdAt', 'DESC')
+        .skip((p - 1) * ps)
+        .take(ps);
+      [items, total] = await qb.getManyAndCount();
+    } else {
+      [items, total] = await this.cases.findAndCount({ where, order: { createdAt: 'DESC' }, skip: (p - 1) * ps, take: ps });
+    }
+
+    // Batch-enrich report-linked cases with report title/name so table & search work smoothly
+    let enrichedItems: any[] = items;
+    if (items.length > 0 && typeof this.dataSource?.query === 'function') {
+      const reportIds = Array.from(
+        new Set(
+          items
+            .filter((mc) => {
+              const t = (mc.targetEntityType || '').toLowerCase();
+              return mc.targetEntityId && (t.includes('report') || t.includes('missing') || mc.caseType === ModerationType.CATALOG_PROPOSAL);
+            })
+            .map((mc) => mc.targetEntityId),
+        ),
+      );
+      if (reportIds.length > 0) {
+        try {
+          const rows: any[] = await this.dataSource.query(
+            `SELECT r.id, r.proposed_name, r.status, r.reporter_id,
+                    u.full_name AS reporter_name, u.email AS reporter_email
+             FROM new_sign_type_reports r
+             LEFT JOIN users u ON u.id = r.reporter_id
+             WHERE r.id = ANY($1::uuid[])`,
+            [reportIds],
+          );
+          const byId = new Map<string, any>();
+          for (const row of rows) {
+            byId.set(row.id, row);
+          }
+          enrichedItems = items.map((mc) => {
+            const rep = byId.get(mc.targetEntityId);
+            if (!rep) return mc;
+            return {
+              ...mc,
+              proposedName: rep.proposed_name ?? null,
+              targetTitle: rep.proposed_name ?? null,
+              reportStatus: rep.status ?? null,
+              reporter: rep.reporter_id
+                ? { id: rep.reporter_id, fullName: rep.reporter_name ?? null, email: rep.reporter_email ?? null }
+                : null,
+            };
+          });
+        } catch {}
+      }
+    }
+
+    return { items: enrichedItems, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
   }
   async getCase(id: string) {
     const mc = await this.cases.findOne({ where: { id } });
