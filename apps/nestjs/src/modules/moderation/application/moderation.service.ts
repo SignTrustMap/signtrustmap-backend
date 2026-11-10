@@ -1676,6 +1676,8 @@ export class ModerationService {
     report.staffNotes = dto.staffNotes ?? report.staffNotes ?? ('Approved as TrafficSignType #' + created.id + ' (' + signCode + ')');
     await this.missing.save(report);
 
+    await this.closeOpenReportCases(reportId, staffId, 'APPROVED', report.staffNotes ?? null);
+
     await this.reportSyncedBackend(created.id);
     await this.notifyReporter(report, 'APPROVED', 'Báo cáo biển báo mới đã được chấp thuận', 'Báo cáo "' + (report.proposedName || 'biển báo mới') + '" đã được thêm vào danh mục với mã "' + signCode + '".');
 
@@ -1829,7 +1831,6 @@ export class ModerationService {
   async resolveCase(id: string, staffId: string, dto: ResolveCaseDto, userRole?: string | string[]) {
     const mc = await this.cases.findOne({ where: { id } });
     if (!mc) throw new NotFoundException('ModerationCase ' + id + ' not found');
-    if (mc.status === ModerationStatus.RESOLVED) throw new BadRequestException('Case is already resolved');
     const actionType = (dto.actionType || 'RESOLVE').toUpperCase();
     const reportId: string | null = (dto as any).reportId ?? null;
     const targetTypeId: number | null = (dto as any).targetSignTypeId ?? (dto as any).mergedIntoSignTypeId ?? null;
@@ -1877,6 +1878,26 @@ export class ModerationService {
       if (!isCallerAdmin) {
         throw new ForbiddenException('Admin role is required to approve and create catalog sign types');
       }
+    }
+
+    if (mc.status === ModerationStatus.RESOLVED) {
+      if (
+        (actionType === 'APPROVED' || actionType === 'MERGED') &&
+        mc.caseType === ModerationType.CATALOG_PROPOSAL
+      ) {
+        const linkedReportId = reportId || mc.targetEntityId;
+        const linkedReport = linkedReportId
+          ? await this.missing.findOne({ where: { id: linkedReportId } as any })
+          : null;
+        if (
+          linkedReport &&
+          ((actionType === 'APPROVED' && linkedReport.status === MissingTypeStatus.APPROVED) ||
+            (actionType === 'MERGED' && linkedReport.status === MissingTypeStatus.MERGED))
+        ) {
+          return mc;
+        }
+      }
+      throw new BadRequestException('Case is already resolved');
     }
 
     if (actionType === 'REQUEST_RECAPTURE' && mc.targetEntityType === 'candidate' && mc.targetEntityId) {
@@ -2204,6 +2225,45 @@ export class ModerationService {
   // ---------------------------------------------------------------------------
   // HELPERS
   // ---------------------------------------------------------------------------
+
+  private async closeOpenReportCases(
+    reportId: string,
+    staffId: string,
+    actionType: string,
+    note: string | null,
+  ): Promise<void> {
+    if (!this.cases || typeof this.cases.find !== 'function') return;
+    try {
+      const openCases = await this.cases.find({
+        where: {
+          targetEntityId: reportId,
+          targetEntityType: In(['missing_sign_type_report', 'new_sign_type_report', 'missing_type_report', 'report']),
+          status: In([ModerationStatus.PENDING, ModerationStatus.IN_REVIEW]),
+        },
+      });
+      if (!openCases.length) return;
+      const now = new Date();
+      for (const mc of openCases) {
+        mc.status = ModerationStatus.RESOLVED;
+        if (note != null) mc.resolutionNote = note;
+        mc.resolvedAt = now;
+        if (!mc.assignedStaffId) mc.assignedStaffId = staffId;
+        await this.cases.save(mc);
+        if (this.actions && typeof this.actions.create === 'function' && typeof this.actions.save === 'function') {
+          await this.actions.save(
+            this.actions.create({
+              caseId: mc.id,
+              actionType,
+              performedBy: staffId,
+              note,
+            } as any),
+          );
+        }
+      }
+    } catch (e: any) {
+      this.logger.warn('Failed to close open moderation cases for report ' + reportId + ': ' + (e as any)?.message);
+    }
+  }
 
   private async requireFallbackCategory(): Promise<number> {
     const fallback = await this.catRepo.findOne({ order: { id: 'ASC' } as any });

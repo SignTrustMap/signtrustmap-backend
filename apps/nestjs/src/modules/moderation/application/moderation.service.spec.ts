@@ -645,6 +645,49 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     expect(cases.save).toHaveBeenCalledWith(expect.objectContaining({ status: 'RESOLVED' }));
   });
 
+  it('resolveCase returns idempotently when a CATALOG_PROPOSAL case is already RESOLVED and its report is APPROVED', async () => {
+    const { service, cases, missing } = buildService();
+    const resolvedCase = {
+      id: 'CASE1',
+      caseType: 'CATALOG_PROPOSAL',
+      status: 'RESOLVED',
+      targetEntityType: 'missing_sign_type_report',
+      targetEntityId: 'R1',
+    };
+    cases.findOne.mockResolvedValue(resolvedCase);
+    missing.findOne.mockResolvedValue({ id: 'R1', status: MissingTypeStatus.APPROVED });
+
+    const res = await service.resolveCase('CASE1', 'ADMIN1', { actionType: 'APPROVED', reportId: 'R1' } as any, ['ADMIN']);
+    expect(res).toBe(resolvedCase);
+    expect(cases.save).not.toHaveBeenCalled();
+  });
+
+  it('approve-and-create-type automatically closes open moderation cases for the approved report', async () => {
+    const { service, cases, actions, missing, catRepo, signTypeRepo, dataSource, catalogService } = buildService();
+    const report = { id: 'R1', status: MissingTypeStatus.ESCALATED_ADMIN, candidateId: null, proposedName: 'No Horn', proposedCategoryId: 1, reporterId: 'U1' };
+    const openCase = { id: 'CASE-OPEN', caseType: 'CATALOG_PROPOSAL', targetEntityType: 'missing_sign_type_report', targetEntityId: 'R1', status: 'PENDING', assignedStaffId: null };
+    missing.findOne.mockResolvedValue(report);
+    catRepo.findOne.mockResolvedValue({ id: 1, code: 'PROHIBITORY' });
+    signTypeRepo.findOne.mockResolvedValue(null);
+    catalogService.createSignType.mockResolvedValue({ id: 42, signCode: 'P.128a' });
+    cases.find.mockResolvedValue([openCase]);
+    dataSource.query.mockImplementation((sql: string) =>
+      sql.includes('SELECT DISTINCT split_part') ? [{ prefix: 'P' }] : [],
+    );
+
+    await service.approveAndCreateType('R1', 'ADMIN1', {
+      signCode: 'P.128a',
+      nameVi: 'Cấm bấm còi',
+      nameEn: 'No Horn',
+      proposedCategoryId: 1,
+      allowedVehicles: ['CAR'],
+      staffNotes: 'ok',
+    }, representativeImage());
+
+    expect(cases.save).toHaveBeenCalledWith(expect.objectContaining({ id: 'CASE-OPEN', status: 'RESOLVED', resolutionNote: 'ok' }));
+    expect(actions.save).toHaveBeenCalledWith(expect.objectContaining({ caseId: 'CASE-OPEN', actionType: 'APPROVED', performedBy: 'ADMIN1' }));
+  });
+
   it('normalizes status OPEN to PENDING in listCases', async () => {
     const { service, cases } = buildService();
     cases.findAndCount.mockResolvedValue([[], 0]);
