@@ -628,7 +628,7 @@ export class ModerationService {
         reportId,
         adminId,
         reason,
-        MissingTypeStatus.ESCALATED_ADMIN,
+        [MissingTypeStatus.ESCALATED_ADMIN, MissingTypeStatus.PENDING],
       );
     }
     if (dto.actionType === 'REJECT' || dto.actionType === 'DISMISS') {
@@ -1207,7 +1207,7 @@ export class ModerationService {
     reportId: string,
     staffId: string,
     note: string | null,
-    expectedStatus = MissingTypeStatus.PENDING,
+    expectedStatus: MissingTypeStatus | MissingTypeStatus[] = MissingTypeStatus.PENDING,
   ) {
     const result = await this.dataSource.transaction(async (manager) => {
       let report: { id: string; candidateId?: string | null; reporterId?: string | null; proposedName?: string | null; status: MissingTypeStatus } | null = null;
@@ -1245,8 +1245,9 @@ export class ModerationService {
         }
       }
       if (!report) throw new NotFoundException('MissingSignTypeReport ' + reportId + ' not found');
-      if (report.status !== expectedStatus) {
-        throw new BadRequestException('Report status must be ' + expectedStatus + ' to request recapture');
+      const allowedStatuses = Array.isArray(expectedStatus) ? expectedStatus : [expectedStatus];
+      if (!allowedStatuses.includes(report.status)) {
+        throw new BadRequestException('Report status must be ' + allowedStatuses.join(' or ') + ' to request recapture');
       }
       if (!report.candidateId) {
         throw new BadRequestException('A candidate-linked report is required to request recapture');
@@ -1270,17 +1271,20 @@ export class ModerationService {
         candidate = candidateRows[0] ?? null;
       }
       if (!candidate) throw new NotFoundException('Candidate ' + report.candidateId + ' not found');
-      if (candidate.status !== CandidateStatus.NEW_TYPE_HOLD) {
-        throw new BadRequestException('Candidate must be on NEW_TYPE_HOLD to request recapture');
+      if ([CandidateStatus.VERIFIED, CandidateStatus.REJECTED, CandidateStatus.RECAPTURE_REQUESTED].includes(candidate.status)) {
+        throw new BadRequestException(`Cannot request recapture for candidate ${candidate.id} with status ${candidate.status}`);
       }
 
       let activeRequestsCount = 0;
       if (typeof manager.getRepository === 'function') {
-        activeRequestsCount = await manager.getRepository(CandidateRecaptureRequest)
+        // PostgreSQL rejects FOR UPDATE combined with aggregate COUNT(), so lock & select row IDs instead.
+        const activeRequests = await manager.getRepository(CandidateRecaptureRequest)
           .createQueryBuilder('r')
           .setLock('pessimistic_write')
+          .select(['r.id'])
           .where('r.candidateId = :candidateId AND r.completedAt IS NULL', { candidateId: candidate.id })
-          .getCount();
+          .getMany();
+        activeRequestsCount = activeRequests.length;
       } else if (typeof manager.query === 'function') {
         const activeRequests: any[] = await manager.query(
           `SELECT id FROM candidate_recapture_requests
@@ -1321,7 +1325,7 @@ export class ModerationService {
             reviewedBy: staffId,
             updatedAt: new Date(),
           })
-          .where('id = :id AND status = :status', { id: reportId, status: expectedStatus })
+          .where('id = :id AND status = :status', { id: reportId, status: report.status })
           .execute();
         updateReportAffected = res.affected ?? 0;
       } else if (typeof manager.query === 'function') {
@@ -1330,7 +1334,7 @@ export class ModerationService {
            SET status = $2, staff_notes = COALESCE($3, staff_notes), reviewed_by = $4, updated_at = NOW()
            WHERE id = $1 AND status = $5
            RETURNING id`,
-          [reportId, MissingTypeStatus.INCOMPLETE, note, staffId, expectedStatus],
+          [reportId, MissingTypeStatus.INCOMPLETE, note, staffId, report.status],
         );
         updateReportAffected = getAffectedRowCount(updatedReports);
       }
@@ -1342,7 +1346,7 @@ export class ModerationService {
           .createQueryBuilder()
           .update(UnverifiedSignCandidate)
           .set({ status: CandidateStatus.RECAPTURE_REQUESTED })
-          .where('id = :id AND status = :status', { id: candidate.id, status: CandidateStatus.NEW_TYPE_HOLD })
+          .where('id = :id AND status = :status', { id: candidate.id, status: candidate.status })
           .execute();
         updateCandAffected = res.affected ?? 0;
       } else if (typeof manager.query === 'function') {
@@ -1351,7 +1355,7 @@ export class ModerationService {
            SET status = $2
            WHERE id = $1 AND status = $3
            RETURNING id`,
-          [candidate.id, CandidateStatus.RECAPTURE_REQUESTED, CandidateStatus.NEW_TYPE_HOLD],
+          [candidate.id, CandidateStatus.RECAPTURE_REQUESTED, candidate.status],
         );
         updateCandAffected = getAffectedRowCount(updatedCandidates);
       }
@@ -1366,6 +1370,7 @@ export class ModerationService {
             candidateId: candidate.id,
             reviewerId: staffId,
             surveyorId: surveyorId ?? undefined,
+            newSignTypeReportId: reportId,
             missingTypeReportId: reportId,
             reason: 'MISSING_TYPE_RECAPTURE_REQUESTED',
             note,
@@ -1401,8 +1406,8 @@ export class ModerationService {
         const reportCase = await caseRepo
           .createQueryBuilder('c')
           .setLock('pessimistic_write')
-          .where('c.targetEntityType = :targetEntityType AND c.targetEntityId = :targetEntityId', {
-            targetEntityType: 'missing_sign_type_report',
+          .where('c.targetEntityType IN (:...targetEntityTypes) AND c.targetEntityId = :targetEntityId', {
+            targetEntityTypes: ['missing_sign_type_report', 'new_sign_type_report', 'missing_type_report', 'report'],
             targetEntityId: reportId,
           })
           .orderBy('c.createdAt', 'DESC')
@@ -1986,11 +1991,14 @@ export class ModerationService {
 
       let activeRequestsCount = 0;
       if (typeof manager.getRepository === 'function') {
-        activeRequestsCount = await manager.getRepository(CandidateRecaptureRequest)
+        // PostgreSQL rejects FOR UPDATE combined with aggregate COUNT(), so lock & select row IDs instead.
+        const activeRequests = await manager.getRepository(CandidateRecaptureRequest)
           .createQueryBuilder('r')
           .setLock('pessimistic_write')
+          .select(['r.id'])
           .where('r.candidateId = :candidateId AND r.completedAt IS NULL', { candidateId: candidate.id })
-          .getCount();
+          .getMany();
+        activeRequestsCount = activeRequests.length;
       } else if (typeof manager.query === 'function') {
         const activeRows: any[] = await manager.query(
           `SELECT id FROM candidate_recapture_requests
