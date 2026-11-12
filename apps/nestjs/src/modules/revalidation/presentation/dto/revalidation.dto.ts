@@ -43,6 +43,11 @@ export class SubmitEvidenceDto {
   @Min(0)
   @Max(360)
   headingDegrees?: number;
+
+  @ApiPropertyOptional({ description: 'Explicit verified sign ID confirmed by user when nearby signs are ambiguous', example: '42' })
+  @IsOptional()
+  @IsString()
+  confirmedSignId?: string;
 }
 
 export class CheckInEligibilityDto {
@@ -83,4 +88,16 @@ export class EarlyClassifyDto {
 export class RequestEvidenceRecaptureDto {
   @IsString() reason: string;
   @IsOptional() @IsString() note?: string;
+}
+
+export class ConfirmAmbiguousTargetDto {
+  @ApiProperty({ description: 'Confirmed verified traffic sign ID', example: 42 })
+  @Type(() => Number)
+  @IsInt()
+  confirmedSignId: number;
+
+  @ApiPropertyOptional({ description: 'Reviewer or surveyor confirmation note' })
+  @IsOptional()
+  @IsString()
+  note?: string;
 }

@@ -1,0 +1,25 @@
+flowchart LR
+  Client[Mobile / Web / Ops]
+  Nest[NestJS Business API]
+  Fast[FastAPI Spatial API]
+  AI[AI Inference]
+  Celery[Celery Worker/Beat]
+  DB[(PostgreSQL + PostGIS)]
+  Redis[(Redis)]
+  Minio[(MinIO)]
+  OSRM[OSRM Routing Engine]
+  Martin[Martin Tile Server]
+  Client --> Nest
+  Client --> Fast
+  Client --> Martin
+  Nest --> DB
+  Nest --> Redis
+  Nest --> Minio
+  Fast --> DB
+  Fast --> Redis
+  Celery --> Redis
+  Celery --> DB
+  Celery --> Minio
+  Celery --> AI
+  AI --> Minio
+  Fast --> OSRM

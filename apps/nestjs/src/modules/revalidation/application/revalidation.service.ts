@@ -456,6 +456,7 @@ export class RevalidationService {
       isLiveCapture?: boolean;
       accuracyMeters?: number;
       headingDegrees?: number;
+      confirmedSignId?: string;
     },
     file?: Express.Multer.File,
   ) {
@@ -481,6 +482,49 @@ export class RevalidationService {
     if (distanceMeters == null || Number.isNaN(distanceMeters)) throw new BadRequestException('Cannot verify distance: target sign has no location');
     if (distanceMeters > maxProximityMeters) {
       throw new BadRequestException(`Submitted evidence is too far from target sign (distance: ${Math.round(distanceMeters)}m, max allowed: ${maxProximityMeters}m)`);
+    }
+
+    // ---- Issue B: Ambiguous nearby signs detection (e.g. multiple similar signs within 50m) ----
+    if (this.dataSource?.query) {
+      const targetSignRows: any[] = await this.dataSource.query(
+        `SELECT id, sign_type_id FROM verified_traffic_signs WHERE id = $1`,
+        [task.verifiedSignId],
+      );
+      const targetSignTypeId = targetSignRows[0]?.sign_type_id;
+
+      if (targetSignTypeId != null) {
+        const nearbySimilarRows: any[] = await this.dataSource.query(
+          `SELECT vts.id, vts.sign_code, vts.sign_type_id,
+                  ST_DistanceSphere(vts.location, ST_SetSRID(ST_MakePoint($1, $2), 4326)) AS distance_meters
+           FROM verified_traffic_signs vts
+           WHERE vts.id <> $3
+             AND vts.sign_type_id = $4
+             AND vts.status = 'ACTIVE'
+             AND ST_DWithin(vts.location::geography, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, 50.0)
+           ORDER BY distance_meters ASC`,
+          [lon, lat, task.verifiedSignId, targetSignTypeId],
+        );
+
+        if (nearbySimilarRows.length > 0 && String(dto.confirmedSignId) !== String(task.verifiedSignId)) {
+          throw new HttpException(
+            {
+              statusCode: HttpStatus.CONFLICT,
+              message: `Multiple similar traffic signs found within 50m radius. Human target confirmation is required to avoid misattribution.`,
+              error: 'AMBIGUOUS_TARGET_SIGN',
+              targetSignId: task.verifiedSignId,
+              candidates: [
+                { id: task.verifiedSignId, distanceMeters: Math.round(distanceMeters) },
+                ...nearbySimilarRows.map((r) => ({
+                  id: r.id,
+                  signCode: r.sign_code,
+                  distanceMeters: Math.round(Number(r.distance_meters)),
+                })),
+              ],
+            },
+            HttpStatus.CONFLICT,
+          );
+        }
+      }
     }
 
     // ---- Daily submission limit (anti spam / sybil bounty abuse) ----

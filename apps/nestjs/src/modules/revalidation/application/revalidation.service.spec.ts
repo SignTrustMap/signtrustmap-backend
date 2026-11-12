@@ -1,3 +1,4 @@
+import { HttpStatus } from '@nestjs/common';
 import { DataSource, Repository } from 'typeorm';
 import { MinioStorageService } from '../../../integrations/minio/minio-storage.service';
 import { NotificationsService } from '../../notifications/notifications.service';
@@ -291,6 +292,70 @@ describe('RevalidationService', () => {
         .rejects.toThrow('Submitted evidence is too far from target sign (distance: 142m, max allowed: 50m)');
     });
 
+    it('Scenario DS-03b: rejects evidence 120m away when max limit is 50m with meaningful error', async () => {
+      const { service } = proximityHarness(120);
+      await expect(service.submitEvidence('task-id', 'surveyor-id', { latitude: 21.02851, longitude: 105.83419, mediaUrl: 'revalidation/task-id/outside.jpg' }))
+        .rejects.toThrow('Submitted evidence is too far from target sign (distance: 120m, max allowed: 50m)');
+    });
+
+    it('Scenario DS-03c: detects ambiguous signs within 50m and requires human confirmation', async () => {
+      const task = { id: 'task-id', verifiedSignId: 'sign-1', status: TaskStatus.OPEN, freshnessRuleId: null } as RevalidationTask;
+      const tasks = { findOne: jest.fn().mockResolvedValue(task) } as unknown as Repository<RevalidationTask>;
+      const query = jest.fn(async (sql: string) => {
+        if (sql.includes('ST_DistanceSphere') && sql.includes('revalidation_tasks')) return [{ distance_meters: 10 }];
+        if (sql.includes('SELECT id, sign_type_id FROM verified_traffic_signs')) return [{ id: 'sign-1', sign_type_id: 42 }];
+        if (sql.includes('vts.sign_type_id = $4') && sql.includes('ST_DWithin')) {
+          return [{ id: 'sign-2', sign_code: 'P.102', sign_type_id: 42, distance_meters: 25.0 }];
+        }
+        if (sql.includes('COUNT(*)')) return [{ cnt: 0 }];
+        return [];
+      });
+      const dataSource = { query, transaction: jest.fn() } as unknown as DataSource;
+      const service = new RevalidationService(
+        tasks,
+        { findOne: jest.fn().mockResolvedValue({ id: 'ev-id', taskId: 'task-id', userId: 'surveyor-id' }) } as any,
+        {} as any,
+        dataSource,
+        {} as any,
+        {} as any,
+        {} as any,
+      );
+
+      // Without confirmation -> throws CONFLICT
+      await expect(
+        service.submitEvidence('task-id', 'surveyor-id', {
+          latitude: 21.02851,
+          longitude: 105.83419,
+          mediaUrl: 'revalidation/task-id/ambiguous.jpg',
+        }),
+      ).rejects.toMatchObject({
+        status: HttpStatus.CONFLICT,
+        response: expect.objectContaining({
+          error: 'AMBIGUOUS_TARGET_SIGN',
+          candidates: expect.arrayContaining([
+            expect.objectContaining({ id: 'sign-1', distanceMeters: 10 }),
+            expect.objectContaining({ id: 'sign-2', distanceMeters: 25 }),
+          ]),
+        }),
+      });
+
+      // With explicit confirmation -> succeeds
+      const txQuery = jest.fn(async (sql: string) => {
+        if (sql.includes('FROM revalidation_tasks') && sql.includes('FOR UPDATE')) return [{ status: TaskStatus.OPEN }];
+        if (sql.includes('COUNT(*)')) return [{ cnt: 0 }];
+        return [];
+      });
+      dataSource.transaction = jest.fn((cb: any) => cb({ query: txQuery }));
+
+      const confirmedResult = await service.submitEvidence('task-id', 'surveyor-id', {
+        latitude: 21.02851,
+        longitude: 105.83419,
+        mediaUrl: 'revalidation/task-id/ambiguous.jpg',
+        confirmedSignId: 'sign-1',
+      });
+      expect(confirmedResult.distanceMeters).toBe(10);
+    });
+
     it('rejects a fourth submission within 24h with 429', async () => {
       const { service } = proximityHarness(5, 3);
       await expect(service.submitEvidence('task-id', 'surveyor-id', { latitude: 21.02851, longitude: 105.83419 }))
@@ -446,7 +511,7 @@ describe('RevalidationService', () => {
       const dataSource = { query } as unknown as DataSource;
       const service = new RevalidationService(
         tasks,
-        {} as any,
+        { findOne: jest.fn().mockResolvedValue({ id: 'ev-id', taskId: 'task-id', userId: 'surveyor-id' }) } as any,
         {} as any,
         dataSource,
         {} as any,
