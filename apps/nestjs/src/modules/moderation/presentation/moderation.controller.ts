@@ -32,14 +32,38 @@ export class ModerationController {
   reportMissing(@CurrentUser() user: any, @Body() dto: CreateMissingTypeReportDto) { return this.svc.reportMissingType(user.id, dto); }
 
   @Roles('STAFF', 'ADMIN')
-  @ApiOperation({ summary: 'List new-sign reports', description: 'Paginated list of new-sign reports submitted by community reviewers, filterable by status' })
+  @ApiOperation({ summary: 'List new-sign reports', description: 'Paginated list of new-sign reports submitted by community reviewers, filterable by status or search query' })
   @Get('moderation/new-signs')
-  listNewSigns(@Query('status') status?: string, @Query('page') page?: string, @Query('pageSize') pageSize?: string) { const p = page ? parseInt(page, 10) : 1; const ps = pageSize ? parseInt(pageSize, 10) : 20; return this.svc.listNewSignReports(status, Number.isNaN(p) ? 1 : p, Number.isNaN(ps) ? 20 : ps); }
+  listNewSigns(
+    @Query('status') status?: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+    @Query('search') search?: string,
+  ) {
+    const p = page ? parseInt(page, 10) : 1;
+    const ps = pageSize ? parseInt(pageSize, 10) : 20;
+    const normalizedSearch = search?.trim() ? search.trim() : undefined;
+    return normalizedSearch !== undefined
+      ? this.svc.listNewSignReports(status, Number.isNaN(p) ? 1 : p, Number.isNaN(ps) ? 20 : ps, normalizedSearch)
+      : this.svc.listNewSignReports(status, Number.isNaN(p) ? 1 : p, Number.isNaN(ps) ? 20 : ps);
+  }
 
   @Roles('STAFF', 'ADMIN')
   @ApiOperation({ summary: 'List new-sign reports (legacy route)', description: 'Backward-compatible alias for GET /moderation/new-signs' })
   @Get('moderation/missing-type-reports')
-  listMissing(@Query('status') status?: string, @Query('page') page?: string, @Query('pageSize') pageSize?: string) { const p = page ? parseInt(page, 10) : 1; const ps = pageSize ? parseInt(pageSize, 10) : 20; return this.svc.listMissingReports(status, Number.isNaN(p) ? 1 : p, Number.isNaN(ps) ? 20 : ps); }
+  listMissing(
+    @Query('status') status?: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+    @Query('search') search?: string,
+  ) {
+    const p = page ? parseInt(page, 10) : 1;
+    const ps = pageSize ? parseInt(pageSize, 10) : 20;
+    const normalizedSearch = search?.trim() ? search.trim() : undefined;
+    return normalizedSearch !== undefined
+      ? this.svc.listMissingReports(status, Number.isNaN(p) ? 1 : p, Number.isNaN(ps) ? 20 : ps, normalizedSearch)
+      : this.svc.listMissingReports(status, Number.isNaN(p) ? 1 : p, Number.isNaN(ps) ? 20 : ps);
+  }
 
   @Roles('STAFF', 'ADMIN')
   @ApiOperation({ summary: 'Get new-sign report detail', description: 'Retrieve image evidence and details for a new-sign report' })
@@ -117,7 +141,19 @@ export class ModerationController {
   @Roles('STAFF', 'ADMIN')
   @ApiOperation({ summary: 'List moderation cases', description: 'Staff/Admin queue of reported signs, suspected spam, or fraud investigations' })
   @Get('moderation/cases')
-  listCases(@Query('status') status?: string, @Query('page') page?: string, @Query('pageSize') pageSize?: string) { const p = page ? parseInt(page, 10) : 1; const ps = pageSize ? parseInt(pageSize, 10) : 20; return this.svc.listCases(status, Number.isNaN(p) ? 1 : p, Number.isNaN(ps) ? 20 : ps); }
+  listCases(
+    @Query('status') status?: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+    @Query('search') search?: string,
+  ) {
+    const p = page ? parseInt(page, 10) : 1;
+    const ps = pageSize ? parseInt(pageSize, 10) : 20;
+    const normalizedSearch = search?.trim() ? search.trim() : undefined;
+    return normalizedSearch !== undefined
+      ? this.svc.listCases(status, Number.isNaN(p) ? 1 : p, Number.isNaN(ps) ? 20 : ps, normalizedSearch)
+      : this.svc.listCases(status, Number.isNaN(p) ? 1 : p, Number.isNaN(ps) ? 20 : ps);
+  }
 
   @Roles('STAFF', 'ADMIN')
   @ApiOperation({ summary: 'Get moderation case detail', description: 'Retrieve full case investigation context, audit history, and evidence' })
@@ -127,5 +163,12 @@ export class ModerationController {
   @Roles('STAFF', 'ADMIN')
   @ApiOperation({ summary: 'Resolve moderation case', description: 'Staff/Admin reaches resolution verdict (Dismiss, Ban User, Remove Sign)' })
   @Put('moderation/cases/:id/resolve')
-  resolveCase(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: any, @Body() dto: ResolveCaseDto) { return this.svc.resolveCase(id, user.id, dto, user?.role); }
+  resolveCase(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: any, @Body() dto: ResolveCaseDto) { return this.svc.resolveCase(id, user.id, dto, user?.roles || user?.role); }
+
+  @Roles('STAFF', 'ADMIN')
+  @ApiOperation({ summary: 'Get user detail by ID', description: 'Retrieve user identity and roles for moderation context' })
+  @Get('moderation/users/:id')
+  getUserProfile(@Param('id', ParseUUIDPipe) id: string) {
+    return this.svc.getUserProfile(id);
+  }
 }

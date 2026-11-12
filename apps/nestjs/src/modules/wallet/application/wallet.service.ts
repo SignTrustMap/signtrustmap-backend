@@ -120,7 +120,7 @@ export class WalletService {
     return this.packageRepo.find({ where: { isActive: true } as any, order: { creditAmount: 'ASC' } as any });
   }
 
-  async topUp(userId: string, dto: TopUpDto) {
+  async topUp(userId: string, dto: TopUpDto, options?: { baseUrl?: string }) {
     const pkg = await this.packageRepo.findOne({ where: { id: dto.packageId } });
     if (!pkg) throw new NotFoundException(`Top-up package #${dto.packageId} not found`);
     if (!pkg.isActive) throw new NotFoundException(`Top-up package #${dto.packageId} is inactive`);
@@ -128,10 +128,13 @@ export class WalletService {
     const gateway = (dto.gateway || dto.paymentMethod || 'MOCK').toUpperCase();
     if (gateway === 'MOMO' && this.momoService) {
       try {
-        return await this.momoService.createPayment(userId, {
+        const payload = {
           packageId: dto.packageId,
           ...(dto.idempotencyKey ? { idempotencyKey: dto.idempotencyKey } : {}),
-        });
+        };
+        return options
+          ? await this.momoService.createPayment(userId, payload, options)
+          : await this.momoService.createPayment(userId, payload);
       } catch (err: any) {
         if (err instanceof BadRequestException || err instanceof NotFoundException) {
           throw err;
@@ -211,9 +214,13 @@ export class WalletService {
     }
 
     if (gateway === 'MOMO') {
-      const payUrl = `https://test-payment.momo.vn/pay?orderId=${saved.orderCode}&amount=${amountVnd}`;
+      const isProd = process.env.NODE_ENV === 'production';
+      const defaultAppUrl = isProd ? 'https://api.signmap.site' : 'http://localhost:3000';
+      const appUrl = (process.env.APP_URL || process.env.API_BASE_URL || defaultAppUrl).replace(/\/$/, '');
+      const simulateBaseUrl = (options?.baseUrl || process.env.MOMO_SIMULATE_BASE_URL || `${appUrl}/api/v1`).replace(/\/$/, '');
+      const payUrl = `${simulateBaseUrl}/payments/momo/simulate/${saved.orderCode}`;
       const deeplink = `momo://app?action=payWithApp&orderId=${saved.orderCode}&amount=${amountVnd}`;
-      const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(deeplink)}`;
+      const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(payUrl)}`;
       return {
         paymentOrder: {
           id: saved.id,
@@ -227,6 +234,7 @@ export class WalletService {
           createdAt: saved.createdAt,
         },
         payUrl,
+        paymentUrl: payUrl,
         deeplink,
         qrCodeUrl,
         orderId: saved.orderCode,
@@ -236,6 +244,11 @@ export class WalletService {
       };
     }
 
+    const isProd = process.env.NODE_ENV === 'production';
+    const defaultAppUrl = isProd ? 'https://api.signmap.site' : 'http://localhost:3000';
+    const defaultAppUrlClean = (process.env.APP_URL || process.env.API_BASE_URL || defaultAppUrl).replace(/\/$/, '');
+    const defaultSimUrl = (options?.baseUrl || process.env.MOMO_SIMULATE_BASE_URL || `${defaultAppUrlClean}/api/v1`).replace(/\/$/, '');
+    const defaultPayUrl = `${defaultSimUrl}/payments/momo/simulate/${saved.orderCode}`;
     return {
       paymentOrder: {
         id: saved.id, orderCode: saved.orderCode, packageId: saved.packageId,
@@ -243,13 +256,14 @@ export class WalletService {
         creditAmount: pkg.creditAmount, gateway: saved.gateway,
         status: saved.status, createdAt: saved.createdAt,
       },
-      payUrl: `https://test-payment.momo.vn/pay?orderId=${saved.orderCode}&amount=${amountVnd}`,
+      payUrl: defaultPayUrl,
+      paymentUrl: defaultPayUrl,
       qrCodeUrl: `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(saved.orderCode)}`,
       message: 'Payment order created. Complete via gateway callback.',
     };
   }
 
-  async topUpCustom(userId: string, dto: CustomTopUpDto) {
+  async topUpCustom(userId: string, dto: CustomTopUpDto, options?: { baseUrl?: string }) {
     const amount = Number(dto.amount);
     if (!Number.isFinite(amount) || !Number.isInteger(amount) || amount < 10 || amount > 10000) {
       throw new BadRequestException('amount must be an integer in [10, 10000]');
@@ -258,10 +272,13 @@ export class WalletService {
     const gateway = (dto.gateway || dto.paymentMethod || 'MOCK').toUpperCase();
     if (gateway === 'MOMO' && this.momoService) {
       try {
-        return await this.momoService.createPayment(userId, {
+        const payload = {
           customAmount: amount,
           ...(dto.idempotencyKey ? { idempotencyKey: dto.idempotencyKey } : {}),
-        });
+        };
+        return options
+          ? await this.momoService.createPayment(userId, payload, options)
+          : await this.momoService.createPayment(userId, payload);
       } catch (err: any) {
         if (err instanceof BadRequestException || err instanceof NotFoundException) {
           throw err;
@@ -367,9 +384,13 @@ export class WalletService {
     }
 
     if (gateway === 'MOMO') {
-      const payUrl = `https://test-payment.momo.vn/pay?orderId=${saved.orderCode}&amount=${numAmountVnd}`;
+      const isProd = process.env.NODE_ENV === 'production';
+      const defaultAppUrl = isProd ? 'https://api.signmap.site' : 'http://localhost:3000';
+      const appUrl = (process.env.APP_URL || process.env.API_BASE_URL || defaultAppUrl).replace(/\/$/, '');
+      const simulateBaseUrl = (options?.baseUrl || process.env.MOMO_SIMULATE_BASE_URL || `${appUrl}/api/v1`).replace(/\/$/, '');
+      const payUrl = `${simulateBaseUrl}/payments/momo/simulate/${saved.orderCode}`;
       const deeplink = `momo://app?action=payWithApp&orderId=${saved.orderCode}&amount=${numAmountVnd}`;
-      const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(deeplink)}`;
+      const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(payUrl)}`;
       return {
         paymentOrder: {
           id: saved.id,
@@ -382,6 +403,7 @@ export class WalletService {
           createdAt: saved.createdAt,
         },
         payUrl,
+        paymentUrl: payUrl,
         deeplink,
         qrCodeUrl,
         orderId: saved.orderCode,
@@ -392,14 +414,56 @@ export class WalletService {
     }
 
     // Override credit amount for custom orders (stored in note / callback payload)
+    const isProd = process.env.NODE_ENV === 'production';
+    const defaultAppUrl = isProd ? 'https://api.signmap.site' : 'http://localhost:3000';
+    const customAppUrl = (process.env.APP_URL || process.env.API_BASE_URL || defaultAppUrl).replace(/\/$/, '');
+    const customSimUrl = (options?.baseUrl || process.env.MOMO_SIMULATE_BASE_URL || `${customAppUrl}/api/v1`).replace(/\/$/, '');
+    const customPayUrl = `${customSimUrl}/payments/momo/simulate/${saved.orderCode}`;
     return {
       paymentOrder: {
         id: saved.id, orderCode: saved.orderCode, packageId: saved.packageId,
         customAmount: amount, amountVnd, gateway: saved.gateway, status: saved.status, createdAt: saved.createdAt,
       },
-      payUrl: `https://test-payment.momo.vn/pay?orderId=${saved.orderCode}&amount=${numAmountVnd}`,
+      payUrl: customPayUrl,
+      paymentUrl: customPayUrl,
       qrCodeUrl: `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(saved.orderCode)}`,
       message: `Custom order: ${amount} credits for ${amountVnd} VND. Complete via payment gateway.`,
+    };
+  }
+
+  async claimDailyReward(userId: string) {
+    await this.ensureWallet(userId);
+    const bonus = 25;
+    const today = new Date().toISOString().split('T')[0];
+    const idempotencyKey = `daily_claim:${userId}:${today}`;
+
+    // Check if user already claimed today via transactions log
+    const existing = await this.txRepo.findOne({
+      where: { userId, referenceType: 'daily_reward_claim', referenceId: today } as any,
+    });
+    if (existing) {
+      const walletInfo = await this.getWallet(userId);
+      return {
+        creditsAdded: 0,
+        newBalance: walletInfo.wallet.balance,
+        message: 'Daily reward already claimed today',
+      };
+    }
+
+    await this.creditUser(
+      userId,
+      bonus,
+      TransactionType.DAILY_TASK_REWARD,
+      'daily_reward_claim',
+      today,
+      'Phần thưởng điểm danh hàng ngày',
+      { idempotencyKey },
+    );
+    const walletInfo = await this.getWallet(userId);
+    return {
+      creditsAdded: bonus,
+      newBalance: walletInfo.wallet.balance,
+      message: `Đã nhận thành công +${bonus} credits điểm danh!`,
     };
   }
 

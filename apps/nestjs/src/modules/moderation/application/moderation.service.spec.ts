@@ -6,6 +6,7 @@ import { MissingSignTypeReport, MissingTypeStatus } from '../infrastructure/pers
 import { SignCategory } from '../../catalog/sign-category.entity';
 import { TrafficSignType } from '../../catalog/traffic-sign-type.entity';
 import { UnverifiedSignCandidate, CandidateStatus } from '../../survey/infrastructure/persistence/unverified-sign-candidate.entity';
+import { CandidateRecaptureRequest } from '../../reviews/infrastructure/persistence/candidate-recapture-request.entity';
 import { NotificationsService } from '../../notifications/notifications.service';
 import { CatalogService } from '../../catalog/catalog.service';
 import { CatalogSyncService } from '../../../integrations/catalog-sync/catalog-sync.service';
@@ -634,6 +635,72 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
       .rejects.toThrow(ForbiddenException);
   });
 
+  it('allows resolveCase with APPROVED actionType when userRole is array containing ADMIN', async () => {
+    const { service, cases, missing, catRepo, catalogService } = buildService();
+    cases.findOne.mockResolvedValue({ id: 'CASE1', status: 'IN_REVIEW', targetEntityType: 'missing_sign_type_report', targetEntityId: 'R1' });
+    missing.findOne.mockResolvedValue({ id: 'R1', status: MissingTypeStatus.PENDING, proposedCategoryId: 1 });
+    catRepo.findOne.mockResolvedValue({ id: 1, code: 'PROHIBITORY' });
+    catalogService.createSignType.mockResolvedValue({ id: 42, signCode: 'P.128a' });
+
+    await service.resolveCase('CASE1', 'ADMIN1', { actionType: 'APPROVED', reportId: 'R1' } as any, ['ADMIN', 'STAFF']);
+    expect(cases.save).toHaveBeenCalledWith(expect.objectContaining({ status: 'RESOLVED' }));
+  });
+
+  it('resolveCase returns idempotently when a CATALOG_PROPOSAL case is already RESOLVED and its report is APPROVED', async () => {
+    const { service, cases, missing } = buildService();
+    const resolvedCase = {
+      id: 'CASE1',
+      caseType: 'CATALOG_PROPOSAL',
+      status: 'RESOLVED',
+      targetEntityType: 'missing_sign_type_report',
+      targetEntityId: 'R1',
+    };
+    cases.findOne.mockResolvedValue(resolvedCase);
+    missing.findOne.mockResolvedValue({ id: 'R1', status: MissingTypeStatus.APPROVED });
+
+    const res = await service.resolveCase('CASE1', 'ADMIN1', { actionType: 'APPROVED', reportId: 'R1' } as any, ['ADMIN']);
+    expect(res).toBe(resolvedCase);
+    expect(cases.save).not.toHaveBeenCalled();
+  });
+
+  it('approve-and-create-type automatically closes open moderation cases for the approved report', async () => {
+    const { service, cases, actions, missing, catRepo, signTypeRepo, dataSource, catalogService } = buildService();
+    const report = { id: 'R1', status: MissingTypeStatus.ESCALATED_ADMIN, candidateId: null, proposedName: 'No Horn', proposedCategoryId: 1, reporterId: 'U1' };
+    const openCase = { id: 'CASE-OPEN', caseType: 'CATALOG_PROPOSAL', targetEntityType: 'missing_sign_type_report', targetEntityId: 'R1', status: 'PENDING', assignedStaffId: null };
+    missing.findOne.mockResolvedValue(report);
+    catRepo.findOne.mockResolvedValue({ id: 1, code: 'PROHIBITORY' });
+    signTypeRepo.findOne.mockResolvedValue(null);
+    catalogService.createSignType.mockResolvedValue({ id: 42, signCode: 'P.128a' });
+    cases.find.mockResolvedValue([openCase]);
+    dataSource.query.mockImplementation((sql: string) =>
+      sql.includes('SELECT DISTINCT split_part') ? [{ prefix: 'P' }] : [],
+    );
+
+    await service.approveAndCreateType('R1', 'ADMIN1', {
+      signCode: 'P.128a',
+      nameVi: 'Cấm bấm còi',
+      nameEn: 'No Horn',
+      proposedCategoryId: 1,
+      allowedVehicles: ['CAR'],
+      staffNotes: 'ok',
+    }, representativeImage());
+
+    expect(cases.save).toHaveBeenCalledWith(expect.objectContaining({ id: 'CASE-OPEN', status: 'RESOLVED', resolutionNote: 'ok' }));
+    expect(actions.save).toHaveBeenCalledWith(expect.objectContaining({ caseId: 'CASE-OPEN', actionType: 'APPROVED', performedBy: 'ADMIN1' }));
+  });
+
+  it('normalizes status OPEN to PENDING in listCases', async () => {
+    const { service, cases } = buildService();
+    cases.findAndCount.mockResolvedValue([[], 0]);
+
+    await service.listCases('OPEN', 1, 10);
+    expect(cases.findAndCount).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { status: 'PENDING' },
+      }),
+    );
+  });
+
   it('approve-and-create-type provisions the sign type, bumps catalog version, releases the held candidate and triggers AI label sync', async () => {
     const { service, missing, catRepo, signTypeRepo, candRepo, dataSource, notifications, catalogService, catalogSyncService, minioStorageService } = buildService();
     const report = { id: 'R1', status: MissingTypeStatus.PENDING, candidateId: 'C1', proposedName: 'No Horn', proposedCategoryId: 1, reporterId: 'U1', suggestedShape: 'CIRCLE', suggestedColorScheme: null };
@@ -839,6 +906,169 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
       id: 'R-ESC',
       status: 'IN_REVIEW',
       rawStatus: MissingTypeStatus.ESCALATED_ADMIN,
+    });
+  });
+
+  it('uses pessimistic row lock without aggregate COUNT() when Admin requests recapture via TypeORM repositories', async () => {
+    const { service, missing, dataSource } = buildService();
+    missing.findOne.mockResolvedValue({
+      id: 'R-REPO',
+      status: MissingTypeStatus.INCOMPLETE,
+      candidateId: 'C-REPO',
+      reporterId: 'REV1',
+    });
+
+    const makeQb = (overrides: Record<string, any> = {}) => {
+      const qb: any = {
+        setLock: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue({ affected: 1 }),
+        getOne: jest.fn().mockResolvedValue(null),
+        getMany: jest.fn().mockResolvedValue([]),
+        getCount: jest.fn().mockImplementation(() => {
+          throw new Error('FOR UPDATE is not allowed with aggregate functions');
+        }),
+        ...overrides,
+      };
+      return qb;
+    };
+
+    const reportLockQb = makeQb({
+      getOne: jest.fn().mockResolvedValue({
+        id: 'R-REPO',
+        candidateId: 'C-REPO',
+        reporterId: 'REV1',
+        proposedName: 'TEst 6',
+        status: MissingTypeStatus.PENDING,
+      }),
+    });
+    const reportUpdateQb = makeQb();
+    const candLockQb = makeQb({
+      getOne: jest.fn().mockResolvedValue({
+        id: 'C-REPO',
+        status: CandidateStatus.PENDING_REVIEW,
+      }),
+    });
+    const candUpdateQb = makeQb();
+    const recCheckQb = makeQb({ getMany: jest.fn().mockResolvedValue([]) });
+    const recRepo = {
+      createQueryBuilder: jest.fn(() => recCheckQb),
+      create: jest.fn((v: any) => v),
+      save: jest.fn(async (v: any) => v),
+    };
+    const caseQb = makeQb({
+      getOne: jest.fn().mockResolvedValue({ id: 'CASE-REPO', status: 'PENDING' }),
+    });
+    const caseRepo = {
+      createQueryBuilder: jest.fn(() => caseQb),
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
+      create: jest.fn((v: any) => v),
+      save: jest.fn(async (v: any) => v),
+    };
+    const actionRepo = {
+      create: jest.fn((v: any) => v),
+      save: jest.fn(async (v: any) => v),
+    };
+
+    const manager = {
+      getRepository: jest.fn((entity: any) => {
+        if (entity === MissingSignTypeReport) {
+          return {
+            createQueryBuilder: jest.fn((alias?: string) => (alias ? reportLockQb : reportUpdateQb)),
+          };
+        }
+        if (entity === UnverifiedSignCandidate) {
+          return {
+            createQueryBuilder: jest.fn((alias?: string) => (alias ? candLockQb : candUpdateQb)),
+          };
+        }
+        if (entity === CandidateRecaptureRequest) return recRepo;
+        if (entity === ModerationCase) return caseRepo;
+        if (entity === ModerationAction) return actionRepo;
+        return {};
+      }),
+    };
+    dataSource.transaction.mockImplementation((fn: (m: any) => any) => fn(manager));
+
+    const result = await service.applyAdminMissingReportAction('R-REPO', 'ADMIN1', {
+      actionType: 'REQUEST_RECAPTURE',
+      reason: 'Need clearer field photo',
+    });
+
+    expect(result).toMatchObject({ id: 'R-REPO', status: MissingTypeStatus.INCOMPLETE });
+    expect(recCheckQb.setLock).toHaveBeenCalledWith('pessimistic_write');
+    expect(recCheckQb.select).toHaveBeenCalledWith(['r.id']);
+    expect(recCheckQb.getMany).toHaveBeenCalled();
+    expect(recCheckQb.getCount).not.toHaveBeenCalled();
+    expect(recRepo.create).toHaveBeenCalledWith(expect.objectContaining({
+      candidateId: 'C-REPO',
+      missingTypeReportId: 'R-REPO',
+      newSignTypeReportId: 'R-REPO',
+    }));
+    expect(caseRepo.update).toHaveBeenCalledWith('CASE-REPO', expect.objectContaining({
+      status: 'RESOLVED',
+      resolutionNote: 'Need clearer field photo',
+    }));
+  });
+
+  it('strips leading # when searching listMissingReports and listCases by UUID or report name', async () => {
+    const { service, missing, cases, dataSource } = buildService();
+    const reportQb: any = {
+      andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getManyAndCount: jest.fn().mockResolvedValue([
+        [{ id: '288661b8-6eea-42af-8800-caf67895dbd3', status: MissingTypeStatus.PENDING, proposedName: 'TEst 6' }],
+        1,
+      ]),
+    };
+    (missing as any).createQueryBuilder = jest.fn(() => reportQb);
+
+    const caseQb: any = {
+      andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getManyAndCount: jest.fn().mockResolvedValue([
+        [{
+          id: 'case-1',
+          caseType: 'CATALOG_PROPOSAL',
+          targetEntityType: 'missing_sign_type_report',
+          targetEntityId: '288661b8-6eea-42af-8800-caf67895dbd3',
+          status: 'PENDING',
+        }],
+        1,
+      ]),
+    };
+    (cases as any).createQueryBuilder = jest.fn(() => caseQb);
+    dataSource.query.mockResolvedValue([
+      {
+        id: '288661b8-6eea-42af-8800-caf67895dbd3',
+        proposed_name: 'TEst 6',
+        status: 'ESCALATED_ADMIN',
+        reporter_id: 'u-1',
+        reporter_name: 'Demo User',
+        reporter_email: 'demo@stm.dev',
+      },
+    ]);
+
+    const repRes = await service.listMissingReports(undefined, 1, 20, '#288661b8');
+    expect(repRes.total).toBe(1);
+    expect(reportQb.andWhere).toHaveBeenCalledWith(expect.any(String), { pattern: '%288661b8%' });
+
+    const caseRes = await service.listCases(undefined, 1, 20, '#288661b8-6eea-42af-8800-caf67895dbd3');
+    expect(caseRes.total).toBe(1);
+    expect(caseQb.andWhere).toHaveBeenCalledWith(expect.any(String), {
+      pattern: '%288661b8-6eea-42af-8800-caf67895dbd3%',
+    });
+    expect(caseRes.items[0]).toMatchObject({
+      proposedName: 'TEst 6',
+      targetTitle: 'TEst 6',
     });
   });
 });

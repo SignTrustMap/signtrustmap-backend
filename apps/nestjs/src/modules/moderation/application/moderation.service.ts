@@ -180,30 +180,67 @@ export class ModerationService {
     return this.reportNewSign(reporterId, dto);
   }
 
-  async listNewSignReports(status?: string, page = 1, pageSize = 20) {
+  async listNewSignReports(status?: string, page = 1, pageSize = 20, search?: string) {
     const p = Math.max(1, page), ps = Math.min(Math.max(1, pageSize), 100);
     const where: any = {};
-    if (status) {
-      const upper = status.toUpperCase();
-      if (upper === 'OPEN') {
+    const upperStatus = status?.toUpperCase();
+    if (upperStatus) {
+      if (upperStatus === 'OPEN') {
         where.status = MissingTypeStatus.PENDING;
-      } else if (upper === 'APPROVED') {
+      } else if (upperStatus === 'APPROVED') {
         where.status = In([MissingTypeStatus.APPROVED, MissingTypeStatus.ESCALATED_ADMIN]);
-      } else if (upper === 'IN_REVIEW' || upper === 'ESCALATED') {
+      } else if (upperStatus === 'IN_REVIEW' || upperStatus === 'ESCALATED') {
         where.status = MissingTypeStatus.ESCALATED_ADMIN;
       } else {
         const allowed = Object.values(MissingTypeStatus);
-        if (!allowed.includes(upper as MissingTypeStatus)) throw new BadRequestException('status must be one of ' + allowed.join(', '));
-        where.status = upper;
+        if (!allowed.includes(upperStatus as MissingTypeStatus)) throw new BadRequestException('status must be one of ' + allowed.join(', '));
+        where.status = upperStatus;
       }
     }
+
+    const normalizedSearch = search?.trim().replace(/^#+/, '').trim() || '';
+    if (normalizedSearch && typeof this.missing?.createQueryBuilder === 'function') {
+      const pattern = `%${normalizedSearch.replace(/[%_\\]/g, '\\$&')}%`;
+      const qb = this.missing.createQueryBuilder('r');
+      if (where.status) {
+        if (upperStatus === 'APPROVED') {
+          qb.andWhere('r.status IN (:...statuses)', {
+            statuses: [MissingTypeStatus.APPROVED, MissingTypeStatus.ESCALATED_ADMIN],
+          });
+        } else {
+          qb.andWhere('r.status = :status', { status: where.status });
+        }
+      }
+      qb.andWhere(
+        `(
+          CAST(r.id AS text) ILIKE :pattern ESCAPE '\\'
+          OR CAST(r.candidate_id AS text) ILIKE :pattern ESCAPE '\\'
+          OR COALESCE(r.proposed_name, '') ILIKE :pattern ESCAPE '\\'
+          OR COALESCE(r.description, '') ILIKE :pattern ESCAPE '\\'
+          OR COALESCE(r.staff_notes, '') ILIKE :pattern ESCAPE '\\'
+          OR EXISTS (
+            SELECT 1 FROM users u
+            WHERE u.id = r.reporter_id
+              AND (COALESCE(u.full_name, '') ILIKE :pattern ESCAPE '\\' OR COALESCE(u.email, '') ILIKE :pattern ESCAPE '\\')
+          )
+        )`,
+        { pattern },
+      )
+        .orderBy('r.createdAt', 'DESC')
+        .skip((p - 1) * ps)
+        .take(ps);
+      const [items, total] = await qb.getManyAndCount();
+      const enriched = await this.enrichWithCandidates(items);
+      return { items: enriched, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
+    }
+
     const [items, total] = await this.missing.findAndCount({ where, order: { createdAt: 'DESC' }, skip: (p - 1) * ps, take: ps });
     const enriched = await this.enrichWithCandidates(items);
     return { items: enriched, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
   }
 
-  listMissingReports(status?: string, page = 1, pageSize = 20) {
-    return this.listNewSignReports(status, page, pageSize);
+  listMissingReports(status?: string, page = 1, pageSize = 20, search?: string) {
+    return this.listNewSignReports(status, page, pageSize, search);
   }
 
   async updateNewSignReport(reportId: string, reviewerId: string, dto: UpdateNewSignTypeReportDto) {
@@ -628,7 +665,7 @@ export class ModerationService {
         reportId,
         adminId,
         reason,
-        MissingTypeStatus.ESCALATED_ADMIN,
+        [MissingTypeStatus.ESCALATED_ADMIN, MissingTypeStatus.PENDING],
       );
     }
     if (dto.actionType === 'REJECT' || dto.actionType === 'DISMISS') {
@@ -1207,7 +1244,7 @@ export class ModerationService {
     reportId: string,
     staffId: string,
     note: string | null,
-    expectedStatus = MissingTypeStatus.PENDING,
+    expectedStatus: MissingTypeStatus | MissingTypeStatus[] = MissingTypeStatus.PENDING,
   ) {
     const result = await this.dataSource.transaction(async (manager) => {
       let report: { id: string; candidateId?: string | null; reporterId?: string | null; proposedName?: string | null; status: MissingTypeStatus } | null = null;
@@ -1245,8 +1282,9 @@ export class ModerationService {
         }
       }
       if (!report) throw new NotFoundException('MissingSignTypeReport ' + reportId + ' not found');
-      if (report.status !== expectedStatus) {
-        throw new BadRequestException('Report status must be ' + expectedStatus + ' to request recapture');
+      const allowedStatuses = Array.isArray(expectedStatus) ? expectedStatus : [expectedStatus];
+      if (!allowedStatuses.includes(report.status)) {
+        throw new BadRequestException('Report status must be ' + allowedStatuses.join(' or ') + ' to request recapture');
       }
       if (!report.candidateId) {
         throw new BadRequestException('A candidate-linked report is required to request recapture');
@@ -1270,17 +1308,20 @@ export class ModerationService {
         candidate = candidateRows[0] ?? null;
       }
       if (!candidate) throw new NotFoundException('Candidate ' + report.candidateId + ' not found');
-      if (candidate.status !== CandidateStatus.NEW_TYPE_HOLD) {
-        throw new BadRequestException('Candidate must be on NEW_TYPE_HOLD to request recapture');
+      if ([CandidateStatus.VERIFIED, CandidateStatus.REJECTED, CandidateStatus.RECAPTURE_REQUESTED].includes(candidate.status)) {
+        throw new BadRequestException(`Cannot request recapture for candidate ${candidate.id} with status ${candidate.status}`);
       }
 
       let activeRequestsCount = 0;
       if (typeof manager.getRepository === 'function') {
-        activeRequestsCount = await manager.getRepository(CandidateRecaptureRequest)
+        // PostgreSQL rejects FOR UPDATE combined with aggregate COUNT(), so lock & select row IDs instead.
+        const activeRequests = await manager.getRepository(CandidateRecaptureRequest)
           .createQueryBuilder('r')
           .setLock('pessimistic_write')
+          .select(['r.id'])
           .where('r.candidateId = :candidateId AND r.completedAt IS NULL', { candidateId: candidate.id })
-          .getCount();
+          .getMany();
+        activeRequestsCount = activeRequests.length;
       } else if (typeof manager.query === 'function') {
         const activeRequests: any[] = await manager.query(
           `SELECT id FROM candidate_recapture_requests
@@ -1321,7 +1362,7 @@ export class ModerationService {
             reviewedBy: staffId,
             updatedAt: new Date(),
           })
-          .where('id = :id AND status = :status', { id: reportId, status: expectedStatus })
+          .where('id = :id AND status = :status', { id: reportId, status: report.status })
           .execute();
         updateReportAffected = res.affected ?? 0;
       } else if (typeof manager.query === 'function') {
@@ -1330,7 +1371,7 @@ export class ModerationService {
            SET status = $2, staff_notes = COALESCE($3, staff_notes), reviewed_by = $4, updated_at = NOW()
            WHERE id = $1 AND status = $5
            RETURNING id`,
-          [reportId, MissingTypeStatus.INCOMPLETE, note, staffId, expectedStatus],
+          [reportId, MissingTypeStatus.INCOMPLETE, note, staffId, report.status],
         );
         updateReportAffected = getAffectedRowCount(updatedReports);
       }
@@ -1342,7 +1383,7 @@ export class ModerationService {
           .createQueryBuilder()
           .update(UnverifiedSignCandidate)
           .set({ status: CandidateStatus.RECAPTURE_REQUESTED })
-          .where('id = :id AND status = :status', { id: candidate.id, status: CandidateStatus.NEW_TYPE_HOLD })
+          .where('id = :id AND status = :status', { id: candidate.id, status: candidate.status })
           .execute();
         updateCandAffected = res.affected ?? 0;
       } else if (typeof manager.query === 'function') {
@@ -1351,7 +1392,7 @@ export class ModerationService {
            SET status = $2
            WHERE id = $1 AND status = $3
            RETURNING id`,
-          [candidate.id, CandidateStatus.RECAPTURE_REQUESTED, CandidateStatus.NEW_TYPE_HOLD],
+          [candidate.id, CandidateStatus.RECAPTURE_REQUESTED, candidate.status],
         );
         updateCandAffected = getAffectedRowCount(updatedCandidates);
       }
@@ -1366,6 +1407,7 @@ export class ModerationService {
             candidateId: candidate.id,
             reviewerId: staffId,
             surveyorId: surveyorId ?? undefined,
+            newSignTypeReportId: reportId,
             missingTypeReportId: reportId,
             reason: 'MISSING_TYPE_RECAPTURE_REQUESTED',
             note,
@@ -1401,8 +1443,8 @@ export class ModerationService {
         const reportCase = await caseRepo
           .createQueryBuilder('c')
           .setLock('pessimistic_write')
-          .where('c.targetEntityType = :targetEntityType AND c.targetEntityId = :targetEntityId', {
-            targetEntityType: 'missing_sign_type_report',
+          .where('c.targetEntityType IN (:...targetEntityTypes) AND c.targetEntityId = :targetEntityId', {
+            targetEntityTypes: ['missing_sign_type_report', 'new_sign_type_report', 'missing_type_report', 'report'],
             targetEntityId: reportId,
           })
           .orderBy('c.createdAt', 'DESC')
@@ -1505,7 +1547,77 @@ export class ModerationService {
     const r = await this.missing.findOne({ where: { id } });
     if (!r) throw new NotFoundException('NewSignTypeReport ' + id + ' not found');
     const [enriched] = await this.enrichWithCandidates([r]);
-    return enriched;
+
+    let reporter: any = null;
+    let reviewer: any = null;
+    if (this.dataSource) {
+      const userIds = [r.reporterId, r.reviewedBy].filter(Boolean);
+      if (userIds.length > 0) {
+        try {
+          const userRows = await this.dataSource.query(
+            `SELECT id, full_name, email, avatar_url FROM users WHERE id = ANY($1::uuid[])`,
+            [userIds],
+          );
+          for (const u of userRows) {
+            if (u.id === r.reporterId) {
+              reporter = { id: u.id, fullName: u.full_name, email: u.email, avatarUrl: u.avatar_url };
+            }
+            if (u.id === r.reviewedBy) {
+              reviewer = { id: u.id, fullName: u.full_name, email: u.email, avatarUrl: u.avatar_url };
+            }
+          }
+        } catch {}
+      }
+    }
+
+    let recaptureRequest: any = null;
+    if (this.dataSource) {
+      try {
+        const recRows = await this.dataSource.query(
+          `SELECT crr.id, crr.candidate_id, crr.reviewer_id, crr.surveyor_id,
+                  crr.reason, crr.note, crr.created_at, crr.completed_at,
+                  u_surv.full_name AS surveyor_name, u_surv.email AS surveyor_email, u_surv.avatar_url AS surveyor_avatar,
+                  u_rev.full_name AS reviewer_name, u_rev.email AS reviewer_email
+           FROM candidate_recapture_requests crr
+           LEFT JOIN users u_surv ON u_surv.id = crr.surveyor_id
+           LEFT JOIN users u_rev ON u_rev.id = crr.reviewer_id
+           WHERE (crr.missing_type_report_id = $1 OR crr.new_sign_type_report_id = $1 OR (crr.candidate_id IS NOT NULL AND crr.candidate_id = $2))
+           ORDER BY crr.created_at DESC
+           LIMIT 1`,
+          [id, r.candidateId ?? null],
+        );
+        if (recRows[0]) {
+          recaptureRequest = {
+            id: recRows[0].id,
+            candidateId: recRows[0].candidate_id,
+            surveyorId: recRows[0].surveyor_id,
+            assignedSurveyor: recRows[0].surveyor_id
+              ? {
+                  id: recRows[0].surveyor_id,
+                  fullName: recRows[0].surveyor_name,
+                  email: recRows[0].surveyor_email,
+                  avatarUrl: recRows[0].surveyor_avatar,
+                }
+              : null,
+            isRandomOrOpenQuest: !recRows[0].surveyor_id,
+            reviewerId: recRows[0].reviewer_id,
+            reviewer: recRows[0].reviewer_id
+              ? {
+                  id: recRows[0].reviewer_id,
+                  fullName: recRows[0].reviewer_name,
+                  email: recRows[0].reviewer_email,
+                }
+              : null,
+            reason: recRows[0].reason,
+            note: recRows[0].note,
+            createdAt: recRows[0].created_at,
+            completedAt: recRows[0].completed_at,
+          };
+        }
+      } catch {}
+    }
+
+    return { ...enriched, reporter, reviewer, recaptureRequest };
   }
 
   getMissingReport(id: string) {
@@ -1606,6 +1718,8 @@ export class ModerationService {
     report.staffNotes = dto.staffNotes ?? report.staffNotes ?? ('Approved as TrafficSignType #' + created.id + ' (' + signCode + ')');
     await this.missing.save(report);
 
+    await this.closeOpenReportCases(reportId, staffId, 'APPROVED', report.staffNotes ?? null);
+
     await this.reportSyncedBackend(created.id);
     await this.notifyReporter(report, 'APPROVED', 'Báo cáo biển báo mới đã được chấp thuận', 'Báo cáo "' + (report.proposedName || 'biển báo mới') + '" đã được thêm vào danh mục với mã "' + signCode + '".');
 
@@ -1614,46 +1728,301 @@ export class ModerationService {
   }
 
   // ---- moderation cases (unchanged behaviour, enriched) ----
-  async listCases(status?: string, page = 1, pageSize = 20) {
+  async listCases(status?: string, page = 1, pageSize = 20, search?: string) {
     const p = Math.max(1, page), ps = Math.min(Math.max(1, pageSize), 100);
-    const where: any = {}; if (status) where.status = status;
-    const [items, total] = await this.cases.findAndCount({ where, order: { createdAt: 'DESC' }, skip: (p - 1) * ps, take: ps });
-    return { items, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
+    const where: any = {};
+    if (status) {
+      const normStatus = status.trim().toUpperCase();
+      if (normStatus === 'OPEN') {
+        where.status = ModerationStatus.PENDING;
+      } else if (Object.values(ModerationStatus).includes(normStatus as any)) {
+        where.status = normStatus as ModerationStatus;
+      }
+    }
+
+    const normalizedSearch = search?.trim().replace(/^#+/, '').trim() || '';
+    let items: ModerationCase[] = [];
+    let total = 0;
+
+    if (normalizedSearch && typeof this.cases?.createQueryBuilder === 'function') {
+      const pattern = `%${normalizedSearch.replace(/[%_\\]/g, '\\$&')}%`;
+      const qb = this.cases.createQueryBuilder('mc');
+      if (where.status) {
+        qb.andWhere('mc.status = :status', { status: where.status });
+      }
+      qb.andWhere(
+        `(
+          CAST(mc.id AS text) ILIKE :pattern ESCAPE '\\'
+          OR CAST(mc.target_entity_id AS text) ILIKE :pattern ESCAPE '\\'
+          OR COALESCE(mc.target_entity_type, '') ILIKE :pattern ESCAPE '\\'
+          OR CAST(mc.case_type AS text) ILIKE :pattern ESCAPE '\\'
+          OR COALESCE(mc.resolution_note, '') ILIKE :pattern ESCAPE '\\'
+          OR EXISTS (
+            SELECT 1 FROM new_sign_type_reports r
+            LEFT JOIN users u ON u.id = r.reporter_id
+            WHERE r.id = mc.target_entity_id
+              AND (
+                COALESCE(r.proposed_name, '') ILIKE :pattern ESCAPE '\\'
+                OR COALESCE(r.description, '') ILIKE :pattern ESCAPE '\\'
+                OR COALESCE(u.full_name, '') ILIKE :pattern ESCAPE '\\'
+                OR COALESCE(u.email, '') ILIKE :pattern ESCAPE '\\'
+              )
+          )
+        )`,
+        { pattern },
+      )
+        .orderBy('mc.createdAt', 'DESC')
+        .skip((p - 1) * ps)
+        .take(ps);
+      [items, total] = await qb.getManyAndCount();
+    } else {
+      [items, total] = await this.cases.findAndCount({ where, order: { createdAt: 'DESC' }, skip: (p - 1) * ps, take: ps });
+    }
+
+    // Batch-enrich report-linked cases with report title/name so table & search work smoothly
+    let enrichedItems: any[] = items;
+    if (items.length > 0 && typeof this.dataSource?.query === 'function') {
+      const reportIds = Array.from(
+        new Set(
+          items
+            .filter((mc) => {
+              const t = (mc.targetEntityType || '').toLowerCase();
+              return mc.targetEntityId && (t.includes('report') || t.includes('missing') || mc.caseType === ModerationType.CATALOG_PROPOSAL);
+            })
+            .map((mc) => mc.targetEntityId),
+        ),
+      );
+      if (reportIds.length > 0) {
+        try {
+          const rows: any[] = await this.dataSource.query(
+            `SELECT r.id, r.proposed_name, r.status, r.reporter_id,
+                    u.full_name AS reporter_name, u.email AS reporter_email
+             FROM new_sign_type_reports r
+             LEFT JOIN users u ON u.id = r.reporter_id
+             WHERE r.id = ANY($1::uuid[])`,
+            [reportIds],
+          );
+          const byId = new Map<string, any>();
+          for (const row of rows) {
+            byId.set(row.id, row);
+          }
+          enrichedItems = items.map((mc) => {
+            const rep = byId.get(mc.targetEntityId);
+            if (!rep) return mc;
+            return {
+              ...mc,
+              proposedName: rep.proposed_name ?? null,
+              targetTitle: rep.proposed_name ?? null,
+              reportStatus: rep.status ?? null,
+              reporter: rep.reporter_id
+                ? { id: rep.reporter_id, fullName: rep.reporter_name ?? null, email: rep.reporter_email ?? null }
+                : null,
+            };
+          });
+        } catch {}
+      }
+    }
+
+    return { items: enrichedItems, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
   }
   async getCase(id: string) {
     const mc = await this.cases.findOne({ where: { id } });
     if (!mc) throw new NotFoundException('ModerationCase ' + id + ' not found');
     const acts = await this.actions.find({ where: { caseId: id }, order: { performedAt: 'ASC' } });
-    return { ...mc, actions: acts };
+
+    let assignedStaff: any = null;
+    if (mc.assignedStaffId && this.dataSource) {
+      try {
+        const staffRows = await this.dataSource.query(
+          `SELECT id, full_name, email, avatar_url FROM users WHERE id = $1`,
+          [mc.assignedStaffId],
+        );
+        if (staffRows[0]) {
+          assignedStaff = {
+            id: staffRows[0].id,
+            fullName: staffRows[0].full_name,
+            email: staffRows[0].email,
+            avatarUrl: staffRows[0].avatar_url,
+          };
+        }
+      } catch {}
+    }
+
+    let recaptureRequest: any = null;
+    if (mc.targetEntityId && this.dataSource) {
+      try {
+        const recRows = await this.dataSource.query(
+          `SELECT crr.id, crr.candidate_id, crr.reviewer_id, crr.surveyor_id,
+                  crr.reason, crr.note, crr.created_at, crr.completed_at,
+                  u_surv.full_name AS surveyor_name, u_surv.email AS surveyor_email, u_surv.avatar_url AS surveyor_avatar,
+                  u_rev.full_name AS reviewer_name, u_rev.email AS reviewer_email
+           FROM candidate_recapture_requests crr
+           LEFT JOIN users u_surv ON u_surv.id = crr.surveyor_id
+           LEFT JOIN users u_rev ON u_rev.id = crr.reviewer_id
+           WHERE (crr.candidate_id = $1 OR crr.missing_type_report_id = $1 OR crr.new_sign_type_report_id = $1)
+           ORDER BY crr.created_at DESC
+           LIMIT 1`,
+          [mc.targetEntityId],
+        );
+        if (recRows[0]) {
+          recaptureRequest = {
+            id: recRows[0].id,
+            candidateId: recRows[0].candidate_id,
+            surveyorId: recRows[0].surveyor_id,
+            assignedSurveyor: recRows[0].surveyor_id
+              ? {
+                  id: recRows[0].surveyor_id,
+                  fullName: recRows[0].surveyor_name,
+                  email: recRows[0].surveyor_email,
+                  avatarUrl: recRows[0].surveyor_avatar,
+                }
+              : null,
+            isRandomOrOpenQuest: !recRows[0].surveyor_id,
+            reviewerId: recRows[0].reviewer_id,
+            reviewer: recRows[0].reviewer_id
+              ? {
+                  id: recRows[0].reviewer_id,
+                  fullName: recRows[0].reviewer_name,
+                  email: recRows[0].reviewer_email,
+                }
+              : null,
+            reason: recRows[0].reason,
+            note: recRows[0].note,
+            createdAt: recRows[0].created_at,
+            completedAt: recRows[0].completed_at,
+          };
+        }
+      } catch {}
+    }
+
+    return { ...mc, actions: acts, assignedStaff, recaptureRequest };
   }
-  async resolveCase(id: string, staffId: string, dto: ResolveCaseDto, userRole?: string) {
+
+  async getUserProfile(userId: string) {
+    if (this.userRepo) {
+      const user = await this.userRepo.findOne({
+        where: { id: userId },
+        relations: ['userRoles', 'userRoles.role'],
+      });
+      if (user) {
+        const roles = (user.userRoles || [])
+          .filter((ur) => ur.isActive)
+          .map((ur) => ur.role?.code)
+          .filter((code): code is string => Boolean(code));
+        return {
+          id: user.id,
+          email: user.email,
+          fullName: user.fullName,
+          full_name: user.fullName,
+          phone: user.phone,
+          avatarUrl: user.avatarUrl,
+          avatar_url: user.avatarUrl,
+          status: user.status,
+          roles,
+          createdAt: user.createdAt,
+          created_at: user.createdAt,
+        };
+      }
+    }
+    if (this.dataSource) {
+      const rows = await this.dataSource.query(
+        `SELECT u.id, u.email, u.full_name, u.phone, u.avatar_url, u.status, u.created_at,
+                COALESCE(array_agg(r.code) FILTER (WHERE r.code IS NOT NULL AND ur.is_active = true), '{}') AS roles
+         FROM users u
+         LEFT JOIN user_roles ur ON ur.user_id = u.id
+         LEFT JOIN roles r ON r.id = ur.role_id
+         WHERE u.id = $1
+         GROUP BY u.id`,
+        [userId],
+      );
+      if (rows[0]) {
+        return {
+          id: rows[0].id,
+          email: rows[0].email,
+          fullName: rows[0].full_name,
+          full_name: rows[0].full_name,
+          phone: rows[0].phone,
+          avatarUrl: rows[0].avatar_url,
+          avatar_url: rows[0].avatar_url,
+          status: rows[0].status,
+          roles: rows[0].roles || [],
+          createdAt: rows[0].created_at,
+          created_at: rows[0].created_at,
+        };
+      }
+    }
+    throw new NotFoundException('User ' + userId + ' not found');
+  }
+  async resolveCase(id: string, staffId: string, dto: ResolveCaseDto, userRole?: string | string[]) {
     const mc = await this.cases.findOne({ where: { id } });
     if (!mc) throw new NotFoundException('ModerationCase ' + id + ' not found');
-    if (mc.status === ModerationStatus.RESOLVED) throw new BadRequestException('Case is already resolved');
     const actionType = (dto.actionType || 'RESOLVE').toUpperCase();
     const reportId: string | null = (dto as any).reportId ?? null;
     const targetTypeId: number | null = (dto as any).targetSignTypeId ?? (dto as any).mergedIntoSignTypeId ?? null;
 
     if (actionType === 'APPROVED') {
-      let isCallerAdmin = userRole === 'ADMIN';
+      let isCallerAdmin =
+        userRole === 'ADMIN' ||
+        (Array.isArray(userRole) && userRole.includes('ADMIN'));
+
       if (!isCallerAdmin) {
         if (this.userRepo && typeof this.userRepo.findOne === 'function') {
-    const staffUser: any = await this.userRepo.findOne({ 
-      where: { id: staffId },
-      relations: ['userRoles'], 
-    });
+          try {
+            const staffUser: any = await this.userRepo.findOne({
+              where: { id: staffId },
+              relations: ['userRoles', 'userRoles.role'],
+            });
 
-    if (staffUser?.role === 'ADMIN' || staffUser?.userRoles?.some((ur: any) => ur.role === 'ADMIN')) {
-      isCallerAdmin = true;
-    }
-        } else if (typeof this.dataSource?.query === 'function') {
-          const rows = await this.dataSource.query('SELECT role FROM users WHERE id = $1', [staffId]);
-          if (rows[0]?.role === 'ADMIN') isCallerAdmin = true;
+            if (
+              staffUser?.role === 'ADMIN' ||
+              staffUser?.userRoles?.some(
+                (ur: any) => ur.role?.code === 'ADMIN' || ur.role === 'ADMIN',
+              )
+            ) {
+              isCallerAdmin = true;
+            }
+          } catch {
+            // ignore findOne relation error if any
+          }
+        }
+        if (!isCallerAdmin && typeof this.dataSource?.query === 'function') {
+          try {
+            const rows = await this.dataSource.query(
+              `SELECT r.code 
+               FROM user_roles ur 
+               JOIN roles r ON ur.role_id = r.id 
+               WHERE ur.user_id = $1 AND ur.is_active = true`,
+              [staffId],
+            );
+            if (rows.some((r: any) => r.code === 'ADMIN')) isCallerAdmin = true;
+          } catch {
+            // ignore fallback query error
+          }
         }
       }
       if (!isCallerAdmin) {
         throw new ForbiddenException('Admin role is required to approve and create catalog sign types');
       }
+    }
+
+    if (mc.status === ModerationStatus.RESOLVED) {
+      if (
+        (actionType === 'APPROVED' || actionType === 'MERGED') &&
+        mc.caseType === ModerationType.CATALOG_PROPOSAL
+      ) {
+        const linkedReportId = reportId || mc.targetEntityId;
+        const linkedReport = linkedReportId
+          ? await this.missing.findOne({ where: { id: linkedReportId } as any })
+          : null;
+        if (
+          linkedReport &&
+          ((actionType === 'APPROVED' && linkedReport.status === MissingTypeStatus.APPROVED) ||
+            (actionType === 'MERGED' && linkedReport.status === MissingTypeStatus.MERGED))
+        ) {
+          return mc;
+        }
+      }
+      throw new BadRequestException('Case is already resolved');
     }
 
     if (actionType === 'REQUEST_RECAPTURE' && mc.targetEntityType === 'candidate' && mc.targetEntityId) {
@@ -1742,11 +2111,14 @@ export class ModerationService {
 
       let activeRequestsCount = 0;
       if (typeof manager.getRepository === 'function') {
-        activeRequestsCount = await manager.getRepository(CandidateRecaptureRequest)
+        // PostgreSQL rejects FOR UPDATE combined with aggregate COUNT(), so lock & select row IDs instead.
+        const activeRequests = await manager.getRepository(CandidateRecaptureRequest)
           .createQueryBuilder('r')
           .setLock('pessimistic_write')
+          .select(['r.id'])
           .where('r.candidateId = :candidateId AND r.completedAt IS NULL', { candidateId: candidate.id })
-          .getCount();
+          .getMany();
+        activeRequestsCount = activeRequests.length;
       } else if (typeof manager.query === 'function') {
         const activeRows: any[] = await manager.query(
           `SELECT id FROM candidate_recapture_requests
@@ -1981,6 +2353,45 @@ export class ModerationService {
   // ---------------------------------------------------------------------------
   // HELPERS
   // ---------------------------------------------------------------------------
+
+  private async closeOpenReportCases(
+    reportId: string,
+    staffId: string,
+    actionType: string,
+    note: string | null,
+  ): Promise<void> {
+    if (!this.cases || typeof this.cases.find !== 'function') return;
+    try {
+      const openCases = await this.cases.find({
+        where: {
+          targetEntityId: reportId,
+          targetEntityType: In(['missing_sign_type_report', 'new_sign_type_report', 'missing_type_report', 'report']),
+          status: In([ModerationStatus.PENDING, ModerationStatus.IN_REVIEW]),
+        },
+      });
+      if (!openCases.length) return;
+      const now = new Date();
+      for (const mc of openCases) {
+        mc.status = ModerationStatus.RESOLVED;
+        if (note != null) mc.resolutionNote = note;
+        mc.resolvedAt = now;
+        if (!mc.assignedStaffId) mc.assignedStaffId = staffId;
+        await this.cases.save(mc);
+        if (this.actions && typeof this.actions.create === 'function' && typeof this.actions.save === 'function') {
+          await this.actions.save(
+            this.actions.create({
+              caseId: mc.id,
+              actionType,
+              performedBy: staffId,
+              note,
+            } as any),
+          );
+        }
+      }
+    } catch (e: any) {
+      this.logger.warn('Failed to close open moderation cases for report ' + reportId + ': ' + (e as any)?.message);
+    }
+  }
 
   private async requireFallbackCategory(): Promise<number> {
     const fallback = await this.catRepo.findOne({ order: { id: 'ASC' } as any });

@@ -463,4 +463,63 @@ describe('MomoPaymentService (MoMo Sandbox Gateway Integration)', () => {
       ).rejects.toThrow(BadGatewayException);
     });
   });
+
+  describe('simulation endpoints', () => {
+    it('renderSimulationPage returns 404 html if order not found', async () => {
+      orderRepo.findOne.mockResolvedValue(null);
+      const html = await service.renderSimulationPage('NON-EXISTENT');
+      expect(html).toContain('404 - Không tìm thấy đơn thanh toán');
+    });
+
+    it('renderSimulationPage returns checkout page with order details', async () => {
+      orderRepo.findOne.mockResolvedValue({
+        id: 'ord-1',
+        orderCode: 'STM-MOMO-100',
+        packageId: 1,
+        amountVnd: '50000',
+        status: PaymentStatus.PENDING,
+      } as any);
+      packageRepo.findOne.mockResolvedValue({ id: 1, creditAmount: 50 } as any);
+
+      const html = await service.renderSimulationPage('STM-MOMO-100');
+      expect(html).toContain('Cổng Thanh Toán Thử Nghiệm');
+      expect(html).toContain('STM-MOMO-100');
+      expect(html).toContain('+50 Credits');
+      expect(html).toContain('50.000 đ');
+    });
+
+    it('completeSimulatedPayment processes successful IPN settlement', async () => {
+      orderRepo.findOne.mockResolvedValue({
+        id: 'ord-1',
+        orderCode: 'STM-MOMO-100',
+        packageId: 1,
+        amountVnd: '50000',
+        userId: 'user-1',
+        status: PaymentStatus.PENDING,
+      } as any);
+      packageRepo.findOne.mockResolvedValue({ id: 1, creditAmount: 50 } as any);
+      walletRepo.findOne.mockResolvedValue({ id: 'wallet-1', userId: 'user-1', balance: '10' } as any);
+
+      const res = await service.completeSimulatedPayment('STM-MOMO-100');
+      expect(res.success).toBe(true);
+      expect(res.status).toBe(PaymentStatus.SUCCESS);
+      expect(res.redirectUrl).toContain('payment=success');
+    });
+
+    it('cancelSimulatedPayment marks order as failed and redirects', async () => {
+      orderRepo.findOne.mockResolvedValue({
+        id: 'ord-1',
+        orderCode: 'STM-MOMO-100',
+        packageId: 1,
+        amountVnd: '50000',
+        userId: 'user-1',
+        status: PaymentStatus.PENDING,
+      } as any);
+
+      const res = await service.cancelSimulatedPayment('STM-MOMO-100');
+      expect(res.success).toBe(false);
+      expect(res.status).toBe(PaymentStatus.FAILED);
+      expect(res.redirectUrl).toContain('payment=cancelled');
+    });
+  });
 });

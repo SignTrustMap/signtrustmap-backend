@@ -627,7 +627,7 @@ describe('WalletService (Phase 1 Ledger & Double-Entry Tests)', () => {
       const res: any = await serviceWithFailingMomo.topUp('user-1', { packageId: 1, gateway: 'MOMO' });
       expect(res.paymentOrder.gateway).toBe('MOMO');
       expect(res.qrCodeUrl).toBeDefined();
-      expect(res.payUrl).toContain('test-payment.momo.vn');
+      expect(res.payUrl).toContain('/payments/momo/simulate/');
       expect(res.message).toContain('MoMo sandbox payment session created');
     });
   });

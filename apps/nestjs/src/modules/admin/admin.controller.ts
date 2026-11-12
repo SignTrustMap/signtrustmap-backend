@@ -96,6 +96,16 @@ export class AdminController {
     return this.svc.getUserStatistics(id);
   }
 
+  @Roles('STAFF', 'ADMIN')
+  @ApiOperation({
+    summary: 'Get user details by ID',
+    description: 'Staff and Admin operation to inspect user profile, identity info, active roles, and performance metrics by UUID',
+  })
+  @Get('users/:id')
+  getUserById(@Param('id', ParseUUIDPipe) id: string) {
+    return this.svc.getUserById(id);
+  }
+
   @ApiOperation({ summary: 'Update user account status', description: 'Admin operation to suspend, activate, or ban a user account with recorded audit reason' })
   @Patch('users/:id/status')
   updateStatus(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateUserStatusDto, @CurrentUser() user: any, @Req() req: any) {

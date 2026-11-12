@@ -6,6 +6,8 @@ import {
   Headers,
   Param,
   Query,
+  Res,
+  Req,
   HttpCode,
   HttpStatus,
   Optional,
@@ -66,11 +68,18 @@ export class PaymentsController {
   createMomoPayment(
     @CurrentUser() user: any,
     @Body() dto: CreateMomoPaymentDto,
+    @Req() req?: any,
   ) {
     if (!this.momoService) {
       throw new ServiceUnavailableException('MoMo payment service is unavailable');
     }
-    return this.momoService.createPayment(user.id, dto);
+    if (!req) {
+      return this.momoService.createPayment(user.id, dto);
+    }
+    const proto = req?.headers?.['x-forwarded-proto'] || req?.protocol || 'http';
+    const host = req?.headers?.['x-forwarded-host'] || req?.get?.('host') || 'localhost:3000';
+    const reqBaseUrl = `${proto}://${host}/api/v1`;
+    return this.momoService.createPayment(user.id, dto, { baseUrl: reqBaseUrl, redirectUrl: dto.redirectUrl });
   }
 
   @Public()
@@ -101,6 +110,82 @@ export class PaymentsController {
       throw new ServiceUnavailableException('MoMo payment service is unavailable');
     }
     return this.momoService.queryTransaction(orderCode, requestId);
+  }
+
+  @Public()
+  @ApiOperation({
+    summary: 'Render MoMo Sandbox simulation checkout page',
+    description: 'Serves an interactive mock payment page for MoMo sandbox testing when external MoMo credentials are unavailable',
+  })
+  @Get('momo/simulate/:orderCode')
+  async renderSimulatePage(
+    @Param('orderCode') orderCode: string,
+    @Res() res: any,
+    @Query('redirectUrl') redirectUrl?: string,
+    @Req() req?: any,
+  ) {
+    if (!this.momoService) {
+      throw new ServiceUnavailableException('MoMo payment service is unavailable');
+    }
+    const proto = req?.headers?.['x-forwarded-proto'] || req?.protocol || 'http';
+    const host = req?.headers?.['x-forwarded-host'] || req?.get?.('host') || 'localhost:3000';
+    const reqBaseUrl = `${proto}://${host}/api/v1`;
+    const html = await this.momoService.renderSimulationPage(orderCode, {
+      baseUrl: reqBaseUrl,
+      overrideRedirectUrl: redirectUrl,
+    });
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.send(html);
+  }
+
+  @Public()
+  @ApiOperation({
+    summary: 'Complete MoMo Sandbox simulated payment',
+    description: 'Simulates successful payment confirmation from MoMo Sandbox and credits wallet',
+  })
+  @Get('momo/simulate/:orderCode/complete')
+  @Post('momo/simulate/:orderCode/complete')
+  async completeSimulatedPayment(
+    @Param('orderCode') orderCode: string,
+    @Res() res: any,
+    @Query('redirectUrl') queryRedirectUrl?: string,
+    @Body('redirectUrl') bodyRedirectUrl?: string,
+    @Req() req?: any,
+  ) {
+    if (!this.momoService) {
+      throw new ServiceUnavailableException('MoMo payment service is unavailable');
+    }
+    const overrideRedirectUrl = queryRedirectUrl || bodyRedirectUrl || req?.get?.('referrer') || req?.get?.('origin');
+    const result = await this.momoService.completeSimulatedPayment(orderCode, { overrideRedirectUrl });
+    if (result.redirectUrl) {
+      return res.redirect(result.redirectUrl);
+    }
+    return res.json(result);
+  }
+
+  @Public()
+  @ApiOperation({
+    summary: 'Cancel MoMo Sandbox simulated payment',
+    description: 'Simulates user cancellation of payment on MoMo Sandbox',
+  })
+  @Get('momo/simulate/:orderCode/cancel')
+  @Post('momo/simulate/:orderCode/cancel')
+  async cancelSimulatedPayment(
+    @Param('orderCode') orderCode: string,
+    @Res() res: any,
+    @Query('redirectUrl') queryRedirectUrl?: string,
+    @Body('redirectUrl') bodyRedirectUrl?: string,
+    @Req() req?: any,
+  ) {
+    if (!this.momoService) {
+      throw new ServiceUnavailableException('MoMo payment service is unavailable');
+    }
+    const overrideRedirectUrl = queryRedirectUrl || bodyRedirectUrl || req?.get?.('referrer') || req?.get?.('origin');
+    const result = await this.momoService.cancelSimulatedPayment(orderCode, { overrideRedirectUrl });
+    if (result.redirectUrl) {
+      return res.redirect(result.redirectUrl);
+    }
+    return res.json(result);
   }
 }
 

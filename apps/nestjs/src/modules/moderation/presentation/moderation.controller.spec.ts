@@ -60,6 +60,9 @@ describe('ModerationController', () => {
     await controller.listMissing('PENDING', '2', '10');
     expect(service.listMissingReports).toHaveBeenCalledWith('PENDING', 2, 10);
 
+    await controller.listMissing('PENDING', '1', '10', '#288661b8');
+    expect(service.listMissingReports).toHaveBeenCalledWith('PENDING', 1, 10, '#288661b8');
+
     await controller.listMissing(undefined, 'bad', 'invalid');
     expect(service.listMissingReports).toHaveBeenCalledWith(undefined, 1, 20);
   });
@@ -124,6 +127,9 @@ describe('ModerationController', () => {
   it('listCases parses pagination and calls service', async () => {
     await controller.listCases('OPEN', '1', '15');
     expect(service.listCases).toHaveBeenCalledWith('OPEN', 1, 15);
+
+    await controller.listCases('PENDING', '1', '20', '#288661b8');
+    expect(service.listCases).toHaveBeenCalledWith('PENDING', 1, 20, '#288661b8');
 
     await controller.listCases(undefined, undefined, undefined);
     expect(service.listCases).toHaveBeenCalledWith(undefined, 1, 20);
