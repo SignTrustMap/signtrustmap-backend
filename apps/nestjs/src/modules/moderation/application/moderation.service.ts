@@ -2415,7 +2415,7 @@ export class ModerationService {
        WHERE upper(sign_code) ~ '^[A-Z]+\\.[0-9]+[A-Z0-9]*$'
        ORDER BY prefix`,
     );
-    const allowedPrefixes = new Set(['P', 'W', 'R', 'I', 'E', 'IE', 'S']);
+    const allowedPrefixes = new Set(['P', 'DP', 'W', 'R', 'RE', 'I', 'E', 'IE', 'S', 'SG', 'SH', 'ZONE']);
     const validPrefixes = existingPrefixes.map((row) => row.prefix).filter((prefix) => allowedPrefixes.has(prefix));
     if (!validPrefixes.includes(prefix)) {
       throw new BadRequestException(
