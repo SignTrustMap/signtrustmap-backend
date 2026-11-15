@@ -957,12 +957,12 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     const res = await service.listCases('OPEN', 1, 10, 'Nguyen Long Vu', 'name', 'ASC');
 
     expect(cases.createQueryBuilder).toHaveBeenCalledWith('mc');
-    expect(qb.leftJoin).toHaveBeenCalledWith(expect.anything(), 'staff', 'staff.id = mc.assignedStaffId');
+    expect(qb.leftJoin).toHaveBeenCalledWith(expect.anything(), 'staff', 'staff.id = mc.assigned_staff_id');
     expect(qb.andWhere).toHaveBeenCalledWith(
-      expect.stringContaining('unaccent(COALESCE(staff.fullName'),
+      expect.stringContaining('unaccent(COALESCE(staff.full_name'),
       expect.objectContaining({ pattern: '%Nguyen Long Vu%' }),
     );
-    expect(qb.orderBy).toHaveBeenCalledWith('mc.caseType', 'ASC');
+    expect(qb.orderBy).toHaveBeenCalledWith('mc.case_type', 'ASC');
     expect(res.items).toHaveLength(1);
     expect(res.total).toBe(1);
   });
@@ -986,13 +986,13 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     const res = await service.listNewSignReports('OPEN', 1, 10, 'duong cam', 'name', 'ASC');
 
     expect(missing.createQueryBuilder).toHaveBeenCalledWith('r');
-    expect(qb.leftJoin).toHaveBeenCalledWith(expect.anything(), 'staff', 'staff.id = r.reviewedBy');
-    expect(qb.leftJoin).toHaveBeenCalledWith(expect.anything(), 'reporter', 'reporter.id = r.reporterId');
+    expect(qb.leftJoin).toHaveBeenCalledWith(expect.anything(), 'staff', 'staff.id = r.reviewed_by');
+    expect(qb.leftJoin).toHaveBeenCalledWith(expect.anything(), 'reporter', 'reporter.id = r.reporter_id');
     expect(qb.andWhere).toHaveBeenCalledWith(
-      expect.stringContaining('unaccent(COALESCE(r.proposedName'),
+      expect.stringContaining('unaccent(COALESCE(r.proposed_name'),
       expect.objectContaining({ pattern: '%duong cam%' }),
     );
-    expect(qb.orderBy).toHaveBeenCalledWith('r.proposedName', 'ASC');
+    expect(qb.orderBy).toHaveBeenCalledWith('r.proposed_name', 'ASC');
     expect(res.items).toHaveLength(1);
   });
   it('uses pessimistic row lock without aggregate COUNT() when Admin requests recapture via TypeORM repositories', async () => {

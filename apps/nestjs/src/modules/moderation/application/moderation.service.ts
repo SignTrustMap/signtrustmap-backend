@@ -212,8 +212,8 @@ export class ModerationService {
       const pattern = `%${normalizedSearch.replace(/[%_\\]/g, '\\$&')}%`;
       const qb = this.missing.createQueryBuilder('r');
       if (typeof qb.leftJoin === 'function') {
-        qb.leftJoin(User, 'staff', 'staff.id = r.reviewedBy')
-          .leftJoin(User, 'reporter', 'reporter.id = r.reporterId');
+        qb.leftJoin(User, 'staff', 'staff.id = r.reviewed_by')
+          .leftJoin(User, 'reporter', 'reporter.id = r.reporter_id');
       }
 
       if (where.status) {
@@ -228,21 +228,21 @@ export class ModerationService {
 
       qb.andWhere(
         `(
-          unaccent(COALESCE(staff.fullName, '')) ILIKE unaccent(:pattern)
+          unaccent(COALESCE(staff.full_name, '')) ILIKE unaccent(:pattern)
           OR unaccent(COALESCE(staff.email, '')) ILIKE unaccent(:pattern)
-          OR unaccent(COALESCE(reporter.fullName, '')) ILIKE unaccent(:pattern)
+          OR unaccent(COALESCE(reporter.full_name, '')) ILIKE unaccent(:pattern)
           OR unaccent(COALESCE(reporter.email, '')) ILIKE unaccent(:pattern)
-          OR unaccent(COALESCE(r.proposedName, '')) ILIKE unaccent(:pattern)
+          OR unaccent(COALESCE(r.proposed_name, '')) ILIKE unaccent(:pattern)
           OR unaccent(COALESCE(r.description, '')) ILIKE unaccent(:pattern)
-          OR unaccent(COALESCE(r.staffNotes, '')) ILIKE unaccent(:pattern)
+          OR unaccent(COALESCE(r.staff_notes, '')) ILIKE unaccent(:pattern)
           OR CAST(r.id AS text) ILIKE :pattern ESCAPE '\\'
-          OR CAST(r.candidateId AS text) ILIKE :pattern ESCAPE '\\'
+          OR CAST(r.candidate_id AS text) ILIKE :pattern ESCAPE '\\'
           OR CAST(r.status AS text) ILIKE :pattern ESCAPE '\\'
         )`,
         { pattern },
       );
 
-      const qbField = sort.field === 'proposedName' ? 'r.proposedName' : sort.field === 'status' ? 'r.status' : 'r.createdAt';
+      const qbField = sort.field === 'proposedName' ? 'r.proposed_name' : sort.field === 'status' ? 'r.status' : 'r.created_at';
       qb.orderBy(qbField, sort.direction);
       if (typeof qb.addOrderBy === 'function') {
         qb.addOrderBy('r.id', 'ASC');
@@ -1785,7 +1785,7 @@ export class ModerationService {
       const pattern = `%${normalizedSearch.replace(/[%_\\]/g, '\\$&')}%`;
       const qb = this.cases.createQueryBuilder('mc');
       if (typeof qb.leftJoin === 'function') {
-        qb.leftJoin(User, 'staff', 'staff.id = mc.assignedStaffId');
+        qb.leftJoin(User, 'staff', 'staff.id = mc.assigned_staff_id');
       }
 
       if (where.status) {
@@ -1794,18 +1794,18 @@ export class ModerationService {
 
       qb.andWhere(
         `(
-          unaccent(COALESCE(staff.fullName, '')) ILIKE unaccent(:pattern)
+          unaccent(COALESCE(staff.full_name, '')) ILIKE unaccent(:pattern)
           OR unaccent(COALESCE(staff.email, '')) ILIKE unaccent(:pattern)
-          OR unaccent(COALESCE(mc.resolutionNote, '')) ILIKE unaccent(:pattern)
-          OR unaccent(COALESCE(mc.targetEntityType, '')) ILIKE unaccent(:pattern)
+          OR unaccent(COALESCE(mc.resolution_note, '')) ILIKE unaccent(:pattern)
+          OR unaccent(COALESCE(mc.target_entity_type, '')) ILIKE unaccent(:pattern)
           OR CAST(mc.id AS text) ILIKE :pattern ESCAPE '\\'
-          OR CAST(mc.targetEntityId AS text) ILIKE :pattern ESCAPE '\\'
-          OR CAST(mc.caseType AS text) ILIKE :pattern ESCAPE '\\'
+          OR CAST(mc.target_entity_id AS text) ILIKE :pattern ESCAPE '\\'
+          OR CAST(mc.case_type AS text) ILIKE :pattern ESCAPE '\\'
           OR CAST(mc.status AS text) ILIKE :pattern ESCAPE '\\'
           OR EXISTS (
             SELECT 1 FROM new_sign_type_reports r
             LEFT JOIN users u ON u.id = r.reporter_id
-            WHERE r.id = mc.targetEntityId
+            WHERE r.id = mc.target_entity_id
               AND (
                 unaccent(COALESCE(r.proposed_name, '')) ILIKE unaccent(:pattern)
                 OR unaccent(COALESCE(r.description, '')) ILIKE unaccent(:pattern)
@@ -1817,7 +1817,7 @@ export class ModerationService {
         { pattern },
       );
 
-      const qbField = sort.field === 'caseType' ? 'mc.caseType' : sort.field === 'status' ? 'mc.status' : 'mc.createdAt';
+      const qbField = sort.field === 'caseType' ? 'mc.case_type' : sort.field === 'status' ? 'mc.status' : 'mc.created_at';
       qb.orderBy(qbField, sort.direction);
       if (typeof qb.addOrderBy === 'function') {
         qb.addOrderBy('mc.id', 'ASC');
