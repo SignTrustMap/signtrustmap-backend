@@ -68,10 +68,22 @@ export class CatalogController {
 
   @ApiOperation({ summary: 'List sign types', description: 'Search and filter catalog traffic signs by category, status, and code' })
   @Get('catalog/sign-types')
-  listSignTypes(@Query() query: ListSignTypesQueryDto) {
+  listSignTypes(@Query() query: ListSignTypesQueryDto, @CurrentUser() user?: any) {
+    const roles: string[] = Array.isArray(user?.roles) ? user.roles : [];
+    const isStaffOrAdmin = roles.includes('ADMIN') || roles.includes('STAFF');
+
+    let isActive: boolean | undefined;
+    if (!isStaffOrAdmin) {
+      // Driver, Surveyor, Reviewer and general users can only view active sign types
+      isActive = true;
+    } else {
+      // Staff and Admin can view all, or filter by active/inactive if explicitly requested
+      isActive = query.isActive !== undefined ? query.isActive === 'true' : undefined;
+    }
+
     return this.svc.listSignTypes({
       categoryId: query.categoryId,
-      isActive: query.isActive === undefined ? true : query.isActive === 'true',
+      isActive,
       search: query.search || query.q,
       page: query.page,
       size: query.size ?? query.pageSize,
@@ -80,7 +92,9 @@ export class CatalogController {
 
   @ApiOperation({ summary: 'Get sign type by ID', description: 'Retrieve single traffic sign type definition, image, and description' })
   @Get('catalog/sign-types/:id')
-  getSignType(@Param('id', ParseIntPipe) id: number) { return this.svc.getSignType(id); }
+  getSignType(@Param('id', ParseIntPipe) id: number, @CurrentUser() user?: any) {
+    return this.svc.getSignType(id, user);
+  }
 
   @Roles('ADMIN')
   @ApiOperation({ summary: 'Create sign type', description: 'Admin operation to define a new traffic sign in the catalog' })

@@ -39,7 +39,7 @@ describe('CatalogService', () => {
       available: true,
     });
     expect(signTypes.findOne).toHaveBeenCalledWith({
-      where: { signCode: expect.anything() },
+      where: { signCode: expect.anything(), isActive: true },
     });
 
     signTypes.findOne.mockResolvedValue(trafficSignType());
@@ -93,6 +93,7 @@ describe('CatalogService', () => {
 
     const result = await service.listSignTypes({
       categoryId: 2,
+      isActive: true,
       search: 'stop',
       page: 1,
       size: 10,
@@ -631,6 +632,121 @@ describe('CatalogService', () => {
         [99],
       );
       expect(categories.delete).toHaveBeenCalledWith(99);
+    });
+
+    it('allows reusing a sign_code if the existing sign with that code is deactivated', async () => {
+      // 1. Check code availability: no ACTIVE sign exists with 'P.102'
+      signTypes.findOne.mockResolvedValueOnce(null);
+      const avail = await service.checkSignCodeAvailability('P.102');
+      expect(avail.available).toBe(true);
+
+      // 2. Create sign type with duplicate code of inactive sign
+      const categoryRepository = repository<SignCategory>();
+      const typeRepository = repository<TrafficSignType>();
+      const promptRepository = repository<SignTypeAiPrompt>();
+      const mappingRepository = repository<SignTypeOsmMapping>();
+      const imageRepository = repository<SignTypeImage>();
+      const manager = {
+        getRepository: jest.fn((target) => {
+          if (target === SignCategory) return categoryRepository;
+          if (target === TrafficSignType) return typeRepository;
+          if (target === SignTypeAiPrompt) return promptRepository;
+          if (target === SignTypeOsmMapping) return mappingRepository;
+          if (target === SignTypeImage) return imageRepository;
+          return repository<any>();
+        }),
+      } as unknown as EntityManager;
+
+      categoryRepository.findOne.mockResolvedValue(entity<SignCategory>({ id: 2 }));
+      typeRepository.findOne.mockResolvedValue(null);
+      typeRepository.create.mockImplementation((value) => value as TrafficSignType);
+      typeRepository.save.mockImplementation(async (value) => ({
+        ...(value as TrafficSignType),
+        id: 101,
+      }));
+      promptRepository.find.mockResolvedValue([]);
+      mappingRepository.find.mockResolvedValue([]);
+      imageRepository.find.mockResolvedValue([]);
+      (dataSource.transaction as jest.Mock).mockImplementation(
+        (callback: (transactionManager: EntityManager) => unknown) => callback(manager),
+      );
+
+      const created = await service.createSignType({
+        categoryId: 2,
+        signCode: 'P.102',
+        nameVi: 'Cấm đi ngược chiều',
+        nameEn: 'No entry',
+        representativeImageKey: 'catalog/p102.png',
+        isActive: true,
+      });
+
+      expect(created.id).toBe(101);
+      expect(typeRepository.findOne).toHaveBeenCalledWith({
+        where: { signCode: expect.anything(), isActive: true },
+      });
+    });
+
+    it('rejects creating a sign type if another sign with the same code is ACTIVE', async () => {
+      const categoryRepository = repository<SignCategory>();
+      const typeRepository = repository<TrafficSignType>();
+      const manager = {
+        getRepository: jest.fn((target) => {
+          if (target === SignCategory) return categoryRepository;
+          if (target === TrafficSignType) return typeRepository;
+          return repository<any>();
+        }),
+      } as unknown as EntityManager;
+
+      categoryRepository.findOne.mockResolvedValue(entity<SignCategory>({ id: 2 }));
+      typeRepository.findOne.mockResolvedValue(entity<TrafficSignType>({ id: 50, signCode: 'P.102', isActive: true }));
+      (dataSource.transaction as jest.Mock).mockImplementation(
+        (callback: (transactionManager: EntityManager) => unknown) => callback(manager),
+      );
+
+      await expect(
+        service.createSignType({
+          categoryId: 2,
+          signCode: 'P.102',
+          nameVi: 'Cấm đi ngược chiều',
+          nameEn: 'No entry',
+          representativeImageKey: 'catalog/p102.png',
+          isActive: true,
+        }),
+      ).rejects.toThrow('sign_code "P.102" exists');
+    });
+
+    it('getSignType throws NotFoundException for non-staff when sign is deactivated', async () => {
+      signTypes.findOne.mockResolvedValue(entity<TrafficSignType>({ id: 5, isActive: false }));
+
+      await expect(service.getSignType(5, { roles: ['DRIVER'] })).rejects.toThrow(
+        'TrafficSignType #5 not found',
+      );
+      await expect(service.getSignType(5, { roles: ['SURVEYOR'] })).rejects.toThrow(
+        'TrafficSignType #5 not found',
+      );
+      await expect(service.getSignType(5, { roles: ['REVIEWER'] })).rejects.toThrow(
+        'TrafficSignType #5 not found',
+      );
+    });
+
+    it('getSignType allows ADMIN and STAFF to view deactivated sign', async () => {
+      const inactiveSign = entity<TrafficSignType>({
+        id: 5,
+        isActive: false,
+        signCode: 'P.102',
+        nameVi: 'Cấm',
+        nameEn: 'No',
+      });
+      signTypes.findOne.mockResolvedValue(inactiveSign);
+      aiPrompts.find.mockResolvedValue([]);
+      osmMappings.find.mockResolvedValue([]);
+      images.find.mockResolvedValue([]);
+
+      const adminView = await service.getSignType(5, { roles: ['ADMIN'] });
+      expect(adminView.id).toBe(5);
+
+      const staffView = await service.getSignType(5, { roles: ['STAFF'] });
+      expect(staffView.id).toBe(5);
     });
   });
 
