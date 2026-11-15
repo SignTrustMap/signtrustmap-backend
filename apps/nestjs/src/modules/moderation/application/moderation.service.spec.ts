@@ -13,9 +13,9 @@ import { ModerationService } from './moderation.service';
 
 describe('ModerationService (Scenario #4: missing sign type)', () => {
   function buildService() {
-    const cases = { findOne: jest.fn(), findAndCount: jest.fn().mockResolvedValue([[], 0]), find: jest.fn().mockResolvedValue([]), save: jest.fn((v: any) => v), create: jest.fn((v: any) => v) };
+    const cases = { findOne: jest.fn(), findAndCount: jest.fn().mockResolvedValue([[], 0]), find: jest.fn().mockResolvedValue([]), save: jest.fn((v: any) => v), create: jest.fn((v: any) => v), createQueryBuilder: jest.fn() };
     const actions = { create: jest.fn((v: any) => v), save: jest.fn((v: any) => v), find: jest.fn().mockResolvedValue([]) };
-    const missing = { findOne: jest.fn(), findAndCount: jest.fn().mockResolvedValue([[], 0]), save: jest.fn((v: any) => v) };
+    const missing = { findOne: jest.fn(), findAndCount: jest.fn().mockResolvedValue([[], 0]), save: jest.fn((v: any) => v), createQueryBuilder: jest.fn() };
     const catRepo = { findOne: jest.fn(), create: jest.fn((v: any) => v), save: jest.fn((v: any) => v) };
     const signTypeRepo = { findOne: jest.fn(), create: jest.fn((v: any) => v), save: jest.fn((v: any) => v) };
     const candRepo = { findOne: jest.fn(), update: jest.fn().mockResolvedValue(undefined), create: jest.fn((v: any) => v), save: jest.fn((v: any) => v) };
@@ -863,5 +863,92 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
       status: 'IN_REVIEW',
       rawStatus: MissingTypeStatus.ESCALATED_ADMIN,
     });
+  });
+
+  it('listCases supports dynamic sorting (newest, oldest, A-Z, Z-A) with findAndCount', async () => {
+    const { service, cases } = buildService();
+    cases.findAndCount.mockResolvedValue([[], 0]);
+
+    // Oldest
+    await service.listCases('OPEN', 1, 10, undefined, 'oldest');
+    expect(cases.findAndCount).toHaveBeenCalledWith(
+      expect.objectContaining({ order: { createdAt: 'ASC' } }),
+    );
+
+    // A - Z (by caseType)
+    await service.listCases('OPEN', 1, 10, undefined, 'name', 'ASC');
+    expect(cases.findAndCount).toHaveBeenCalledWith(
+      expect.objectContaining({ order: { caseType: 'ASC' } }),
+    );
+
+    // Z - A (by caseType)
+    await service.listCases('OPEN', 1, 10, undefined, 'name', 'DESC');
+    expect(cases.findAndCount).toHaveBeenCalledWith(
+      expect.objectContaining({ order: { caseType: 'DESC' } }),
+    );
+
+    // Newest
+    await service.listCases('OPEN', 1, 10, undefined, 'newest');
+    expect(cases.findAndCount).toHaveBeenCalledWith(
+      expect.objectContaining({ order: { createdAt: 'DESC' } }),
+    );
+  });
+
+  it('listCases builds unaccent and staff join query when search query is provided', async () => {
+    const { service, cases } = buildService();
+    const qb = {
+      leftJoin: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      addOrderBy: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getManyAndCount: jest.fn().mockResolvedValue([
+        [{ id: 'case-123', caseType: 'CATALOG_PROPOSAL', assignedStaffId: 'staff-1', status: 'PENDING' }],
+        1,
+      ]),
+    };
+    (cases as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
+
+    const res = await service.listCases('OPEN', 1, 10, 'Nguyen Long Vu', 'name', 'ASC');
+
+    expect(cases.createQueryBuilder).toHaveBeenCalledWith('mc');
+    expect(qb.leftJoin).toHaveBeenCalledWith(expect.anything(), 'staff', 'staff.id = mc.assignedStaffId');
+    expect(qb.andWhere).toHaveBeenCalledWith(
+      expect.stringContaining('unaccent(COALESCE(staff.fullName'),
+      expect.objectContaining({ searchPattern: '%Nguyen Long Vu%' }),
+    );
+    expect(qb.orderBy).toHaveBeenCalledWith('mc.caseType', 'ASC');
+    expect(res.items).toHaveLength(1);
+    expect(res.total).toBe(1);
+  });
+
+  it('listNewSignReports supports dynamic sorting and unaccent search joining staff and reporter', async () => {
+    const { service, missing } = buildService();
+    const qb = {
+      leftJoin: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      addOrderBy: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getManyAndCount: jest.fn().mockResolvedValue([
+        [{ id: 'r-1', proposedName: 'Đường cấm', status: MissingTypeStatus.PENDING }],
+        1,
+      ]),
+    };
+    (missing as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
+
+    const res = await service.listNewSignReports('OPEN', 1, 10, 'duong cam', 'name', 'ASC');
+
+    expect(missing.createQueryBuilder).toHaveBeenCalledWith('r');
+    expect(qb.leftJoin).toHaveBeenCalledWith(expect.anything(), 'staff', 'staff.id = r.reviewedBy');
+    expect(qb.leftJoin).toHaveBeenCalledWith(expect.anything(), 'reporter', 'reporter.id = r.reporterId');
+    expect(qb.andWhere).toHaveBeenCalledWith(
+      expect.stringContaining('unaccent(COALESCE(r.proposedName'),
+      expect.objectContaining({ searchPattern: '%duong cam%' }),
+    );
+    expect(qb.orderBy).toHaveBeenCalledWith('r.proposedName', 'ASC');
+    expect(res.items).toHaveLength(1);
   });
 });

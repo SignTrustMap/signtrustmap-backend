@@ -180,7 +180,14 @@ export class ModerationService {
     return this.reportNewSign(reporterId, dto);
   }
 
-  async listNewSignReports(status?: string, page = 1, pageSize = 20) {
+  async listNewSignReports(
+    status?: string,
+    page = 1,
+    pageSize = 20,
+    search?: string,
+    sortBy?: string,
+    sortOrder?: string,
+  ) {
     const p = Math.max(1, page), ps = Math.min(Math.max(1, pageSize), 100);
     const where: any = {};
     if (status) {
@@ -197,13 +204,66 @@ export class ModerationService {
         where.status = upper;
       }
     }
-    const [items, total] = await this.missing.findAndCount({ where, order: { createdAt: 'DESC' }, skip: (p - 1) * ps, take: ps });
+
+    const sort = this.parseNewSignSort(sortBy, sortOrder);
+    const term = search?.trim();
+
+    if (term && typeof this.missing.createQueryBuilder === 'function') {
+      const qb = this.missing.createQueryBuilder('r')
+        .leftJoin(User, 'staff', 'staff.id = r.reviewedBy')
+        .leftJoin(User, 'reporter', 'reporter.id = r.reporterId');
+
+      if (where.status) {
+        if (where.status instanceof Object && where.status._type === 'in') {
+          qb.andWhere('r.status IN (:...statuses)', { statuses: where.status._value });
+        } else {
+          qb.andWhere('r.status = :status', { status: where.status });
+        }
+      }
+
+      const searchPattern = `%${term}%`;
+      qb.andWhere(
+        `(
+          unaccent(COALESCE(staff.fullName, '')) ILIKE unaccent(:searchPattern)
+          OR unaccent(COALESCE(staff.email, '')) ILIKE unaccent(:searchPattern)
+          OR unaccent(COALESCE(reporter.fullName, '')) ILIKE unaccent(:searchPattern)
+          OR unaccent(COALESCE(reporter.email, '')) ILIKE unaccent(:searchPattern)
+          OR unaccent(COALESCE(r.proposedName, '')) ILIKE unaccent(:searchPattern)
+          OR unaccent(COALESCE(r.description, '')) ILIKE unaccent(:searchPattern)
+          OR unaccent(COALESCE(r.staffNotes, '')) ILIKE unaccent(:searchPattern)
+          OR r.id::text ILIKE :searchPattern
+          OR r.candidateId::text ILIKE :searchPattern
+          OR r.status::text ILIKE :searchPattern
+        )`,
+        { searchPattern },
+      );
+
+      const qbField = sort.field === 'proposedName' ? 'r.proposedName' : sort.field === 'status' ? 'r.status' : 'r.createdAt';
+      qb.orderBy(qbField, sort.direction)
+        .addOrderBy('r.id', 'ASC')
+        .skip((p - 1) * ps)
+        .take(ps);
+
+      const [items, total] = await qb.getManyAndCount();
+      const enriched = await this.enrichWithCandidates(items);
+      return { items: enriched, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
+    }
+
+    const order: Record<string, 'ASC' | 'DESC'> = { [sort.field]: sort.direction };
+    const [items, total] = await this.missing.findAndCount({ where, order, skip: (p - 1) * ps, take: ps });
     const enriched = await this.enrichWithCandidates(items);
     return { items: enriched, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
   }
 
-  listMissingReports(status?: string, page = 1, pageSize = 20) {
-    return this.listNewSignReports(status, page, pageSize);
+  listMissingReports(
+    status?: string,
+    page = 1,
+    pageSize = 20,
+    search?: string,
+    sortBy?: string,
+    sortOrder?: string,
+  ) {
+    return this.listNewSignReports(status, page, pageSize, search, sortBy, sortOrder);
   }
 
   async updateNewSignReport(reportId: string, reviewerId: string, dto: UpdateNewSignTypeReportDto) {
@@ -1684,7 +1744,14 @@ export class ModerationService {
   }
 
   // ---- moderation cases (unchanged behaviour, enriched) ----
-  async listCases(status?: string, page = 1, pageSize = 20) {
+  async listCases(
+    status?: string,
+    page = 1,
+    pageSize = 20,
+    search?: string,
+    sortBy?: string,
+    sortOrder?: string,
+  ) {
     const p = Math.max(1, page), ps = Math.min(Math.max(1, pageSize), 100);
     const where: any = {};
     if (status) {
@@ -1695,8 +1762,100 @@ export class ModerationService {
         where.status = normStatus as ModerationStatus;
       }
     }
-    const [items, total] = await this.cases.findAndCount({ where, order: { createdAt: 'DESC' }, skip: (p - 1) * ps, take: ps });
+
+    const sort = this.parseCaseSort(sortBy, sortOrder);
+    const term = search?.trim();
+
+    if (term && typeof this.cases.createQueryBuilder === 'function') {
+      const qb = this.cases.createQueryBuilder('mc')
+        .leftJoin(User, 'staff', 'staff.id = mc.assignedStaffId');
+
+      if (where.status) {
+        qb.andWhere('mc.status = :status', { status: where.status });
+      }
+
+      const searchPattern = `%${term}%`;
+      qb.andWhere(
+        `(
+          unaccent(COALESCE(staff.fullName, '')) ILIKE unaccent(:searchPattern)
+          OR unaccent(COALESCE(staff.email, '')) ILIKE unaccent(:searchPattern)
+          OR unaccent(COALESCE(mc.resolutionNote, '')) ILIKE unaccent(:searchPattern)
+          OR unaccent(COALESCE(mc.targetEntityType, '')) ILIKE unaccent(:searchPattern)
+          OR mc.id::text ILIKE :searchPattern
+          OR mc.targetEntityId::text ILIKE :searchPattern
+          OR mc.caseType::text ILIKE :searchPattern
+          OR mc.status::text ILIKE :searchPattern
+        )`,
+        { searchPattern },
+      );
+
+      const qbField = sort.field === 'caseType' ? 'mc.caseType' : sort.field === 'status' ? 'mc.status' : 'mc.createdAt';
+      qb.orderBy(qbField, sort.direction)
+        .addOrderBy('mc.id', 'ASC')
+        .skip((p - 1) * ps)
+        .take(ps);
+
+      const [items, total] = await qb.getManyAndCount();
+      return { items, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
+    }
+
+    const order: Record<string, 'ASC' | 'DESC'> = { [sort.field]: sort.direction };
+    const [items, total] = await this.cases.findAndCount({ where, order, skip: (p - 1) * ps, take: ps });
     return { items, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
+  }
+
+  private parseCaseSort(sortBy?: string, sortOrder?: string): { field: string; direction: 'ASC' | 'DESC' } {
+    let direction: 'ASC' | 'DESC' = 'DESC';
+    const normSortOrder = (sortOrder || '').trim().toUpperCase();
+    if (normSortOrder === 'ASC' || normSortOrder === 'DESC') {
+      direction = normSortOrder;
+    }
+
+    const normSortBy = (sortBy || '').trim().toLowerCase();
+    if (normSortBy === 'oldest') {
+      return { field: 'createdAt', direction: 'ASC' };
+    }
+    if (normSortBy === 'newest') {
+      return { field: 'createdAt', direction: 'DESC' };
+    }
+    if (['name', 'name_asc', 'a_z', 'a-z', 'casetype', 'case_type'].includes(normSortBy)) {
+      const dir = ['a_z', 'a-z', 'name_asc'].includes(normSortBy) ? 'ASC' : (normSortOrder === 'DESC' ? 'DESC' : 'ASC');
+      return { field: 'caseType', direction: dir };
+    }
+    if (['name_desc', 'z_a', 'z-a'].includes(normSortBy)) {
+      return { field: 'caseType', direction: 'DESC' };
+    }
+    if (normSortBy === 'status') {
+      return { field: 'status', direction };
+    }
+    return { field: 'createdAt', direction };
+  }
+
+  private parseNewSignSort(sortBy?: string, sortOrder?: string): { field: string; direction: 'ASC' | 'DESC' } {
+    let direction: 'ASC' | 'DESC' = 'DESC';
+    const normSortOrder = (sortOrder || '').trim().toUpperCase();
+    if (normSortOrder === 'ASC' || normSortOrder === 'DESC') {
+      direction = normSortOrder;
+    }
+
+    const normSortBy = (sortBy || '').trim().toLowerCase();
+    if (normSortBy === 'oldest') {
+      return { field: 'createdAt', direction: 'ASC' };
+    }
+    if (normSortBy === 'newest') {
+      return { field: 'createdAt', direction: 'DESC' };
+    }
+    if (['name', 'name_asc', 'a_z', 'a-z', 'proposedname', 'proposed_name'].includes(normSortBy)) {
+      const dir = ['a_z', 'a-z', 'name_asc'].includes(normSortBy) ? 'ASC' : (normSortOrder === 'DESC' ? 'DESC' : 'ASC');
+      return { field: 'proposedName', direction: dir };
+    }
+    if (['name_desc', 'z_a', 'z-a'].includes(normSortBy)) {
+      return { field: 'proposedName', direction: 'DESC' };
+    }
+    if (normSortBy === 'status') {
+      return { field: 'status', direction };
+    }
+    return { field: 'createdAt', direction };
   }
   async getCase(id: string) {
     const mc = await this.cases.findOne({ where: { id } });

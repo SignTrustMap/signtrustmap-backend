@@ -129,6 +129,19 @@ describe('ModerationController', () => {
     expect(service.listCases).toHaveBeenCalledWith(undefined, 1, 20);
   });
 
+  it('listCases and listEscalations forward search, sortBy, sortOrder to service', async () => {
+    await controller.listCases('IN_REVIEW', '2', '25', 'Nguyen', undefined, 'name', 'ASC');
+    expect(service.listCases).toHaveBeenCalledWith('IN_REVIEW', 2, 25, 'Nguyen', 'name', 'ASC');
+
+    await controller.listEscalations('PENDING', '1', '10', 'staff@signmap.site', undefined, 'oldest', undefined);
+    expect(service.listCases).toHaveBeenCalledWith('PENDING', 1, 10, 'staff@signmap.site', 'oldest', undefined);
+  });
+
+  it('listNewSigns forwards search, sortBy, sortOrder to service', async () => {
+    await controller.listNewSigns('PENDING', '1', '20', 'cam di nguoc chieu', undefined, 'newest', 'DESC');
+    expect(service.listNewSignReports).toHaveBeenCalledWith('PENDING', 1, 20, 'cam di nguoc chieu', 'newest', 'DESC');
+  });
+
   it('getCase calls service.getCase', async () => {
     const res = await controller.getCase('case-1');
     expect(res).toEqual({ id: 'case-1' });
