@@ -25,6 +25,14 @@ class CandidateIdPersistenceIntegrationTests(unittest.TestCase):
     SURVEYOR_ID = uuid.UUID("f42b57a0-1beb-4463-abee-ab768e454949")
     EXPECTED_CANDIDATE_ID = uuid.UUID("a3bb189e-8bf9-3888-9912-ace4e6543002")
 
+    @classmethod
+    def setUpClass(cls) -> None:
+        try:
+            with get_sync_db() as db:
+                db.execute(select(1))
+        except Exception:
+            raise unittest.SkipTest("Live database not available for candidate ID integration test")
+
     def setUp(self) -> None:
         self._cleanup()
         with get_sync_db() as db:
