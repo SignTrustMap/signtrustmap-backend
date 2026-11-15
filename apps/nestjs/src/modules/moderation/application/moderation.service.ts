@@ -190,20 +190,57 @@ export class ModerationService {
   ) {
     const p = Math.max(1, page), ps = Math.min(Math.max(1, pageSize), 100);
     const where: any = {};
-    if (status) {
-      const upper = status.toUpperCase();
-      if (upper === 'OPEN') {
+    const upperStatus = status?.toUpperCase();
+    if (upperStatus) {
+      if (upperStatus === 'OPEN') {
         where.status = MissingTypeStatus.PENDING;
-      } else if (upper === 'APPROVED') {
+      } else if (upperStatus === 'APPROVED') {
         where.status = In([MissingTypeStatus.APPROVED, MissingTypeStatus.ESCALATED_ADMIN]);
-      } else if (upper === 'IN_REVIEW' || upper === 'ESCALATED') {
+      } else if (upperStatus === 'IN_REVIEW' || upperStatus === 'ESCALATED') {
         where.status = MissingTypeStatus.ESCALATED_ADMIN;
       } else {
         const allowed = Object.values(MissingTypeStatus);
-        if (!allowed.includes(upper as MissingTypeStatus)) throw new BadRequestException('status must be one of ' + allowed.join(', '));
-        where.status = upper;
+        if (!allowed.includes(upperStatus as MissingTypeStatus)) throw new BadRequestException('status must be one of ' + allowed.join(', '));
+        where.status = upperStatus;
       }
     }
+
+    const normalizedSearch = search?.trim().replace(/^#+/, '').trim() || '';
+    if (normalizedSearch && typeof this.missing?.createQueryBuilder === 'function') {
+      const pattern = `%${normalizedSearch.replace(/[%_\\]/g, '\\$&')}%`;
+      const qb = this.missing.createQueryBuilder('r');
+      if (where.status) {
+        if (upperStatus === 'APPROVED') {
+          qb.andWhere('r.status IN (:...statuses)', {
+            statuses: [MissingTypeStatus.APPROVED, MissingTypeStatus.ESCALATED_ADMIN],
+          });
+        } else {
+          qb.andWhere('r.status = :status', { status: where.status });
+        }
+      }
+      qb.andWhere(
+        `(
+          CAST(r.id AS text) ILIKE :pattern ESCAPE '\\'
+          OR CAST(r.candidate_id AS text) ILIKE :pattern ESCAPE '\\'
+          OR COALESCE(r.proposed_name, '') ILIKE :pattern ESCAPE '\\'
+          OR COALESCE(r.description, '') ILIKE :pattern ESCAPE '\\'
+          OR COALESCE(r.staff_notes, '') ILIKE :pattern ESCAPE '\\'
+          OR EXISTS (
+            SELECT 1 FROM users u
+            WHERE u.id = r.reporter_id
+              AND (COALESCE(u.full_name, '') ILIKE :pattern ESCAPE '\\' OR COALESCE(u.email, '') ILIKE :pattern ESCAPE '\\')
+          )
+        )`,
+        { pattern },
+      )
+        .orderBy('r.createdAt', 'DESC')
+        .skip((p - 1) * ps)
+        .take(ps);
+      const [items, total] = await qb.getManyAndCount();
+      const enriched = await this.enrichWithCandidates(items);
+      return { items: enriched, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
+    }
+
 
     const sort = this.parseNewSignSort(sortBy, sortOrder);
     const term = search?.trim();
@@ -215,13 +252,16 @@ export class ModerationService {
 
       if (where.status) {
         if (where.status instanceof Object && where.status._type === 'in') {
-          qb.andWhere('r.status IN (:...statuses)', { statuses: where.status._value });
+          qb.andWhere('r.status IN (:...statuses)', {
+            statuses: where.status._value,
+          });
         } else {
           qb.andWhere('r.status = :status', { status: where.status });
         }
       }
 
-      const searchPattern = `%${term}%`;
+      const searchPattern = `%${term.replace(/^#/, '')}%`;
+
       qb.andWhere(
         `(
           unaccent(COALESCE(staff.fullName, '')) ILIKE unaccent(:searchPattern)
@@ -238,7 +278,13 @@ export class ModerationService {
         { searchPattern },
       );
 
-      const qbField = sort.field === 'proposedName' ? 'r.proposedName' : sort.field === 'status' ? 'r.status' : 'r.createdAt';
+      const qbField =
+        sort.field === 'proposedName'
+          ? 'r.proposedName'
+          : sort.field === 'status'
+            ? 'r.status'
+            : 'r.createdAt';
+
       qb.orderBy(qbField, sort.direction)
         .addOrderBy('r.id', 'ASC')
         .skip((p - 1) * ps)
@@ -246,11 +292,27 @@ export class ModerationService {
 
       const [items, total] = await qb.getManyAndCount();
       const enriched = await this.enrichWithCandidates(items);
-      return { items: enriched, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
+
+      return {
+        items: enriched,
+        total,
+        page: p,
+        pageSize: ps,
+        totalPages: Math.ceil(total / ps),
+      };
     }
 
-    const order: Record<string, 'ASC' | 'DESC'> = { [sort.field]: sort.direction };
-    const [items, total] = await this.missing.findAndCount({ where, order, skip: (p - 1) * ps, take: ps });
+    const order: Record<string, 'ASC' | 'DESC'> = {
+      [sort.field]: sort.direction,
+    };
+
+    const [items, total] = await this.missing.findAndCount({
+      where,
+      order,
+      skip: (p - 1) * ps,
+      take: ps,
+    });
+
     const enriched = await this.enrichWithCandidates(items);
     return { items: enriched, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
   }
@@ -264,6 +326,7 @@ export class ModerationService {
     sortOrder?: string,
   ) {
     return this.listNewSignReports(status, page, pageSize, search, sortBy, sortOrder);
+  }
   }
 
   async updateNewSignReport(reportId: string, reviewerId: string, dto: UpdateNewSignTypeReportDto) {
@@ -688,7 +751,7 @@ export class ModerationService {
         reportId,
         adminId,
         reason,
-        MissingTypeStatus.ESCALATED_ADMIN,
+        [MissingTypeStatus.ESCALATED_ADMIN, MissingTypeStatus.PENDING],
       );
     }
     if (dto.actionType === 'REJECT' || dto.actionType === 'DISMISS') {
@@ -1267,7 +1330,7 @@ export class ModerationService {
     reportId: string,
     staffId: string,
     note: string | null,
-    expectedStatus = MissingTypeStatus.PENDING,
+    expectedStatus: MissingTypeStatus | MissingTypeStatus[] = MissingTypeStatus.PENDING,
   ) {
     const result = await this.dataSource.transaction(async (manager) => {
       let report: { id: string; candidateId?: string | null; reporterId?: string | null; proposedName?: string | null; status: MissingTypeStatus } | null = null;
@@ -1305,8 +1368,9 @@ export class ModerationService {
         }
       }
       if (!report) throw new NotFoundException('MissingSignTypeReport ' + reportId + ' not found');
-      if (report.status !== expectedStatus) {
-        throw new BadRequestException('Report status must be ' + expectedStatus + ' to request recapture');
+      const allowedStatuses = Array.isArray(expectedStatus) ? expectedStatus : [expectedStatus];
+      if (!allowedStatuses.includes(report.status)) {
+        throw new BadRequestException('Report status must be ' + allowedStatuses.join(' or ') + ' to request recapture');
       }
       if (!report.candidateId) {
         throw new BadRequestException('A candidate-linked report is required to request recapture');
@@ -1330,17 +1394,20 @@ export class ModerationService {
         candidate = candidateRows[0] ?? null;
       }
       if (!candidate) throw new NotFoundException('Candidate ' + report.candidateId + ' not found');
-      if (candidate.status !== CandidateStatus.NEW_TYPE_HOLD) {
-        throw new BadRequestException('Candidate must be on NEW_TYPE_HOLD to request recapture');
+      if ([CandidateStatus.VERIFIED, CandidateStatus.REJECTED, CandidateStatus.RECAPTURE_REQUESTED].includes(candidate.status)) {
+        throw new BadRequestException(`Cannot request recapture for candidate ${candidate.id} with status ${candidate.status}`);
       }
 
       let activeRequestsCount = 0;
       if (typeof manager.getRepository === 'function') {
-        activeRequestsCount = await manager.getRepository(CandidateRecaptureRequest)
+        // PostgreSQL rejects FOR UPDATE combined with aggregate COUNT(), so lock & select row IDs instead.
+        const activeRequests = await manager.getRepository(CandidateRecaptureRequest)
           .createQueryBuilder('r')
           .setLock('pessimistic_write')
+          .select(['r.id'])
           .where('r.candidateId = :candidateId AND r.completedAt IS NULL', { candidateId: candidate.id })
-          .getCount();
+          .getMany();
+        activeRequestsCount = activeRequests.length;
       } else if (typeof manager.query === 'function') {
         const activeRequests: any[] = await manager.query(
           `SELECT id FROM candidate_recapture_requests
@@ -1381,7 +1448,7 @@ export class ModerationService {
             reviewedBy: staffId,
             updatedAt: new Date(),
           })
-          .where('id = :id AND status = :status', { id: reportId, status: expectedStatus })
+          .where('id = :id AND status = :status', { id: reportId, status: report.status })
           .execute();
         updateReportAffected = res.affected ?? 0;
       } else if (typeof manager.query === 'function') {
@@ -1390,7 +1457,7 @@ export class ModerationService {
            SET status = $2, staff_notes = COALESCE($3, staff_notes), reviewed_by = $4, updated_at = NOW()
            WHERE id = $1 AND status = $5
            RETURNING id`,
-          [reportId, MissingTypeStatus.INCOMPLETE, note, staffId, expectedStatus],
+          [reportId, MissingTypeStatus.INCOMPLETE, note, staffId, report.status],
         );
         updateReportAffected = getAffectedRowCount(updatedReports);
       }
@@ -1402,7 +1469,7 @@ export class ModerationService {
           .createQueryBuilder()
           .update(UnverifiedSignCandidate)
           .set({ status: CandidateStatus.RECAPTURE_REQUESTED })
-          .where('id = :id AND status = :status', { id: candidate.id, status: CandidateStatus.NEW_TYPE_HOLD })
+          .where('id = :id AND status = :status', { id: candidate.id, status: candidate.status })
           .execute();
         updateCandAffected = res.affected ?? 0;
       } else if (typeof manager.query === 'function') {
@@ -1411,7 +1478,7 @@ export class ModerationService {
            SET status = $2
            WHERE id = $1 AND status = $3
            RETURNING id`,
-          [candidate.id, CandidateStatus.RECAPTURE_REQUESTED, CandidateStatus.NEW_TYPE_HOLD],
+          [candidate.id, CandidateStatus.RECAPTURE_REQUESTED, candidate.status],
         );
         updateCandAffected = getAffectedRowCount(updatedCandidates);
       }
@@ -1426,6 +1493,7 @@ export class ModerationService {
             candidateId: candidate.id,
             reviewerId: staffId,
             surveyorId: surveyorId ?? undefined,
+            newSignTypeReportId: reportId,
             missingTypeReportId: reportId,
             reason: 'MISSING_TYPE_RECAPTURE_REQUESTED',
             note,
@@ -1461,8 +1529,8 @@ export class ModerationService {
         const reportCase = await caseRepo
           .createQueryBuilder('c')
           .setLock('pessimistic_write')
-          .where('c.targetEntityType = :targetEntityType AND c.targetEntityId = :targetEntityId', {
-            targetEntityType: 'missing_sign_type_report',
+          .where('c.targetEntityType IN (:...targetEntityTypes) AND c.targetEntityId = :targetEntityId', {
+            targetEntityTypes: ['missing_sign_type_report', 'new_sign_type_report', 'missing_type_report', 'report'],
             targetEntityId: reportId,
           })
           .orderBy('c.createdAt', 'DESC')
@@ -1736,6 +1804,8 @@ export class ModerationService {
     report.staffNotes = dto.staffNotes ?? report.staffNotes ?? ('Approved as TrafficSignType #' + created.id + ' (' + signCode + ')');
     await this.missing.save(report);
 
+    await this.closeOpenReportCases(reportId, staffId, 'APPROVED', report.staffNotes ?? null);
+
     await this.reportSyncedBackend(created.id);
     await this.notifyReporter(report, 'APPROVED', 'Báo cáo biển báo mới đã được chấp thuận', 'Báo cáo "' + (report.proposedName || 'biển báo mới') + '" đã được thêm vào danh mục với mã "' + signCode + '".');
 
@@ -1763,10 +1833,15 @@ export class ModerationService {
       }
     }
 
-    const sort = this.parseCaseSort(sortBy, sortOrder);
-    const term = search?.trim();
 
-    if (term && typeof this.cases.createQueryBuilder === 'function') {
+    const sort = this.parseCaseSort(sortBy, sortOrder);
+    const normalizedSearch = search?.trim().replace(/^#+/, '').trim() || '';
+    let items: ModerationCase[] = [];
+    let total = 0;
+
+    if (normalizedSearch && typeof this.cases.createQueryBuilder === 'function') {
+      const searchPattern = `%${normalizedSearch.replace(/[%_\\]/g, '\\$&')}%`;
+
       const qb = this.cases.createQueryBuilder('mc')
         .leftJoin(User, 'staff', 'staff.id = mc.assignedStaffId');
 
@@ -1774,34 +1849,134 @@ export class ModerationService {
         qb.andWhere('mc.status = :status', { status: where.status });
       }
 
-      const searchPattern = `%${term}%`;
       qb.andWhere(
         `(
-          unaccent(COALESCE(staff.fullName, '')) ILIKE unaccent(:searchPattern)
-          OR unaccent(COALESCE(staff.email, '')) ILIKE unaccent(:searchPattern)
-          OR unaccent(COALESCE(mc.resolutionNote, '')) ILIKE unaccent(:searchPattern)
-          OR unaccent(COALESCE(mc.targetEntityType, '')) ILIKE unaccent(:searchPattern)
-          OR mc.id::text ILIKE :searchPattern
-          OR mc.targetEntityId::text ILIKE :searchPattern
-          OR mc.caseType::text ILIKE :searchPattern
-          OR mc.status::text ILIKE :searchPattern
+          unaccent(COALESCE(staff.fullName, '')) ILIKE unaccent(:searchPattern) ESCAPE '\\'
+          OR unaccent(COALESCE(staff.email, '')) ILIKE unaccent(:searchPattern) ESCAPE '\\'
+          OR unaccent(COALESCE(mc.resolutionNote, '')) ILIKE unaccent(:searchPattern) ESCAPE '\\'
+          OR unaccent(COALESCE(mc.targetEntityType, '')) ILIKE unaccent(:searchPattern) ESCAPE '\\'
+          OR mc.id::text ILIKE :searchPattern ESCAPE '\\'
+          OR mc.targetEntityId::text ILIKE :searchPattern ESCAPE '\\'
+          OR mc.caseType::text ILIKE :searchPattern ESCAPE '\\'
+          OR mc.status::text ILIKE :searchPattern ESCAPE '\\'
+          OR EXISTS (
+            SELECT 1 FROM new_sign_type_reports r
+            LEFT JOIN users u ON u.id = r.reporter_id
+            WHERE r.id = mc.target_entity_id
+              AND (
+                unaccent(COALESCE(r.proposed_name, '')) ILIKE unaccent(:searchPattern) ESCAPE '\\'
+                OR unaccent(COALESCE(r.description, '')) ILIKE unaccent(:searchPattern) ESCAPE '\\'
+                OR unaccent(COALESCE(u.full_name, '')) ILIKE unaccent(:searchPattern) ESCAPE '\\'
+                OR unaccent(COALESCE(u.email, '')) ILIKE unaccent(:searchPattern) ESCAPE '\\'
+              )
+          )
         )`,
         { searchPattern },
       );
 
-      const qbField = sort.field === 'caseType' ? 'mc.caseType' : sort.field === 'status' ? 'mc.status' : 'mc.createdAt';
+      const qbField =
+        sort.field === 'caseType'
+          ? 'mc.caseType'
+          : sort.field === 'status'
+            ? 'mc.status'
+            : 'mc.createdAt';
+
       qb.orderBy(qbField, sort.direction)
         .addOrderBy('mc.id', 'ASC')
         .skip((p - 1) * ps)
         .take(ps);
 
-      const [items, total] = await qb.getManyAndCount();
-      return { items, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
+      [items, total] = await qb.getManyAndCount();
+    } else {
+      const order: Record<string, 'ASC' | 'DESC'> = {
+        [sort.field]: sort.direction,
+      };
+
+      [items, total] = await this.cases.findAndCount({
+        where,
+        order,
+        skip: (p - 1) * ps,
+        take: ps,
+      });
     }
 
-    const order: Record<string, 'ASC' | 'DESC'> = { [sort.field]: sort.direction };
-    const [items, total] = await this.cases.findAndCount({ where, order, skip: (p - 1) * ps, take: ps });
-    return { items, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
+    // Batch-enrich report-linked cases with report title and reporter data
+    let enrichedItems: any[] = items;
+
+    if (items.length > 0 && typeof this.dataSource?.query === 'function') {
+      const reportIds = Array.from(
+        new Set(
+          items
+            .filter((mc) => {
+              const t = (mc.targetEntityType || '').toLowerCase();
+              return (
+                mc.targetEntityId &&
+                (
+                  t.includes('report') ||
+                  t.includes('missing') ||
+                  mc.caseType === ModerationType.CATALOG_PROPOSAL
+                )
+              );
+            })
+            .map((mc) => mc.targetEntityId),
+        ),
+      );
+
+      if (reportIds.length > 0) {
+        try {
+          const rows: any[] = await this.dataSource.query(
+            `SELECT
+                r.id,
+                r.proposed_name,
+                r.status,
+                r.reporter_id,
+                u.full_name AS reporter_name,
+                u.email AS reporter_email
+             FROM new_sign_type_reports r
+             LEFT JOIN users u ON u.id = r.reporter_id
+             WHERE r.id = ANY($1::uuid[])`,
+            [reportIds],
+          );
+
+          const byId = new Map<string, any>();
+
+          for (const row of rows) {
+            byId.set(row.id, row);
+          }
+
+          enrichedItems = items.map((mc) => {
+            const rep = byId.get(mc.targetEntityId);
+
+            if (!rep) return mc;
+
+            return {
+              ...mc,
+              proposedName: rep.proposed_name ?? null,
+              targetTitle: rep.proposed_name ?? null,
+              reportStatus: rep.status ?? null,
+              reporter: rep.reporter_id
+                ? {
+                    id: rep.reporter_id,
+                    fullName: rep.reporter_name ?? null,
+                    email: rep.reporter_email ?? null,
+                  }
+                : null,
+            };
+          });
+        } catch {
+          // Keep original cases if enrichment fails
+        }
+      }
+    }
+
+    return {
+      items: enrichedItems,
+      total,
+      page: p,
+      pageSize: ps,
+      totalPages: Math.ceil(total / ps),
+    };
+
   }
 
   private parseCaseSort(sortBy?: string, sortOrder?: string): { field: string; direction: 'ASC' | 'DESC' } {
@@ -1988,7 +2163,6 @@ export class ModerationService {
   async resolveCase(id: string, staffId: string, dto: ResolveCaseDto, userRole?: string | string[]) {
     const mc = await this.cases.findOne({ where: { id } });
     if (!mc) throw new NotFoundException('ModerationCase ' + id + ' not found');
-    if (mc.status === ModerationStatus.RESOLVED) throw new BadRequestException('Case is already resolved');
     const actionType = (dto.actionType || 'RESOLVE').toUpperCase();
     const reportId: string | null = (dto as any).reportId ?? null;
     const targetTypeId: number | null = (dto as any).targetSignTypeId ?? (dto as any).mergedIntoSignTypeId ?? null;
@@ -2036,6 +2210,26 @@ export class ModerationService {
       if (!isCallerAdmin) {
         throw new ForbiddenException('Admin role is required to approve and create catalog sign types');
       }
+    }
+
+    if (mc.status === ModerationStatus.RESOLVED) {
+      if (
+        (actionType === 'APPROVED' || actionType === 'MERGED') &&
+        mc.caseType === ModerationType.CATALOG_PROPOSAL
+      ) {
+        const linkedReportId = reportId || mc.targetEntityId;
+        const linkedReport = linkedReportId
+          ? await this.missing.findOne({ where: { id: linkedReportId } as any })
+          : null;
+        if (
+          linkedReport &&
+          ((actionType === 'APPROVED' && linkedReport.status === MissingTypeStatus.APPROVED) ||
+            (actionType === 'MERGED' && linkedReport.status === MissingTypeStatus.MERGED))
+        ) {
+          return mc;
+        }
+      }
+      throw new BadRequestException('Case is already resolved');
     }
 
     if (actionType === 'REQUEST_RECAPTURE' && mc.targetEntityType === 'candidate' && mc.targetEntityId) {
@@ -2124,11 +2318,14 @@ export class ModerationService {
 
       let activeRequestsCount = 0;
       if (typeof manager.getRepository === 'function') {
-        activeRequestsCount = await manager.getRepository(CandidateRecaptureRequest)
+        // PostgreSQL rejects FOR UPDATE combined with aggregate COUNT(), so lock & select row IDs instead.
+        const activeRequests = await manager.getRepository(CandidateRecaptureRequest)
           .createQueryBuilder('r')
           .setLock('pessimistic_write')
+          .select(['r.id'])
           .where('r.candidateId = :candidateId AND r.completedAt IS NULL', { candidateId: candidate.id })
-          .getCount();
+          .getMany();
+        activeRequestsCount = activeRequests.length;
       } else if (typeof manager.query === 'function') {
         const activeRows: any[] = await manager.query(
           `SELECT id FROM candidate_recapture_requests
@@ -2364,6 +2561,45 @@ export class ModerationService {
   // HELPERS
   // ---------------------------------------------------------------------------
 
+  private async closeOpenReportCases(
+    reportId: string,
+    staffId: string,
+    actionType: string,
+    note: string | null,
+  ): Promise<void> {
+    if (!this.cases || typeof this.cases.find !== 'function') return;
+    try {
+      const openCases = await this.cases.find({
+        where: {
+          targetEntityId: reportId,
+          targetEntityType: In(['missing_sign_type_report', 'new_sign_type_report', 'missing_type_report', 'report']),
+          status: In([ModerationStatus.PENDING, ModerationStatus.IN_REVIEW]),
+        },
+      });
+      if (!openCases.length) return;
+      const now = new Date();
+      for (const mc of openCases) {
+        mc.status = ModerationStatus.RESOLVED;
+        if (note != null) mc.resolutionNote = note;
+        mc.resolvedAt = now;
+        if (!mc.assignedStaffId) mc.assignedStaffId = staffId;
+        await this.cases.save(mc);
+        if (this.actions && typeof this.actions.create === 'function' && typeof this.actions.save === 'function') {
+          await this.actions.save(
+            this.actions.create({
+              caseId: mc.id,
+              actionType,
+              performedBy: staffId,
+              note,
+            } as any),
+          );
+        }
+      }
+    } catch (e: any) {
+      this.logger.warn('Failed to close open moderation cases for report ' + reportId + ': ' + (e as any)?.message);
+    }
+  }
+
   private async requireFallbackCategory(): Promise<number> {
     const fallback = await this.catRepo.findOne({ order: { id: 'ASC' } as any });
     if (!fallback) throw new BadRequestException('No sign category exists; create one before approving a sign type');
@@ -2386,7 +2622,7 @@ export class ModerationService {
        WHERE upper(sign_code) ~ '^[A-Z]+\\.[0-9]+[A-Z0-9]*$'
        ORDER BY prefix`,
     );
-    const allowedPrefixes = new Set(['P', 'W', 'R', 'I', 'E', 'IE', 'S']);
+    const allowedPrefixes = new Set(['P', 'DP', 'W', 'R', 'RE', 'I', 'E', 'IE', 'S', 'SG', 'SH', 'ZONE']);
     const validPrefixes = existingPrefixes.map((row) => row.prefix).filter((prefix) => allowedPrefixes.has(prefix));
     if (!validPrefixes.includes(prefix)) {
       throw new BadRequestException(

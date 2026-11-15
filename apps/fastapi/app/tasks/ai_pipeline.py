@@ -10,6 +10,7 @@ import io
 import json
 import logging
 import re
+import uuid
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
@@ -614,9 +615,11 @@ def _persist_candidates(
                 yaw_offset_deg=calibration.get("yaw_offset_deg", 0.0),
             )
 
+            candidate_id_val = uuid.UUID(str(sign["candidate_id"])) if sign.get("candidate_id") else uuid.uuid4()
             candidate_id = db.execute(
                 insert(UnverifiedSignCandidate)
                 .values(
+                    id=candidate_id_val,
                     submission_id=submission_id,
                     predicted_sign_type_id=sign_type_id,
                     confidence_score=float(sign["confidence"]),

@@ -32,7 +32,10 @@ export class ModerationController {
   reportMissing(@CurrentUser() user: any, @Body() dto: CreateMissingTypeReportDto) { return this.svc.reportMissingType(user.id, dto); }
 
   @Roles('STAFF', 'ADMIN')
-  @ApiOperation({ summary: 'List new-sign reports', description: 'Paginated list of new-sign reports submitted by community reviewers, filterable by status, staff, and searchable' })
+  @ApiOperation({
+    summary: 'List new-sign reports',
+    description: 'Paginated list of new-sign reports submitted by community reviewers, filterable by status and staff, with search and dynamic sorting support',
+  })
   @Get('moderation/new-signs')
   listNewSigns(
     @Query('status') status?: string,
@@ -45,11 +48,23 @@ export class ModerationController {
   ) {
     const p = page ? parseInt(page, 10) : 1;
     const ps = pageSize ? parseInt(pageSize, 10) : 20;
+
     const pNum = Number.isNaN(p) ? 1 : p;
     const psNum = Number.isNaN(ps) ? 20 : ps;
-    if (search || q || sortBy || sortOrder) {
-      return this.svc.listNewSignReports(status, pNum, psNum, search || q, sortBy, sortOrder);
+
+    const normalizedSearch = (search?.trim() || q?.trim()) || undefined;
+
+    if (normalizedSearch !== undefined || sortBy || sortOrder) {
+      return this.svc.listNewSignReports(
+        status,
+        pNum,
+        psNum,
+        normalizedSearch,
+        sortBy,
+        sortOrder,
+      );
     }
+
     return this.svc.listNewSignReports(status, pNum, psNum);
   }
 
@@ -67,11 +82,23 @@ export class ModerationController {
   ) {
     const p = page ? parseInt(page, 10) : 1;
     const ps = pageSize ? parseInt(pageSize, 10) : 20;
+
     const pNum = Number.isNaN(p) ? 1 : p;
     const psNum = Number.isNaN(ps) ? 20 : ps;
-    if (search || q || sortBy || sortOrder) {
-      return this.svc.listMissingReports(status, pNum, psNum, search || q, sortBy, sortOrder);
+
+    const normalizedSearch = search?.trim() || q?.trim() || undefined;
+
+    if (normalizedSearch !== undefined || sortBy || sortOrder) {
+      return this.svc.listMissingReports(
+        status,
+        pNum,
+        psNum,
+        normalizedSearch,
+        sortBy,
+        sortOrder,
+      );
     }
+
     return this.svc.listMissingReports(status, pNum, psNum);
   }
 
@@ -156,22 +183,38 @@ export class ModerationController {
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
     @Query('search') search?: string,
+
     @Query('q') q?: string,
     @Query('sortBy') sortBy?: string,
     @Query('sortOrder') sortOrder?: string,
   ) {
     const p = page ? parseInt(page, 10) : 1;
     const ps = pageSize ? parseInt(pageSize, 10) : 20;
+
     const pNum = Number.isNaN(p) ? 1 : p;
     const psNum = Number.isNaN(ps) ? 20 : ps;
-    if (search || q || sortBy || sortOrder) {
-      return this.svc.listCases(status, pNum, psNum, search || q, sortBy, sortOrder);
+
+    const normalizedSearch = search?.trim() || q?.trim() || undefined;
+
+    if (normalizedSearch !== undefined || sortBy || sortOrder) {
+      return this.svc.listCases(
+        status,
+        pNum,
+        psNum,
+        normalizedSearch,
+        sortBy,
+        sortOrder,
+      );
     }
+
     return this.svc.listCases(status, pNum, psNum);
   }
 
   @Roles('STAFF', 'ADMIN')
-  @ApiOperation({ summary: 'List escalations', description: 'Backward-compatible alias for GET /moderation/cases' })
+  @ApiOperation({
+    summary: 'List escalations',
+    description: 'Backward-compatible alias for GET /moderation/cases',
+  })
   @Get('escalations')
   listEscalations(
     @Query('status') status?: string,
@@ -182,7 +225,17 @@ export class ModerationController {
     @Query('sortBy') sortBy?: string,
     @Query('sortOrder') sortOrder?: string,
   ) {
-    return this.listCases(status, page, pageSize, search, q, sortBy, sortOrder);
+    return this.listCases(
+      status,
+      page,
+      pageSize,
+      search,
+      q,
+      sortBy,
+      sortOrder,
+    );
+  }
+
   }
 
   @Roles('STAFF', 'ADMIN')
