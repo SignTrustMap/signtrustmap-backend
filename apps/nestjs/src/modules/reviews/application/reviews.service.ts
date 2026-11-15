@@ -1590,32 +1590,48 @@ export class ReviewsService {
     }
 
     let surveyorId: string | null = null;
-    const isAutoAssignRecapture = this.systemSwitchService
-      ? await this.systemSwitchService.isEnabled('AUTO_ASSIGN_RECAPTURE_EMAIL')
-      : false;
+    if (dto.assignedSurveyorId) {
+      const surveyorRows: any[] = await (this.candidateRepo.manager as any).query(
+        `SELECT u.id
+         FROM users u
+         JOIN user_roles ur ON ur.user_id = u.id AND ur.is_active = true
+         JOIN roles r ON r.id = ur.role_id AND r.code = 'SURVEYOR'
+         WHERE u.id = $1 AND u.status = 'ACTIVE'
+         LIMIT 1`,
+        [dto.assignedSurveyorId],
+      );
+      if (!surveyorRows || surveyorRows.length === 0) {
+        throw new BadRequestException('Surveyor được chỉ định không tồn tại, không hoạt động hoặc không có vai trò SURVEYOR');
+      }
+      surveyorId = surveyorRows[0].id;
+    } else {
+      const isAutoAssignRecapture = this.systemSwitchService
+        ? await this.systemSwitchService.isEnabled('AUTO_ASSIGN_RECAPTURE_EMAIL')
+        : false;
 
-    if (isAutoAssignRecapture) {
-      const meta = await this.systemSwitchService?.getMetadata<{ targetEmail?: string }>('AUTO_ASSIGN_RECAPTURE_EMAIL');
-      const targetEmail = meta?.targetEmail || 'demo@stm.dev';
-      try {
-        const demoRows = await (this.candidateRepo.manager as any).query(
-          `SELECT id FROM users WHERE email = $1 AND status = 'ACTIVE' LIMIT 1`,
-          [targetEmail],
-        );
-        if (demoRows && demoRows[0]?.id) surveyorId = demoRows[0].id;
-      } catch {}
-    }
-
-    if (!surveyorId) {
-      surveyorId = candidate.submission?.surveyorId ?? null;
-      if (!surveyorId && candidate.submissionId) {
+      if (isAutoAssignRecapture) {
+        const meta = await this.systemSwitchService?.getMetadata<{ targetEmail?: string }>('AUTO_ASSIGN_RECAPTURE_EMAIL');
+        const targetEmail = meta?.targetEmail || 'demo@stm.dev';
         try {
-          const rows = await (this.candidateRepo.manager as any).query(
-            'SELECT surveyor_id FROM survey_submissions WHERE id = $1',
-            [candidate.submissionId],
+          const demoRows = await (this.candidateRepo.manager as any).query(
+            `SELECT id FROM users WHERE email = $1 AND status = 'ACTIVE' LIMIT 1`,
+            [targetEmail],
           );
-          if (rows.length && rows[0].surveyor_id) surveyorId = rows[0].surveyor_id;
+          if (demoRows && demoRows[0]?.id) surveyorId = demoRows[0].id;
         } catch {}
+      }
+
+      if (!surveyorId) {
+        surveyorId = candidate.submission?.surveyorId ?? null;
+        if (!surveyorId && candidate.submissionId) {
+          try {
+            const rows = await (this.candidateRepo.manager as any).query(
+              'SELECT surveyor_id FROM survey_submissions WHERE id = $1',
+              [candidate.submissionId],
+            );
+            if (rows.length && rows[0].surveyor_id) surveyorId = rows[0].surveyor_id;
+          } catch {}
+        }
       }
     }
 
@@ -1942,6 +1958,19 @@ export class ReviewsService {
             idempotentReplay: true,
           };
         }
+      }
+      // Check if this candidate is assigned to another surveyor
+      let otherSurveyorRows: any[] = [];
+      try {
+        otherSurveyorRows = await (this.candidateRepo.manager as any).query(
+          `SELECT id, surveyor_id
+           FROM candidate_recapture_requests
+           WHERE candidate_id = $1 AND completed_at IS NULL`,
+          [candidateId],
+        );
+      } catch {}
+      if (Array.isArray(otherSurveyorRows) && otherSurveyorRows.length > 0 && otherSurveyorRows[0]?.surveyor_id && otherSurveyorRows[0].surveyor_id !== surveyorId && !isRecaptureBypass) {
+        throw new ForbiddenException('Bạn không được phân công thực hiện nhiệm vụ chụp lại này (thuộc quyền của Surveyor khác)');
       }
       throw new BadRequestException(`Candidate ${candidateId} does not have exactly one active recapture request assigned to or open for this surveyor`);
     }
