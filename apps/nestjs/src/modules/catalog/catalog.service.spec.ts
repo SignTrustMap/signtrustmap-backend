@@ -748,6 +748,84 @@ describe('CatalogService', () => {
       const staffView = await service.getSignType(5, { roles: ['STAFF'] });
       expect(staffView.id).toBe(5);
     });
+
+    it('creates support shot from JSON imageUrl and unsets prior primary if isPrimary=true', async () => {
+      signTypes.findOne.mockResolvedValue(entity<TrafficSignType>({ id: 10, signCode: 'P.102' }));
+      images.update.mockResolvedValue({ affected: 1 } as any);
+      images.create.mockImplementation((x: any) => x);
+      images.save.mockImplementation(async (x: any) => ({ id: 'img-1', ...x }));
+
+      const res = await service.addSupportShot(10, {
+        imageUrl: 'https://s3.signmap.site/test.jpg',
+        isPrimary: true,
+        role: 'MEDOID',
+      });
+
+      expect(images.update).toHaveBeenCalledWith({ signTypeId: 10 }, { isPrimary: false });
+      expect(images.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          signTypeId: 10,
+          imageUrl: 'https://s3.signmap.site/test.jpg',
+          isPrimary: true,
+          role: 'MEDOID',
+        }),
+      );
+      expect(res).toMatchObject({ id: 'img-1', imageUrl: 'https://s3.signmap.site/test.jpg' });
+    });
+
+    it('uploads file to MinIO and creates support shot when file is provided', async () => {
+      const storage = {
+        putObject: jest.fn().mockResolvedValue(undefined),
+        getPublicUrl: jest.fn().mockReturnValue('https://s3.signmap.site/stm-sign-crops/catalog/support-shots/test.jpg'),
+      } as any;
+      const uploadService = new CatalogService(
+        categories,
+        signTypes,
+        parameters,
+        aiPrompts,
+        osmMappings,
+        images,
+        dataSource,
+        undefined,
+        storage,
+      );
+
+      signTypes.findOne.mockResolvedValue(entity<TrafficSignType>({ id: 10, signCode: 'P.102' }));
+      images.create.mockImplementation((x: any) => x);
+      images.save.mockImplementation(async (x: any) => ({ id: 'img-2', ...x }));
+
+      const file = {
+        buffer: Buffer.from([0xff, 0xd8, 0xff, 0x00]),
+        size: 4,
+        mimetype: 'image/jpeg',
+        originalname: 'shot.jpg',
+      } as Express.Multer.File;
+
+      const res = await uploadService.addSupportShot(10, { role: 'ANCHOR' }, file);
+
+      expect(storage.putObject).toHaveBeenCalledWith(
+        'stm-sign-crops',
+        expect.stringContaining('catalog/support-shots/P.102-'),
+        file.buffer,
+        file.mimetype,
+      );
+      expect(images.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          signTypeId: 10,
+          imageUrl: 'https://s3.signmap.site/stm-sign-crops/catalog/support-shots/test.jpg',
+          role: 'ANCHOR',
+        }),
+      );
+      expect(res).toMatchObject({ id: 'img-2', imageUrl: 'https://s3.signmap.site/stm-sign-crops/catalog/support-shots/test.jpg' });
+    });
+
+    it('throws BadRequestException if neither file nor imageUrl is provided', async () => {
+      signTypes.findOne.mockResolvedValue(entity<TrafficSignType>({ id: 10, signCode: 'P.102' }));
+
+      await expect(service.addSupportShot(10, {})).rejects.toThrow(
+        'Either an image file or an imageUrl must be provided',
+      );
+    });
   });
 
   function repository<T>(): jest.Mocked<Repository<T>> {

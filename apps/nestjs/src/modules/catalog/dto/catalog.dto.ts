@@ -5,6 +5,7 @@ import {
   IsBoolean,
   IsIn,
   IsInt,
+  IsNumber,
   IsOptional,
   IsString,
   Max,
@@ -355,11 +356,12 @@ export class ListSignTypesQueryDto {
 }
 
 export class CreateSupportShotDto {
-  @ApiProperty({ description: 'Support shot image URL', maxLength: 500 })
+  @ApiPropertyOptional({ description: 'Support shot image URL (required if file not uploaded)', maxLength: 500 })
+  @IsOptional()
   @IsString()
   @MinLength(1)
   @MaxLength(500)
-  imageUrl: string;
+  imageUrl?: string;
 
   @ApiPropertyOptional({ description: 'Support shot role', enum: ['ANCHOR', 'MEDOID', 'REPRESENTATIVE'] })
   @IsOptional()
@@ -369,16 +371,20 @@ export class CreateSupportShotDto {
 
   @ApiPropertyOptional({ description: 'Whether the support shot is pinned' })
   @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true' || value === 1 || value === '1')
   @IsBoolean()
   isPinned?: boolean;
 
   @ApiPropertyOptional({ description: 'Whether the support shot is primary' })
   @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true' || value === 1 || value === '1')
   @IsBoolean()
   isPrimary?: boolean;
 
   @ApiPropertyOptional({ description: 'Sharpness score' })
   @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
   sharpness?: number;
 }
 
