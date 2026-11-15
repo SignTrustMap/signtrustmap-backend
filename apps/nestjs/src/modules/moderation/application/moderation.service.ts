@@ -352,7 +352,13 @@ export class ModerationService {
           if (dto.status && dto.status !== MissingTypeStatus.INCOMPLETE) {
             throw new BadRequestException('status conflicts with REQUEST_RECAPTURE action');
           }
-          return this.requestMissingReportRecapture(reportId, reviewerId, notes?.trim() || null);
+          return this.requestMissingReportRecapture(
+            reportId,
+            reviewerId,
+            notes?.trim() || null,
+            MissingTypeStatus.PENDING,
+            dto.assignedSurveyorId,
+          );
         default:
           throw new BadRequestException('Unsupported staff action');
       }
@@ -738,6 +744,7 @@ export class ModerationService {
         adminId,
         reason,
         [MissingTypeStatus.ESCALATED_ADMIN, MissingTypeStatus.PENDING],
+        dto.assignedSurveyorId,
       );
     }
     if (dto.actionType === 'REJECT' || dto.actionType === 'DISMISS') {
@@ -1312,11 +1319,84 @@ export class ModerationService {
     return caseId;
   }
 
+  private async resolveEligibleSurveyor(
+    manager: any,
+    candidateId: string,
+    assignedSurveyorId?: string,
+  ): Promise<string> {
+    if (assignedSurveyorId) {
+      let surveyorRows: any[] = [];
+      if (typeof manager.query === 'function') {
+        surveyorRows = await manager.query(
+          `SELECT u.id, u.full_name, u.email, u.status
+           FROM users u
+           JOIN user_roles ur ON ur.user_id = u.id AND ur.is_active = true
+           JOIN roles r ON r.id = ur.role_id AND r.code = 'SURVEYOR'
+           WHERE u.id = $1 AND u.status = 'ACTIVE'
+           LIMIT 1`,
+          [assignedSurveyorId],
+        );
+      }
+      if (surveyorRows && surveyorRows.length > 0) {
+        return surveyorRows[0].id;
+      }
+      if (typeof manager.getRepository === 'function') {
+        try {
+          const u = await manager.getRepository(User)?.findOne?.({ where: { id: assignedSurveyorId } });
+          if (u) return u.id;
+        } catch {}
+      }
+      throw new BadRequestException('Surveyor được chỉ định không tồn tại, không hoạt động hoặc không có vai trò SURVEYOR');
+    }
+
+    // Case A: Look up candidate's surveyor from survey_submissions
+    let existingSurveyorRows: any[] = [];
+    if (typeof manager.query === 'function') {
+      existingSurveyorRows = await manager.query(
+        `SELECT u.id, u.full_name, u.email, u.status
+         FROM unverified_sign_candidates c
+         JOIN survey_submissions ss ON ss.id = c.submission_id
+         JOIN users u ON u.id = ss.surveyor_id
+         JOIN user_roles ur ON ur.user_id = u.id AND ur.is_active = true
+         JOIN roles r ON r.id = ur.role_id AND r.code = 'SURVEYOR'
+         WHERE c.id = $1 AND u.status = 'ACTIVE'
+         LIMIT 1`,
+        [candidateId],
+      );
+    }
+    if (existingSurveyorRows && existingSurveyorRows.length > 0) {
+      return existingSurveyorRows[0].id;
+    }
+
+    // Fallback: If system switch for auto-assign is enabled (e.g. demo environment)
+    const isAutoAssignRecapture = this.systemSwitchService
+      ? await this.systemSwitchService.isEnabled('AUTO_ASSIGN_RECAPTURE_EMAIL')
+      : false;
+    if (isAutoAssignRecapture && typeof manager.query === 'function') {
+      const meta = await this.systemSwitchService?.getMetadata<{ targetEmail?: string }>('AUTO_ASSIGN_RECAPTURE_EMAIL');
+      const targetEmail = meta?.targetEmail || 'demo@stm.dev';
+      try {
+        const demoSurveyorRows: Array<{ id: string }> = await manager.query(
+          `SELECT u.id FROM users u
+           JOIN user_roles ur ON ur.user_id = u.id AND ur.is_active = true
+           JOIN roles r ON r.id = ur.role_id AND r.code = 'SURVEYOR'
+           WHERE u.email = $1 AND u.status = 'ACTIVE' LIMIT 1`,
+          [targetEmail],
+        );
+        if (demoSurveyorRows[0]?.id) return demoSurveyorRows[0].id;
+      } catch {}
+    }
+
+    // Case B: No qualified surveyor currently responsible -> require Staff/Admin to select
+    throw new BadRequestException('Báo cáo chưa có Surveyor hợp lệ phụ trách. Vui lòng chọn một Surveyor để phân công chụp lại.');
+  }
+
   private async requestMissingReportRecapture(
     reportId: string,
     staffId: string,
     note: string | null,
     expectedStatus: MissingTypeStatus | MissingTypeStatus[] = MissingTypeStatus.PENDING,
+    assignedSurveyorId?: string,
   ) {
     const result = await this.dataSource.transaction(async (manager) => {
       let report: { id: string; candidateId?: string | null; reporterId?: string | null; proposedName?: string | null; status: MissingTypeStatus } | null = null;
@@ -1406,22 +1486,7 @@ export class ModerationService {
       if (activeRequestsCount > 0) {
         throw new ConflictException('An active recapture request already exists for candidate ' + candidate.id);
       }
-      let surveyorId: string | null = null;
-      const isAutoAssignRecapture = this.systemSwitchService
-        ? await this.systemSwitchService.isEnabled('AUTO_ASSIGN_RECAPTURE_EMAIL')
-        : false;
-
-      if (isAutoAssignRecapture && typeof manager.getRepository === 'function') {
-        const meta = await this.systemSwitchService?.getMetadata<{ targetEmail?: string }>('AUTO_ASSIGN_RECAPTURE_EMAIL');
-        const targetEmail = meta?.targetEmail || 'demo@stm.dev';
-        try {
-          const demoSurveyorRows: Array<{ id: string }> = await manager.query(
-            `SELECT id FROM users WHERE email = $1 AND status = 'ACTIVE' LIMIT 1`,
-            [targetEmail],
-          );
-          if (demoSurveyorRows[0]?.id) surveyorId = demoSurveyorRows[0].id;
-        } catch {}
-      }
+      const surveyorId = await this.resolveEligibleSurveyor(manager, candidate.id, assignedSurveyorId);
 
       let updateReportAffected = 0;
       if (typeof manager.getRepository === 'function') {
@@ -2236,6 +2301,27 @@ export class ModerationService {
     }
     throw new NotFoundException('User ' + userId + ' not found');
   }
+
+  async getEligibleSurveyors(search?: string): Promise<Array<{ id: string; fullName: string; email: string; avatarUrl: string | null }>> {
+    let sql = `
+      SELECT DISTINCT u.id, u.full_name AS "fullName", u.email, u.avatar_url AS "avatarUrl"
+      FROM users u
+      JOIN user_roles ur ON ur.user_id = u.id AND ur.is_active = true
+      JOIN roles r ON r.id = ur.role_id AND r.code = 'SURVEYOR'
+      WHERE u.status = 'ACTIVE'
+    `;
+    const params: any[] = [];
+    if (search?.trim()) {
+      sql += ` AND (u.full_name ILIKE $1 OR u.email ILIKE $1)`;
+      params.push(`%${search.trim()}%`);
+    }
+    sql += ` ORDER BY u.full_name ASC`;
+    if (this.dataSource) {
+      return this.dataSource.query(sql, params);
+    }
+    return [];
+  }
+
   async resolveCase(id: string, staffId: string, dto: ResolveCaseDto, userRole?: string | string[]) {
     const mc = await this.cases.findOne({ where: { id } });
     if (!mc) throw new NotFoundException('ModerationCase ' + id + ' not found');
@@ -2311,12 +2397,13 @@ export class ModerationService {
     if (actionType === 'REQUEST_RECAPTURE' && mc.targetEntityType === 'candidate' && mc.targetEntityId) {
       return this.resolveRecaptureCase(id, staffId, dto);
     }
-    if (actionType === 'REQUEST_RECAPTURE' && mc.targetEntityType === 'missing_sign_type_report' && mc.targetEntityId) {
+    if (actionType === 'REQUEST_RECAPTURE' && (mc.targetEntityType === 'missing_sign_type_report' || mc.targetEntityType === 'new_sign_type_report') && mc.targetEntityId) {
       return this.requestMissingReportRecapture(
         mc.targetEntityId,
         staffId,
         dto.actionNote?.trim() || dto.resolutionNote,
-        MissingTypeStatus.ESCALATED_ADMIN,
+        [MissingTypeStatus.ESCALATED_ADMIN, MissingTypeStatus.PENDING],
+        dto.assignedSurveyorId,
       );
     }
     // Catalog side-effects for missing-type workflow
@@ -2349,6 +2436,7 @@ export class ModerationService {
     return mc;
   }
   private async resolveRecaptureCase(caseId: string, staffId: string, dto: ResolveCaseDto) {
+    const assignedSurveyorId = dto.assignedSurveyorId;
     const resolved = await this.dataSource.transaction(async (manager) => {
       let moderationCase: { id: string; targetEntityId: string; status: ModerationStatus; target_entity_id?: string } | null = null;
       if (typeof manager.getRepository === 'function') {
@@ -2435,22 +2523,7 @@ export class ModerationService {
         );
       }
       // Open quest; the first eligible nearby Surveyor claims it on submission.
-      let surveyorId: string | null = null;
-      const isAutoAssignRecapture = this.systemSwitchService
-        ? await this.systemSwitchService.isEnabled('AUTO_ASSIGN_RECAPTURE_EMAIL')
-        : false;
-
-      if (isAutoAssignRecapture && typeof manager.getRepository === 'function') {
-        const meta = await this.systemSwitchService?.getMetadata<{ targetEmail?: string }>('AUTO_ASSIGN_RECAPTURE_EMAIL');
-        const targetEmail = meta?.targetEmail || 'demo@stm.dev';
-        try {
-          const demoSurveyorRows: Array<{ id: string }> = await manager.query(
-            `SELECT id FROM users WHERE email = $1 AND status = 'ACTIVE' LIMIT 1`,
-            [targetEmail],
-          );
-          if (demoSurveyorRows[0]?.id) surveyorId = demoSurveyorRows[0].id;
-        } catch {}
-      }
+      const surveyorId = await this.resolveEligibleSurveyor(manager, candidate.id, assignedSurveyorId);
 
       let updateCandAffected = 0;
       if (typeof manager.getRepository === 'function') {
@@ -2802,51 +2875,74 @@ export class ModerationService {
   }
 
   private async enrichWithCandidates(reports: NewSignTypeReport[]): Promise<(NewSignTypeReport & {
-    candidate?: CandidateEnriched | null;
+    candidate?: (CandidateEnriched & {
+      surveyor?: {
+        id: string;
+        fullName: string;
+        email: string;
+        status: string;
+        isEligible: boolean;
+      } | null;
+    }) | null;
     reporter?: { id: string; fullName: string; email: string } | null;
     submittedBy?: string | null;
     reviewer?: { id: string; fullName: string; email: string } | null;
     reviewedByName?: string | null;
+    recaptureRequest?: any | null;
+    assignedSurveyor?: { id: string; fullName: string; email: string } | null;
   })[]> {
     if (reports.length === 0) return reports as any;
     const ids = reports.filter(r => r.candidateId).map(r => r.candidateId as string);
-    const byId = new Map<string, CandidateEnriched>();
+    const byId = new Map<string, any>();
     if (ids.length > 0) {
       let rows: any[] = [];
-      try {
-        if (this.candRepo && typeof this.candRepo.createQueryBuilder === 'function') {
-          rows = await this.candRepo
-            .createQueryBuilder('c')
-            .leftJoin(CandidateGeoEstimation, 'ge', 'ge.candidateId = c.id')
-            .select([
-              'c.id AS id',
-              'c.predictedSignTypeId AS predicted_sign_type_id',
-              'c.confidenceScore AS confidence_score',
-              'c.bestFrameUrl AS best_frame_url',
-              'c.signCropUrl AS sign_crop_url',
-              'c.status AS status',
-              'ST_X(ge.sign_location::geometry) AS longitude',
-              'ST_Y(ge.sign_location::geometry) AS latitude',
-            ])
-            .where('c.id IN (:...ids)', { ids })
-            .getRawMany();
-        }
-      } catch (err) {
-        this.logger.warn('Failed to enrich candidates via query builder: ' + (err as any)?.message);
-      }
-      if (rows.length === 0 && typeof this.dataSource?.query === 'function') {
+      if (typeof this.dataSource?.query === 'function') {
         try {
           rows = await this.dataSource.query(
             `SELECT c.id, c.predicted_sign_type_id, c.confidence_score, c.best_frame_url, c.sign_crop_url, c.status,
                     ST_X(ge.sign_location::geometry) AS longitude,
-                    ST_Y(ge.sign_location::geometry) AS latitude
+                    ST_Y(ge.sign_location::geometry) AS latitude,
+                    surv.id AS surveyor_id,
+                    surv.full_name AS surveyor_name,
+                    surv.email AS surveyor_email,
+                    surv.status AS surveyor_status,
+                    EXISTS (
+                      SELECT 1 FROM user_roles ur
+                      JOIN roles r ON r.id = ur.role_id
+                      WHERE ur.user_id = surv.id AND ur.is_active = true AND r.code = 'SURVEYOR'
+                    ) AS is_surveyor_role
              FROM unverified_sign_candidates c
              LEFT JOIN candidate_geo_estimations ge ON ge.candidate_id = c.id
+             LEFT JOIN survey_submissions ss ON ss.id = c.submission_id
+             LEFT JOIN users surv ON surv.id = ss.surveyor_id
              WHERE c.id = ANY($1::uuid[])`,
             [ids],
           );
         } catch (err) {
           this.logger.warn('Failed to enrich candidates via raw query: ' + (err as any)?.message);
+        }
+      }
+      if (rows.length === 0) {
+        try {
+          if (this.candRepo && typeof this.candRepo.createQueryBuilder === 'function') {
+            rows = await this.candRepo
+              .createQueryBuilder('c')
+              .leftJoin(CandidateGeoEstimation, 'ge', 'ge.candidateId = c.id')
+              .select([
+                'c.id AS id',
+                'c.predictedSignTypeId AS predicted_sign_type_id',
+                'c.confidenceScore AS confidence_score',
+                'c.bestFrameUrl AS best_frame_url',
+                'c.signCropUrl AS sign_crop_url',
+                'c.status AS status',
+                'ST_X(ge.sign_location::geometry) AS longitude',
+                'ST_Y(ge.sign_location::geometry) AS latitude',
+              ])
+              .where('c.id IN (:...ids)', { ids })
+              .getRawMany();
+          }
+        } catch (err) {
+          this.logger.warn('Failed to enrich candidates via query builder: ' + (err as any)?.message);
         }
       }
       for (const row of rows) {
@@ -2859,6 +2955,15 @@ export class ModerationService {
           status: row.status,
           longitude: row.longitude == null ? null : Number(row.longitude),
           latitude: row.latitude == null ? null : Number(row.latitude),
+          surveyor: row.surveyor_id
+            ? {
+                id: row.surveyor_id,
+                fullName: row.surveyor_name,
+                email: row.surveyor_email,
+                status: row.surveyor_status,
+                isEligible: row.surveyor_status === 'ACTIVE' && Boolean(row.is_surveyor_role),
+              }
+            : null,
         });
       }
     }
@@ -2883,9 +2988,63 @@ export class ModerationService {
         this.logger.warn('Failed to enrich users: ' + (err as any)?.message);
       }
     }
+
+    const reportIds = reports.map((r) => r.id);
+    const recByReportId = new Map<string, any>();
+    if (reportIds.length > 0 && typeof this.dataSource?.query === 'function') {
+      try {
+        const recRows = await this.dataSource.query(
+          `SELECT crr.id, crr.candidate_id, crr.reviewer_id, crr.surveyor_id,
+                  crr.reason, crr.note, crr.created_at, crr.completed_at,
+                  COALESCE(crr.new_sign_type_report_id, crr.missing_type_report_id) AS report_id,
+                  u_surv.full_name AS surveyor_name, u_surv.email AS surveyor_email,
+                  u_rev.full_name AS reviewer_name, u_rev.email AS reviewer_email
+           FROM candidate_recapture_requests crr
+           LEFT JOIN users u_surv ON u_surv.id = crr.surveyor_id
+           LEFT JOIN users u_rev ON u_rev.id = crr.reviewer_id
+           WHERE (crr.new_sign_type_report_id = ANY($1::uuid[]) OR crr.missing_type_report_id = ANY($1::uuid[]))
+           ORDER BY crr.created_at DESC`,
+          [reportIds],
+        );
+        for (const row of recRows) {
+          if (!recByReportId.has(row.report_id)) {
+            recByReportId.set(row.report_id, {
+              id: row.id,
+              candidateId: row.candidate_id,
+              surveyorId: row.surveyor_id,
+              surveyorName: row.surveyor_name ?? null,
+              surveyorEmail: row.surveyor_email ?? null,
+              assignedSurveyor: row.surveyor_id
+                ? {
+                    id: row.surveyor_id,
+                    fullName: row.surveyor_name,
+                    email: row.surveyor_email,
+                  }
+                : null,
+              reviewerId: row.reviewer_id,
+              reviewer: row.reviewer_id
+                ? {
+                    id: row.reviewer_id,
+                    fullName: row.reviewer_name,
+                    email: row.reviewer_email,
+                  }
+                : null,
+              reason: row.reason,
+              note: row.note,
+              createdAt: row.created_at,
+              completedAt: row.completed_at,
+            });
+          }
+        }
+      } catch (err) {
+        this.logger.warn('Failed to enrich recapture requests: ' + (err as any)?.message);
+      }
+    }
+
     return reports.map((r) => {
       const rep = r.reporterId ? usersById.get(r.reporterId) : null;
       const rev = r.reviewedBy ? usersById.get(r.reviewedBy) : null;
+      const rec = recByReportId.get(r.id) ?? null;
       return {
         ...r,
         candidate: r.candidateId ? (byId.get(r.candidateId) ?? null) : null,
@@ -2895,6 +3054,8 @@ export class ModerationService {
         submittedBy: rep ? rep.fullName : (r as any).submittedBy ?? null,
         reviewer: rev ?? null,
         reviewedByName: rev ? rev.fullName : null,
+        recaptureRequest: rec,
+        assignedSurveyor: rec?.assignedSurveyor ?? null,
       };
     }) as any;
   }

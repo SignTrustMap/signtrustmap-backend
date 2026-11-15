@@ -21,6 +21,13 @@ import {
 export class ModerationController {
   constructor(private readonly svc: ModerationService) {}
 
+  @Roles('STAFF', 'ADMIN')
+  @ApiOperation({ summary: 'List active eligible surveyors', description: 'Retrieve active surveyors for recapture assignments' })
+  @Get('moderation/surveyors')
+  getEligibleSurveyors(@Query('search') search?: string) {
+    return this.svc.getEligibleSurveyors(search);
+  }
+
   @Roles('REVIEWER', 'ADMIN')
   @ApiOperation({ summary: 'Report a new sign', description: 'Reviewer sends a candidate and its existing photo/location evidence to the staff queue without entering sign details' })
   @Post('reviews/new-sign')

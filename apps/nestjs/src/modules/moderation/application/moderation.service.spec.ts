@@ -7,6 +7,7 @@ import { SignCategory } from '../../catalog/sign-category.entity';
 import { TrafficSignType } from '../../catalog/traffic-sign-type.entity';
 import { UnverifiedSignCandidate, CandidateStatus } from '../../survey/infrastructure/persistence/unverified-sign-candidate.entity';
 import { CandidateRecaptureRequest } from '../../reviews/infrastructure/persistence/candidate-recapture-request.entity';
+import { User } from '../../auth/infrastructure/persistence/user.entity';
 import { NotificationsService } from '../../notifications/notifications.service';
 import { CatalogService } from '../../catalog/catalog.service';
 import { CatalogSyncService } from '../../../integrations/catalog-sync/catalog-sync.service';
@@ -311,7 +312,8 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
           id: 'C1',
           status: CandidateStatus.MISSING_TYPE_HOLD,
         }])
-        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([]) // no active requests
+        .mockResolvedValueOnce([{ id: 'SURV1', full_name: 'Surveyor One', status: 'ACTIVE' }]) // existing candidate surveyor
         .mockResolvedValueOnce([{ id: 'R1' }])
         .mockResolvedValueOnce([{ id: 'C1' }])
         .mockResolvedValueOnce([])
@@ -329,11 +331,19 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     expect(result).toMatchObject({ id: 'R1', status: MissingTypeStatus.INCOMPLETE });
     expect(manager.query).toHaveBeenCalledWith(
       expect.stringContaining('missing_type_report_id'),
-      ['C1', 'staff-1', 'R1', 'Please recapture from the same location.'],
+      ['C1', 'staff-1', 'SURV1', 'R1', 'Please recapture from the same location.'],
     );
     expect(manager.query).toHaveBeenCalledWith(
       expect.stringContaining("SET status = $2"),
       ['C1', CandidateStatus.RECAPTURE_REQUESTED, CandidateStatus.MISSING_TYPE_HOLD],
+    );
+    expect(notifications.create).toHaveBeenCalledWith(
+      'SURV1',
+      'IMAGE_RECAPTURE_REQUESTED',
+      expect.any(String),
+      expect.any(String),
+      'candidate',
+      'C1',
     );
     expect(notifications.create).toHaveBeenCalledWith(
       'U1',
@@ -343,10 +353,38 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
       'missing_sign_type_report',
       'R1',
     );
-    expect(notifications.create).toHaveBeenCalledTimes(1);
+    expect(notifications.create).toHaveBeenCalledTimes(2);
   });
 
-  it('creates an open recapture quest without requiring a preselected active surveyor', async () => {
+  it('rejects recapture request when report has no surveyor and staff did not provide assignedSurveyorId', async () => {
+    const { service, dataSource, missing } = buildService();
+    missing.findOne.mockResolvedValue({
+      id: 'R1',
+      status: MissingTypeStatus.PENDING,
+      candidateId: 'C1',
+    });
+    const manager = {
+      query: jest.fn()
+        .mockResolvedValueOnce([{
+          id: 'R1',
+          candidate_id: 'C1',
+          reporter_id: 'U1',
+          proposed_name: null,
+          status: MissingTypeStatus.PENDING,
+        }])
+        .mockResolvedValueOnce([{ id: 'C1', status: CandidateStatus.MISSING_TYPE_HOLD }])
+        .mockResolvedValueOnce([]) // no active requests
+        .mockResolvedValueOnce([]), // no existing surveyor found
+    };
+    dataSource.transaction.mockImplementation((fn: (m: any) => any) => fn(manager));
+
+    await expect(service.updateMissingReport('R1', 'staff-1', {
+      actionType: 'REQUEST_RECAPTURE',
+      actionNote: 'Please recapture.',
+    })).rejects.toThrow('Báo cáo chưa có Surveyor hợp lệ phụ trách. Vui lòng chọn một Surveyor để phân công chụp lại.');
+  });
+
+  it('assigns recapture request to specified surveyor when staff provides assignedSurveyorId', async () => {
     const { service, dataSource, missing } = buildService();
     missing.findOne.mockResolvedValue({
       id: 'R1',
@@ -363,7 +401,8 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
           status: MissingTypeStatus.PENDING,
         }])
         .mockResolvedValueOnce([{ id: 'C1', status: CandidateStatus.MISSING_TYPE_HOLD }])
-        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([]) // no active requests
+        .mockResolvedValueOnce([{ id: 'SURV_EXPLICIT', full_name: 'Explicit Surveyor', status: 'ACTIVE' }]) // assigned surveyor validation
         .mockResolvedValueOnce([{ id: 'R1' }])
         .mockResolvedValueOnce([{ id: 'C1' }])
         .mockResolvedValueOnce([])
@@ -376,12 +415,13 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     const result = await service.updateMissingReport('R1', 'staff-1', {
       actionType: 'REQUEST_RECAPTURE',
       actionNote: 'Please recapture from the same location.',
+      assignedSurveyorId: 'SURV_EXPLICIT',
     });
 
     expect(result).toMatchObject({ id: 'R1', status: MissingTypeStatus.INCOMPLETE });
     expect(manager.query).toHaveBeenCalledWith(
       expect.stringContaining('INSERT INTO candidate_recapture_requests'),
-      ['C1', 'staff-1', 'R1', 'Please recapture from the same location.'],
+      ['C1', 'staff-1', 'SURV_EXPLICIT', 'R1', 'Please recapture from the same location.'],
     );
   });
 
@@ -531,7 +571,8 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
           id: 'C1',
           status: CandidateStatus.MISSING_TYPE_HOLD,
         }])
-        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([]) // no active requests
+        .mockResolvedValueOnce([{ id: 'SURV_ADMIN', full_name: 'Admin Surveyor', status: 'ACTIVE' }]) // surveyor validation
         .mockResolvedValueOnce([{ id: 'R1' }])
         .mockResolvedValueOnce([{ id: 'C1' }])
         .mockResolvedValueOnce([])
@@ -544,6 +585,7 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     const result = await service.applyAdminMissingReportAction('R1', 'ADMIN1', {
       actionType: 'REQUEST_RECAPTURE',
       reason: 'Image evidence is insufficient.',
+      assignedSurveyorId: 'SURV_ADMIN',
     });
 
     if (!('status' in result)) throw new Error('Expected admin recapture response');
@@ -558,7 +600,7 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     );
     expect(manager.query).toHaveBeenCalledWith(
       expect.stringContaining('INSERT INTO candidate_recapture_requests'),
-      ['C1', 'ADMIN1', 'R1', 'Image evidence is insufficient.'],
+      ['C1', 'ADMIN1', 'SURV_ADMIN', 'R1', 'Image evidence is insufficient.'],
     );
   });
 
@@ -589,8 +631,9 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
       query: jest.fn()
         .mockResolvedValueOnce([{ id: 'CASE1', status: 'IN_REVIEW', target_entity_id: 'C1' }])
         .mockResolvedValueOnce([{ id: 'C1', status: CandidateStatus.MISSING_TYPE_HOLD }])
-        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([]) // no active requests
         .mockResolvedValueOnce([{ id: 'REPORT1' }])
+        .mockResolvedValueOnce([{ id: 'STAFF_SURV', full_name: 'Staff Surveyor', status: 'ACTIVE' }]) // surveyor validation
         .mockResolvedValueOnce({ rowCount: 1 })
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ id: 'CASE1', status: 'RESOLVED', target_entity_id: 'C1' }])
@@ -601,12 +644,13 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     const result = await service.resolveCase('CASE1', 'STAFF1', {
       actionType: 'REQUEST_RECAPTURE',
       resolutionNote: 'Please recapture',
+      assignedSurveyorId: 'STAFF_SURV',
     } as any);
 
     expect(result.status).toBe('RESOLVED');
     expect(manager.query).toHaveBeenCalledWith(
       expect.stringContaining('missing_type_report_id'),
-      ['C1', 'STAFF1', 'REPORT1', 'Please recapture'],
+      ['C1', 'STAFF1', 'STAFF_SURV', 'REPORT1', 'Please recapture'],
     );
   });
 
@@ -1267,6 +1311,7 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
         if (entity === CandidateRecaptureRequest) return recRepo;
         if (entity === ModerationCase) return caseRepo;
         if (entity === ModerationAction) return actionRepo;
+        if (entity === User) return { findOne: jest.fn().mockResolvedValue({ id: 'SURV-REPO', status: 'ACTIVE' }) };
         return {};
       }),
     };
@@ -1275,6 +1320,7 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     const result = await service.applyAdminMissingReportAction('R-REPO', 'ADMIN1', {
       actionType: 'REQUEST_RECAPTURE',
       reason: 'Need clearer field photo',
+      assignedSurveyorId: 'SURV-REPO',
     });
 
     expect(result).toMatchObject({ id: 'R-REPO', status: MissingTypeStatus.INCOMPLETE });
@@ -1286,6 +1332,7 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
       candidateId: 'C-REPO',
       missingTypeReportId: 'R-REPO',
       newSignTypeReportId: 'R-REPO',
+      surveyorId: 'SURV-REPO',
     }));
     expect(caseRepo.update).toHaveBeenCalledWith('CASE-REPO', expect.objectContaining({
       status: 'RESOLVED',
@@ -1348,5 +1395,18 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
       proposedName: 'TEst 6',
       targetTitle: 'TEst 6',
     });
+  });
+
+  it('getEligibleSurveyors queries and returns active surveyors', async () => {
+    const { service, dataSource } = buildService();
+    (dataSource as any).query = jest.fn().mockResolvedValue([
+      { id: 'surv-1', fullName: 'Nguyen Van A', email: 'a@stm.dev', avatarUrl: null },
+    ]);
+    const res = await service.getEligibleSurveyors('Nguyen');
+    expect(dataSource.query).toHaveBeenCalledWith(
+      expect.stringContaining("roles r ON r.id = ur.role_id AND r.code = 'SURVEYOR'"),
+      ['%Nguyen%'],
+    );
+    expect(res).toEqual([{ id: 'surv-1', fullName: 'Nguyen Van A', email: 'a@stm.dev', avatarUrl: null }]);
   });
 });
