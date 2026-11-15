@@ -3080,36 +3080,6 @@ export class ModerationService {
           this.logger.warn('Failed to enrich candidates via query builder: ' + (err as any)?.message);
         }
       }
-             WHERE c.id = ANY($1::uuid[])`,
-            [ids],
-          );
-        } catch (err) {
-          this.logger.warn('Failed to enrich candidates via raw query: ' + (err as any)?.message);
-        }
-      }
-      if (rows.length === 0) {
-        try {
-          if (this.candRepo && typeof this.candRepo.createQueryBuilder === 'function') {
-            rows = await this.candRepo
-              .createQueryBuilder('c')
-              .leftJoin(CandidateGeoEstimation, 'ge', 'ge.candidateId = c.id')
-              .select([
-                'c.id AS id',
-                'c.predictedSignTypeId AS predicted_sign_type_id',
-                'c.confidenceScore AS confidence_score',
-                'c.bestFrameUrl AS best_frame_url',
-                'c.signCropUrl AS sign_crop_url',
-                'c.status AS status',
-                'ST_X(ge.sign_location::geometry) AS longitude',
-                'ST_Y(ge.sign_location::geometry) AS latitude',
-              ])
-              .where('c.id IN (:...ids)', { ids })
-              .getRawMany();
-          }
-        } catch (err) {
-          this.logger.warn('Failed to enrich candidates via query builder: ' + (err as any)?.message);
-        }
-      }
       for (const row of rows) {
         let lat = row.latitude == null ? null : Number(row.latitude);
         let lon = row.longitude == null ? null : Number(row.longitude);
