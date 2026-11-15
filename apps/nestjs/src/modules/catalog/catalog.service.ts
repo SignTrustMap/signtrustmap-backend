@@ -92,7 +92,7 @@ export class CatalogService {
     const signCode = this.normalizeSignCode(input);
     await this.validateSignCodePrefix(signCode);
     const existing = await this.signTypes.findOne({
-      where: { signCode: ILike(signCode) },
+      where: { signCode: ILike(signCode), isActive: true },
     });
     return { signCode, available: !existing };
   }
@@ -180,14 +180,17 @@ export class CatalogService {
     const query = this.signTypes
       .createQueryBuilder('signType')
       .leftJoinAndSelect('signType.category', 'category')
-      .where('signType.isActive = :isActive', {
-        isActive: options.isActive ?? true,
-      })
       .orderBy('signType.nameEn', 'ASC')
       .addOrderBy('signType.nameVi', 'ASC')
       .addOrderBy('signType.id', 'ASC')
       .skip(page * size)
       .take(size);
+
+    if (options.isActive !== undefined) {
+      query.where('signType.isActive = :isActive', {
+        isActive: options.isActive,
+      });
+    }
 
     if (options.categoryId !== undefined) {
       query.andWhere('signType.categoryId = :categoryId', {
@@ -207,7 +210,7 @@ export class CatalogService {
     return pageResponse(content, page, size, totalElements);
   }
 
-  async getSignType(id: number): Promise<CatalogSignType> {
+  async getSignType(id: number, user?: any): Promise<CatalogSignType> {
     if (!Number.isInteger(id) || id > 2147483647 || id < 1) {
       throw new NotFoundException(`TrafficSignType #${id} not found`);
     }
@@ -216,6 +219,15 @@ export class CatalogService {
       relations: ['category'],
     });
     if (!signType) throw new NotFoundException(`TrafficSignType #${id} not found`);
+
+    if (user !== undefined) {
+      const roles: string[] = Array.isArray(user?.roles) ? user.roles : [];
+      const isStaffOrAdmin = roles.includes('ADMIN') || roles.includes('STAFF');
+      if (!isStaffOrAdmin && !signType.isActive) {
+        throw new NotFoundException(`TrafficSignType #${id} not found`);
+      }
+    }
+
     return (await this.enrichSignTypes([signType]))[0];
   }
 
@@ -264,8 +276,14 @@ export class CatalogService {
 
       const signCode = this.normalizeSignCode(dto.signCode);
       await this.validateSignCodePrefix(signCode);
-      if (await signTypes.findOne({ where: { signCode: ILike(signCode) } })) {
-        throw new ConflictException(`sign_code "${signCode}" exists`);
+      const willBeActive = dto.isActive ?? true;
+      if (willBeActive) {
+        const existingActive = await signTypes.findOne({
+          where: { signCode: ILike(signCode), isActive: true },
+        });
+        if (existingActive) {
+          throw new ConflictException(`sign_code "${signCode}" exists`);
+        }
       }
       const now = new Date();
       let signType: TrafficSignType;
@@ -292,7 +310,7 @@ export class CatalogService {
         if (error?.code === '23505') {
           const duplicateField = this.uniqueViolationField(error);
           throw new ConflictException(
-            duplicateField === 'sign_code'
+            duplicateField === 'sign_code' || error?.detail?.includes('sign_code') || error?.constraint?.includes('sign_code')
               ? `sign_code "${signCode}" exists`
               : 'Catalog sign type violates a unique constraint',
           );
@@ -331,16 +349,24 @@ export class CatalogService {
         signType.categoryId = category.id;
         signType.category = category;
       }
+      const willBeActive = dto.isActive !== undefined ? dto.isActive : signType.isActive;
+      const targetSignCode = dto.signCode !== undefined ? this.normalizeSignCode(dto.signCode) : signType.signCode;
+
       if (dto.signCode !== undefined) {
-        const signCode = this.normalizeSignCode(dto.signCode);
-        await this.validateSignCodePrefix(signCode);
+        await this.validateSignCodePrefix(targetSignCode);
+      }
+
+      if (willBeActive) {
         const duplicate = await signTypes.findOne({
-          where: { signCode: ILike(signCode) },
+          where: { signCode: ILike(targetSignCode), isActive: true },
         });
         if (duplicate && duplicate.id !== id) {
-          throw new ConflictException(`sign_code "${signCode}" exists`);
+          throw new ConflictException(`sign_code "${targetSignCode}" exists`);
         }
-        signType.signCode = signCode;
+      }
+
+      if (dto.signCode !== undefined) {
+        signType.signCode = targetSignCode;
       }
       if (dto.slug !== undefined) {
         const slug = this.trimToNull(dto.slug)?.toUpperCase() ?? null;
@@ -378,7 +404,7 @@ export class CatalogService {
         if (error?.code === '23505') {
           const duplicateField = this.uniqueViolationField(error);
           throw new ConflictException(
-            duplicateField === 'sign_code'
+            duplicateField === 'sign_code' || error?.detail?.includes('sign_code') || error?.constraint?.includes('sign_code')
               ? `sign_code "${signType.signCode}" exists`
               : 'Catalog sign type violates a unique constraint',
           );
