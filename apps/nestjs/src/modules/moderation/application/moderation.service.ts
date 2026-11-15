@@ -210,47 +210,65 @@ export class ModerationService {
 
     if (normalizedSearch && typeof this.missing?.createQueryBuilder === 'function') {
       const pattern = `%${normalizedSearch.replace(/[%_\\]/g, '\\$&')}%`;
-      const qb = this.missing.createQueryBuilder('r');
-      if (typeof qb.leftJoin === 'function') {
-        qb.leftJoin(User, 'staff', 'staff.id = r.reviewed_by')
-          .leftJoin(User, 'reporter', 'reporter.id = r.reporter_id');
-      }
+      const executeQuery = async (useUnaccent: boolean) => {
+        const qb = this.missing.createQueryBuilder('r');
+        if (typeof qb.leftJoin === 'function') {
+          qb.leftJoin(User, 'staff', 'staff.id = r.reviewed_by')
+            .leftJoin(User, 'reporter', 'reporter.id = r.reporter_id');
+        }
 
-      if (where.status) {
-        if (upperStatus === 'APPROVED') {
-          qb.andWhere('r.status IN (:...statuses)', {
-            statuses: [MissingTypeStatus.APPROVED, MissingTypeStatus.ESCALATED_ADMIN],
-          });
+        if (where.status) {
+          if (upperStatus === 'APPROVED') {
+            qb.andWhere('r.status IN (:...statuses)', {
+              statuses: [MissingTypeStatus.APPROVED, MissingTypeStatus.ESCALATED_ADMIN],
+            });
+          } else {
+            qb.andWhere('r.status = :status', { status: where.status });
+          }
+        }
+
+        const unaccentFn = (expr: string) => (useUnaccent ? `unaccent(${expr})` : expr);
+
+        qb.andWhere(
+          `(
+            ${unaccentFn("COALESCE(staff.full_name, '')")} ILIKE ${unaccentFn(':pattern')}
+            OR ${unaccentFn("COALESCE(staff.email, '')")} ILIKE ${unaccentFn(':pattern')}
+            OR ${unaccentFn("COALESCE(reporter.full_name, '')")} ILIKE ${unaccentFn(':pattern')}
+            OR ${unaccentFn("COALESCE(reporter.email, '')")} ILIKE ${unaccentFn(':pattern')}
+            OR ${unaccentFn("COALESCE(r.proposed_name, '')")} ILIKE ${unaccentFn(':pattern')}
+            OR ${unaccentFn("COALESCE(r.description, '')")} ILIKE ${unaccentFn(':pattern')}
+            OR ${unaccentFn("COALESCE(r.staff_notes, '')")} ILIKE ${unaccentFn(':pattern')}
+            OR CAST(r.id AS text) ILIKE :pattern ESCAPE '\\'
+            OR CAST(r.candidate_id AS text) ILIKE :pattern ESCAPE '\\'
+            OR CAST(r.status AS text) ILIKE :pattern ESCAPE '\\'
+          )`,
+          { pattern },
+        );
+
+        const qbField = sort.field === 'proposedName' ? 'r.proposedName' : sort.field === 'status' ? 'r.status' : 'r.createdAt';
+        qb.orderBy(qbField, sort.direction);
+        if (typeof qb.addOrderBy === 'function') {
+          qb.addOrderBy('r.id', 'ASC');
+        }
+        qb.skip((p - 1) * ps)
+          .take(ps);
+
+        return qb.getManyAndCount();
+      };
+
+      let items: any[] = [];
+      let total = 0;
+      try {
+        [items, total] = await executeQuery(true);
+      } catch (err: any) {
+        if (err?.message?.includes('unaccent') || err?.code === '42883') {
+          this.logger.warn('PostgreSQL unaccent extension not installed; falling back to standard ILIKE search');
+          [items, total] = await executeQuery(false);
         } else {
-          qb.andWhere('r.status = :status', { status: where.status });
+          throw err;
         }
       }
 
-      qb.andWhere(
-        `(
-          unaccent(COALESCE(staff.full_name, '')) ILIKE unaccent(:pattern)
-          OR unaccent(COALESCE(staff.email, '')) ILIKE unaccent(:pattern)
-          OR unaccent(COALESCE(reporter.full_name, '')) ILIKE unaccent(:pattern)
-          OR unaccent(COALESCE(reporter.email, '')) ILIKE unaccent(:pattern)
-          OR unaccent(COALESCE(r.proposed_name, '')) ILIKE unaccent(:pattern)
-          OR unaccent(COALESCE(r.description, '')) ILIKE unaccent(:pattern)
-          OR unaccent(COALESCE(r.staff_notes, '')) ILIKE unaccent(:pattern)
-          OR CAST(r.id AS text) ILIKE :pattern ESCAPE '\\'
-          OR CAST(r.candidate_id AS text) ILIKE :pattern ESCAPE '\\'
-          OR CAST(r.status AS text) ILIKE :pattern ESCAPE '\\'
-        )`,
-        { pattern },
-      );
-
-      const qbField = sort.field === 'proposedName' ? 'r.proposed_name' : sort.field === 'status' ? 'r.status' : 'r.created_at';
-      qb.orderBy(qbField, sort.direction);
-      if (typeof qb.addOrderBy === 'function') {
-        qb.addOrderBy('r.id', 'ASC');
-      }
-      qb.skip((p - 1) * ps)
-        .take(ps);
-
-      const [items, total] = await qb.getManyAndCount();
       const enriched = await this.enrichWithCandidates(items);
       return { items: enriched, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
     }
@@ -1783,59 +1801,74 @@ export class ModerationService {
 
     if (normalizedSearch && typeof this.cases?.createQueryBuilder === 'function') {
       const pattern = `%${normalizedSearch.replace(/[%_\\]/g, '\\$&')}%`;
-      const qb = this.cases.createQueryBuilder('mc');
-      if (typeof qb.leftJoin === 'function') {
-        qb.leftJoin(User, 'staff', 'staff.id = mc.assigned_staff_id');
+      const executeQuery = async (useUnaccent: boolean) => {
+        const qb = this.cases.createQueryBuilder('mc');
+        if (typeof qb.leftJoin === 'function') {
+          qb.leftJoin(User, 'staff', 'staff.id = mc.assigned_staff_id');
+        }
+
+        if (where.status) {
+          qb.andWhere('mc.status = :status', { status: where.status });
+        }
+
+        const unaccentFn = (expr: string) => (useUnaccent ? `unaccent(${expr})` : expr);
+
+        qb.andWhere(
+          `(
+            ${unaccentFn("COALESCE(staff.full_name, '')")} ILIKE ${unaccentFn(':pattern')}
+            OR ${unaccentFn("COALESCE(staff.email, '')")} ILIKE ${unaccentFn(':pattern')}
+            OR ${unaccentFn("COALESCE(mc.resolution_note, '')")} ILIKE ${unaccentFn(':pattern')}
+            OR ${unaccentFn("COALESCE(mc.target_entity_type, '')")} ILIKE ${unaccentFn(':pattern')}
+            OR CAST(mc.id AS text) ILIKE :pattern ESCAPE '\\'
+            OR CAST(mc.target_entity_id AS text) ILIKE :pattern ESCAPE '\\'
+            OR CAST(mc.case_type AS text) ILIKE :pattern ESCAPE '\\'
+            OR CAST(mc.status AS text) ILIKE :pattern ESCAPE '\\'
+            OR EXISTS (
+              SELECT 1 FROM new_sign_type_reports r
+              LEFT JOIN users u ON u.id = r.reporter_id
+              WHERE r.id = mc.target_entity_id
+                AND (
+                  ${unaccentFn("COALESCE(r.proposed_name, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(r.description, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(u.full_name, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(u.email, '')")} ILIKE ${unaccentFn(':pattern')}
+                )
+            )
+            OR EXISTS (
+              SELECT 1 FROM unverified_sign_candidates c
+              LEFT JOIN traffic_sign_types tst ON (tst.id = c.predicted_sign_type_id OR tst.id = c.selected_sign_type_id)
+              WHERE c.id = mc.target_entity_id
+                AND (
+                  ${unaccentFn("COALESCE(tst.name_vi, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(tst.name_en, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR tst.sign_code ILIKE :pattern
+                )
+            )
+          )`,
+          { pattern },
+        );
+
+        const qbField = sort.field === 'caseType' ? 'mc.caseType' : sort.field === 'status' ? 'mc.status' : 'mc.createdAt';
+        qb.orderBy(qbField, sort.direction);
+        if (typeof qb.addOrderBy === 'function') {
+          qb.addOrderBy('mc.id', 'ASC');
+        }
+        qb.skip((p - 1) * ps)
+          .take(ps);
+
+        return qb.getManyAndCount();
+      };
+
+      try {
+        [items, total] = await executeQuery(true);
+      } catch (err: any) {
+        if (err?.message?.includes('unaccent') || err?.code === '42883') {
+          this.logger.warn('PostgreSQL unaccent extension not installed; falling back to standard ILIKE search');
+          [items, total] = await executeQuery(false);
+        } else {
+          throw err;
+        }
       }
-
-      if (where.status) {
-        qb.andWhere('mc.status = :status', { status: where.status });
-      }
-
-      qb.andWhere(
-        `(
-          unaccent(COALESCE(staff.full_name, '')) ILIKE unaccent(:pattern)
-          OR unaccent(COALESCE(staff.email, '')) ILIKE unaccent(:pattern)
-          OR unaccent(COALESCE(mc.resolution_note, '')) ILIKE unaccent(:pattern)
-          OR unaccent(COALESCE(mc.target_entity_type, '')) ILIKE unaccent(:pattern)
-          OR CAST(mc.id AS text) ILIKE :pattern ESCAPE '\\'
-          OR CAST(mc.target_entity_id AS text) ILIKE :pattern ESCAPE '\\'
-          OR CAST(mc.case_type AS text) ILIKE :pattern ESCAPE '\\'
-          OR CAST(mc.status AS text) ILIKE :pattern ESCAPE '\\'
-          OR EXISTS (
-            SELECT 1 FROM new_sign_type_reports r
-            LEFT JOIN users u ON u.id = r.reporter_id
-            WHERE r.id = mc.target_entity_id
-              AND (
-                unaccent(COALESCE(r.proposed_name, '')) ILIKE unaccent(:pattern)
-                OR unaccent(COALESCE(r.description, '')) ILIKE unaccent(:pattern)
-                OR unaccent(COALESCE(u.full_name, '')) ILIKE unaccent(:pattern)
-                OR unaccent(COALESCE(u.email, '')) ILIKE unaccent(:pattern)
-              )
-          )
-          OR EXISTS (
-            SELECT 1 FROM unverified_sign_candidates c
-            LEFT JOIN traffic_sign_types tst ON (tst.id = c.predicted_sign_type_id OR tst.id = c.selected_sign_type_id)
-            WHERE c.id = mc.target_entity_id
-              AND (
-                unaccent(COALESCE(tst.name_vi, '')) ILIKE unaccent(:pattern)
-                OR unaccent(COALESCE(tst.name_en, '')) ILIKE unaccent(:pattern)
-                OR tst.sign_code ILIKE :pattern
-              )
-          )
-        )`,
-        { pattern },
-      );
-
-      const qbField = sort.field === 'caseType' ? 'mc.case_type' : sort.field === 'status' ? 'mc.status' : 'mc.created_at';
-      qb.orderBy(qbField, sort.direction);
-      if (typeof qb.addOrderBy === 'function') {
-        qb.addOrderBy('mc.id', 'ASC');
-      }
-      qb.skip((p - 1) * ps)
-        .take(ps);
-
-      [items, total] = await qb.getManyAndCount();
     } else {
       const order: Record<string, 'ASC' | 'DESC'> = { [sort.field]: sort.direction };
       [items, total] = await this.cases.findAndCount({ where, order, skip: (p - 1) * ps, take: ps });

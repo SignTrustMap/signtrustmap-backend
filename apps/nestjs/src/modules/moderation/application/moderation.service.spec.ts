@@ -962,7 +962,7 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
       expect.stringContaining('unaccent(COALESCE(staff.full_name'),
       expect.objectContaining({ pattern: '%Nguyen Long Vu%' }),
     );
-    expect(qb.orderBy).toHaveBeenCalledWith('mc.case_type', 'ASC');
+    expect(qb.orderBy).toHaveBeenCalledWith('mc.caseType', 'ASC');
     expect(res.items).toHaveLength(1);
     expect(res.total).toBe(1);
   });
@@ -992,8 +992,73 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
       expect.stringContaining('unaccent(COALESCE(r.proposed_name'),
       expect.objectContaining({ pattern: '%duong cam%' }),
     );
-    expect(qb.orderBy).toHaveBeenCalledWith('r.proposed_name', 'ASC');
+    expect(qb.orderBy).toHaveBeenCalledWith('r.proposedName', 'ASC');
     expect(res.items).toHaveLength(1);
+  });
+
+  it('listCases falls back to standard ILIKE search when PostgreSQL unaccent extension is missing', async () => {
+    const { service, cases } = buildService();
+    let attempt = 0;
+    const qb = {
+      leftJoin: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      addOrderBy: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getManyAndCount: jest.fn().mockImplementation(async () => {
+        attempt++;
+        if (attempt === 1) {
+          const err: any = new Error('function unaccent(text) does not exist');
+          err.code = '42883';
+          throw err;
+        }
+        return [[{ id: 'case-unaccent-fallback', caseType: 'CATALOG_PROPOSAL', status: 'PENDING' }], 1];
+      }),
+    };
+    (cases as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
+
+    const res = await service.listCases('OPEN', 1, 10, 'de xuat', 'newest');
+
+    expect(res.items).toHaveLength(1);
+    expect(res.items[0].id).toBe('case-unaccent-fallback');
+    // Verified fallback executed without unaccent
+    expect(qb.andWhere).toHaveBeenLastCalledWith(
+      expect.not.stringContaining('unaccent('),
+      expect.objectContaining({ pattern: '%de xuat%' }),
+    );
+  });
+
+  it('listNewSignReports falls back to standard ILIKE search when PostgreSQL unaccent extension is missing', async () => {
+    const { service, missing } = buildService();
+    let attempt = 0;
+    const qb = {
+      leftJoin: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      addOrderBy: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getManyAndCount: jest.fn().mockImplementation(async () => {
+        attempt++;
+        if (attempt === 1) {
+          const err: any = new Error('function unaccent(text) does not exist');
+          err.code = '42883';
+          throw err;
+        }
+        return [[{ id: 'r-fallback', proposedName: 'Đường cấm', status: MissingTypeStatus.PENDING }], 1];
+      }),
+    };
+    (missing as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
+
+    const res = await service.listNewSignReports('OPEN', 1, 10, 'duong cam', 'newest');
+
+    expect(res.items).toHaveLength(1);
+    expect(res.items[0].id).toBe('r-fallback');
+    expect(qb.andWhere).toHaveBeenLastCalledWith(
+      expect.not.stringContaining('unaccent('),
+      expect.objectContaining({ pattern: '%duong cam%' }),
+    );
   });
   it('uses pessimistic row lock without aggregate COUNT() when Admin requests recapture via TypeORM repositories', async () => {
     const { service, missing, dataSource } = buildService();
