@@ -1813,6 +1813,16 @@ export class ModerationService {
                 OR unaccent(COALESCE(u.email, '')) ILIKE unaccent(:pattern)
               )
           )
+          OR EXISTS (
+            SELECT 1 FROM unverified_sign_candidates c
+            LEFT JOIN traffic_sign_types tst ON (tst.id = c.predicted_sign_type_id OR tst.id = c.selected_sign_type_id)
+            WHERE c.id = mc.target_entity_id
+              AND (
+                unaccent(COALESCE(tst.name_vi, '')) ILIKE unaccent(:pattern)
+                OR unaccent(COALESCE(tst.name_en, '')) ILIKE unaccent(:pattern)
+                OR tst.sign_code ILIKE :pattern
+              )
+          )
         )`,
         { pattern },
       );
@@ -1869,6 +1879,43 @@ export class ModerationService {
               reporter: rep.reporter_id
                 ? { id: rep.reporter_id, fullName: rep.reporter_name ?? null, email: rep.reporter_email ?? null }
                 : null,
+            };
+          });
+        } catch {}
+      }
+
+      // Also enrich candidate-linked cases with sign name/code from traffic_sign_types
+      const candidateIds = Array.from(
+        new Set(
+          enrichedItems
+            .filter((mc) => {
+              const t = (mc.targetEntityType || '').toLowerCase();
+              return mc.targetEntityId && (t.includes('candidate') || mc.caseType === ModerationType.REVIEW_CONFLICT);
+            })
+            .map((mc) => mc.targetEntityId),
+        ),
+      );
+      if (candidateIds.length > 0) {
+        try {
+          const candRows: any[] = await this.dataSource.query(
+            `SELECT c.id, tst.name_vi, tst.sign_code
+             FROM unverified_sign_candidates c
+             LEFT JOIN traffic_sign_types tst ON (tst.id = c.selected_sign_type_id OR tst.id = c.predicted_sign_type_id)
+             WHERE c.id = ANY($1::uuid[])`,
+            [candidateIds],
+          );
+          const candById = new Map<string, any>();
+          for (const row of candRows) {
+            candById.set(row.id, row);
+          }
+          enrichedItems = enrichedItems.map((mc) => {
+            const cand = candById.get(mc.targetEntityId);
+            if (!cand || mc.targetTitle) return mc;
+            const title = cand.name_vi ? `${cand.sign_code ? cand.sign_code + ' - ' : ''}${cand.name_vi}` : null;
+            return {
+              ...mc,
+              targetTitle: title,
+              proposedName: cand.name_vi ?? null,
             };
           });
         } catch {}
