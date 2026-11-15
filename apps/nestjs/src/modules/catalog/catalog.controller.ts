@@ -177,9 +177,29 @@ export class CatalogController {
 
   @Roles('ADMIN', 'STAFF')
   @ApiOperation({ summary: 'Add support shot for sign type', description: 'Admin or Staff manually adds a real-photo support shot for a sign type' })
+  @ApiConsumes('multipart/form-data', 'application/json')
+  @ApiBody({
+    description: 'Support shot payload. Accepts either multipart form with binary "file" or JSON with "imageUrl".',
+    schema: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', format: 'binary', description: 'Support shot image file' },
+        imageUrl: { type: 'string', description: 'Support shot image URL (if not uploading file)' },
+        role: { type: 'string', enum: ['ANCHOR', 'MEDOID', 'REPRESENTATIVE'], default: 'MEDOID' },
+        isPinned: { type: 'boolean', default: false },
+        isPrimary: { type: 'boolean', default: false },
+        sharpness: { type: 'number' },
+      },
+    },
+  })
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 50 * 1024 * 1024 } }))
   @Post('catalog/sign-types/:id/support-shots')
-  addSupportShot(@Param('id', ParseIntPipe) id: number, @Body() dto: CreateSupportShotDto) {
-    return this.svc.addSupportShot(id, dto);
+  addSupportShot(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CreateSupportShotDto,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
+    return this.svc.addSupportShot(id, dto, file);
   }
 
   @Roles('ADMIN')

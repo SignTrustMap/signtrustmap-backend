@@ -672,9 +672,37 @@ export class CatalogService {
     };
   }
 
-  async addSupportShot(signTypeId: number, dto: CreateSupportShotDto) {
+  async uploadSupportShotImage(file: Express.Multer.File, signCode?: string): Promise<string> {
+    if (!file || !file.buffer) {
+      throw new BadRequestException('File is missing or empty');
+    }
+    if (!['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'].includes(file.mimetype)) {
+      throw new BadRequestException('Support shot image must be JPEG, PNG, WebP, or HEIF');
+    }
+    if (file.size > 50 * 1024 * 1024) throw new BadRequestException('Support shot image exceeds 50 MB');
+    const signature = validateFileSignature(MediaFileType.IMAGE, file.buffer);
+    if (!signature.valid) throw new BadRequestException(signature.error);
+    const cleanCode = signCode ? signCode.toUpperCase().replace(/[^A-Z0-9._-]/g, '') : 'SUPPORT';
+    const filename = (file.originalname || 'image.png').replace(/[^a-zA-Z0-9._-]/g, '');
+    const key = `catalog/support-shots/${cleanCode}-${randomUUID()}-${filename}`;
+    if (this.minioStorageService) {
+      await this.minioStorageService.putObject('stm-sign-crops', key, file.buffer, file.mimetype);
+      return this.minioStorageService.getPublicUrl('stm-sign-crops', key);
+    }
+    return `https://s3.signmap.site/stm-sign-crops/${key}`;
+  }
+
+  async addSupportShot(signTypeId: number, dto: CreateSupportShotDto, file?: Express.Multer.File) {
     const signType = await this.signTypes.findOne({ where: { id: signTypeId } });
     if (!signType) throw new NotFoundException(`TrafficSignType #${signTypeId} not found`);
+
+    let imageUrl = dto.imageUrl?.trim();
+    if (file) {
+      imageUrl = await this.uploadSupportShotImage(file, signType.signCode);
+    }
+    if (!imageUrl) {
+      throw new BadRequestException('Either an image file or an imageUrl must be provided');
+    }
 
     if (dto.isPrimary) {
       // Unset previous primary for this sign type
@@ -683,7 +711,7 @@ export class CatalogService {
 
     const newShot = this.signTypeImages.create({
       signTypeId,
-      imageUrl: dto.imageUrl,
+      imageUrl,
       imageType: 'REAL_PHOTO',
       role: dto.role || 'MEDOID',
       isPrimary: dto.isPrimary ?? false,

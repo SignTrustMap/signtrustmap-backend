@@ -104,4 +104,18 @@ describe('CatalogController', () => {
       'ADMIN',
     ]);
   });
+
+  it('delegates addSupportShot to catalog service with id, dto, and file', () => {
+    (service as any).addSupportShot = jest.fn().mockReturnValue({ id: 'img-1' });
+    const file = { buffer: Buffer.from([]), mimetype: 'image/png' } as Express.Multer.File;
+    const dto = { role: 'MEDOID', isPrimary: false };
+
+    controller.addSupportShot(5, dto as any, file);
+
+    expect((service as any).addSupportShot).toHaveBeenCalledWith(5, dto, file);
+    expect(Reflect.getMetadata(ROLES_KEY, CatalogController.prototype.addSupportShot)).toEqual([
+      'ADMIN',
+      'STAFF',
+    ]);
+  });
 });
