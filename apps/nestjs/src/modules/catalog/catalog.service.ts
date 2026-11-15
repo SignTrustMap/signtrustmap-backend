@@ -628,7 +628,7 @@ export class CatalogService {
        WHERE upper(sign_code) ~ '^[A-Z]+\\.[0-9]+[A-Z0-9]*$'
        ORDER BY prefix`,
     );
-    const canonicalPrefixes = new Set(['P', 'W', 'R', 'I', 'E', 'IE', 'S']);
+    const canonicalPrefixes = new Set(['P', 'DP', 'W', 'R', 'RE', 'I', 'E', 'IE', 'S', 'SG', 'SH', 'ZONE']);
     const knownPrefixes = prefixes.map((row) => row.prefix).filter((value) => canonicalPrefixes.has(value));
     if (!canonicalPrefixes.has(prefix) || !knownPrefixes.includes(prefix)) {
       throw new BadRequestException(

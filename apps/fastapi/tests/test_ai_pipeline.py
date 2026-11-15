@@ -1,4 +1,5 @@
 import json
+import uuid
 from datetime import datetime, timezone
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
@@ -266,9 +267,41 @@ class AiPipelineContractTests(TestCase):
 
         self.assertEqual(inserted, 1)
         self.assertEqual(unmapped, 0)
-        # Verify db.commit and execution of candidate + geo estimation insert
         self.assertGreater(db.execute.call_count, 4)
         db.commit.assert_called_once()
+
+    def test_persist_candidates_uses_deterministic_candidate_id_from_ai(self) -> None:
+        expected_id = uuid.UUID("a3bb189e-8bf9-3888-9912-ace4e6543002")
+        db = MagicMock()
+        db.execute.return_value.mappings.return_value.first.return_value = {"id": 1}
+        db.execute.return_value.scalar_one.return_value = expected_id
+
+        dummy_signs = [{
+            "candidate_id": str(expected_id),
+            "track_id": 42,
+            "class_id": 102,
+            "class_name": "P.102",
+            "confidence": 0.92,
+            "box_xyxy": [100.0, 100.0, 200.0, 200.0],
+            "best_frame_key": "crops/sub/frame.jpg",
+            "sign_crop_key": "crops/sub/crop.jpg",
+            "frame_index": 5,
+            "timestamp_seconds": 2.0,
+        }]
+
+        with patch.object(ai_pipeline, "get_sync_db") as get_sync_db:
+            get_sync_db.return_value.__enter__.return_value = db
+            inserted, unmapped = ai_pipeline._persist_candidates("sub-1", dummy_signs)
+
+        self.assertEqual(inserted, 1)
+        self.assertEqual(unmapped, 0)
+        insert_calls = [
+            c for c in db.execute.call_args_list
+            if getattr(c[0][0], "is_insert", False) and hasattr(c[0][0], "table") and c[0][0].table.name == "unverified_sign_candidates"
+        ]
+        self.assertEqual(len(insert_calls), 1)
+        stmt = insert_calls[0][0][0]
+        self.assertEqual(stmt.compile().params.get("id"), expected_id)
 
     def test_pipeline_marks_failed_on_exception_after_retries(self) -> None:
         task = ai_pipeline.task_process_submission_pipeline
