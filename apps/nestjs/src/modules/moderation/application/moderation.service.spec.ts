@@ -988,12 +988,139 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     expect(missing.createQueryBuilder).toHaveBeenCalledWith('r');
     expect(qb.leftJoin).toHaveBeenCalledWith(expect.anything(), 'staff', 'staff.id = r.reviewed_by');
     expect(qb.leftJoin).toHaveBeenCalledWith(expect.anything(), 'reporter', 'reporter.id = r.reporter_id');
+    expect(qb.leftJoin).toHaveBeenCalledWith(expect.anything(), 'orig_reporter', 'orig_reporter.id = r.original_reporter_id');
     expect(qb.andWhere).toHaveBeenCalledWith(
       expect.stringContaining('unaccent(COALESCE(r.proposed_name'),
       expect.objectContaining({ pattern: '%duong cam%' }),
     );
     expect(qb.orderBy).toHaveBeenCalledWith('r.proposedName', 'ASC');
     expect(res.items).toHaveLength(1);
+  });
+
+  it('listCases searches across relational user fields (assigned staff, reporter, action performer, surveyor)', async () => {
+    const { service, cases, dataSource } = buildService();
+    const qb = {
+      leftJoin: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      addOrderBy: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getManyAndCount: jest.fn().mockResolvedValue([
+        [{
+          id: 'case-user-test',
+          caseType: 'CATALOG_PROPOSAL',
+          assignedStaffId: 'staff-uuid-1',
+          targetEntityType: 'new_sign_type_report',
+          targetEntityId: 'report-uuid-1',
+          status: 'PENDING',
+        }],
+        1,
+      ]),
+    };
+    (cases as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
+    (dataSource as any).query = jest.fn().mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM new_sign_type_reports')) {
+        return [{
+          id: 'report-uuid-1',
+          proposed_name: 'Biển chỉ dẫn',
+          status: 'PENDING',
+          reporter_id: 'reporter-uuid-1',
+          reporter_name: 'Trần Thị Mai',
+          reporter_email: 'mai@stm.dev',
+        }];
+      }
+      if (sql.includes('FROM users WHERE id = ANY')) {
+        return [{
+          id: 'staff-uuid-1',
+          full_name: 'Lê Văn An',
+          email: 'an.le@stm.dev',
+        }];
+      }
+      return [];
+    });
+
+    const res = await service.listCases('OPEN', 1, 10, 'Trần Thị Mai', 'newest', 'DESC');
+
+    expect(cases.createQueryBuilder).toHaveBeenCalledWith('mc');
+    expect(qb.andWhere).toHaveBeenCalledWith(
+      expect.stringContaining('COALESCE(u.full_name'),
+      expect.objectContaining({ pattern: '%Trần Thị Mai%' }),
+    );
+    expect(qb.andWhere).toHaveBeenCalledWith(
+      expect.stringContaining('COALESCE(ma_u.full_name'),
+      expect.anything(),
+    );
+    expect(qb.andWhere).toHaveBeenCalledWith(
+      expect.stringContaining('COALESCE(surveyor.full_name'),
+      expect.anything(),
+    );
+    expect(res.items).toHaveLength(1);
+    expect(res.items[0].reporter).toEqual({
+      id: 'reporter-uuid-1',
+      fullName: 'Trần Thị Mai',
+      email: 'mai@stm.dev',
+    });
+    expect(res.items[0].assignedStaff).toEqual({
+      id: 'staff-uuid-1',
+      fullName: 'Lê Văn An',
+      email: 'an.le@stm.dev',
+    });
+  });
+
+  it('listNewSignReports searches across reporter, reviewer, orig_reporter, and enriches user profiles', async () => {
+    const { service, missing, dataSource } = buildService();
+    const qb = {
+      leftJoin: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      addOrderBy: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getManyAndCount: jest.fn().mockResolvedValue([
+        [{
+          id: 'report-user-test',
+          proposedName: 'Biển cấm dừng',
+          status: MissingTypeStatus.PENDING,
+          reporterId: 'user-reporter-1',
+          reviewedBy: 'user-staff-1',
+        }],
+        1,
+      ]),
+    };
+    (missing as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
+    (dataSource as any).query = jest.fn().mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM users WHERE id = ANY')) {
+        return [
+          { id: 'user-reporter-1', full_name: 'Nguyễn Văn Bình', email: 'binh@stm.dev' },
+          { id: 'user-staff-1', full_name: 'Phạm Minh Đức', email: 'duc@stm.dev' },
+        ];
+      }
+      return [];
+    });
+
+    const res = await service.listNewSignReports('OPEN', 1, 10, 'Nguyễn Văn Bình', 'newest', 'DESC');
+
+    expect(qb.leftJoin).toHaveBeenCalledWith(expect.anything(), 'staff', 'staff.id = r.reviewed_by');
+    expect(qb.leftJoin).toHaveBeenCalledWith(expect.anything(), 'reporter', 'reporter.id = r.reporter_id');
+    expect(qb.leftJoin).toHaveBeenCalledWith(expect.anything(), 'orig_reporter', 'orig_reporter.id = r.original_reporter_id');
+    expect(qb.andWhere).toHaveBeenCalledWith(
+      expect.stringContaining('COALESCE(reporter.full_name'),
+      expect.objectContaining({ pattern: '%Nguyễn Văn Bình%' }),
+    );
+    expect(res.items).toHaveLength(1);
+    expect(res.items[0].reporter).toEqual({
+      id: 'user-reporter-1',
+      fullName: 'Nguyễn Văn Bình',
+      email: 'binh@stm.dev',
+    });
+    expect(res.items[0].submittedBy).toBe('Nguyễn Văn Bình');
+    expect(res.items[0].reviewer).toEqual({
+      id: 'user-staff-1',
+      fullName: 'Phạm Minh Đức',
+      email: 'duc@stm.dev',
+    });
+    expect(res.items[0].reviewedByName).toBe('Phạm Minh Đức');
   });
 
   it('listCases falls back to standard ILIKE search when PostgreSQL unaccent extension is missing', async () => {

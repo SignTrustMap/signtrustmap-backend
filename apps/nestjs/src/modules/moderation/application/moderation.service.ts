@@ -214,7 +214,8 @@ export class ModerationService {
         const qb = this.missing.createQueryBuilder('r');
         if (typeof qb.leftJoin === 'function') {
           qb.leftJoin(User, 'staff', 'staff.id = r.reviewed_by')
-            .leftJoin(User, 'reporter', 'reporter.id = r.reporter_id');
+            .leftJoin(User, 'reporter', 'reporter.id = r.reporter_id')
+            .leftJoin(User, 'orig_reporter', 'orig_reporter.id = r.original_reporter_id');
         }
 
         if (where.status) {
@@ -235,12 +236,36 @@ export class ModerationService {
             OR ${unaccentFn("COALESCE(staff.email, '')")} ILIKE ${unaccentFn(':pattern')}
             OR ${unaccentFn("COALESCE(reporter.full_name, '')")} ILIKE ${unaccentFn(':pattern')}
             OR ${unaccentFn("COALESCE(reporter.email, '')")} ILIKE ${unaccentFn(':pattern')}
+            OR ${unaccentFn("COALESCE(orig_reporter.full_name, '')")} ILIKE ${unaccentFn(':pattern')}
+            OR ${unaccentFn("COALESCE(orig_reporter.email, '')")} ILIKE ${unaccentFn(':pattern')}
             OR ${unaccentFn("COALESCE(r.proposed_name, '')")} ILIKE ${unaccentFn(':pattern')}
             OR ${unaccentFn("COALESCE(r.description, '')")} ILIKE ${unaccentFn(':pattern')}
             OR ${unaccentFn("COALESCE(r.staff_notes, '')")} ILIKE ${unaccentFn(':pattern')}
             OR CAST(r.id AS text) ILIKE :pattern ESCAPE '\\'
             OR CAST(r.candidate_id AS text) ILIKE :pattern ESCAPE '\\'
+            OR CAST(r.reporter_id AS text) ILIKE :pattern ESCAPE '\\'
+            OR CAST(r.original_reporter_id AS text) ILIKE :pattern ESCAPE '\\'
+            OR CAST(r.reviewed_by AS text) ILIKE :pattern ESCAPE '\\'
             OR CAST(r.status AS text) ILIKE :pattern ESCAPE '\\'
+            OR EXISTS (
+              SELECT 1 FROM unverified_sign_candidates c
+              LEFT JOIN traffic_sign_types tst ON (tst.id = c.predicted_sign_type_id OR tst.id = c.selected_sign_type_id)
+              LEFT JOIN survey_submissions ss ON ss.id = c.submission_id
+              LEFT JOIN users surveyor ON surveyor.id = ss.surveyor_id
+              LEFT JOIN users selector ON selector.id = c.selected_by
+              WHERE c.id = r.candidate_id
+                AND (
+                  ${unaccentFn("COALESCE(tst.name_vi, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(tst.name_en, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR tst.sign_code ILIKE :pattern
+                  OR ${unaccentFn("COALESCE(surveyor.full_name, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(surveyor.email, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(selector.full_name, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(selector.email, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR CAST(surveyor.id AS text) ILIKE :pattern ESCAPE '\\'
+                  OR CAST(selector.id AS text) ILIKE :pattern ESCAPE '\\'
+                )
+            )
           )`,
           { pattern },
         );
@@ -1821,27 +1846,66 @@ export class ModerationService {
             OR ${unaccentFn("COALESCE(mc.target_entity_type, '')")} ILIKE ${unaccentFn(':pattern')}
             OR CAST(mc.id AS text) ILIKE :pattern ESCAPE '\\'
             OR CAST(mc.target_entity_id AS text) ILIKE :pattern ESCAPE '\\'
+            OR CAST(mc.assigned_staff_id AS text) ILIKE :pattern ESCAPE '\\'
             OR CAST(mc.case_type AS text) ILIKE :pattern ESCAPE '\\'
             OR CAST(mc.status AS text) ILIKE :pattern ESCAPE '\\'
             OR EXISTS (
               SELECT 1 FROM new_sign_type_reports r
               LEFT JOIN users u ON u.id = r.reporter_id
+              LEFT JOIN users staff_r ON staff_r.id = r.reviewed_by
+              LEFT JOIN users orig_u ON orig_u.id = r.original_reporter_id
               WHERE r.id = mc.target_entity_id
                 AND (
                   ${unaccentFn("COALESCE(r.proposed_name, '')")} ILIKE ${unaccentFn(':pattern')}
                   OR ${unaccentFn("COALESCE(r.description, '')")} ILIKE ${unaccentFn(':pattern')}
                   OR ${unaccentFn("COALESCE(u.full_name, '')")} ILIKE ${unaccentFn(':pattern')}
                   OR ${unaccentFn("COALESCE(u.email, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(staff_r.full_name, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(staff_r.email, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(orig_u.full_name, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(orig_u.email, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR CAST(r.reporter_id AS text) ILIKE :pattern ESCAPE '\\'
+                  OR CAST(r.original_reporter_id AS text) ILIKE :pattern ESCAPE '\\'
+                  OR CAST(r.reviewed_by AS text) ILIKE :pattern ESCAPE '\\'
+                )
+            )
+            OR EXISTS (
+              SELECT 1 FROM moderation_actions ma
+              JOIN users ma_u ON ma_u.id = ma.performed_by
+              WHERE ma.case_id = mc.id
+                AND (
+                  ${unaccentFn("COALESCE(ma_u.full_name, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(ma_u.email, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(ma.note, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR CAST(ma.performed_by AS text) ILIKE :pattern ESCAPE '\\'
                 )
             )
             OR EXISTS (
               SELECT 1 FROM unverified_sign_candidates c
               LEFT JOIN traffic_sign_types tst ON (tst.id = c.predicted_sign_type_id OR tst.id = c.selected_sign_type_id)
+              LEFT JOIN survey_submissions ss ON ss.id = c.submission_id
+              LEFT JOIN users surveyor ON surveyor.id = ss.surveyor_id
+              LEFT JOIN users selector ON selector.id = c.selected_by
               WHERE c.id = mc.target_entity_id
                 AND (
                   ${unaccentFn("COALESCE(tst.name_vi, '')")} ILIKE ${unaccentFn(':pattern')}
                   OR ${unaccentFn("COALESCE(tst.name_en, '')")} ILIKE ${unaccentFn(':pattern')}
                   OR tst.sign_code ILIKE :pattern
+                  OR ${unaccentFn("COALESCE(surveyor.full_name, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(surveyor.email, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(selector.full_name, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(selector.email, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR CAST(surveyor.id AS text) ILIKE :pattern ESCAPE '\\'
+                  OR CAST(selector.id AS text) ILIKE :pattern ESCAPE '\\'
+                )
+            )
+            OR EXISTS (
+              SELECT 1 FROM users target_user
+              WHERE target_user.id = mc.target_entity_id
+                AND (
+                  ${unaccentFn("COALESCE(target_user.full_name, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(target_user.email, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR CAST(target_user.id AS text) ILIKE :pattern ESCAPE '\\'
                 )
             )
           )`,
@@ -1949,6 +2013,39 @@ export class ModerationService {
               ...mc,
               targetTitle: title,
               proposedName: cand.name_vi ?? null,
+            };
+          });
+        } catch {}
+      }
+
+      // Also batch-enrich assigned staff details
+      const staffIds = Array.from(
+        new Set(
+          enrichedItems
+            .map((mc) => mc.assignedStaffId)
+            .filter(Boolean),
+        ),
+      );
+      if (staffIds.length > 0) {
+        try {
+          const staffRows: any[] = await this.dataSource.query(
+            `SELECT id, full_name, email FROM users WHERE id = ANY($1::uuid[])`,
+            [staffIds],
+          );
+          const staffById = new Map<string, any>();
+          for (const s of staffRows) {
+            staffById.set(s.id, s);
+          }
+          enrichedItems = enrichedItems.map((mc) => {
+            const s = mc.assignedStaffId ? staffById.get(mc.assignedStaffId) : null;
+            if (!s) return mc;
+            return {
+              ...mc,
+              assignedStaff: {
+                id: s.id,
+                fullName: s.full_name,
+                email: s.email,
+              },
             };
           });
         } catch {}
@@ -2704,7 +2801,13 @@ export class ModerationService {
     }
   }
 
-  private async enrichWithCandidates(reports: NewSignTypeReport[]): Promise<(NewSignTypeReport & { candidate?: CandidateEnriched | null })[]> {
+  private async enrichWithCandidates(reports: NewSignTypeReport[]): Promise<(NewSignTypeReport & {
+    candidate?: CandidateEnriched | null;
+    reporter?: { id: string; fullName: string; email: string } | null;
+    submittedBy?: string | null;
+    reviewer?: { id: string; fullName: string; email: string } | null;
+    reviewedByName?: string | null;
+  })[]> {
     if (reports.length === 0) return reports as any;
     const ids = reports.filter(r => r.candidateId).map(r => r.candidateId as string);
     const byId = new Map<string, CandidateEnriched>();
@@ -2759,12 +2862,41 @@ export class ModerationService {
         });
       }
     }
-    return reports.map(r => ({
-      ...r,
-      candidate: r.candidateId ? (byId.get(r.candidateId) ?? null) : null,
-      status: r.status === MissingTypeStatus.ESCALATED_ADMIN ? 'IN_REVIEW' : r.status,
-      rawStatus: r.status,
-    })) as any;
+    const userIds = Array.from(
+      new Set(
+        reports
+          .flatMap((r) => [r.reporterId, (r as any).originalReporterId, r.reviewedBy])
+          .filter(Boolean),
+      ),
+    );
+    const usersById = new Map<string, { id: string; fullName: string; email: string }>();
+    if (userIds.length > 0 && typeof this.dataSource?.query === 'function') {
+      try {
+        const uRows: any[] = await this.dataSource.query(
+          `SELECT id, full_name, email FROM users WHERE id = ANY($1::uuid[])`,
+          [userIds],
+        );
+        for (const u of uRows) {
+          usersById.set(u.id, { id: u.id, fullName: u.full_name, email: u.email });
+        }
+      } catch (err) {
+        this.logger.warn('Failed to enrich users: ' + (err as any)?.message);
+      }
+    }
+    return reports.map((r) => {
+      const rep = r.reporterId ? usersById.get(r.reporterId) : null;
+      const rev = r.reviewedBy ? usersById.get(r.reviewedBy) : null;
+      return {
+        ...r,
+        candidate: r.candidateId ? (byId.get(r.candidateId) ?? null) : null,
+        status: r.status === MissingTypeStatus.ESCALATED_ADMIN ? 'IN_REVIEW' : r.status,
+        rawStatus: r.status,
+        reporter: rep ?? null,
+        submittedBy: rep ? rep.fullName : (r as any).submittedBy ?? null,
+        reviewer: rev ?? null,
+        reviewedByName: rev ? rev.fullName : null,
+      };
+    }) as any;
   }
 
   private async reportSyncedBackend(signTypeId: number): Promise<void> {
