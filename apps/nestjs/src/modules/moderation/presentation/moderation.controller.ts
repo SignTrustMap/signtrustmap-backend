@@ -32,14 +32,48 @@ export class ModerationController {
   reportMissing(@CurrentUser() user: any, @Body() dto: CreateMissingTypeReportDto) { return this.svc.reportMissingType(user.id, dto); }
 
   @Roles('STAFF', 'ADMIN')
-  @ApiOperation({ summary: 'List new-sign reports', description: 'Paginated list of new-sign reports submitted by community reviewers, filterable by status' })
+  @ApiOperation({ summary: 'List new-sign reports', description: 'Paginated list of new-sign reports submitted by community reviewers, filterable by status, staff, and searchable' })
   @Get('moderation/new-signs')
-  listNewSigns(@Query('status') status?: string, @Query('page') page?: string, @Query('pageSize') pageSize?: string) { const p = page ? parseInt(page, 10) : 1; const ps = pageSize ? parseInt(pageSize, 10) : 20; return this.svc.listNewSignReports(status, Number.isNaN(p) ? 1 : p, Number.isNaN(ps) ? 20 : ps); }
+  listNewSigns(
+    @Query('status') status?: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+    @Query('search') search?: string,
+    @Query('q') q?: string,
+    @Query('sortBy') sortBy?: string,
+    @Query('sortOrder') sortOrder?: string,
+  ) {
+    const p = page ? parseInt(page, 10) : 1;
+    const ps = pageSize ? parseInt(pageSize, 10) : 20;
+    const pNum = Number.isNaN(p) ? 1 : p;
+    const psNum = Number.isNaN(ps) ? 20 : ps;
+    if (search || q || sortBy || sortOrder) {
+      return this.svc.listNewSignReports(status, pNum, psNum, search || q, sortBy, sortOrder);
+    }
+    return this.svc.listNewSignReports(status, pNum, psNum);
+  }
 
   @Roles('STAFF', 'ADMIN')
   @ApiOperation({ summary: 'List new-sign reports (legacy route)', description: 'Backward-compatible alias for GET /moderation/new-signs' })
   @Get('moderation/missing-type-reports')
-  listMissing(@Query('status') status?: string, @Query('page') page?: string, @Query('pageSize') pageSize?: string) { const p = page ? parseInt(page, 10) : 1; const ps = pageSize ? parseInt(pageSize, 10) : 20; return this.svc.listMissingReports(status, Number.isNaN(p) ? 1 : p, Number.isNaN(ps) ? 20 : ps); }
+  listMissing(
+    @Query('status') status?: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+    @Query('search') search?: string,
+    @Query('q') q?: string,
+    @Query('sortBy') sortBy?: string,
+    @Query('sortOrder') sortOrder?: string,
+  ) {
+    const p = page ? parseInt(page, 10) : 1;
+    const ps = pageSize ? parseInt(pageSize, 10) : 20;
+    const pNum = Number.isNaN(p) ? 1 : p;
+    const psNum = Number.isNaN(ps) ? 20 : ps;
+    if (search || q || sortBy || sortOrder) {
+      return this.svc.listMissingReports(status, pNum, psNum, search || q, sortBy, sortOrder);
+    }
+    return this.svc.listMissingReports(status, pNum, psNum);
+  }
 
   @Roles('STAFF', 'ADMIN')
   @ApiOperation({ summary: 'Get new-sign report detail', description: 'Retrieve image evidence and details for a new-sign report' })
@@ -117,7 +151,39 @@ export class ModerationController {
   @Roles('STAFF', 'ADMIN')
   @ApiOperation({ summary: 'List moderation cases', description: 'Staff/Admin queue of reported signs, suspected spam, or fraud investigations' })
   @Get('moderation/cases')
-  listCases(@Query('status') status?: string, @Query('page') page?: string, @Query('pageSize') pageSize?: string) { const p = page ? parseInt(page, 10) : 1; const ps = pageSize ? parseInt(pageSize, 10) : 20; return this.svc.listCases(status, Number.isNaN(p) ? 1 : p, Number.isNaN(ps) ? 20 : ps); }
+  listCases(
+    @Query('status') status?: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+    @Query('search') search?: string,
+    @Query('q') q?: string,
+    @Query('sortBy') sortBy?: string,
+    @Query('sortOrder') sortOrder?: string,
+  ) {
+    const p = page ? parseInt(page, 10) : 1;
+    const ps = pageSize ? parseInt(pageSize, 10) : 20;
+    const pNum = Number.isNaN(p) ? 1 : p;
+    const psNum = Number.isNaN(ps) ? 20 : ps;
+    if (search || q || sortBy || sortOrder) {
+      return this.svc.listCases(status, pNum, psNum, search || q, sortBy, sortOrder);
+    }
+    return this.svc.listCases(status, pNum, psNum);
+  }
+
+  @Roles('STAFF', 'ADMIN')
+  @ApiOperation({ summary: 'List escalations', description: 'Backward-compatible alias for GET /moderation/cases' })
+  @Get('escalations')
+  listEscalations(
+    @Query('status') status?: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+    @Query('search') search?: string,
+    @Query('q') q?: string,
+    @Query('sortBy') sortBy?: string,
+    @Query('sortOrder') sortOrder?: string,
+  ) {
+    return this.listCases(status, page, pageSize, search, q, sortBy, sortOrder);
+  }
 
   @Roles('STAFF', 'ADMIN')
   @ApiOperation({ summary: 'Get moderation case detail', description: 'Retrieve full case investigation context, audit history, and evidence' })
