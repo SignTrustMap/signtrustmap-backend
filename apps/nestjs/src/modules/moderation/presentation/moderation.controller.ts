@@ -47,8 +47,12 @@ export class ModerationController {
     const ps = pageSize ? parseInt(pageSize, 10) : 20;
     const pNum = Number.isNaN(p) ? 1 : p;
     const psNum = Number.isNaN(ps) ? 20 : ps;
-    if (search || q || sortBy || sortOrder) {
-      return this.svc.listNewSignReports(status, pNum, psNum, search || q, sortBy, sortOrder);
+    const querySearch = (search || q)?.trim();
+    if (sortBy || sortOrder) {
+      return this.svc.listNewSignReports(status, pNum, psNum, querySearch, sortBy, sortOrder);
+    }
+    if (querySearch) {
+      return this.svc.listNewSignReports(status, pNum, psNum, querySearch);
     }
     return this.svc.listNewSignReports(status, pNum, psNum);
   }
@@ -69,8 +73,12 @@ export class ModerationController {
     const ps = pageSize ? parseInt(pageSize, 10) : 20;
     const pNum = Number.isNaN(p) ? 1 : p;
     const psNum = Number.isNaN(ps) ? 20 : ps;
-    if (search || q || sortBy || sortOrder) {
-      return this.svc.listMissingReports(status, pNum, psNum, search || q, sortBy, sortOrder);
+    const querySearch = (search || q)?.trim();
+    if (sortBy || sortOrder) {
+      return this.svc.listMissingReports(status, pNum, psNum, querySearch, sortBy, sortOrder);
+    }
+    if (querySearch) {
+      return this.svc.listMissingReports(status, pNum, psNum, querySearch);
     }
     return this.svc.listMissingReports(status, pNum, psNum);
   }
@@ -164,8 +172,12 @@ export class ModerationController {
     const ps = pageSize ? parseInt(pageSize, 10) : 20;
     const pNum = Number.isNaN(p) ? 1 : p;
     const psNum = Number.isNaN(ps) ? 20 : ps;
-    if (search || q || sortBy || sortOrder) {
-      return this.svc.listCases(status, pNum, psNum, search || q, sortBy, sortOrder);
+    const querySearch = (search || q)?.trim();
+    if (sortBy || sortOrder) {
+      return this.svc.listCases(status, pNum, psNum, querySearch, sortBy, sortOrder);
+    }
+    if (querySearch) {
+      return this.svc.listCases(status, pNum, psNum, querySearch);
     }
     return this.svc.listCases(status, pNum, psNum);
   }
