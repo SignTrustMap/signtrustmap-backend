@@ -97,6 +97,80 @@ export class AdminNewSignTypeActionDto {
   banTarget?: string;
 }
 
+export class ListModerationCasesQueryDto {
+  @ApiPropertyOptional({ description: 'Filter by status (PENDING, IN_REVIEW, RESOLVED, ESCALATED_ADMIN, OPEN)' })
+  @IsOptional()
+  @IsString()
+  status?: string;
+
+  @ApiPropertyOptional({ description: 'Page number (1-based)', default: 1 })
+  @IsOptional()
+  @IsString()
+  page?: string;
+
+  @ApiPropertyOptional({ description: 'Page size limit', default: 20 })
+  @IsOptional()
+  @IsString()
+  pageSize?: string;
+
+  @ApiPropertyOptional({ description: 'Search term for staff name/email, case ID, target entity, notes' })
+  @IsOptional()
+  @IsString()
+  search?: string;
+
+  @ApiPropertyOptional({ description: 'Alias for search term' })
+  @IsOptional()
+  @IsString()
+  q?: string;
+
+  @ApiPropertyOptional({ description: 'Sort by field (createdAt, newest, oldest, name, caseType, status)' })
+  @IsOptional()
+  @IsString()
+  sortBy?: string;
+
+  @ApiPropertyOptional({ description: 'Sort order direction (ASC, DESC)', enum: ['ASC', 'DESC', 'asc', 'desc'] })
+  @IsOptional()
+  @IsString()
+  sortOrder?: string;
+}
+
+export class ListNewSignReportsQueryDto {
+  @ApiPropertyOptional({ description: 'Filter by status (PENDING, APPROVED, MERGED, ESCALATED_ADMIN, INCOMPLETE, REJECTED, OPEN)' })
+  @IsOptional()
+  @IsString()
+  status?: string;
+
+  @ApiPropertyOptional({ description: 'Page number (1-based)', default: 1 })
+  @IsOptional()
+  @IsString()
+  page?: string;
+
+  @ApiPropertyOptional({ description: 'Page size limit', default: 20 })
+  @IsOptional()
+  @IsString()
+  pageSize?: string;
+
+  @ApiPropertyOptional({ description: 'Search term for staff name/email, reporter, proposed sign name, notes' })
+  @IsOptional()
+  @IsString()
+  search?: string;
+
+  @ApiPropertyOptional({ description: 'Alias for search term' })
+  @IsOptional()
+  @IsString()
+  q?: string;
+
+  @ApiPropertyOptional({ description: 'Sort by field (createdAt, newest, oldest, name, proposedName, status)' })
+  @IsOptional()
+  @IsString()
+  sortBy?: string;
+
+  @ApiPropertyOptional({ description: 'Sort order direction (ASC, DESC)', enum: ['ASC', 'DESC', 'asc', 'desc'] })
+  @IsOptional()
+  @IsString()
+  sortOrder?: string;
+}
+
 export {
   CreateNewSignTypeReportDto as CreateMissingTypeReportDto,
   UpdateNewSignTypeReportDto as UpdateMissingTypeReportDto,

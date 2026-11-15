@@ -39,7 +39,7 @@ describe('CatalogService', () => {
       available: true,
     });
     expect(signTypes.findOne).toHaveBeenCalledWith({
-      where: { signCode: expect.anything() },
+      where: { signCode: expect.anything(), isActive: true },
     });
 
     signTypes.findOne.mockResolvedValue(trafficSignType());
@@ -93,6 +93,7 @@ describe('CatalogService', () => {
 
     const result = await service.listSignTypes({
       categoryId: 2,
+      isActive: true,
       search: 'stop',
       page: 1,
       size: 10,
@@ -631,6 +632,199 @@ describe('CatalogService', () => {
         [99],
       );
       expect(categories.delete).toHaveBeenCalledWith(99);
+    });
+
+    it('allows reusing a sign_code if the existing sign with that code is deactivated', async () => {
+      // 1. Check code availability: no ACTIVE sign exists with 'P.102'
+      signTypes.findOne.mockResolvedValueOnce(null);
+      const avail = await service.checkSignCodeAvailability('P.102');
+      expect(avail.available).toBe(true);
+
+      // 2. Create sign type with duplicate code of inactive sign
+      const categoryRepository = repository<SignCategory>();
+      const typeRepository = repository<TrafficSignType>();
+      const promptRepository = repository<SignTypeAiPrompt>();
+      const mappingRepository = repository<SignTypeOsmMapping>();
+      const imageRepository = repository<SignTypeImage>();
+      const manager = {
+        getRepository: jest.fn((target) => {
+          if (target === SignCategory) return categoryRepository;
+          if (target === TrafficSignType) return typeRepository;
+          if (target === SignTypeAiPrompt) return promptRepository;
+          if (target === SignTypeOsmMapping) return mappingRepository;
+          if (target === SignTypeImage) return imageRepository;
+          return repository<any>();
+        }),
+      } as unknown as EntityManager;
+
+      categoryRepository.findOne.mockResolvedValue(entity<SignCategory>({ id: 2 }));
+      typeRepository.findOne.mockResolvedValue(null);
+      typeRepository.create.mockImplementation((value) => value as TrafficSignType);
+      typeRepository.save.mockImplementation(async (value) => ({
+        ...(value as TrafficSignType),
+        id: 101,
+      }));
+      promptRepository.find.mockResolvedValue([]);
+      mappingRepository.find.mockResolvedValue([]);
+      imageRepository.find.mockResolvedValue([]);
+      (dataSource.transaction as jest.Mock).mockImplementation(
+        (callback: (transactionManager: EntityManager) => unknown) => callback(manager),
+      );
+
+      const created = await service.createSignType({
+        categoryId: 2,
+        signCode: 'P.102',
+        nameVi: 'Cấm đi ngược chiều',
+        nameEn: 'No entry',
+        representativeImageKey: 'catalog/p102.png',
+        isActive: true,
+      });
+
+      expect(created.id).toBe(101);
+      expect(typeRepository.findOne).toHaveBeenCalledWith({
+        where: { signCode: expect.anything(), isActive: true },
+      });
+    });
+
+    it('rejects creating a sign type if another sign with the same code is ACTIVE', async () => {
+      const categoryRepository = repository<SignCategory>();
+      const typeRepository = repository<TrafficSignType>();
+      const manager = {
+        getRepository: jest.fn((target) => {
+          if (target === SignCategory) return categoryRepository;
+          if (target === TrafficSignType) return typeRepository;
+          return repository<any>();
+        }),
+      } as unknown as EntityManager;
+
+      categoryRepository.findOne.mockResolvedValue(entity<SignCategory>({ id: 2 }));
+      typeRepository.findOne.mockResolvedValue(entity<TrafficSignType>({ id: 50, signCode: 'P.102', isActive: true }));
+      (dataSource.transaction as jest.Mock).mockImplementation(
+        (callback: (transactionManager: EntityManager) => unknown) => callback(manager),
+      );
+
+      await expect(
+        service.createSignType({
+          categoryId: 2,
+          signCode: 'P.102',
+          nameVi: 'Cấm đi ngược chiều',
+          nameEn: 'No entry',
+          representativeImageKey: 'catalog/p102.png',
+          isActive: true,
+        }),
+      ).rejects.toThrow('sign_code "P.102" exists');
+    });
+
+    it('getSignType throws NotFoundException for non-staff when sign is deactivated', async () => {
+      signTypes.findOne.mockResolvedValue(entity<TrafficSignType>({ id: 5, isActive: false }));
+
+      await expect(service.getSignType(5, { roles: ['DRIVER'] })).rejects.toThrow(
+        'TrafficSignType #5 not found',
+      );
+      await expect(service.getSignType(5, { roles: ['SURVEYOR'] })).rejects.toThrow(
+        'TrafficSignType #5 not found',
+      );
+      await expect(service.getSignType(5, { roles: ['REVIEWER'] })).rejects.toThrow(
+        'TrafficSignType #5 not found',
+      );
+    });
+
+    it('getSignType allows ADMIN and STAFF to view deactivated sign', async () => {
+      const inactiveSign = entity<TrafficSignType>({
+        id: 5,
+        isActive: false,
+        signCode: 'P.102',
+        nameVi: 'Cấm',
+        nameEn: 'No',
+      });
+      signTypes.findOne.mockResolvedValue(inactiveSign);
+      aiPrompts.find.mockResolvedValue([]);
+      osmMappings.find.mockResolvedValue([]);
+      images.find.mockResolvedValue([]);
+
+      const adminView = await service.getSignType(5, { roles: ['ADMIN'] });
+      expect(adminView.id).toBe(5);
+
+      const staffView = await service.getSignType(5, { roles: ['STAFF'] });
+      expect(staffView.id).toBe(5);
+    });
+
+    it('creates support shot from JSON imageUrl and unsets prior primary if isPrimary=true', async () => {
+      signTypes.findOne.mockResolvedValue(entity<TrafficSignType>({ id: 10, signCode: 'P.102' }));
+      images.update.mockResolvedValue({ affected: 1 } as any);
+      images.create.mockImplementation((x: any) => x);
+      images.save.mockImplementation(async (x: any) => ({ id: 'img-1', ...x }));
+
+      const res = await service.addSupportShot(10, {
+        imageUrl: 'https://s3.signmap.site/test.jpg',
+        isPrimary: true,
+        role: 'MEDOID',
+      });
+
+      expect(images.update).toHaveBeenCalledWith({ signTypeId: 10 }, { isPrimary: false });
+      expect(images.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          signTypeId: 10,
+          imageUrl: 'https://s3.signmap.site/test.jpg',
+          isPrimary: true,
+          role: 'MEDOID',
+        }),
+      );
+      expect(res).toMatchObject({ id: 'img-1', imageUrl: 'https://s3.signmap.site/test.jpg' });
+    });
+
+    it('uploads file to MinIO and creates support shot when file is provided', async () => {
+      const storage = {
+        putObject: jest.fn().mockResolvedValue(undefined),
+        getPublicUrl: jest.fn().mockReturnValue('https://s3.signmap.site/stm-sign-crops/catalog/support-shots/test.jpg'),
+      } as any;
+      const uploadService = new CatalogService(
+        categories,
+        signTypes,
+        parameters,
+        aiPrompts,
+        osmMappings,
+        images,
+        dataSource,
+        undefined,
+        storage,
+      );
+
+      signTypes.findOne.mockResolvedValue(entity<TrafficSignType>({ id: 10, signCode: 'P.102' }));
+      images.create.mockImplementation((x: any) => x);
+      images.save.mockImplementation(async (x: any) => ({ id: 'img-2', ...x }));
+
+      const file = {
+        buffer: Buffer.from([0xff, 0xd8, 0xff, 0x00]),
+        size: 4,
+        mimetype: 'image/jpeg',
+        originalname: 'shot.jpg',
+      } as Express.Multer.File;
+
+      const res = await uploadService.addSupportShot(10, { role: 'ANCHOR' }, file);
+
+      expect(storage.putObject).toHaveBeenCalledWith(
+        'stm-sign-crops',
+        expect.stringContaining('catalog/support-shots/P.102-'),
+        file.buffer,
+        file.mimetype,
+      );
+      expect(images.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          signTypeId: 10,
+          imageUrl: 'https://s3.signmap.site/stm-sign-crops/catalog/support-shots/test.jpg',
+          role: 'ANCHOR',
+        }),
+      );
+      expect(res).toMatchObject({ id: 'img-2', imageUrl: 'https://s3.signmap.site/stm-sign-crops/catalog/support-shots/test.jpg' });
+    });
+
+    it('throws BadRequestException if neither file nor imageUrl is provided', async () => {
+      signTypes.findOne.mockResolvedValue(entity<TrafficSignType>({ id: 10, signCode: 'P.102' }));
+
+      await expect(service.addSupportShot(10, {})).rejects.toThrow(
+        'Either an image file or an imageUrl must be provided',
+      );
     });
   });
 

@@ -180,7 +180,14 @@ export class ModerationService {
     return this.reportNewSign(reporterId, dto);
   }
 
-  async listNewSignReports(status?: string, page = 1, pageSize = 20, search?: string) {
+  async listNewSignReports(
+    status?: string,
+    page = 1,
+    pageSize = 20,
+    search?: string,
+    sortBy?: string,
+    sortOrder?: string,
+  ) {
     const p = Math.max(1, page), ps = Math.min(Math.max(1, pageSize), 100);
     const where: any = {};
     const upperStatus = status?.toUpperCase();
@@ -198,49 +205,89 @@ export class ModerationService {
       }
     }
 
+    const sort = this.parseNewSignSort(sortBy, sortOrder);
     const normalizedSearch = search?.trim().replace(/^#+/, '').trim() || '';
+
     if (normalizedSearch && typeof this.missing?.createQueryBuilder === 'function') {
       const pattern = `%${normalizedSearch.replace(/[%_\\]/g, '\\$&')}%`;
-      const qb = this.missing.createQueryBuilder('r');
-      if (where.status) {
-        if (upperStatus === 'APPROVED') {
-          qb.andWhere('r.status IN (:...statuses)', {
-            statuses: [MissingTypeStatus.APPROVED, MissingTypeStatus.ESCALATED_ADMIN],
-          });
+      const executeQuery = async (useUnaccent: boolean) => {
+        const qb = this.missing.createQueryBuilder('r');
+        if (typeof qb.leftJoin === 'function') {
+          qb.leftJoin(User, 'staff', 'staff.id = r.reviewed_by')
+            .leftJoin(User, 'reporter', 'reporter.id = r.reporter_id');
+        }
+
+        if (where.status) {
+          if (upperStatus === 'APPROVED') {
+            qb.andWhere('r.status IN (:...statuses)', {
+              statuses: [MissingTypeStatus.APPROVED, MissingTypeStatus.ESCALATED_ADMIN],
+            });
+          } else {
+            qb.andWhere('r.status = :status', { status: where.status });
+          }
+        }
+
+        const unaccentFn = (expr: string) => (useUnaccent ? `unaccent(${expr})` : expr);
+
+        qb.andWhere(
+          `(
+            ${unaccentFn("COALESCE(staff.full_name, '')")} ILIKE ${unaccentFn(':pattern')}
+            OR ${unaccentFn("COALESCE(staff.email, '')")} ILIKE ${unaccentFn(':pattern')}
+            OR ${unaccentFn("COALESCE(reporter.full_name, '')")} ILIKE ${unaccentFn(':pattern')}
+            OR ${unaccentFn("COALESCE(reporter.email, '')")} ILIKE ${unaccentFn(':pattern')}
+            OR ${unaccentFn("COALESCE(r.proposed_name, '')")} ILIKE ${unaccentFn(':pattern')}
+            OR ${unaccentFn("COALESCE(r.description, '')")} ILIKE ${unaccentFn(':pattern')}
+            OR ${unaccentFn("COALESCE(r.staff_notes, '')")} ILIKE ${unaccentFn(':pattern')}
+            OR CAST(r.id AS text) ILIKE :pattern ESCAPE '\\'
+            OR CAST(r.candidate_id AS text) ILIKE :pattern ESCAPE '\\'
+            OR CAST(r.status AS text) ILIKE :pattern ESCAPE '\\'
+          )`,
+          { pattern },
+        );
+
+        const qbField = sort.field === 'proposedName' ? 'r.proposedName' : sort.field === 'status' ? 'r.status' : 'r.createdAt';
+        qb.orderBy(qbField, sort.direction);
+        if (typeof qb.addOrderBy === 'function') {
+          qb.addOrderBy('r.id', 'ASC');
+        }
+        qb.skip((p - 1) * ps)
+          .take(ps);
+
+        return qb.getManyAndCount();
+      };
+
+      let items: any[] = [];
+      let total = 0;
+      try {
+        [items, total] = await executeQuery(true);
+      } catch (err: any) {
+        if (err?.message?.includes('unaccent') || err?.code === '42883') {
+          this.logger.warn('PostgreSQL unaccent extension not installed; falling back to standard ILIKE search');
+          [items, total] = await executeQuery(false);
         } else {
-          qb.andWhere('r.status = :status', { status: where.status });
+          throw err;
         }
       }
-      qb.andWhere(
-        `(
-          CAST(r.id AS text) ILIKE :pattern ESCAPE '\\'
-          OR CAST(r.candidate_id AS text) ILIKE :pattern ESCAPE '\\'
-          OR COALESCE(r.proposed_name, '') ILIKE :pattern ESCAPE '\\'
-          OR COALESCE(r.description, '') ILIKE :pattern ESCAPE '\\'
-          OR COALESCE(r.staff_notes, '') ILIKE :pattern ESCAPE '\\'
-          OR EXISTS (
-            SELECT 1 FROM users u
-            WHERE u.id = r.reporter_id
-              AND (COALESCE(u.full_name, '') ILIKE :pattern ESCAPE '\\' OR COALESCE(u.email, '') ILIKE :pattern ESCAPE '\\')
-          )
-        )`,
-        { pattern },
-      )
-        .orderBy('r.createdAt', 'DESC')
-        .skip((p - 1) * ps)
-        .take(ps);
-      const [items, total] = await qb.getManyAndCount();
+
       const enriched = await this.enrichWithCandidates(items);
       return { items: enriched, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
     }
 
-    const [items, total] = await this.missing.findAndCount({ where, order: { createdAt: 'DESC' }, skip: (p - 1) * ps, take: ps });
+    const order: Record<string, 'ASC' | 'DESC'> = { [sort.field]: sort.direction };
+    const [items, total] = await this.missing.findAndCount({ where, order, skip: (p - 1) * ps, take: ps });
     const enriched = await this.enrichWithCandidates(items);
     return { items: enriched, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
   }
 
-  listMissingReports(status?: string, page = 1, pageSize = 20, search?: string) {
-    return this.listNewSignReports(status, page, pageSize, search);
+  listMissingReports(
+    status?: string,
+    page = 1,
+    pageSize = 20,
+    search?: string,
+    sortBy?: string,
+    sortOrder?: string,
+  ) {
+    return this.listNewSignReports(status, page, pageSize, search, sortBy, sortOrder);
   }
 
   async updateNewSignReport(reportId: string, reviewerId: string, dto: UpdateNewSignTypeReportDto) {
@@ -1728,7 +1775,14 @@ export class ModerationService {
   }
 
   // ---- moderation cases (unchanged behaviour, enriched) ----
-  async listCases(status?: string, page = 1, pageSize = 20, search?: string) {
+  async listCases(
+    status?: string,
+    page = 1,
+    pageSize = 20,
+    search?: string,
+    sortBy?: string,
+    sortOrder?: string,
+  ) {
     const p = Math.max(1, page), ps = Math.min(Math.max(1, pageSize), 100);
     const where: any = {};
     if (status) {
@@ -1740,43 +1794,84 @@ export class ModerationService {
       }
     }
 
+    const sort = this.parseCaseSort(sortBy, sortOrder);
     const normalizedSearch = search?.trim().replace(/^#+/, '').trim() || '';
     let items: ModerationCase[] = [];
     let total = 0;
 
     if (normalizedSearch && typeof this.cases?.createQueryBuilder === 'function') {
       const pattern = `%${normalizedSearch.replace(/[%_\\]/g, '\\$&')}%`;
-      const qb = this.cases.createQueryBuilder('mc');
-      if (where.status) {
-        qb.andWhere('mc.status = :status', { status: where.status });
+      const executeQuery = async (useUnaccent: boolean) => {
+        const qb = this.cases.createQueryBuilder('mc');
+        if (typeof qb.leftJoin === 'function') {
+          qb.leftJoin(User, 'staff', 'staff.id = mc.assigned_staff_id');
+        }
+
+        if (where.status) {
+          qb.andWhere('mc.status = :status', { status: where.status });
+        }
+
+        const unaccentFn = (expr: string) => (useUnaccent ? `unaccent(${expr})` : expr);
+
+        qb.andWhere(
+          `(
+            ${unaccentFn("COALESCE(staff.full_name, '')")} ILIKE ${unaccentFn(':pattern')}
+            OR ${unaccentFn("COALESCE(staff.email, '')")} ILIKE ${unaccentFn(':pattern')}
+            OR ${unaccentFn("COALESCE(mc.resolution_note, '')")} ILIKE ${unaccentFn(':pattern')}
+            OR ${unaccentFn("COALESCE(mc.target_entity_type, '')")} ILIKE ${unaccentFn(':pattern')}
+            OR CAST(mc.id AS text) ILIKE :pattern ESCAPE '\\'
+            OR CAST(mc.target_entity_id AS text) ILIKE :pattern ESCAPE '\\'
+            OR CAST(mc.case_type AS text) ILIKE :pattern ESCAPE '\\'
+            OR CAST(mc.status AS text) ILIKE :pattern ESCAPE '\\'
+            OR EXISTS (
+              SELECT 1 FROM new_sign_type_reports r
+              LEFT JOIN users u ON u.id = r.reporter_id
+              WHERE r.id = mc.target_entity_id
+                AND (
+                  ${unaccentFn("COALESCE(r.proposed_name, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(r.description, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(u.full_name, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(u.email, '')")} ILIKE ${unaccentFn(':pattern')}
+                )
+            )
+            OR EXISTS (
+              SELECT 1 FROM unverified_sign_candidates c
+              LEFT JOIN traffic_sign_types tst ON (tst.id = c.predicted_sign_type_id OR tst.id = c.selected_sign_type_id)
+              WHERE c.id = mc.target_entity_id
+                AND (
+                  ${unaccentFn("COALESCE(tst.name_vi, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(tst.name_en, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR tst.sign_code ILIKE :pattern
+                )
+            )
+          )`,
+          { pattern },
+        );
+
+        const qbField = sort.field === 'caseType' ? 'mc.caseType' : sort.field === 'status' ? 'mc.status' : 'mc.createdAt';
+        qb.orderBy(qbField, sort.direction);
+        if (typeof qb.addOrderBy === 'function') {
+          qb.addOrderBy('mc.id', 'ASC');
+        }
+        qb.skip((p - 1) * ps)
+          .take(ps);
+
+        return qb.getManyAndCount();
+      };
+
+      try {
+        [items, total] = await executeQuery(true);
+      } catch (err: any) {
+        if (err?.message?.includes('unaccent') || err?.code === '42883') {
+          this.logger.warn('PostgreSQL unaccent extension not installed; falling back to standard ILIKE search');
+          [items, total] = await executeQuery(false);
+        } else {
+          throw err;
+        }
       }
-      qb.andWhere(
-        `(
-          CAST(mc.id AS text) ILIKE :pattern ESCAPE '\\'
-          OR CAST(mc.target_entity_id AS text) ILIKE :pattern ESCAPE '\\'
-          OR COALESCE(mc.target_entity_type, '') ILIKE :pattern ESCAPE '\\'
-          OR CAST(mc.case_type AS text) ILIKE :pattern ESCAPE '\\'
-          OR COALESCE(mc.resolution_note, '') ILIKE :pattern ESCAPE '\\'
-          OR EXISTS (
-            SELECT 1 FROM new_sign_type_reports r
-            LEFT JOIN users u ON u.id = r.reporter_id
-            WHERE r.id = mc.target_entity_id
-              AND (
-                COALESCE(r.proposed_name, '') ILIKE :pattern ESCAPE '\\'
-                OR COALESCE(r.description, '') ILIKE :pattern ESCAPE '\\'
-                OR COALESCE(u.full_name, '') ILIKE :pattern ESCAPE '\\'
-                OR COALESCE(u.email, '') ILIKE :pattern ESCAPE '\\'
-              )
-          )
-        )`,
-        { pattern },
-      )
-        .orderBy('mc.createdAt', 'DESC')
-        .skip((p - 1) * ps)
-        .take(ps);
-      [items, total] = await qb.getManyAndCount();
     } else {
-      [items, total] = await this.cases.findAndCount({ where, order: { createdAt: 'DESC' }, skip: (p - 1) * ps, take: ps });
+      const order: Record<string, 'ASC' | 'DESC'> = { [sort.field]: sort.direction };
+      [items, total] = await this.cases.findAndCount({ where, order, skip: (p - 1) * ps, take: ps });
     }
 
     // Batch-enrich report-linked cases with report title/name so table & search work smoothly
@@ -1821,9 +1916,100 @@ export class ModerationService {
           });
         } catch {}
       }
+
+      // Also enrich candidate-linked cases with sign name/code from traffic_sign_types
+      const candidateIds = Array.from(
+        new Set(
+          enrichedItems
+            .filter((mc) => {
+              const t = (mc.targetEntityType || '').toLowerCase();
+              return mc.targetEntityId && (t.includes('candidate') || mc.caseType === ModerationType.REVIEW_CONFLICT);
+            })
+            .map((mc) => mc.targetEntityId),
+        ),
+      );
+      if (candidateIds.length > 0) {
+        try {
+          const candRows: any[] = await this.dataSource.query(
+            `SELECT c.id, tst.name_vi, tst.sign_code
+             FROM unverified_sign_candidates c
+             LEFT JOIN traffic_sign_types tst ON (tst.id = c.selected_sign_type_id OR tst.id = c.predicted_sign_type_id)
+             WHERE c.id = ANY($1::uuid[])`,
+            [candidateIds],
+          );
+          const candById = new Map<string, any>();
+          for (const row of candRows) {
+            candById.set(row.id, row);
+          }
+          enrichedItems = enrichedItems.map((mc) => {
+            const cand = candById.get(mc.targetEntityId);
+            if (!cand || mc.targetTitle) return mc;
+            const title = cand.name_vi ? `${cand.sign_code ? cand.sign_code + ' - ' : ''}${cand.name_vi}` : null;
+            return {
+              ...mc,
+              targetTitle: title,
+              proposedName: cand.name_vi ?? null,
+            };
+          });
+        } catch {}
+      }
     }
 
     return { items: enrichedItems, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
+  }
+
+  private parseCaseSort(sortBy?: string, sortOrder?: string): { field: string; direction: 'ASC' | 'DESC' } {
+    let direction: 'ASC' | 'DESC' = 'DESC';
+    const normSortOrder = (sortOrder || '').trim().toUpperCase();
+    if (normSortOrder === 'ASC' || normSortOrder === 'DESC') {
+      direction = normSortOrder;
+    }
+
+    const normSortBy = (sortBy || '').trim().toLowerCase();
+    if (normSortBy === 'oldest') {
+      return { field: 'createdAt', direction: 'ASC' };
+    }
+    if (normSortBy === 'newest') {
+      return { field: 'createdAt', direction: 'DESC' };
+    }
+    if (['name', 'name_asc', 'a_z', 'a-z', 'casetype', 'case_type'].includes(normSortBy)) {
+      const dir = ['a_z', 'a-z', 'name_asc'].includes(normSortBy) ? 'ASC' : (normSortOrder === 'DESC' ? 'DESC' : 'ASC');
+      return { field: 'caseType', direction: dir };
+    }
+    if (['name_desc', 'z_a', 'z-a'].includes(normSortBy)) {
+      return { field: 'caseType', direction: 'DESC' };
+    }
+    if (normSortBy === 'status') {
+      return { field: 'status', direction };
+    }
+    return { field: 'createdAt', direction };
+  }
+
+  private parseNewSignSort(sortBy?: string, sortOrder?: string): { field: string; direction: 'ASC' | 'DESC' } {
+    let direction: 'ASC' | 'DESC' = 'DESC';
+    const normSortOrder = (sortOrder || '').trim().toUpperCase();
+    if (normSortOrder === 'ASC' || normSortOrder === 'DESC') {
+      direction = normSortOrder;
+    }
+
+    const normSortBy = (sortBy || '').trim().toLowerCase();
+    if (normSortBy === 'oldest') {
+      return { field: 'createdAt', direction: 'ASC' };
+    }
+    if (normSortBy === 'newest') {
+      return { field: 'createdAt', direction: 'DESC' };
+    }
+    if (['name', 'name_asc', 'a_z', 'a-z', 'proposedname', 'proposed_name'].includes(normSortBy)) {
+      const dir = ['a_z', 'a-z', 'name_asc'].includes(normSortBy) ? 'ASC' : (normSortOrder === 'DESC' ? 'DESC' : 'ASC');
+      return { field: 'proposedName', direction: dir };
+    }
+    if (['name_desc', 'z_a', 'z-a'].includes(normSortBy)) {
+      return { field: 'proposedName', direction: 'DESC' };
+    }
+    if (normSortBy === 'status') {
+      return { field: 'status', direction };
+    }
+    return { field: 'createdAt', direction };
   }
   async getCase(id: string) {
     const mc = await this.cases.findOne({ where: { id } });

@@ -19,14 +19,17 @@ describe('CatalogController', () => {
     expect(service.checkSignCodeAvailability).toHaveBeenCalledWith('P.110');
   });
 
-  it('maps Spring pagination and existing filter aliases', () => {
-    controller.listSignTypes({
-      categoryId: 2,
-      isActive: 'false',
-      q: 'stop',
-      page: 2,
-      pageSize: 25,
-    });
+  it('maps Spring pagination and allows ADMIN to filter inactive signs', () => {
+    controller.listSignTypes(
+      {
+        categoryId: 2,
+        isActive: 'false',
+        q: 'stop',
+        page: 2,
+        pageSize: 25,
+      },
+      { roles: ['ADMIN'] },
+    );
 
     expect(service.listSignTypes).toHaveBeenCalledWith({
       categoryId: 2,
@@ -35,6 +38,58 @@ describe('CatalogController', () => {
       page: 2,
       size: 25,
     });
+  });
+
+  it('allows STAFF to view all signs when isActive filter is omitted', () => {
+    controller.listSignTypes(
+      {
+        categoryId: 2,
+        page: 0,
+        pageSize: 10,
+      },
+      { roles: ['STAFF'] },
+    );
+
+    expect(service.listSignTypes).toHaveBeenCalledWith({
+      categoryId: 2,
+      isActive: undefined,
+      search: undefined,
+      page: 0,
+      size: 10,
+    });
+  });
+
+  it('restricts DRIVER, SURVEYOR, and REVIEWER to only active signs even if isActive=false requested', () => {
+    for (const role of ['DRIVER', 'SURVEYOR', 'REVIEWER']) {
+      jest.clearAllMocks();
+      controller.listSignTypes(
+        {
+          categoryId: 2,
+          isActive: 'false',
+          q: 'speed',
+        },
+        { roles: [role] },
+      );
+
+      expect(service.listSignTypes).toHaveBeenCalledWith(
+        expect.objectContaining({
+          isActive: true,
+        }),
+      );
+    }
+  });
+
+  it('defaults unauthenticated or general users to only active signs', () => {
+    controller.listSignTypes({
+      categoryId: 1,
+      isActive: 'false',
+    });
+
+    expect(service.listSignTypes).toHaveBeenCalledWith(
+      expect.objectContaining({
+        isActive: true,
+      }),
+    );
   });
 
   it('keeps catalog reads authenticated and writes ADMIN-only', () => {
@@ -47,6 +102,20 @@ describe('CatalogController', () => {
     ]);
     expect(Reflect.getMetadata(ROLES_KEY, CatalogController.prototype.uploadRepresentativeImage)).toEqual([
       'ADMIN',
+    ]);
+  });
+
+  it('delegates addSupportShot to catalog service with id, dto, and file', () => {
+    (service as any).addSupportShot = jest.fn().mockReturnValue({ id: 'img-1' });
+    const file = { buffer: Buffer.from([]), mimetype: 'image/png' } as Express.Multer.File;
+    const dto = { role: 'MEDOID', isPrimary: false };
+
+    controller.addSupportShot(5, dto as any, file);
+
+    expect((service as any).addSupportShot).toHaveBeenCalledWith(5, dto, file);
+    expect(Reflect.getMetadata(ROLES_KEY, CatalogController.prototype.addSupportShot)).toEqual([
+      'ADMIN',
+      'STAFF',
     ]);
   });
 });

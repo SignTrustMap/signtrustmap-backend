@@ -10,7 +10,7 @@ export class TrafficSignType {
   @Column({ name: 'category_id', type: 'int' })
   categoryId: number;
 
-  @Column({ name: 'sign_code', type: 'varchar', length: 50, unique: true })
+  @Column({ name: 'sign_code', type: 'varchar', length: 50 })
   signCode: string;
 
   @Column({ name: 'slug', type: 'varchar', length: 100, nullable: true, unique: true })

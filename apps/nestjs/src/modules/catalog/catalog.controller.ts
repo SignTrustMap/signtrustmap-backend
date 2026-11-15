@@ -68,10 +68,22 @@ export class CatalogController {
 
   @ApiOperation({ summary: 'List sign types', description: 'Search and filter catalog traffic signs by category, status, and code' })
   @Get('catalog/sign-types')
-  listSignTypes(@Query() query: ListSignTypesQueryDto) {
+  listSignTypes(@Query() query: ListSignTypesQueryDto, @CurrentUser() user?: any) {
+    const roles: string[] = Array.isArray(user?.roles) ? user.roles : [];
+    const isStaffOrAdmin = roles.includes('ADMIN') || roles.includes('STAFF');
+
+    let isActive: boolean | undefined;
+    if (!isStaffOrAdmin) {
+      // Driver, Surveyor, Reviewer and general users can only view active sign types
+      isActive = true;
+    } else {
+      // Staff and Admin can view all, or filter by active/inactive if explicitly requested
+      isActive = query.isActive !== undefined ? query.isActive === 'true' : undefined;
+    }
+
     return this.svc.listSignTypes({
       categoryId: query.categoryId,
-      isActive: query.isActive === undefined ? true : query.isActive === 'true',
+      isActive,
       search: query.search || query.q,
       page: query.page,
       size: query.size ?? query.pageSize,
@@ -80,7 +92,9 @@ export class CatalogController {
 
   @ApiOperation({ summary: 'Get sign type by ID', description: 'Retrieve single traffic sign type definition, image, and description' })
   @Get('catalog/sign-types/:id')
-  getSignType(@Param('id', ParseIntPipe) id: number) { return this.svc.getSignType(id); }
+  getSignType(@Param('id', ParseIntPipe) id: number, @CurrentUser() user?: any) {
+    return this.svc.getSignType(id, user);
+  }
 
   @Roles('ADMIN')
   @ApiOperation({ summary: 'Create sign type', description: 'Admin operation to define a new traffic sign in the catalog' })
@@ -163,9 +177,29 @@ export class CatalogController {
 
   @Roles('ADMIN', 'STAFF')
   @ApiOperation({ summary: 'Add support shot for sign type', description: 'Admin or Staff manually adds a real-photo support shot for a sign type' })
+  @ApiConsumes('multipart/form-data', 'application/json')
+  @ApiBody({
+    description: 'Support shot payload. Accepts either multipart form with binary "file" or JSON with "imageUrl".',
+    schema: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', format: 'binary', description: 'Support shot image file' },
+        imageUrl: { type: 'string', description: 'Support shot image URL (if not uploading file)' },
+        role: { type: 'string', enum: ['ANCHOR', 'MEDOID', 'REPRESENTATIVE'], default: 'MEDOID' },
+        isPinned: { type: 'boolean', default: false },
+        isPrimary: { type: 'boolean', default: false },
+        sharpness: { type: 'number' },
+      },
+    },
+  })
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 50 * 1024 * 1024 } }))
   @Post('catalog/sign-types/:id/support-shots')
-  addSupportShot(@Param('id', ParseIntPipe) id: number, @Body() dto: CreateSupportShotDto) {
-    return this.svc.addSupportShot(id, dto);
+  addSupportShot(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CreateSupportShotDto,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
+    return this.svc.addSupportShot(id, dto, file);
   }
 
   @Roles('ADMIN')

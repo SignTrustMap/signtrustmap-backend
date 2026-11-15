@@ -14,9 +14,9 @@ import { ModerationService } from './moderation.service';
 
 describe('ModerationService (Scenario #4: missing sign type)', () => {
   function buildService() {
-    const cases = { findOne: jest.fn(), findAndCount: jest.fn().mockResolvedValue([[], 0]), find: jest.fn().mockResolvedValue([]), save: jest.fn((v: any) => v), create: jest.fn((v: any) => v) };
+    const cases = { findOne: jest.fn(), findAndCount: jest.fn().mockResolvedValue([[], 0]), find: jest.fn().mockResolvedValue([]), save: jest.fn((v: any) => v), create: jest.fn((v: any) => v), createQueryBuilder: jest.fn() };
     const actions = { create: jest.fn((v: any) => v), save: jest.fn((v: any) => v), find: jest.fn().mockResolvedValue([]) };
-    const missing = { findOne: jest.fn(), findAndCount: jest.fn().mockResolvedValue([[], 0]), save: jest.fn((v: any) => v) };
+    const missing = { findOne: jest.fn(), findAndCount: jest.fn().mockResolvedValue([[], 0]), save: jest.fn((v: any) => v), createQueryBuilder: jest.fn() };
     const catRepo = { findOne: jest.fn(), create: jest.fn((v: any) => v), save: jest.fn((v: any) => v) };
     const signTypeRepo = { findOne: jest.fn(), create: jest.fn((v: any) => v), save: jest.fn((v: any) => v) };
     const candRepo = { findOne: jest.fn(), update: jest.fn().mockResolvedValue(undefined), create: jest.fn((v: any) => v), save: jest.fn((v: any) => v) };
@@ -909,6 +909,157 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     });
   });
 
+  it('listCases supports dynamic sorting (newest, oldest, A-Z, Z-A) with findAndCount', async () => {
+    const { service, cases } = buildService();
+    cases.findAndCount.mockResolvedValue([[], 0]);
+
+    // Oldest
+    await service.listCases('OPEN', 1, 10, undefined, 'oldest');
+    expect(cases.findAndCount).toHaveBeenCalledWith(
+      expect.objectContaining({ order: { createdAt: 'ASC' } }),
+    );
+
+    // A - Z (by caseType)
+    await service.listCases('OPEN', 1, 10, undefined, 'name', 'ASC');
+    expect(cases.findAndCount).toHaveBeenCalledWith(
+      expect.objectContaining({ order: { caseType: 'ASC' } }),
+    );
+
+    // Z - A (by caseType)
+    await service.listCases('OPEN', 1, 10, undefined, 'name', 'DESC');
+    expect(cases.findAndCount).toHaveBeenCalledWith(
+      expect.objectContaining({ order: { caseType: 'DESC' } }),
+    );
+
+    // Newest
+    await service.listCases('OPEN', 1, 10, undefined, 'newest');
+    expect(cases.findAndCount).toHaveBeenCalledWith(
+      expect.objectContaining({ order: { createdAt: 'DESC' } }),
+    );
+  });
+
+  it('listCases builds unaccent and staff join query when search query is provided', async () => {
+    const { service, cases } = buildService();
+    const qb = {
+      leftJoin: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      addOrderBy: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getManyAndCount: jest.fn().mockResolvedValue([
+        [{ id: 'case-123', caseType: 'CATALOG_PROPOSAL', assignedStaffId: 'staff-1', status: 'PENDING' }],
+        1,
+      ]),
+    };
+    (cases as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
+
+    const res = await service.listCases('OPEN', 1, 10, 'Nguyen Long Vu', 'name', 'ASC');
+
+    expect(cases.createQueryBuilder).toHaveBeenCalledWith('mc');
+    expect(qb.leftJoin).toHaveBeenCalledWith(expect.anything(), 'staff', 'staff.id = mc.assigned_staff_id');
+    expect(qb.andWhere).toHaveBeenCalledWith(
+      expect.stringContaining('unaccent(COALESCE(staff.full_name'),
+      expect.objectContaining({ pattern: '%Nguyen Long Vu%' }),
+    );
+    expect(qb.orderBy).toHaveBeenCalledWith('mc.caseType', 'ASC');
+    expect(res.items).toHaveLength(1);
+    expect(res.total).toBe(1);
+  });
+
+  it('listNewSignReports supports dynamic sorting and unaccent search joining staff and reporter', async () => {
+    const { service, missing } = buildService();
+    const qb = {
+      leftJoin: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      addOrderBy: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getManyAndCount: jest.fn().mockResolvedValue([
+        [{ id: 'r-1', proposedName: 'Đường cấm', status: MissingTypeStatus.PENDING }],
+        1,
+      ]),
+    };
+    (missing as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
+
+    const res = await service.listNewSignReports('OPEN', 1, 10, 'duong cam', 'name', 'ASC');
+
+    expect(missing.createQueryBuilder).toHaveBeenCalledWith('r');
+    expect(qb.leftJoin).toHaveBeenCalledWith(expect.anything(), 'staff', 'staff.id = r.reviewed_by');
+    expect(qb.leftJoin).toHaveBeenCalledWith(expect.anything(), 'reporter', 'reporter.id = r.reporter_id');
+    expect(qb.andWhere).toHaveBeenCalledWith(
+      expect.stringContaining('unaccent(COALESCE(r.proposed_name'),
+      expect.objectContaining({ pattern: '%duong cam%' }),
+    );
+    expect(qb.orderBy).toHaveBeenCalledWith('r.proposedName', 'ASC');
+    expect(res.items).toHaveLength(1);
+  });
+
+  it('listCases falls back to standard ILIKE search when PostgreSQL unaccent extension is missing', async () => {
+    const { service, cases } = buildService();
+    let attempt = 0;
+    const qb = {
+      leftJoin: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      addOrderBy: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getManyAndCount: jest.fn().mockImplementation(async () => {
+        attempt++;
+        if (attempt === 1) {
+          const err: any = new Error('function unaccent(text) does not exist');
+          err.code = '42883';
+          throw err;
+        }
+        return [[{ id: 'case-unaccent-fallback', caseType: 'CATALOG_PROPOSAL', status: 'PENDING' }], 1];
+      }),
+    };
+    (cases as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
+
+    const res = await service.listCases('OPEN', 1, 10, 'de xuat', 'newest');
+
+    expect(res.items).toHaveLength(1);
+    expect(res.items[0].id).toBe('case-unaccent-fallback');
+    // Verified fallback executed without unaccent
+    expect(qb.andWhere).toHaveBeenLastCalledWith(
+      expect.not.stringContaining('unaccent('),
+      expect.objectContaining({ pattern: '%de xuat%' }),
+    );
+  });
+
+  it('listNewSignReports falls back to standard ILIKE search when PostgreSQL unaccent extension is missing', async () => {
+    const { service, missing } = buildService();
+    let attempt = 0;
+    const qb = {
+      leftJoin: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      addOrderBy: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getManyAndCount: jest.fn().mockImplementation(async () => {
+        attempt++;
+        if (attempt === 1) {
+          const err: any = new Error('function unaccent(text) does not exist');
+          err.code = '42883';
+          throw err;
+        }
+        return [[{ id: 'r-fallback', proposedName: 'Đường cấm', status: MissingTypeStatus.PENDING }], 1];
+      }),
+    };
+    (missing as any).createQueryBuilder = jest.fn().mockReturnValue(qb);
+
+    const res = await service.listNewSignReports('OPEN', 1, 10, 'duong cam', 'newest');
+
+    expect(res.items).toHaveLength(1);
+    expect(res.items[0].id).toBe('r-fallback');
+    expect(qb.andWhere).toHaveBeenLastCalledWith(
+      expect.not.stringContaining('unaccent('),
+      expect.objectContaining({ pattern: '%duong cam%' }),
+    );
+  });
   it('uses pessimistic row lock without aggregate COUNT() when Admin requests recapture via TypeORM repositories', async () => {
     const { service, missing, dataSource } = buildService();
     missing.findOne.mockResolvedValue({
