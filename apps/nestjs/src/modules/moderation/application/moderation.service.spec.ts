@@ -356,8 +356,8 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     expect(notifications.create).toHaveBeenCalledTimes(2);
   });
 
-  it('automatically selects and records a random active surveyor when report has no surveyor responsible', async () => {
-    const { service, dataSource, missing } = buildService();
+  it('automatically selects and records 3 random active surveyors when report has no surveyor responsible', async () => {
+    const { service, dataSource, missing, notifications } = buildService();
     missing.findOne.mockResolvedValue({
       id: 'R1',
       status: MissingTypeStatus.INCOMPLETE,
@@ -375,7 +375,11 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
         .mockResolvedValueOnce([{ id: 'C1', status: CandidateStatus.MISSING_TYPE_HOLD }])
         .mockResolvedValueOnce([]) // no active requests
         .mockResolvedValueOnce([]) // no existing surveyor found
-        .mockResolvedValueOnce([{ id: 'RANDOM_SURV_1', full_name: 'Random Surveyor', email: 'random@stm.dev' }]) // random surveyor chosen
+        .mockResolvedValueOnce([
+          { id: 'RANDOM_SURV_1', full_name: 'Random Surveyor 1', email: 'surv1@stm.dev' },
+          { id: 'RANDOM_SURV_2', full_name: 'Random Surveyor 2', email: 'surv2@stm.dev' },
+          { id: 'RANDOM_SURV_3', full_name: 'Random Surveyor 3', email: 'surv3@stm.dev' },
+        ]) // 3 random surveyors chosen
         .mockResolvedValueOnce([{ id: 'R1' }])
         .mockResolvedValueOnce([{ id: 'C1' }])
         .mockResolvedValueOnce([])
@@ -394,6 +398,30 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     expect(manager.query).toHaveBeenCalledWith(
       expect.stringContaining('candidate_recapture_requests'),
       expect.arrayContaining(['RANDOM_SURV_1']),
+    );
+    expect(notifications.create).toHaveBeenCalledWith(
+      'RANDOM_SURV_1',
+      'IMAGE_RECAPTURE_REQUESTED',
+      expect.any(String),
+      expect.any(String),
+      'candidate',
+      'C1',
+    );
+    expect(notifications.create).toHaveBeenCalledWith(
+      'RANDOM_SURV_2',
+      'IMAGE_RECAPTURE_REQUESTED',
+      expect.any(String),
+      expect.any(String),
+      'candidate',
+      'C1',
+    );
+    expect(notifications.create).toHaveBeenCalledWith(
+      'RANDOM_SURV_3',
+      'IMAGE_RECAPTURE_REQUESTED',
+      expect.any(String),
+      expect.any(String),
+      'candidate',
+      'C1',
     );
   });
 

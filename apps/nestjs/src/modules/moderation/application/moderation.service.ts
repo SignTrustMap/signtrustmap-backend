@@ -1326,7 +1326,7 @@ export class ModerationService {
     manager: any,
     candidateId: string,
     assignedSurveyorId?: string,
-  ): Promise<string> {
+  ): Promise<{ surveyorId: string; assignedSurveyorIds: string[]; assignedSurveyors: Array<{ id: string; fullName?: string; email?: string }> }> {
     if (assignedSurveyorId) {
       let surveyorRows: any[] = [];
       if (typeof manager.query === 'function') {
@@ -1341,12 +1341,26 @@ export class ModerationService {
         );
       }
       if (surveyorRows && surveyorRows.length > 0) {
-        return surveyorRows[0].id;
+        return {
+          surveyorId: surveyorRows[0].id,
+          assignedSurveyorIds: [surveyorRows[0].id],
+          assignedSurveyors: [{
+            id: surveyorRows[0].id,
+            fullName: surveyorRows[0].full_name,
+            email: surveyorRows[0].email,
+          }],
+        };
       }
       if (typeof manager.getRepository === 'function') {
         try {
           const u = await manager.getRepository(User)?.findOne?.({ where: { id: assignedSurveyorId } });
-          if (u) return u.id;
+          if (u) {
+            return {
+              surveyorId: u.id,
+              assignedSurveyorIds: [u.id],
+              assignedSurveyors: [{ id: u.id, fullName: u.fullName, email: u.email }],
+            };
+          }
         } catch {}
       }
       throw new BadRequestException('Surveyor được chỉ định không tồn tại, không hoạt động hoặc không có vai trò SURVEYOR');
@@ -1368,7 +1382,15 @@ export class ModerationService {
       );
     }
     if (existingSurveyorRows && existingSurveyorRows.length > 0) {
-      return existingSurveyorRows[0].id;
+      return {
+        surveyorId: existingSurveyorRows[0].id,
+        assignedSurveyorIds: [existingSurveyorRows[0].id],
+        assignedSurveyors: [{
+          id: existingSurveyorRows[0].id,
+          fullName: existingSurveyorRows[0].full_name,
+          email: existingSurveyorRows[0].email,
+        }],
+      };
     }
 
     // Fallback: If system switch for auto-assign is enabled (e.g. demo environment)
@@ -1379,18 +1401,28 @@ export class ModerationService {
       const meta = await this.systemSwitchService?.getMetadata<{ targetEmail?: string }>('AUTO_ASSIGN_RECAPTURE_EMAIL');
       const targetEmail = meta?.targetEmail || 'demo@stm.dev';
       try {
-        const demoSurveyorRows: Array<{ id: string }> = await manager.query(
-          `SELECT u.id FROM users u
+        const demoSurveyorRows: Array<{ id: string; full_name?: string; email?: string }> = await manager.query(
+          `SELECT u.id, u.full_name, u.email FROM users u
            JOIN user_roles ur ON ur.user_id = u.id AND ur.is_active = true
            JOIN roles r ON r.id = ur.role_id AND r.code = 'SURVEYOR'
            WHERE u.email = $1 AND u.status = 'ACTIVE' LIMIT 1`,
           [targetEmail],
         );
-        if (demoSurveyorRows[0]?.id) return demoSurveyorRows[0].id;
+        if (demoSurveyorRows[0]?.id) {
+          return {
+            surveyorId: demoSurveyorRows[0].id,
+            assignedSurveyorIds: [demoSurveyorRows[0].id],
+            assignedSurveyors: [{
+              id: demoSurveyorRows[0].id,
+              fullName: demoSurveyorRows[0].full_name,
+              email: demoSurveyorRows[0].email,
+            }],
+          };
+        }
       } catch {}
     }
 
-    // Random fallback: Automatically assign a random active surveyor from the pool of qualified surveyors
+    // Random fallback: Automatically assign up to 3 random active surveyors from the pool of qualified surveyors
     let randomSurveyorRows: any[] = [];
     if (typeof manager.query === 'function') {
       try {
@@ -1401,21 +1433,35 @@ export class ModerationService {
            JOIN roles r ON r.id = ur.role_id AND r.code = 'SURVEYOR'
            WHERE u.status = 'ACTIVE'
            ORDER BY RANDOM()
-           LIMIT 1`,
+           LIMIT 3`,
         );
       } catch (err) {
-        this.logger.warn('Failed to select random surveyor via query: ' + (err as any)?.message);
+        this.logger.warn('Failed to select random surveyors via query: ' + (err as any)?.message);
       }
     }
     if (randomSurveyorRows && randomSurveyorRows.length > 0) {
-      return randomSurveyorRows[0].id;
+      return {
+        surveyorId: randomSurveyorRows[0].id,
+        assignedSurveyorIds: randomSurveyorRows.map((r) => r.id),
+        assignedSurveyors: randomSurveyorRows.map((r) => ({
+          id: r.id,
+          fullName: r.full_name,
+          email: r.email,
+        })),
+      };
     }
 
     if (typeof manager.getRepository === 'function') {
       try {
         const userRepo = manager.getRepository(User);
         const randomUser = await userRepo?.findOne?.({ where: { status: UserStatus.ACTIVE } });
-        if (randomUser) return randomUser.id;
+        if (randomUser) {
+          return {
+            surveyorId: randomUser.id,
+            assignedSurveyorIds: [randomUser.id],
+            assignedSurveyors: [{ id: randomUser.id, fullName: randomUser.fullName, email: randomUser.email }],
+          };
+        }
       } catch {}
     }
 
@@ -1517,7 +1563,14 @@ export class ModerationService {
       if (activeRequestsCount > 0) {
         throw new ConflictException('An active recapture request already exists for candidate ' + candidate.id);
       }
-      const surveyorId = await this.resolveEligibleSurveyor(manager, candidate.id, assignedSurveyorId);
+      const resolvedSurveyor = await this.resolveEligibleSurveyor(manager, candidate.id, assignedSurveyorId);
+      const surveyorId = resolvedSurveyor.surveyorId;
+      const assignedSurveyorIds = resolvedSurveyor.assignedSurveyorIds;
+      const assignedSurveyors = resolvedSurveyor.assignedSurveyors;
+
+      const recaptureNote = assignedSurveyorIds.length > 1
+        ? (note ? `${note}\n[ASSIGNED_SURVEYORS:${assignedSurveyorIds.join(',')}]` : `[ASSIGNED_SURVEYORS:${assignedSurveyorIds.join(',')}]`)
+        : note;
 
       let updateReportAffected = 0;
       if (typeof manager.getRepository === 'function') {
@@ -1578,7 +1631,7 @@ export class ModerationService {
             newSignTypeReportId: reportId,
             missingTypeReportId: reportId,
             reason: 'MISSING_TYPE_RECAPTURE_REQUESTED',
-            note,
+            note: recaptureNote,
           }));
         } else if (typeof manager.query === 'function') {
           if (surveyorId) {
@@ -1586,14 +1639,14 @@ export class ModerationService {
               `INSERT INTO candidate_recapture_requests
                  (candidate_id, reviewer_id, surveyor_id, missing_type_report_id, reason, note)
                VALUES ($1, $2, $3, $4, 'MISSING_TYPE_RECAPTURE_REQUESTED', $5)`,
-              [candidate.id, staffId, surveyorId, reportId, note],
+              [candidate.id, staffId, surveyorId, reportId, recaptureNote],
             );
           } else {
             await manager.query(
               `INSERT INTO candidate_recapture_requests
                  (candidate_id, reviewer_id, missing_type_report_id, reason, note)
                VALUES ($1, $2, $3, 'MISSING_TYPE_RECAPTURE_REQUESTED', $4)`,
-              [candidate.id, staffId, reportId, note],
+              [candidate.id, staffId, reportId, recaptureNote],
             );
           }
         }
@@ -1605,6 +1658,9 @@ export class ModerationService {
       }
 
       let moderationCaseId: string | undefined;
+      const actionAuditNote = assignedSurveyors.length > 1
+        ? `Hệ thống phân công ngẫu nhiên 3 Surveyor (${assignedSurveyors.map((s) => s.fullName || s.email || s.id).join(', ')}). ${note || ''}`.trim()
+        : note;
       if (typeof manager.getRepository === 'function') {
         const caseRepo = manager.getRepository(ModerationCase);
         const actionRepo = manager.getRepository(ModerationAction);
@@ -1642,7 +1698,7 @@ export class ModerationService {
           caseId: moderationCaseId,
           actionType: 'REQUEST_RECAPTURE',
           performedBy: staffId,
-          note,
+          note: actionAuditNote,
         }));
       } else if (typeof manager.query === 'function') {
         const reportCaseRows: any[] = await manager.query(
@@ -1673,24 +1729,30 @@ export class ModerationService {
         await manager.query(
           `INSERT INTO moderation_actions (case_id, action_type, performed_by, note)
            VALUES ($1, 'REQUEST_RECAPTURE', $2, $3)`,
-          [moderationCaseId, staffId, note],
+          [moderationCaseId, staffId, actionAuditNote],
         );
       }
-      return { reporterId: report.reporterId, proposedName: report.proposedName, candidateId: candidate.id, surveyorId };
+      return { reporterId: report.reporterId, proposedName: report.proposedName, candidateId: candidate.id, surveyorId, assignedSurveyors };
     });
 
-    if (result.surveyorId && this.notificationsService) {
-      try {
-        await this.notificationsService.create(
-          result.surveyorId,
-          'IMAGE_RECAPTURE_REQUESTED',
-          'Yêu cầu chụp lại ảnh biển báo',
-          'Quản trị viên yêu cầu chụp lại ảnh biển báo: ' + (note || 'Vui lòng chụp lại ảnh rõ nét tại vị trí biển báo'),
-          'candidate',
-          result.candidateId,
-        );
-      } catch (error: any) {
-        this.logger.warn('Surveyor recapture notification failed: ' + error?.message);
+    const targetSurveyors = (result.assignedSurveyors && result.assignedSurveyors.length > 0)
+      ? result.assignedSurveyors
+      : (result.surveyorId ? [{ id: result.surveyorId }] : []);
+
+    if (this.notificationsService) {
+      for (const surv of targetSurveyors) {
+        try {
+          await this.notificationsService.create(
+            surv.id,
+            'IMAGE_RECAPTURE_REQUESTED',
+            'Yêu cầu chụp lại ảnh biển báo',
+            'Quản trị viên yêu cầu chụp lại ảnh biển báo: ' + (note || 'Vui lòng chụp lại ảnh rõ nét tại vị trí biển báo'),
+            'candidate',
+            result.candidateId,
+          );
+        } catch (error: any) {
+          this.logger.warn('Surveyor recapture notification failed: ' + error?.message);
+        }
       }
     }
 
@@ -1755,18 +1817,46 @@ export class ModerationService {
           [id, r.candidateId ?? null],
         );
         if (recRows[0]) {
+          const assignedSurveyorsList: any[] = [];
+          if (recRows[0].surveyor_id) {
+            assignedSurveyorsList.push({
+              id: recRows[0].surveyor_id,
+              fullName: recRows[0].surveyor_name,
+              email: recRows[0].surveyor_email,
+              avatarUrl: recRows[0].surveyor_avatar,
+            });
+          }
+          const assignedMatch = String(recRows[0].note || '').match(/\[ASSIGNED_SURVEYORS:([^\]]+)\]/);
+          if (assignedMatch && assignedMatch[1]) {
+            const rawIds = assignedMatch[1].split(',').map((s: string) => s.trim()).filter(Boolean);
+            const otherIds = rawIds.filter((uid: string) => uid !== recRows[0].surveyor_id);
+            if (otherIds.length > 0) {
+              try {
+                const moreSurveyors = await this.dataSource.query(
+                  `SELECT id, full_name, email, avatar_url FROM users WHERE id = ANY($1::uuid[])`,
+                  [otherIds],
+                );
+                for (const u of moreSurveyors) {
+                  assignedSurveyorsList.push({
+                    id: u.id,
+                    fullName: u.full_name,
+                    email: u.email,
+                    avatarUrl: u.avatar_url,
+                  });
+                }
+              } catch {}
+            }
+          }
+
+          const rawNote = recRows[0].note;
+          const cleanNote = String(rawNote || '').replace(/\s*\[ASSIGNED_SURVEYORS:[^\]]+\]\s*/g, '').trim() || null;
+
           recaptureRequest = {
             id: recRows[0].id,
             candidateId: recRows[0].candidate_id,
             surveyorId: recRows[0].surveyor_id,
-            assignedSurveyor: recRows[0].surveyor_id
-              ? {
-                  id: recRows[0].surveyor_id,
-                  fullName: recRows[0].surveyor_name,
-                  email: recRows[0].surveyor_email,
-                  avatarUrl: recRows[0].surveyor_avatar,
-                }
-              : null,
+            assignedSurveyor: assignedSurveyorsList[0] ?? null,
+            assignedSurveyors: assignedSurveyorsList,
             isRandomOrOpenQuest: !recRows[0].surveyor_id,
             reviewerId: recRows[0].reviewer_id,
             reviewer: recRows[0].reviewer_id
@@ -1777,7 +1867,8 @@ export class ModerationService {
                 }
               : null,
             reason: recRows[0].reason,
-            note: recRows[0].note,
+            note: cleanNote,
+            rawNote,
             createdAt: recRows[0].created_at,
             completedAt: recRows[0].completed_at,
           };
@@ -2269,18 +2360,46 @@ export class ModerationService {
           [mc.targetEntityId],
         );
         if (recRows[0]) {
+          const assignedSurveyorsList: any[] = [];
+          if (recRows[0].surveyor_id) {
+            assignedSurveyorsList.push({
+              id: recRows[0].surveyor_id,
+              fullName: recRows[0].surveyor_name,
+              email: recRows[0].surveyor_email,
+              avatarUrl: recRows[0].surveyor_avatar,
+            });
+          }
+          const assignedMatch = String(recRows[0].note || '').match(/\[ASSIGNED_SURVEYORS:([^\]]+)\]/);
+          if (assignedMatch && assignedMatch[1]) {
+            const rawIds = assignedMatch[1].split(',').map((s: string) => s.trim()).filter(Boolean);
+            const otherIds = rawIds.filter((uid: string) => uid !== recRows[0].surveyor_id);
+            if (otherIds.length > 0) {
+              try {
+                const moreSurveyors = await this.dataSource.query(
+                  `SELECT id, full_name, email, avatar_url FROM users WHERE id = ANY($1::uuid[])`,
+                  [otherIds],
+                );
+                for (const u of moreSurveyors) {
+                  assignedSurveyorsList.push({
+                    id: u.id,
+                    fullName: u.full_name,
+                    email: u.email,
+                    avatarUrl: u.avatar_url,
+                  });
+                }
+              } catch {}
+            }
+          }
+
+          const rawNote = recRows[0].note;
+          const cleanNote = String(rawNote || '').replace(/\s*\[ASSIGNED_SURVEYORS:[^\]]+\]\s*/g, '').trim() || null;
+
           recaptureRequest = {
             id: recRows[0].id,
             candidateId: recRows[0].candidate_id,
             surveyorId: recRows[0].surveyor_id,
-            assignedSurveyor: recRows[0].surveyor_id
-              ? {
-                  id: recRows[0].surveyor_id,
-                  fullName: recRows[0].surveyor_name,
-                  email: recRows[0].surveyor_email,
-                  avatarUrl: recRows[0].surveyor_avatar,
-                }
-              : null,
+            assignedSurveyor: assignedSurveyorsList[0] ?? null,
+            assignedSurveyors: assignedSurveyorsList,
             isRandomOrOpenQuest: !recRows[0].surveyor_id,
             reviewerId: recRows[0].reviewer_id,
             reviewer: recRows[0].reviewer_id
@@ -2291,7 +2410,8 @@ export class ModerationService {
                 }
               : null,
             reason: recRows[0].reason,
-            note: recRows[0].note,
+            note: cleanNote,
+            rawNote,
             createdAt: recRows[0].created_at,
             completedAt: recRows[0].completed_at,
           };
@@ -2685,7 +2805,14 @@ export class ModerationService {
         );
       }
       // Open quest; the first eligible nearby Surveyor claims it on submission.
-      const surveyorId = await this.resolveEligibleSurveyor(manager, candidate.id, assignedSurveyorId);
+      const resolvedSurveyor = await this.resolveEligibleSurveyor(manager, candidate.id, assignedSurveyorId);
+      const surveyorId = resolvedSurveyor.surveyorId;
+      const assignedSurveyorIds = resolvedSurveyor.assignedSurveyorIds;
+      const assignedSurveyors = resolvedSurveyor.assignedSurveyors;
+
+      const recaptureNote = assignedSurveyorIds.length > 1
+        ? (dto.resolutionNote ? `${dto.resolutionNote}\n[ASSIGNED_SURVEYORS:${assignedSurveyorIds.join(',')}]` : `[ASSIGNED_SURVEYORS:${assignedSurveyorIds.join(',')}]`)
+        : (dto.resolutionNote ?? null);
 
       let updateCandAffected = 0;
       if (typeof manager.getRepository === 'function') {
@@ -2719,7 +2846,7 @@ export class ModerationService {
             surveyorId: surveyorId ?? undefined,
             missingTypeReportId: reportRows[0].id,
             reason: 'MODERATION_RECAPTURE_REQUESTED',
-            note: dto.resolutionNote ?? null,
+            note: recaptureNote,
           }));
         } else if (typeof manager.query === 'function') {
           if (surveyorId) {
@@ -2727,14 +2854,14 @@ export class ModerationService {
               `INSERT INTO candidate_recapture_requests
                  (candidate_id, reviewer_id, surveyor_id, missing_type_report_id, reason, note)
                VALUES ($1, $2, $3, $4, 'MODERATION_RECAPTURE_REQUESTED', $5)`,
-              [candidate.id, staffId, surveyorId, reportRows[0].id, dto.resolutionNote ?? null],
+              [candidate.id, staffId, surveyorId, reportRows[0].id, recaptureNote],
             );
           } else {
             await manager.query(
               `INSERT INTO candidate_recapture_requests
                  (candidate_id, reviewer_id, missing_type_report_id, reason, note)
                VALUES ($1, $2, $3, 'MODERATION_RECAPTURE_REQUESTED', $4)`,
-              [candidate.id, staffId, reportRows[0].id, dto.resolutionNote ?? null],
+              [candidate.id, staffId, reportRows[0].id, recaptureNote],
             );
           }
         }
@@ -2746,6 +2873,9 @@ export class ModerationService {
       }
 
       let updatedCaseResult: any;
+      const actionAuditNote = assignedSurveyors.length > 1
+        ? `Hệ thống phân công ngẫu nhiên 3 Surveyor (${assignedSurveyors.map((s) => s.fullName || s.email || s.id).join(', ')}). ${dto.resolutionNote || ''}`.trim()
+        : (dto.actionNote ?? dto.resolutionNote ?? null);
       if (typeof manager.getRepository === 'function') {
         const caseRepo = manager.getRepository(ModerationCase);
         const actionRepo = manager.getRepository(ModerationAction);
@@ -2760,7 +2890,7 @@ export class ModerationService {
           caseId,
           actionType: 'REQUEST_RECAPTURE',
           performedBy: staffId,
-          note: dto.actionNote ?? dto.resolutionNote ?? null,
+          note: actionAuditNote,
         }));
       } else if (typeof manager.query === 'function') {
         const updatedCases: any[] = await manager.query(
@@ -2773,24 +2903,30 @@ export class ModerationService {
         await manager.query(
           `INSERT INTO moderation_actions (case_id, action_type, performed_by, note)
            VALUES ($1, $2, $3, $4)`,
-          [caseId, 'REQUEST_RECAPTURE', staffId, dto.actionNote ?? dto.resolutionNote ?? null],
+          [caseId, 'REQUEST_RECAPTURE', staffId, actionAuditNote],
         );
         updatedCaseResult = updatedCases[0];
       }
-      return { ...updatedCaseResult, surveyorId, candidateId: candidate.id };
+      return { ...updatedCaseResult, surveyorId, candidateId: candidate.id, assignedSurveyors };
     });
 
-    if (resolved?.surveyorId && resolved?.candidateId && this.notificationsService) {
-      try {
-        await this.notificationsService.create(
-          resolved.surveyorId,
-          'IMAGE_RECAPTURE_REQUESTED',
-          'Yêu cầu chụp lại ảnh biển báo',
-          'Quản trị viên yêu cầu chụp lại ảnh biển báo: ' + (dto.resolutionNote || 'Vui lòng chụp lại ảnh rõ nét tại vị trí biển báo'),
-          'candidate',
-          resolved.candidateId,
-        );
-      } catch {}
+    const targetSurveyors = (resolved?.assignedSurveyors && resolved?.assignedSurveyors.length > 0)
+      ? resolved.assignedSurveyors
+      : (resolved?.surveyorId ? [{ id: resolved.surveyorId }] : []);
+
+    if (resolved?.candidateId && this.notificationsService) {
+      for (const surv of targetSurveyors) {
+        try {
+          await this.notificationsService.create(
+            surv.id,
+            'IMAGE_RECAPTURE_REQUESTED',
+            'Yêu cầu chụp lại ảnh biển báo',
+            'Quản trị viên yêu cầu chụp lại ảnh biển báo: ' + (dto.resolutionNote || 'Vui lòng chụp lại ảnh rõ nét tại vị trí biển báo'),
+            'candidate',
+            resolved.candidateId,
+          );
+        } catch {}
+      }
     }
 
     return resolved;
