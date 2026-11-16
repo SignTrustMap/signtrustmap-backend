@@ -17,6 +17,7 @@ export class ResolveCaseDto {
   @IsOptional() @IsUUID() reportId?: string;
   @IsOptional() @IsInt() targetSignTypeId?: number;
   @IsOptional() @IsInt() mergedIntoSignTypeId?: number;
+  @IsOptional() @IsUUID() assignedSurveyorId?: string;
 }
 export class UpdateNewSignTypeReportDto {
   @IsOptional() @IsIn(['MERGE', 'REJECT', 'REQUEST_RECAPTURE', 'ESCALATE_ADMIN']) actionType?: string;
@@ -27,6 +28,7 @@ export class UpdateNewSignTypeReportDto {
   @IsOptional() @IsString() actionNote?: string;
   @IsOptional() @IsString() @MaxLength(30) suggestedShape?: string;
   @IsOptional() @IsString() @MaxLength(30) suggestedColorScheme?: string;
+  @IsOptional() @IsUUID() assignedSurveyorId?: string;
 }
 
 export class ApproveAndCreateTypeDto {
@@ -95,6 +97,9 @@ export class AdminNewSignTypeActionDto {
 
   @IsOptional() @IsIn(['LATEST_SURVEYOR', 'SURVEYOR', 'REVIEWER', 'STAFF'])
   banTarget?: string;
+
+  @IsOptional() @IsUUID()
+  assignedSurveyorId?: string;
 }
 
 export class ListModerationCasesQueryDto {

@@ -16,6 +16,7 @@ import { SignTypeImage } from '../../catalog/sign-type-image.entity';
 import { UserStatusHistory } from '../../admin/user-status-history.entity';
 import { AuditLog } from '../../admin/audit-log.entity';
 import { CandidateGeoEstimation } from '../../survey/infrastructure/persistence/candidate-geo-estimation.entity';
+import { SurveySubmission } from '../../survey/infrastructure/persistence/survey-submission.entity';
 import { CreateNewSignTypeReportDto, ResolveCaseDto, UpdateNewSignTypeReportDto, ApproveAndCreateTypeDto, AdminNewSignTypeActionDto } from '../presentation/dto/moderation.dto';
 import { NotificationsService } from '../../notifications/notifications.service';
 import { CatalogService } from '../../catalog/catalog.service';
@@ -25,6 +26,7 @@ import { VEHICLE_TYPES } from '../../../common/vehicle-types';
 import { validateFileSignature } from '../../survey/domain/media-validator';
 import { MediaFileType } from '../../survey/domain/submission-contract';
 import { SystemSwitchService } from '../../admin/system-switch.service';
+import { AdminService } from '../../admin/admin.service';
 
 export interface CandidateEnriched {
   id: string;
@@ -65,6 +67,7 @@ export class ModerationService {
     @Optional() @InjectRepository(UserStatusHistory) private readonly userStatusHistoryRepo?: Repository<UserStatusHistory>,
     @Optional() @InjectRepository(AuditLog) private readonly auditLogRepo?: Repository<AuditLog>,
     @Optional() private readonly systemSwitchService?: SystemSwitchService,
+    @Optional() private readonly adminService?: AdminService,
   ) {}
 
   /**
@@ -214,7 +217,8 @@ export class ModerationService {
         const qb = this.missing.createQueryBuilder('r');
         if (typeof qb.leftJoin === 'function') {
           qb.leftJoin(User, 'staff', 'staff.id = r.reviewed_by')
-            .leftJoin(User, 'reporter', 'reporter.id = r.reporter_id');
+            .leftJoin(User, 'reporter', 'reporter.id = r.reporter_id')
+            .leftJoin(User, 'orig_reporter', 'orig_reporter.id = r.original_reporter_id');
         }
 
         if (where.status) {
@@ -235,12 +239,36 @@ export class ModerationService {
             OR ${unaccentFn("COALESCE(staff.email, '')")} ILIKE ${unaccentFn(':pattern')}
             OR ${unaccentFn("COALESCE(reporter.full_name, '')")} ILIKE ${unaccentFn(':pattern')}
             OR ${unaccentFn("COALESCE(reporter.email, '')")} ILIKE ${unaccentFn(':pattern')}
+            OR ${unaccentFn("COALESCE(orig_reporter.full_name, '')")} ILIKE ${unaccentFn(':pattern')}
+            OR ${unaccentFn("COALESCE(orig_reporter.email, '')")} ILIKE ${unaccentFn(':pattern')}
             OR ${unaccentFn("COALESCE(r.proposed_name, '')")} ILIKE ${unaccentFn(':pattern')}
             OR ${unaccentFn("COALESCE(r.description, '')")} ILIKE ${unaccentFn(':pattern')}
             OR ${unaccentFn("COALESCE(r.staff_notes, '')")} ILIKE ${unaccentFn(':pattern')}
             OR CAST(r.id AS text) ILIKE :pattern ESCAPE '\\'
             OR CAST(r.candidate_id AS text) ILIKE :pattern ESCAPE '\\'
+            OR CAST(r.reporter_id AS text) ILIKE :pattern ESCAPE '\\'
+            OR CAST(r.original_reporter_id AS text) ILIKE :pattern ESCAPE '\\'
+            OR CAST(r.reviewed_by AS text) ILIKE :pattern ESCAPE '\\'
             OR CAST(r.status AS text) ILIKE :pattern ESCAPE '\\'
+            OR EXISTS (
+              SELECT 1 FROM unverified_sign_candidates c
+              LEFT JOIN traffic_sign_types tst ON (tst.id = c.predicted_sign_type_id OR tst.id = c.selected_sign_type_id)
+              LEFT JOIN survey_submissions ss ON ss.id = c.submission_id
+              LEFT JOIN users surveyor ON surveyor.id = ss.surveyor_id
+              LEFT JOIN users selector ON selector.id = c.selected_by
+              WHERE c.id = r.candidate_id
+                AND (
+                  ${unaccentFn("COALESCE(tst.name_vi, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(tst.name_en, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR tst.sign_code ILIKE :pattern
+                  OR ${unaccentFn("COALESCE(surveyor.full_name, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(surveyor.email, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(selector.full_name, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(selector.email, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR CAST(surveyor.id AS text) ILIKE :pattern ESCAPE '\\'
+                  OR CAST(selector.id AS text) ILIKE :pattern ESCAPE '\\'
+                )
+            )
           )`,
           { pattern },
         );
@@ -327,7 +355,13 @@ export class ModerationService {
           if (dto.status && dto.status !== MissingTypeStatus.INCOMPLETE) {
             throw new BadRequestException('status conflicts with REQUEST_RECAPTURE action');
           }
-          return this.requestMissingReportRecapture(reportId, reviewerId, notes?.trim() || null);
+          return this.requestMissingReportRecapture(
+            reportId,
+            reviewerId,
+            notes?.trim() || null,
+            MissingTypeStatus.PENDING,
+            dto.assignedSurveyorId,
+          );
         default:
           throw new BadRequestException('Unsupported staff action');
       }
@@ -713,6 +747,7 @@ export class ModerationService {
         adminId,
         reason,
         [MissingTypeStatus.ESCALATED_ADMIN, MissingTypeStatus.PENDING],
+        dto.assignedSurveyorId,
       );
     }
     if (dto.actionType === 'REJECT' || dto.actionType === 'DISMISS') {
@@ -1287,11 +1322,158 @@ export class ModerationService {
     return caseId;
   }
 
+  private async resolveEligibleSurveyor(
+    manager: any,
+    candidateId: string,
+    assignedSurveyorId?: string,
+  ): Promise<{ surveyorId: string; assignedSurveyorIds: string[]; assignedSurveyors: Array<{ id: string; fullName?: string; email?: string }> }> {
+    if (assignedSurveyorId) {
+      let surveyorRows: any[] = [];
+      if (typeof manager.query === 'function') {
+        surveyorRows = await manager.query(
+          `SELECT u.id, u.full_name, u.email, u.status
+           FROM users u
+           JOIN user_roles ur ON ur.user_id = u.id AND ur.is_active = true
+           JOIN roles r ON r.id = ur.role_id AND r.code = 'SURVEYOR'
+           WHERE u.id = $1 AND u.status = 'ACTIVE'
+           LIMIT 1`,
+          [assignedSurveyorId],
+        );
+      }
+      if (surveyorRows && surveyorRows.length > 0) {
+        return {
+          surveyorId: surveyorRows[0].id,
+          assignedSurveyorIds: [surveyorRows[0].id],
+          assignedSurveyors: [{
+            id: surveyorRows[0].id,
+            fullName: surveyorRows[0].full_name,
+            email: surveyorRows[0].email,
+          }],
+        };
+      }
+      if (typeof manager.getRepository === 'function') {
+        try {
+          const u = await manager.getRepository(User)?.findOne?.({ where: { id: assignedSurveyorId } });
+          if (u) {
+            return {
+              surveyorId: u.id,
+              assignedSurveyorIds: [u.id],
+              assignedSurveyors: [{ id: u.id, fullName: u.fullName, email: u.email }],
+            };
+          }
+        } catch {}
+      }
+      throw new BadRequestException('Surveyor được chỉ định không tồn tại, không hoạt động hoặc không có vai trò SURVEYOR');
+    }
+
+    // Case A: Look up candidate's surveyor from survey_submissions
+    let existingSurveyorRows: any[] = [];
+    if (typeof manager.query === 'function') {
+      existingSurveyorRows = await manager.query(
+        `SELECT u.id, u.full_name, u.email, u.status
+         FROM unverified_sign_candidates c
+         JOIN survey_submissions ss ON ss.id = c.submission_id
+         JOIN users u ON u.id = ss.surveyor_id
+         JOIN user_roles ur ON ur.user_id = u.id AND ur.is_active = true
+         JOIN roles r ON r.id = ur.role_id AND r.code = 'SURVEYOR'
+         WHERE c.id = $1 AND u.status = 'ACTIVE'
+         LIMIT 1`,
+        [candidateId],
+      );
+    }
+    if (existingSurveyorRows && existingSurveyorRows.length > 0) {
+      return {
+        surveyorId: existingSurveyorRows[0].id,
+        assignedSurveyorIds: [existingSurveyorRows[0].id],
+        assignedSurveyors: [{
+          id: existingSurveyorRows[0].id,
+          fullName: existingSurveyorRows[0].full_name,
+          email: existingSurveyorRows[0].email,
+        }],
+      };
+    }
+
+    // Fallback: If system switch for auto-assign is enabled (e.g. demo environment)
+    const isAutoAssignRecapture = this.systemSwitchService
+      ? await this.systemSwitchService.isEnabled('AUTO_ASSIGN_RECAPTURE_EMAIL')
+      : false;
+    if (isAutoAssignRecapture && typeof manager.query === 'function') {
+      const meta = await this.systemSwitchService?.getMetadata<{ targetEmail?: string }>('AUTO_ASSIGN_RECAPTURE_EMAIL');
+      const targetEmail = meta?.targetEmail || 'demo@stm.dev';
+      try {
+        const demoSurveyorRows: Array<{ id: string; full_name?: string; email?: string }> = await manager.query(
+          `SELECT u.id, u.full_name, u.email FROM users u
+           JOIN user_roles ur ON ur.user_id = u.id AND ur.is_active = true
+           JOIN roles r ON r.id = ur.role_id AND r.code = 'SURVEYOR'
+           WHERE u.email = $1 AND u.status = 'ACTIVE' LIMIT 1`,
+          [targetEmail],
+        );
+        if (demoSurveyorRows[0]?.id) {
+          return {
+            surveyorId: demoSurveyorRows[0].id,
+            assignedSurveyorIds: [demoSurveyorRows[0].id],
+            assignedSurveyors: [{
+              id: demoSurveyorRows[0].id,
+              fullName: demoSurveyorRows[0].full_name,
+              email: demoSurveyorRows[0].email,
+            }],
+          };
+        }
+      } catch {}
+    }
+
+    // Random fallback: Automatically assign up to 3 random active surveyors from the pool of qualified surveyors
+    let randomSurveyorRows: any[] = [];
+    if (typeof manager.query === 'function') {
+      try {
+        randomSurveyorRows = await manager.query(
+          `SELECT u.id, u.full_name, u.email
+           FROM users u
+           JOIN user_roles ur ON ur.user_id = u.id AND ur.is_active = true
+           JOIN roles r ON r.id = ur.role_id AND r.code = 'SURVEYOR'
+           WHERE u.status = 'ACTIVE'
+           ORDER BY RANDOM()
+           LIMIT 3`,
+        );
+      } catch (err) {
+        this.logger.warn('Failed to select random surveyors via query: ' + (err as any)?.message);
+      }
+    }
+    if (randomSurveyorRows && randomSurveyorRows.length > 0) {
+      return {
+        surveyorId: randomSurveyorRows[0].id,
+        assignedSurveyorIds: randomSurveyorRows.map((r) => r.id),
+        assignedSurveyors: randomSurveyorRows.map((r) => ({
+          id: r.id,
+          fullName: r.full_name,
+          email: r.email,
+        })),
+      };
+    }
+
+    if (typeof manager.getRepository === 'function') {
+      try {
+        const userRepo = manager.getRepository(User);
+        const randomUser = await userRepo?.findOne?.({ where: { status: UserStatus.ACTIVE } });
+        if (randomUser) {
+          return {
+            surveyorId: randomUser.id,
+            assignedSurveyorIds: [randomUser.id],
+            assignedSurveyors: [{ id: randomUser.id, fullName: randomUser.fullName, email: randomUser.email }],
+          };
+        }
+      } catch {}
+    }
+
+    throw new BadRequestException('Không tìm thấy Surveyor nào đang hoạt động trong hệ thống để phân công nhiệm vụ chụp lại.');
+  }
+
   private async requestMissingReportRecapture(
     reportId: string,
     staffId: string,
     note: string | null,
     expectedStatus: MissingTypeStatus | MissingTypeStatus[] = MissingTypeStatus.PENDING,
+    assignedSurveyorId?: string,
   ) {
     const result = await this.dataSource.transaction(async (manager) => {
       let report: { id: string; candidateId?: string | null; reporterId?: string | null; proposedName?: string | null; status: MissingTypeStatus } | null = null;
@@ -1381,22 +1563,14 @@ export class ModerationService {
       if (activeRequestsCount > 0) {
         throw new ConflictException('An active recapture request already exists for candidate ' + candidate.id);
       }
-      let surveyorId: string | null = null;
-      const isAutoAssignRecapture = this.systemSwitchService
-        ? await this.systemSwitchService.isEnabled('AUTO_ASSIGN_RECAPTURE_EMAIL')
-        : false;
+      const resolvedSurveyor = await this.resolveEligibleSurveyor(manager, candidate.id, assignedSurveyorId);
+      const surveyorId = resolvedSurveyor.surveyorId;
+      const assignedSurveyorIds = resolvedSurveyor.assignedSurveyorIds;
+      const assignedSurveyors = resolvedSurveyor.assignedSurveyors;
 
-      if (isAutoAssignRecapture && typeof manager.getRepository === 'function') {
-        const meta = await this.systemSwitchService?.getMetadata<{ targetEmail?: string }>('AUTO_ASSIGN_RECAPTURE_EMAIL');
-        const targetEmail = meta?.targetEmail || 'demo@stm.dev';
-        try {
-          const demoSurveyorRows: Array<{ id: string }> = await manager.query(
-            `SELECT id FROM users WHERE email = $1 AND status = 'ACTIVE' LIMIT 1`,
-            [targetEmail],
-          );
-          if (demoSurveyorRows[0]?.id) surveyorId = demoSurveyorRows[0].id;
-        } catch {}
-      }
+      const recaptureNote = assignedSurveyorIds.length > 1
+        ? (note ? `${note}\n[ASSIGNED_SURVEYORS:${assignedSurveyorIds.join(',')}]` : `[ASSIGNED_SURVEYORS:${assignedSurveyorIds.join(',')}]`)
+        : note;
 
       let updateReportAffected = 0;
       if (typeof manager.getRepository === 'function') {
@@ -1457,7 +1631,7 @@ export class ModerationService {
             newSignTypeReportId: reportId,
             missingTypeReportId: reportId,
             reason: 'MISSING_TYPE_RECAPTURE_REQUESTED',
-            note,
+            note: recaptureNote,
           }));
         } else if (typeof manager.query === 'function') {
           if (surveyorId) {
@@ -1465,14 +1639,14 @@ export class ModerationService {
               `INSERT INTO candidate_recapture_requests
                  (candidate_id, reviewer_id, surveyor_id, missing_type_report_id, reason, note)
                VALUES ($1, $2, $3, $4, 'MISSING_TYPE_RECAPTURE_REQUESTED', $5)`,
-              [candidate.id, staffId, surveyorId, reportId, note],
+              [candidate.id, staffId, surveyorId, reportId, recaptureNote],
             );
           } else {
             await manager.query(
               `INSERT INTO candidate_recapture_requests
                  (candidate_id, reviewer_id, missing_type_report_id, reason, note)
                VALUES ($1, $2, $3, 'MISSING_TYPE_RECAPTURE_REQUESTED', $4)`,
-              [candidate.id, staffId, reportId, note],
+              [candidate.id, staffId, reportId, recaptureNote],
             );
           }
         }
@@ -1484,6 +1658,9 @@ export class ModerationService {
       }
 
       let moderationCaseId: string | undefined;
+      const actionAuditNote = assignedSurveyors.length > 1
+        ? `Hệ thống phân công ngẫu nhiên 3 Surveyor (${assignedSurveyors.map((s) => s.fullName || s.email || s.id).join(', ')}). ${note || ''}`.trim()
+        : note;
       if (typeof manager.getRepository === 'function') {
         const caseRepo = manager.getRepository(ModerationCase);
         const actionRepo = manager.getRepository(ModerationAction);
@@ -1521,7 +1698,7 @@ export class ModerationService {
           caseId: moderationCaseId,
           actionType: 'REQUEST_RECAPTURE',
           performedBy: staffId,
-          note,
+          note: actionAuditNote,
         }));
       } else if (typeof manager.query === 'function') {
         const reportCaseRows: any[] = await manager.query(
@@ -1552,24 +1729,30 @@ export class ModerationService {
         await manager.query(
           `INSERT INTO moderation_actions (case_id, action_type, performed_by, note)
            VALUES ($1, 'REQUEST_RECAPTURE', $2, $3)`,
-          [moderationCaseId, staffId, note],
+          [moderationCaseId, staffId, actionAuditNote],
         );
       }
-      return { reporterId: report.reporterId, proposedName: report.proposedName, candidateId: candidate.id, surveyorId };
+      return { reporterId: report.reporterId, proposedName: report.proposedName, candidateId: candidate.id, surveyorId, assignedSurveyors };
     });
 
-    if (result.surveyorId && this.notificationsService) {
-      try {
-        await this.notificationsService.create(
-          result.surveyorId,
-          'IMAGE_RECAPTURE_REQUESTED',
-          'Yêu cầu chụp lại ảnh biển báo',
-          'Quản trị viên yêu cầu chụp lại ảnh biển báo: ' + (note || 'Vui lòng chụp lại ảnh rõ nét tại vị trí biển báo'),
-          'candidate',
-          result.candidateId,
-        );
-      } catch (error: any) {
-        this.logger.warn('Surveyor recapture notification failed: ' + error?.message);
+    const targetSurveyors = (result.assignedSurveyors && result.assignedSurveyors.length > 0)
+      ? result.assignedSurveyors
+      : (result.surveyorId ? [{ id: result.surveyorId }] : []);
+
+    if (this.notificationsService) {
+      for (const surv of targetSurveyors) {
+        try {
+          await this.notificationsService.create(
+            surv.id,
+            'IMAGE_RECAPTURE_REQUESTED',
+            'Yêu cầu chụp lại ảnh biển báo',
+            'Quản trị viên yêu cầu chụp lại ảnh biển báo: ' + (note || 'Vui lòng chụp lại ảnh rõ nét tại vị trí biển báo'),
+            'candidate',
+            result.candidateId,
+          );
+        } catch (error: any) {
+          this.logger.warn('Surveyor recapture notification failed: ' + error?.message);
+        }
       }
     }
 
@@ -1634,18 +1817,46 @@ export class ModerationService {
           [id, r.candidateId ?? null],
         );
         if (recRows[0]) {
+          const assignedSurveyorsList: any[] = [];
+          if (recRows[0].surveyor_id) {
+            assignedSurveyorsList.push({
+              id: recRows[0].surveyor_id,
+              fullName: recRows[0].surveyor_name,
+              email: recRows[0].surveyor_email,
+              avatarUrl: recRows[0].surveyor_avatar,
+            });
+          }
+          const assignedMatch = String(recRows[0].note || '').match(/\[ASSIGNED_SURVEYORS:([^\]]+)\]/);
+          if (assignedMatch && assignedMatch[1]) {
+            const rawIds = assignedMatch[1].split(',').map((s: string) => s.trim()).filter(Boolean);
+            const otherIds = rawIds.filter((uid: string) => uid !== recRows[0].surveyor_id);
+            if (otherIds.length > 0) {
+              try {
+                const moreSurveyors = await this.dataSource.query(
+                  `SELECT id, full_name, email, avatar_url FROM users WHERE id = ANY($1::uuid[])`,
+                  [otherIds],
+                );
+                for (const u of moreSurveyors) {
+                  assignedSurveyorsList.push({
+                    id: u.id,
+                    fullName: u.full_name,
+                    email: u.email,
+                    avatarUrl: u.avatar_url,
+                  });
+                }
+              } catch {}
+            }
+          }
+
+          const rawNote = recRows[0].note;
+          const cleanNote = String(rawNote || '').replace(/\s*\[ASSIGNED_SURVEYORS:[^\]]+\]\s*/g, '').trim() || null;
+
           recaptureRequest = {
             id: recRows[0].id,
             candidateId: recRows[0].candidate_id,
             surveyorId: recRows[0].surveyor_id,
-            assignedSurveyor: recRows[0].surveyor_id
-              ? {
-                  id: recRows[0].surveyor_id,
-                  fullName: recRows[0].surveyor_name,
-                  email: recRows[0].surveyor_email,
-                  avatarUrl: recRows[0].surveyor_avatar,
-                }
-              : null,
+            assignedSurveyor: assignedSurveyorsList[0] ?? null,
+            assignedSurveyors: assignedSurveyorsList,
             isRandomOrOpenQuest: !recRows[0].surveyor_id,
             reviewerId: recRows[0].reviewer_id,
             reviewer: recRows[0].reviewer_id
@@ -1656,7 +1867,8 @@ export class ModerationService {
                 }
               : null,
             reason: recRows[0].reason,
-            note: recRows[0].note,
+            note: cleanNote,
+            rawNote,
             createdAt: recRows[0].created_at,
             completedAt: recRows[0].completed_at,
           };
@@ -1664,7 +1876,32 @@ export class ModerationService {
       } catch {}
     }
 
-    return { ...enriched, reporter, reviewer, recaptureRequest };
+    const cand = (enriched as any)?.candidate;
+    const lat = cand?.latitude ?? null;
+    const lng = cand?.longitude ?? null;
+
+    const userIdsToLoad = [
+      reporter?.id,
+      reviewer?.id,
+      recaptureRequest?.assignedSurveyor?.id,
+      recaptureRequest?.reviewer?.id,
+    ].filter((uid, idx, arr) => Boolean(uid) && arr.indexOf(uid) === idx);
+
+    if (userIdsToLoad.length > 0 && this.adminService) {
+      try {
+        const statsMap = await this.adminService.batchLoadUserStatistics(userIdsToLoad);
+        if (reporter) reporter.statistics = statsMap.get(reporter.id) || null;
+        if (reviewer) reviewer.statistics = statsMap.get(reviewer.id) || null;
+        if (recaptureRequest?.assignedSurveyor) {
+          recaptureRequest.assignedSurveyor.statistics = statsMap.get(recaptureRequest.assignedSurveyor.id) || null;
+        }
+        if (recaptureRequest?.reviewer) {
+          recaptureRequest.reviewer.statistics = statsMap.get(recaptureRequest.reviewer.id) || null;
+        }
+      } catch {}
+    }
+
+    return { ...enriched, latitude: lat, longitude: lng, reporter, reviewer, recaptureRequest };
   }
 
   getMissingReport(id: string) {
@@ -1821,27 +2058,66 @@ export class ModerationService {
             OR ${unaccentFn("COALESCE(mc.target_entity_type, '')")} ILIKE ${unaccentFn(':pattern')}
             OR CAST(mc.id AS text) ILIKE :pattern ESCAPE '\\'
             OR CAST(mc.target_entity_id AS text) ILIKE :pattern ESCAPE '\\'
+            OR CAST(mc.assigned_staff_id AS text) ILIKE :pattern ESCAPE '\\'
             OR CAST(mc.case_type AS text) ILIKE :pattern ESCAPE '\\'
             OR CAST(mc.status AS text) ILIKE :pattern ESCAPE '\\'
             OR EXISTS (
               SELECT 1 FROM new_sign_type_reports r
               LEFT JOIN users u ON u.id = r.reporter_id
+              LEFT JOIN users staff_r ON staff_r.id = r.reviewed_by
+              LEFT JOIN users orig_u ON orig_u.id = r.original_reporter_id
               WHERE r.id = mc.target_entity_id
                 AND (
                   ${unaccentFn("COALESCE(r.proposed_name, '')")} ILIKE ${unaccentFn(':pattern')}
                   OR ${unaccentFn("COALESCE(r.description, '')")} ILIKE ${unaccentFn(':pattern')}
                   OR ${unaccentFn("COALESCE(u.full_name, '')")} ILIKE ${unaccentFn(':pattern')}
                   OR ${unaccentFn("COALESCE(u.email, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(staff_r.full_name, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(staff_r.email, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(orig_u.full_name, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(orig_u.email, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR CAST(r.reporter_id AS text) ILIKE :pattern ESCAPE '\\'
+                  OR CAST(r.original_reporter_id AS text) ILIKE :pattern ESCAPE '\\'
+                  OR CAST(r.reviewed_by AS text) ILIKE :pattern ESCAPE '\\'
+                )
+            )
+            OR EXISTS (
+              SELECT 1 FROM moderation_actions ma
+              JOIN users ma_u ON ma_u.id = ma.performed_by
+              WHERE ma.case_id = mc.id
+                AND (
+                  ${unaccentFn("COALESCE(ma_u.full_name, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(ma_u.email, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(ma.note, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR CAST(ma.performed_by AS text) ILIKE :pattern ESCAPE '\\'
                 )
             )
             OR EXISTS (
               SELECT 1 FROM unverified_sign_candidates c
               LEFT JOIN traffic_sign_types tst ON (tst.id = c.predicted_sign_type_id OR tst.id = c.selected_sign_type_id)
+              LEFT JOIN survey_submissions ss ON ss.id = c.submission_id
+              LEFT JOIN users surveyor ON surveyor.id = ss.surveyor_id
+              LEFT JOIN users selector ON selector.id = c.selected_by
               WHERE c.id = mc.target_entity_id
                 AND (
                   ${unaccentFn("COALESCE(tst.name_vi, '')")} ILIKE ${unaccentFn(':pattern')}
                   OR ${unaccentFn("COALESCE(tst.name_en, '')")} ILIKE ${unaccentFn(':pattern')}
                   OR tst.sign_code ILIKE :pattern
+                  OR ${unaccentFn("COALESCE(surveyor.full_name, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(surveyor.email, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(selector.full_name, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(selector.email, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR CAST(surveyor.id AS text) ILIKE :pattern ESCAPE '\\'
+                  OR CAST(selector.id AS text) ILIKE :pattern ESCAPE '\\'
+                )
+            )
+            OR EXISTS (
+              SELECT 1 FROM users target_user
+              WHERE target_user.id = mc.target_entity_id
+                AND (
+                  ${unaccentFn("COALESCE(target_user.full_name, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR ${unaccentFn("COALESCE(target_user.email, '')")} ILIKE ${unaccentFn(':pattern')}
+                  OR CAST(target_user.id AS text) ILIKE :pattern ESCAPE '\\'
                 )
             )
           )`,
@@ -1953,6 +2229,39 @@ export class ModerationService {
           });
         } catch {}
       }
+
+      // Also batch-enrich assigned staff details
+      const staffIds = Array.from(
+        new Set(
+          enrichedItems
+            .map((mc) => mc.assignedStaffId)
+            .filter(Boolean),
+        ),
+      );
+      if (staffIds.length > 0) {
+        try {
+          const staffRows: any[] = await this.dataSource.query(
+            `SELECT id, full_name, email FROM users WHERE id = ANY($1::uuid[])`,
+            [staffIds],
+          );
+          const staffById = new Map<string, any>();
+          for (const s of staffRows) {
+            staffById.set(s.id, s);
+          }
+          enrichedItems = enrichedItems.map((mc) => {
+            const s = mc.assignedStaffId ? staffById.get(mc.assignedStaffId) : null;
+            if (!s) return mc;
+            return {
+              ...mc,
+              assignedStaff: {
+                id: s.id,
+                fullName: s.full_name,
+                email: s.email,
+              },
+            };
+          });
+        } catch {}
+      }
     }
 
     return { items: enrichedItems, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
@@ -2051,18 +2360,46 @@ export class ModerationService {
           [mc.targetEntityId],
         );
         if (recRows[0]) {
+          const assignedSurveyorsList: any[] = [];
+          if (recRows[0].surveyor_id) {
+            assignedSurveyorsList.push({
+              id: recRows[0].surveyor_id,
+              fullName: recRows[0].surveyor_name,
+              email: recRows[0].surveyor_email,
+              avatarUrl: recRows[0].surveyor_avatar,
+            });
+          }
+          const assignedMatch = String(recRows[0].note || '').match(/\[ASSIGNED_SURVEYORS:([^\]]+)\]/);
+          if (assignedMatch && assignedMatch[1]) {
+            const rawIds = assignedMatch[1].split(',').map((s: string) => s.trim()).filter(Boolean);
+            const otherIds = rawIds.filter((uid: string) => uid !== recRows[0].surveyor_id);
+            if (otherIds.length > 0) {
+              try {
+                const moreSurveyors = await this.dataSource.query(
+                  `SELECT id, full_name, email, avatar_url FROM users WHERE id = ANY($1::uuid[])`,
+                  [otherIds],
+                );
+                for (const u of moreSurveyors) {
+                  assignedSurveyorsList.push({
+                    id: u.id,
+                    fullName: u.full_name,
+                    email: u.email,
+                    avatarUrl: u.avatar_url,
+                  });
+                }
+              } catch {}
+            }
+          }
+
+          const rawNote = recRows[0].note;
+          const cleanNote = String(rawNote || '').replace(/\s*\[ASSIGNED_SURVEYORS:[^\]]+\]\s*/g, '').trim() || null;
+
           recaptureRequest = {
             id: recRows[0].id,
             candidateId: recRows[0].candidate_id,
             surveyorId: recRows[0].surveyor_id,
-            assignedSurveyor: recRows[0].surveyor_id
-              ? {
-                  id: recRows[0].surveyor_id,
-                  fullName: recRows[0].surveyor_name,
-                  email: recRows[0].surveyor_email,
-                  avatarUrl: recRows[0].surveyor_avatar,
-                }
-              : null,
+            assignedSurveyor: assignedSurveyorsList[0] ?? null,
+            assignedSurveyors: assignedSurveyorsList,
             isRandomOrOpenQuest: !recRows[0].surveyor_id,
             reviewerId: recRows[0].reviewer_id,
             reviewer: recRows[0].reviewer_id
@@ -2073,7 +2410,8 @@ export class ModerationService {
                 }
               : null,
             reason: recRows[0].reason,
-            note: recRows[0].note,
+            note: cleanNote,
+            rawNote,
             createdAt: recRows[0].created_at,
             completedAt: recRows[0].completed_at,
           };
@@ -2081,10 +2419,108 @@ export class ModerationService {
       } catch {}
     }
 
-    return { ...mc, actions: acts, assignedStaff, recaptureRequest };
+    let surveyorUser: any = recaptureRequest?.assignedSurveyor ?? null;
+    let reviewerUser: any = recaptureRequest?.reviewer ?? null;
+    let staffUser: any = assignedStaff ?? null;
+
+    if (this.dataSource && mc.targetEntityId) {
+      try {
+        if (!reviewerUser) {
+          const repRows = await this.dataSource.query(
+            `SELECT u.id, u.full_name, u.email, u.avatar_url
+             FROM new_sign_type_reports r
+             JOIN users u ON u.id = r.reporter_id
+             WHERE r.id = $1`,
+            [mc.targetEntityId],
+          );
+          if (repRows[0]) {
+            reviewerUser = {
+              id: repRows[0].id,
+              fullName: repRows[0].full_name,
+              email: repRows[0].email,
+              avatarUrl: repRows[0].avatar_url,
+            };
+          }
+        }
+        if (!surveyorUser) {
+          const survRows = await this.dataSource.query(
+            `SELECT u.id, u.full_name, u.email, u.avatar_url
+             FROM new_sign_type_reports r
+             JOIN unverified_sign_candidates c ON c.id = r.candidate_id
+             JOIN survey_submissions s ON s.id = c.submission_id
+             JOIN users u ON u.id = s.surveyor_id
+             WHERE r.id = $1`,
+            [mc.targetEntityId],
+          );
+          if (survRows[0]) {
+            surveyorUser = {
+              id: survRows[0].id,
+              fullName: survRows[0].full_name,
+              email: survRows[0].email,
+              avatarUrl: survRows[0].avatar_url,
+            };
+          }
+        }
+        if (!staffUser) {
+          const staffRows = await this.dataSource.query(
+            `SELECT u.id, u.full_name, u.email, u.avatar_url
+             FROM new_sign_type_reports r
+             JOIN users u ON u.id = r.reviewed_by
+             WHERE r.id = $1`,
+            [mc.targetEntityId],
+          );
+          if (staffRows[0]) {
+            staffUser = {
+              id: staffRows[0].id,
+              fullName: staffRows[0].full_name,
+              email: staffRows[0].email,
+              avatarUrl: staffRows[0].avatar_url,
+            };
+          }
+        }
+      } catch {}
+    }
+
+    const userIdsToLoad = [
+      assignedStaff?.id,
+      surveyorUser?.id,
+      reviewerUser?.id,
+      staffUser?.id,
+      recaptureRequest?.assignedSurveyor?.id,
+      recaptureRequest?.reviewer?.id,
+    ].filter((uid, idx, arr) => Boolean(uid) && arr.indexOf(uid) === idx);
+
+    if (userIdsToLoad.length > 0 && this.adminService) {
+      try {
+        const statsMap = await this.adminService.batchLoadUserStatistics(userIdsToLoad);
+        if (assignedStaff) assignedStaff.statistics = statsMap.get(assignedStaff.id) || null;
+        if (surveyorUser) surveyorUser.statistics = statsMap.get(surveyorUser.id) || null;
+        if (reviewerUser) reviewerUser.statistics = statsMap.get(reviewerUser.id) || null;
+        if (staffUser) staffUser.statistics = statsMap.get(staffUser.id) || null;
+        if (recaptureRequest?.assignedSurveyor) {
+          recaptureRequest.assignedSurveyor.statistics = statsMap.get(recaptureRequest.assignedSurveyor.id) || null;
+        }
+        if (recaptureRequest?.reviewer) {
+          recaptureRequest.reviewer.statistics = statsMap.get(recaptureRequest.reviewer.id) || null;
+        }
+      } catch {}
+    }
+
+    return {
+      ...mc,
+      actions: acts,
+      assignedStaff,
+      recaptureRequest,
+      involvedUsers: {
+        surveyor: surveyorUser,
+        reviewer: reviewerUser,
+        staff: staffUser,
+      },
+    };
   }
 
   async getUserProfile(userId: string) {
+    let profile: any = null;
     if (this.userRepo) {
       const user = await this.userRepo.findOne({
         where: { id: userId },
@@ -2095,7 +2531,7 @@ export class ModerationService {
           .filter((ur) => ur.isActive)
           .map((ur) => ur.role?.code)
           .filter((code): code is string => Boolean(code));
-        return {
+        profile = {
           id: user.id,
           email: user.email,
           fullName: user.fullName,
@@ -2110,7 +2546,7 @@ export class ModerationService {
         };
       }
     }
-    if (this.dataSource) {
+    if (!profile && this.dataSource) {
       const rows = await this.dataSource.query(
         `SELECT u.id, u.email, u.full_name, u.phone, u.avatar_url, u.status, u.created_at,
                 COALESCE(array_agg(r.code) FILTER (WHERE r.code IS NOT NULL AND ur.is_active = true), '{}') AS roles
@@ -2122,7 +2558,7 @@ export class ModerationService {
         [userId],
       );
       if (rows[0]) {
-        return {
+        profile = {
           id: rows[0].id,
           email: rows[0].email,
           fullName: rows[0].full_name,
@@ -2137,8 +2573,37 @@ export class ModerationService {
         };
       }
     }
-    throw new NotFoundException('User ' + userId + ' not found');
+    if (!profile) throw new NotFoundException('User ' + userId + ' not found');
+
+    if (this.adminService) {
+      try {
+        const statsMap = await this.adminService.batchLoadUserStatistics([userId]);
+        profile.statistics = statsMap.get(userId) || null;
+      } catch {}
+    }
+    return profile;
   }
+
+  async getEligibleSurveyors(search?: string): Promise<Array<{ id: string; fullName: string; email: string; avatarUrl: string | null }>> {
+    let sql = `
+      SELECT DISTINCT u.id, u.full_name AS "fullName", u.email, u.avatar_url AS "avatarUrl"
+      FROM users u
+      JOIN user_roles ur ON ur.user_id = u.id AND ur.is_active = true
+      JOIN roles r ON r.id = ur.role_id AND r.code = 'SURVEYOR'
+      WHERE u.status = 'ACTIVE'
+    `;
+    const params: any[] = [];
+    if (search?.trim()) {
+      sql += ` AND (u.full_name ILIKE $1 OR u.email ILIKE $1)`;
+      params.push(`%${search.trim()}%`);
+    }
+    sql += ` ORDER BY u.full_name ASC`;
+    if (this.dataSource) {
+      return this.dataSource.query(sql, params);
+    }
+    return [];
+  }
+
   async resolveCase(id: string, staffId: string, dto: ResolveCaseDto, userRole?: string | string[]) {
     const mc = await this.cases.findOne({ where: { id } });
     if (!mc) throw new NotFoundException('ModerationCase ' + id + ' not found');
@@ -2214,12 +2679,13 @@ export class ModerationService {
     if (actionType === 'REQUEST_RECAPTURE' && mc.targetEntityType === 'candidate' && mc.targetEntityId) {
       return this.resolveRecaptureCase(id, staffId, dto);
     }
-    if (actionType === 'REQUEST_RECAPTURE' && mc.targetEntityType === 'missing_sign_type_report' && mc.targetEntityId) {
+    if (actionType === 'REQUEST_RECAPTURE' && (mc.targetEntityType === 'missing_sign_type_report' || mc.targetEntityType === 'new_sign_type_report') && mc.targetEntityId) {
       return this.requestMissingReportRecapture(
         mc.targetEntityId,
         staffId,
         dto.actionNote?.trim() || dto.resolutionNote,
-        MissingTypeStatus.ESCALATED_ADMIN,
+        [MissingTypeStatus.ESCALATED_ADMIN, MissingTypeStatus.PENDING],
+        dto.assignedSurveyorId,
       );
     }
     // Catalog side-effects for missing-type workflow
@@ -2252,6 +2718,7 @@ export class ModerationService {
     return mc;
   }
   private async resolveRecaptureCase(caseId: string, staffId: string, dto: ResolveCaseDto) {
+    const assignedSurveyorId = dto.assignedSurveyorId;
     const resolved = await this.dataSource.transaction(async (manager) => {
       let moderationCase: { id: string; targetEntityId: string; status: ModerationStatus; target_entity_id?: string } | null = null;
       if (typeof manager.getRepository === 'function') {
@@ -2338,22 +2805,14 @@ export class ModerationService {
         );
       }
       // Open quest; the first eligible nearby Surveyor claims it on submission.
-      let surveyorId: string | null = null;
-      const isAutoAssignRecapture = this.systemSwitchService
-        ? await this.systemSwitchService.isEnabled('AUTO_ASSIGN_RECAPTURE_EMAIL')
-        : false;
+      const resolvedSurveyor = await this.resolveEligibleSurveyor(manager, candidate.id, assignedSurveyorId);
+      const surveyorId = resolvedSurveyor.surveyorId;
+      const assignedSurveyorIds = resolvedSurveyor.assignedSurveyorIds;
+      const assignedSurveyors = resolvedSurveyor.assignedSurveyors;
 
-      if (isAutoAssignRecapture && typeof manager.getRepository === 'function') {
-        const meta = await this.systemSwitchService?.getMetadata<{ targetEmail?: string }>('AUTO_ASSIGN_RECAPTURE_EMAIL');
-        const targetEmail = meta?.targetEmail || 'demo@stm.dev';
-        try {
-          const demoSurveyorRows: Array<{ id: string }> = await manager.query(
-            `SELECT id FROM users WHERE email = $1 AND status = 'ACTIVE' LIMIT 1`,
-            [targetEmail],
-          );
-          if (demoSurveyorRows[0]?.id) surveyorId = demoSurveyorRows[0].id;
-        } catch {}
-      }
+      const recaptureNote = assignedSurveyorIds.length > 1
+        ? (dto.resolutionNote ? `${dto.resolutionNote}\n[ASSIGNED_SURVEYORS:${assignedSurveyorIds.join(',')}]` : `[ASSIGNED_SURVEYORS:${assignedSurveyorIds.join(',')}]`)
+        : (dto.resolutionNote ?? null);
 
       let updateCandAffected = 0;
       if (typeof manager.getRepository === 'function') {
@@ -2387,7 +2846,7 @@ export class ModerationService {
             surveyorId: surveyorId ?? undefined,
             missingTypeReportId: reportRows[0].id,
             reason: 'MODERATION_RECAPTURE_REQUESTED',
-            note: dto.resolutionNote ?? null,
+            note: recaptureNote,
           }));
         } else if (typeof manager.query === 'function') {
           if (surveyorId) {
@@ -2395,14 +2854,14 @@ export class ModerationService {
               `INSERT INTO candidate_recapture_requests
                  (candidate_id, reviewer_id, surveyor_id, missing_type_report_id, reason, note)
                VALUES ($1, $2, $3, $4, 'MODERATION_RECAPTURE_REQUESTED', $5)`,
-              [candidate.id, staffId, surveyorId, reportRows[0].id, dto.resolutionNote ?? null],
+              [candidate.id, staffId, surveyorId, reportRows[0].id, recaptureNote],
             );
           } else {
             await manager.query(
               `INSERT INTO candidate_recapture_requests
                  (candidate_id, reviewer_id, missing_type_report_id, reason, note)
                VALUES ($1, $2, $3, 'MODERATION_RECAPTURE_REQUESTED', $4)`,
-              [candidate.id, staffId, reportRows[0].id, dto.resolutionNote ?? null],
+              [candidate.id, staffId, reportRows[0].id, recaptureNote],
             );
           }
         }
@@ -2414,6 +2873,9 @@ export class ModerationService {
       }
 
       let updatedCaseResult: any;
+      const actionAuditNote = assignedSurveyors.length > 1
+        ? `Hệ thống phân công ngẫu nhiên 3 Surveyor (${assignedSurveyors.map((s) => s.fullName || s.email || s.id).join(', ')}). ${dto.resolutionNote || ''}`.trim()
+        : (dto.actionNote ?? dto.resolutionNote ?? null);
       if (typeof manager.getRepository === 'function') {
         const caseRepo = manager.getRepository(ModerationCase);
         const actionRepo = manager.getRepository(ModerationAction);
@@ -2428,7 +2890,7 @@ export class ModerationService {
           caseId,
           actionType: 'REQUEST_RECAPTURE',
           performedBy: staffId,
-          note: dto.actionNote ?? dto.resolutionNote ?? null,
+          note: actionAuditNote,
         }));
       } else if (typeof manager.query === 'function') {
         const updatedCases: any[] = await manager.query(
@@ -2441,24 +2903,30 @@ export class ModerationService {
         await manager.query(
           `INSERT INTO moderation_actions (case_id, action_type, performed_by, note)
            VALUES ($1, $2, $3, $4)`,
-          [caseId, 'REQUEST_RECAPTURE', staffId, dto.actionNote ?? dto.resolutionNote ?? null],
+          [caseId, 'REQUEST_RECAPTURE', staffId, actionAuditNote],
         );
         updatedCaseResult = updatedCases[0];
       }
-      return { ...updatedCaseResult, surveyorId, candidateId: candidate.id };
+      return { ...updatedCaseResult, surveyorId, candidateId: candidate.id, assignedSurveyors };
     });
 
-    if (resolved?.surveyorId && resolved?.candidateId && this.notificationsService) {
-      try {
-        await this.notificationsService.create(
-          resolved.surveyorId,
-          'IMAGE_RECAPTURE_REQUESTED',
-          'Yêu cầu chụp lại ảnh biển báo',
-          'Quản trị viên yêu cầu chụp lại ảnh biển báo: ' + (dto.resolutionNote || 'Vui lòng chụp lại ảnh rõ nét tại vị trí biển báo'),
-          'candidate',
-          resolved.candidateId,
-        );
-      } catch {}
+    const targetSurveyors = (resolved?.assignedSurveyors && resolved?.assignedSurveyors.length > 0)
+      ? resolved.assignedSurveyors
+      : (resolved?.surveyorId ? [{ id: resolved.surveyorId }] : []);
+
+    if (resolved?.candidateId && this.notificationsService) {
+      for (const surv of targetSurveyors) {
+        try {
+          await this.notificationsService.create(
+            surv.id,
+            'IMAGE_RECAPTURE_REQUESTED',
+            'Yêu cầu chụp lại ảnh biển báo',
+            'Quản trị viên yêu cầu chụp lại ảnh biển báo: ' + (dto.resolutionNote || 'Vui lòng chụp lại ảnh rõ nét tại vị trí biển báo'),
+            'candidate',
+            resolved.candidateId,
+          );
+        } catch {}
+      }
     }
 
     return resolved;
@@ -2704,41 +3172,48 @@ export class ModerationService {
     }
   }
 
-  private async enrichWithCandidates(reports: NewSignTypeReport[]): Promise<(NewSignTypeReport & { candidate?: CandidateEnriched | null })[]> {
+  private async enrichWithCandidates(reports: NewSignTypeReport[]): Promise<(NewSignTypeReport & {
+    candidate?: (CandidateEnriched & {
+      surveyor?: {
+        id: string;
+        fullName: string;
+        email: string;
+        status: string;
+        isEligible: boolean;
+      } | null;
+    }) | null;
+    reporter?: { id: string; fullName: string; email: string } | null;
+    submittedBy?: string | null;
+    reviewer?: { id: string; fullName: string; email: string } | null;
+    reviewedByName?: string | null;
+    recaptureRequest?: any | null;
+    assignedSurveyor?: { id: string; fullName: string; email: string } | null;
+  })[]> {
     if (reports.length === 0) return reports as any;
     const ids = reports.filter(r => r.candidateId).map(r => r.candidateId as string);
-    const byId = new Map<string, CandidateEnriched>();
+    const byId = new Map<string, any>();
     if (ids.length > 0) {
       let rows: any[] = [];
-      try {
-        if (this.candRepo && typeof this.candRepo.createQueryBuilder === 'function') {
-          rows = await this.candRepo
-            .createQueryBuilder('c')
-            .leftJoin(CandidateGeoEstimation, 'ge', 'ge.candidateId = c.id')
-            .select([
-              'c.id AS id',
-              'c.predictedSignTypeId AS predicted_sign_type_id',
-              'c.confidenceScore AS confidence_score',
-              'c.bestFrameUrl AS best_frame_url',
-              'c.signCropUrl AS sign_crop_url',
-              'c.status AS status',
-              'ST_X(ge.sign_location::geometry) AS longitude',
-              'ST_Y(ge.sign_location::geometry) AS latitude',
-            ])
-            .where('c.id IN (:...ids)', { ids })
-            .getRawMany();
-        }
-      } catch (err) {
-        this.logger.warn('Failed to enrich candidates via query builder: ' + (err as any)?.message);
-      }
-      if (rows.length === 0 && typeof this.dataSource?.query === 'function') {
+      if (typeof this.dataSource?.query === 'function') {
         try {
           rows = await this.dataSource.query(
             `SELECT c.id, c.predicted_sign_type_id, c.confidence_score, c.best_frame_url, c.sign_crop_url, c.status,
-                    ST_X(ge.sign_location::geometry) AS longitude,
-                    ST_Y(ge.sign_location::geometry) AS latitude
+                    COALESCE(ST_X(ge.sign_location::geometry), ST_X(ge.vehicle_location::geometry)) AS longitude,
+                    COALESCE(ST_Y(ge.sign_location::geometry), ST_Y(ge.vehicle_location::geometry)) AS latitude,
+                    s.note AS submission_note,
+                    surv.id AS surveyor_id,
+                    surv.full_name AS surveyor_name,
+                    surv.email AS surveyor_email,
+                    surv.status AS surveyor_status,
+                    EXISTS (
+                      SELECT 1 FROM user_roles ur
+                      JOIN roles r ON r.id = ur.role_id
+                      WHERE ur.user_id = surv.id AND ur.is_active = true AND r.code = 'SURVEYOR'
+                    ) AS is_surveyor_role
              FROM unverified_sign_candidates c
              LEFT JOIN candidate_geo_estimations ge ON ge.candidate_id = c.id
+             LEFT JOIN survey_submissions s ON s.id = c.submission_id
+             LEFT JOIN users surv ON surv.id = s.surveyor_id
              WHERE c.id = ANY($1::uuid[])`,
             [ids],
           );
@@ -2746,7 +3221,39 @@ export class ModerationService {
           this.logger.warn('Failed to enrich candidates via raw query: ' + (err as any)?.message);
         }
       }
+      if (rows.length === 0 && this.candRepo && typeof this.candRepo.createQueryBuilder === 'function') {
+        try {
+          rows = await this.candRepo
+            .createQueryBuilder('c')
+            .leftJoin(CandidateGeoEstimation, 'ge', 'ge.candidateId = c.id')
+            .leftJoin(SurveySubmission, 's', 's.id = c.submissionId')
+            .select([
+              'c.id AS id',
+              'c.predictedSignTypeId AS predicted_sign_type_id',
+              'c.confidenceScore AS confidence_score',
+              'c.bestFrameUrl AS best_frame_url',
+              'c.signCropUrl AS sign_crop_url',
+              'c.status AS status',
+              'COALESCE(ST_X(ge.sign_location::geometry), ST_X(ge.vehicle_location::geometry)) AS longitude',
+              'COALESCE(ST_Y(ge.sign_location::geometry), ST_Y(ge.vehicle_location::geometry)) AS latitude',
+              's.note AS submission_note',
+            ])
+            .where('c.id IN (:...ids)', { ids })
+            .getRawMany();
+        } catch (err) {
+          this.logger.warn('Failed to enrich candidates via query builder: ' + (err as any)?.message);
+        }
+      }
       for (const row of rows) {
+        let lat = row.latitude == null ? null : Number(row.latitude);
+        let lon = row.longitude == null ? null : Number(row.longitude);
+        if ((lat == null || lon == null) && row.submission_note) {
+          const m = String(row.submission_note).match(/GPS:\s*([-\d.]+),\s*([-\d.]+)/);
+          if (m) {
+            lat = parseFloat(m[1]);
+            lon = parseFloat(m[2]);
+          }
+        }
         byId.set(row.id, {
           id: row.id,
           predictedSignTypeId: Number(row.predicted_sign_type_id),
@@ -2754,17 +3261,111 @@ export class ModerationService {
           bestFrameUrl: row.best_frame_url,
           signCropUrl: row.sign_crop_url,
           status: row.status,
-          longitude: row.longitude == null ? null : Number(row.longitude),
-          latitude: row.latitude == null ? null : Number(row.latitude),
+          longitude: lon,
+          latitude: lat,
+          surveyor: row.surveyor_id
+            ? {
+                id: row.surveyor_id,
+                fullName: row.surveyor_name,
+                email: row.surveyor_email,
+                status: row.surveyor_status,
+                isEligible: row.surveyor_status === 'ACTIVE' && Boolean(row.is_surveyor_role),
+              }
+            : null,
         });
       }
     }
-    return reports.map(r => ({
-      ...r,
-      candidate: r.candidateId ? (byId.get(r.candidateId) ?? null) : null,
-      status: r.status === MissingTypeStatus.ESCALATED_ADMIN ? 'IN_REVIEW' : r.status,
-      rawStatus: r.status,
-    })) as any;
+    const userIds = Array.from(
+      new Set(
+        reports
+          .flatMap((r) => [r.reporterId, (r as any).originalReporterId, r.reviewedBy])
+          .filter(Boolean),
+      ),
+    );
+    const usersById = new Map<string, { id: string; fullName: string; email: string }>();
+    if (userIds.length > 0 && typeof this.dataSource?.query === 'function') {
+      try {
+        const uRows: any[] = await this.dataSource.query(
+          `SELECT id, full_name, email FROM users WHERE id = ANY($1::uuid[])`,
+          [userIds],
+        );
+        for (const u of uRows) {
+          usersById.set(u.id, { id: u.id, fullName: u.full_name, email: u.email });
+        }
+      } catch (err) {
+        this.logger.warn('Failed to enrich users: ' + (err as any)?.message);
+      }
+    }
+
+    const reportIds = reports.map((r) => r.id);
+    const recByReportId = new Map<string, any>();
+    if (reportIds.length > 0 && typeof this.dataSource?.query === 'function') {
+      try {
+        const recRows = await this.dataSource.query(
+          `SELECT crr.id, crr.candidate_id, crr.reviewer_id, crr.surveyor_id,
+                  crr.reason, crr.note, crr.created_at, crr.completed_at,
+                  COALESCE(crr.new_sign_type_report_id, crr.missing_type_report_id) AS report_id,
+                  u_surv.full_name AS surveyor_name, u_surv.email AS surveyor_email,
+                  u_rev.full_name AS reviewer_name, u_rev.email AS reviewer_email
+           FROM candidate_recapture_requests crr
+           LEFT JOIN users u_surv ON u_surv.id = crr.surveyor_id
+           LEFT JOIN users u_rev ON u_rev.id = crr.reviewer_id
+           WHERE (crr.new_sign_type_report_id = ANY($1::uuid[]) OR crr.missing_type_report_id = ANY($1::uuid[]))
+           ORDER BY crr.created_at DESC`,
+          [reportIds],
+        );
+        for (const row of recRows) {
+          if (!recByReportId.has(row.report_id)) {
+            recByReportId.set(row.report_id, {
+              id: row.id,
+              candidateId: row.candidate_id,
+              surveyorId: row.surveyor_id,
+              surveyorName: row.surveyor_name ?? null,
+              surveyorEmail: row.surveyor_email ?? null,
+              assignedSurveyor: row.surveyor_id
+                ? {
+                    id: row.surveyor_id,
+                    fullName: row.surveyor_name,
+                    email: row.surveyor_email,
+                  }
+                : null,
+              reviewerId: row.reviewer_id,
+              reviewer: row.reviewer_id
+                ? {
+                    id: row.reviewer_id,
+                    fullName: row.reviewer_name,
+                    email: row.reviewer_email,
+                  }
+                : null,
+              reason: row.reason,
+              note: row.note,
+              createdAt: row.created_at,
+              completedAt: row.completed_at,
+            });
+          }
+        }
+      } catch (err) {
+        this.logger.warn('Failed to enrich recapture requests: ' + (err as any)?.message);
+      }
+    }
+
+    return reports.map((r) => {
+      const rep = r.reporterId ? usersById.get(r.reporterId) : null;
+      const rev = r.reviewedBy ? usersById.get(r.reviewedBy) : null;
+      const rec = recByReportId.get(r.id) ?? null;
+      return {
+        ...r,
+        candidate: r.candidateId ? (byId.get(r.candidateId) ?? null) : null,
+        status: r.status === MissingTypeStatus.ESCALATED_ADMIN ? 'IN_REVIEW' : r.status,
+        rawStatus: r.status,
+        reporter: rep ?? null,
+        submittedBy: rep ? rep.fullName : (r as any).submittedBy ?? null,
+        reviewer: rev ?? null,
+        reviewedByName: rev ? rev.fullName : null,
+        recaptureRequest: rec,
+        assignedSurveyor: rec?.assignedSurveyor ?? null,
+      };
+    }) as any;
   }
 
   private async reportSyncedBackend(signTypeId: number): Promise<void> {

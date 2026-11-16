@@ -55,6 +55,10 @@ export class RequestRecaptureDto {
   @IsString()
   @MaxLength(128)
   idempotencyKey?: string;
+
+  @IsOptional()
+  @IsUUID()
+  assignedSurveyorId?: string;
 }
 
 export class SubmitRecaptureDto {

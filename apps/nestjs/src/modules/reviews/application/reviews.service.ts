@@ -1590,31 +1590,66 @@ export class ReviewsService {
     }
 
     let surveyorId: string | null = null;
-    const isAutoAssignRecapture = this.systemSwitchService
-      ? await this.systemSwitchService.isEnabled('AUTO_ASSIGN_RECAPTURE_EMAIL')
-      : false;
+    let assignedSurveyors: any[] = [];
+    if (dto.assignedSurveyorId) {
+      const surveyorRows: any[] = await (this.candidateRepo.manager as any).query(
+        `SELECT u.id
+         FROM users u
+         JOIN user_roles ur ON ur.user_id = u.id AND ur.is_active = true
+         JOIN roles r ON r.id = ur.role_id AND r.code = 'SURVEYOR'
+         WHERE u.id = $1 AND u.status = 'ACTIVE'
+         LIMIT 1`,
+        [dto.assignedSurveyorId],
+      );
+      if (!surveyorRows || surveyorRows.length === 0) {
+        throw new BadRequestException('Surveyor được chỉ định không tồn tại, không hoạt động hoặc không có vai trò SURVEYOR');
+      }
+      surveyorId = surveyorRows[0].id;
+    } else {
+      const isAutoAssignRecapture = this.systemSwitchService
+        ? await this.systemSwitchService.isEnabled('AUTO_ASSIGN_RECAPTURE_EMAIL')
+        : false;
 
-    if (isAutoAssignRecapture) {
-      const meta = await this.systemSwitchService?.getMetadata<{ targetEmail?: string }>('AUTO_ASSIGN_RECAPTURE_EMAIL');
-      const targetEmail = meta?.targetEmail || 'demo@stm.dev';
-      try {
-        const demoRows = await (this.candidateRepo.manager as any).query(
-          `SELECT id FROM users WHERE email = $1 AND status = 'ACTIVE' LIMIT 1`,
-          [targetEmail],
-        );
-        if (demoRows && demoRows[0]?.id) surveyorId = demoRows[0].id;
-      } catch {}
-    }
-
-    if (!surveyorId) {
-      surveyorId = candidate.submission?.surveyorId ?? null;
-      if (!surveyorId && candidate.submissionId) {
+      if (isAutoAssignRecapture) {
+        const meta = await this.systemSwitchService?.getMetadata<{ targetEmail?: string }>('AUTO_ASSIGN_RECAPTURE_EMAIL');
+        const targetEmail = meta?.targetEmail || 'demo@stm.dev';
         try {
-          const rows = await (this.candidateRepo.manager as any).query(
-            'SELECT surveyor_id FROM survey_submissions WHERE id = $1',
-            [candidate.submissionId],
+          const demoRows = await (this.candidateRepo.manager as any).query(
+            `SELECT id FROM users WHERE email = $1 AND status = 'ACTIVE' LIMIT 1`,
+            [targetEmail],
           );
-          if (rows.length && rows[0].surveyor_id) surveyorId = rows[0].surveyor_id;
+          if (demoRows && demoRows[0]?.id) surveyorId = demoRows[0].id;
+        } catch {}
+      }
+
+      if (!surveyorId) {
+        surveyorId = candidate.submission?.surveyorId ?? null;
+        if (!surveyorId && candidate.submissionId) {
+          try {
+            const rows = await (this.candidateRepo.manager as any).query(
+              'SELECT surveyor_id FROM survey_submissions WHERE id = $1',
+              [candidate.submissionId],
+            );
+            if (rows.length && rows[0].surveyor_id) surveyorId = rows[0].surveyor_id;
+          } catch {}
+        }
+      }
+
+      if (!surveyorId) {
+        try {
+          const randomRows = await (this.candidateRepo.manager as any).query(
+            `SELECT u.id, u.full_name, u.email
+             FROM users u
+             JOIN user_roles ur ON ur.user_id = u.id AND ur.is_active = true
+             JOIN roles r ON r.id = ur.role_id AND r.code = 'SURVEYOR'
+             WHERE u.status = 'ACTIVE'
+             ORDER BY RANDOM()
+             LIMIT 3`,
+          );
+          if (randomRows && randomRows.length > 0) {
+            surveyorId = randomRows[0].id;
+            assignedSurveyors = randomRows;
+          }
         } catch {}
       }
     }
@@ -1717,12 +1752,16 @@ export class ReviewsService {
       if (getAffectedRowCount(candidateUpdate) !== 1) {
         throw new BadRequestException(`Candidate ${candidateId} changed state before recapture request creation`);
       }
+      const assignedIds = assignedSurveyors.map((s) => s.id);
+      const finalNote = assignedIds.length > 1
+        ? (note ? `${note}\n[ASSIGNED_SURVEYORS:${assignedIds.join(',')}]` : `[ASSIGNED_SURVEYORS:${assignedIds.join(',')}]`)
+        : note;
       const rows = await manager.query(
         `INSERT INTO candidate_recapture_requests
            (candidate_id, reviewer_id, surveyor_id, missing_type_report_id, reason, note, idempotency_key)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING *`,
-        [candidateId, reviewerId, surveyorId, reportId, reason, note, idempotencyKey],
+        [candidateId, reviewerId, surveyorId, reportId, reason, finalNote, idempotencyKey],
       );
       return rows[0];
     };
@@ -1801,24 +1840,30 @@ export class ReviewsService {
       );
     } catch {}
 
-    // Dispatch notification to surveyor
+    // Dispatch notification to surveyors
     let notificationSent = false;
-    if (surveyorId && this.notificationsService) {
-      try {
-        const signName =
-          candidate.predictedSignType?.nameVi || candidate.predictedSignType?.nameEn || 'biển báo';
-        const msg = `Ảnh chụp cho ${signName} quá mờ hoặc khó xác định (${reason}${note ? ': ' + note : ''}). Vui lòng chụp lại ảnh rõ nét hơn tại vị trí này.`;
-        await this.notificationsService.create(
-          surveyorId,
-          'IMAGE_RECAPTURE_REQUESTED',
-          'Yêu cầu chụp lại ảnh biển báo',
-          msg,
-          'candidate',
-          candidateId,
-        );
-        notificationSent = true;
-      } catch (err: any) {
-        // Notification failure should not fail request
+    const targetSurveyors = assignedSurveyors.length > 0
+      ? assignedSurveyors
+      : (surveyorId ? [{ id: surveyorId }] : []);
+
+    for (const surv of targetSurveyors) {
+      if (this.notificationsService) {
+        try {
+          const signName =
+            candidate.predictedSignType?.nameVi || candidate.predictedSignType?.nameEn || 'biển báo';
+          const msg = `Ảnh chụp cho ${signName} quá mờ hoặc khó xác định (${reason}${note ? ': ' + note : ''}). Vui lòng chụp lại ảnh rõ nét hơn tại vị trí này.`;
+          await this.notificationsService.create(
+            surv.id,
+            'IMAGE_RECAPTURE_REQUESTED',
+            'Yêu cầu chụp lại ảnh biển báo',
+            msg,
+            'candidate',
+            candidateId,
+          );
+          notificationSent = true;
+        } catch (err: any) {
+          // Notification failure should not fail request
+        }
       }
     }
 
@@ -1912,6 +1957,7 @@ export class ReviewsService {
        WHERE candidate_id = $1
          AND (
            surveyor_id = $2
+           OR note LIKE '%' || $2 || '%'
            OR surveyor_id IS NULL
            OR $3::boolean = true
          )
@@ -1941,6 +1987,23 @@ export class ReviewsService {
             },
             idempotentReplay: true,
           };
+        }
+      }
+      // Check if this candidate is assigned to another surveyor
+      let otherSurveyorRows: any[] = [];
+      try {
+        otherSurveyorRows = await (this.candidateRepo.manager as any).query(
+          `SELECT id, surveyor_id, note
+           FROM candidate_recapture_requests
+           WHERE candidate_id = $1 AND completed_at IS NULL`,
+          [candidateId],
+        );
+      } catch {}
+      if (Array.isArray(otherSurveyorRows) && otherSurveyorRows.length > 0 && !isRecaptureBypass) {
+        const activeReq = otherSurveyorRows[0];
+        const isAssigned = activeReq?.surveyor_id === surveyorId || String(activeReq?.note || '').includes(surveyorId);
+        if (!isAssigned && activeReq?.surveyor_id) {
+          throw new ForbiddenException('Bạn không được phân công thực hiện nhiệm vụ chụp lại này (thuộc quyền của Surveyor khác)');
         }
       }
       throw new BadRequestException(`Candidate ${candidateId} does not have exactly one active recapture request assigned to or open for this surveyor`);
@@ -2194,6 +2257,7 @@ export class ReviewsService {
              TRUE
              AND (
                crr.surveyor_id = $1
+               OR crr.note LIKE '%' || $1 || '%'
                OR (
                  crr.surveyor_id IS NULL
                  AND $2::double precision IS NOT NULL
@@ -2257,6 +2321,7 @@ export class ReviewsService {
              TRUE
              AND (
                crr.surveyor_id = $1
+               OR crr.note LIKE '%' || $1 || '%'
                OR (
                  crr.surveyor_id IS NULL
                  AND $2::double precision IS NOT NULL
@@ -2271,7 +2336,7 @@ export class ReviewsService {
              )
            )
          )
-       ORDER BY CASE WHEN crr.surveyor_id = $1 THEN 0 ELSE 1 END,
+       ORDER BY CASE WHEN (crr.surveyor_id = $1 OR crr.note LIKE '%' || $1 || '%') THEN 0 ELSE 1 END,
          CASE WHEN crr.surveyor_id IS NULL THEN RANDOM() END,
          crr.created_at DESC
        LIMIT $6 OFFSET $7`,

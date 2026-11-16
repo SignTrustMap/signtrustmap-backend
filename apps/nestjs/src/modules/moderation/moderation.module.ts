@@ -13,6 +13,7 @@ import { User } from '../auth/infrastructure/persistence/user.entity';
 import { SignTypeImage } from '../catalog/sign-type-image.entity';
 import { UserStatusHistory } from '../admin/user-status-history.entity';
 import { AuditLog } from '../admin/audit-log.entity';
+import { AdminModule } from '../admin/admin.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { CatalogModule } from '../catalog/catalog.module';
 import { CatalogSyncModule } from '../../integrations/catalog-sync/catalog-sync.module';
@@ -32,6 +33,7 @@ import { MinioModule } from '../../integrations/minio/minio.module';
       UserStatusHistory,
       AuditLog,
     ]),
+    AdminModule,
     NotificationsModule,
     CatalogModule,
     CatalogSyncModule,

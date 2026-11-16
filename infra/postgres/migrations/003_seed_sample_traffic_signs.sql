@@ -7,4 +7,4 @@ INSERT INTO traffic_sign_types (id, category_id, sign_code, name_vi, name_en, is
 VALUES 
   (1, 1, 'P.102', 'Cấm đi ngược chiều', 'No Entry', true),
   (2, 1, 'P.127', 'Tốc độ tối đa cho phép', 'Maximum Speed Limit', true)
-ON CONFLICT (sign_code) DO NOTHING;
+ON CONFLICT (id) DO NOTHING;

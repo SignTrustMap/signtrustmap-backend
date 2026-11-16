@@ -926,6 +926,18 @@ describe('ReviewsService', () => {
       expect(storage.putObject).not.toHaveBeenCalled();
     });
 
+    it('throws ForbiddenException when a surveyor tries to submit a recapture assigned to another surveyor', async () => {
+      const { service, storage, managerQuery } = buildSubmitService();
+      managerQuery
+        .mockReset()
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'req-1', surveyor_id: 'assigned-surveyor-uuid' }]);
+      await expect(service.submitRecapture('unauthorized-surveyor', 'cand-1', { latitude: 10.77, longitude: 106.7 }, {
+        signCrop: [image('sign-crop')], bestFrame: [image('best-frame')],
+      })).rejects.toThrow('Bạn không được phân công thực hiện nhiệm vụ chụp lại này');
+      expect(storage.putObject).not.toHaveBeenCalled();
+    });
+
     it('rejects missing, duplicate, or invalid media safely', async () => {
       const { service, storage } = buildSubmitService();
       await expect(service.submitRecapture('surveyor-1', 'cand-1', { latitude: 10.77, longitude: 106.7 }, { signCrop: [image('sign-crop')] })).rejects.toThrow('Both signCrop');

@@ -185,11 +185,26 @@ export class CreateSignTypeDto {
 
   @ApiPropertyOptional({ description: 'Whether the sign type is active', default: true })
   @IsOptional()
+  @Transform(({ value }) => {
+    if (value === 'true' || value === true) return true;
+    if (value === 'false' || value === false) return false;
+    return value;
+  })
   @IsBoolean()
   isActive?: boolean;
 
   @ApiPropertyOptional({ description: 'Applicable vehicle types', type: [String], enum: Object.values(VEHICLE_TYPES) })
   @IsOptional()
+  @Transform(({ value }) => {
+    if (typeof value !== 'string') return value;
+    try {
+      const parsed: unknown = JSON.parse(value);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      // ignore JSON parse error
+    }
+    return value.split(',').map((v) => v.trim()).filter(Boolean);
+  })
   @IsArray()
   @IsIn(Object.values(VEHICLE_TYPES), { each: true })
   allowedVehicles?: VehicleType[];
@@ -281,11 +296,26 @@ export class UpdateSignTypeDto {
 
   @ApiPropertyOptional({ description: 'Whether the sign type is active' })
   @IsOptional()
+  @Transform(({ value }) => {
+    if (value === 'true' || value === true) return true;
+    if (value === 'false' || value === false) return false;
+    return value;
+  })
   @IsBoolean()
   isActive?: boolean;
 
   @ApiPropertyOptional({ description: 'Applicable vehicle types', type: [String], enum: Object.values(VEHICLE_TYPES) })
   @IsOptional()
+  @Transform(({ value }) => {
+    if (typeof value !== 'string') return value;
+    try {
+      const parsed: unknown = JSON.parse(value);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      // ignore JSON parse error
+    }
+    return value.split(',').map((v) => v.trim()).filter(Boolean);
+  })
   @IsArray()
   @IsIn(Object.values(VEHICLE_TYPES), { each: true })
   allowedVehicles?: VehicleType[];
