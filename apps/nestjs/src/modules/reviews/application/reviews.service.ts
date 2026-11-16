@@ -1633,6 +1633,21 @@ export class ReviewsService {
           } catch {}
         }
       }
+
+      if (!surveyorId) {
+        try {
+          const randomRows = await (this.candidateRepo.manager as any).query(
+            `SELECT u.id
+             FROM users u
+             JOIN user_roles ur ON ur.user_id = u.id AND ur.is_active = true
+             JOIN roles r ON r.id = ur.role_id AND r.code = 'SURVEYOR'
+             WHERE u.status = 'ACTIVE'
+             ORDER BY RANDOM()
+             LIMIT 1`,
+          );
+          if (randomRows && randomRows[0]?.id) surveyorId = randomRows[0].id;
+        } catch {}
+      }
     }
 
     const reason = dto.reason.trim();

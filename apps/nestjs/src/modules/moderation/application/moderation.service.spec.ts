@@ -356,7 +356,48 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     expect(notifications.create).toHaveBeenCalledTimes(2);
   });
 
-  it('rejects recapture request when report has no surveyor and staff did not provide assignedSurveyorId', async () => {
+  it('automatically selects and records a random active surveyor when report has no surveyor responsible', async () => {
+    const { service, dataSource, missing } = buildService();
+    missing.findOne.mockResolvedValue({
+      id: 'R1',
+      status: MissingTypeStatus.INCOMPLETE,
+      candidateId: 'C1',
+    });
+    const manager = {
+      query: jest.fn()
+        .mockResolvedValueOnce([{
+          id: 'R1',
+          candidate_id: 'C1',
+          reporter_id: 'U1',
+          proposed_name: null,
+          status: MissingTypeStatus.PENDING,
+        }])
+        .mockResolvedValueOnce([{ id: 'C1', status: CandidateStatus.MISSING_TYPE_HOLD }])
+        .mockResolvedValueOnce([]) // no active requests
+        .mockResolvedValueOnce([]) // no existing surveyor found
+        .mockResolvedValueOnce([{ id: 'RANDOM_SURV_1', full_name: 'Random Surveyor', email: 'random@stm.dev' }]) // random surveyor chosen
+        .mockResolvedValueOnce([{ id: 'R1' }])
+        .mockResolvedValueOnce([{ id: 'C1' }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 'CASE1' }])
+        .mockResolvedValueOnce([]),
+    };
+    dataSource.transaction.mockImplementation((fn: (m: any) => any) => fn(manager));
+
+    const result = await service.updateMissingReport('R1', 'staff-1', {
+      actionType: 'REQUEST_RECAPTURE',
+      actionNote: 'Please recapture.',
+    });
+
+    expect(result).toMatchObject({ id: 'R1', status: MissingTypeStatus.INCOMPLETE });
+    expect(manager.query).toHaveBeenCalledWith(
+      expect.stringContaining('candidate_recapture_requests'),
+      expect.arrayContaining(['RANDOM_SURV_1']),
+    );
+  });
+
+  it('throws BadRequestException when no active surveyor can be found in the system', async () => {
     const { service, dataSource, missing } = buildService();
     missing.findOne.mockResolvedValue({
       id: 'R1',
@@ -374,14 +415,15 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
         }])
         .mockResolvedValueOnce([{ id: 'C1', status: CandidateStatus.MISSING_TYPE_HOLD }])
         .mockResolvedValueOnce([]) // no active requests
-        .mockResolvedValueOnce([]), // no existing surveyor found
+        .mockResolvedValueOnce([]) // no existing surveyor found
+        .mockResolvedValueOnce([]), // no random surveyor found in system
     };
     dataSource.transaction.mockImplementation((fn: (m: any) => any) => fn(manager));
 
     await expect(service.updateMissingReport('R1', 'staff-1', {
       actionType: 'REQUEST_RECAPTURE',
       actionNote: 'Please recapture.',
-    })).rejects.toThrow('Báo cáo chưa có Surveyor hợp lệ phụ trách. Vui lòng chọn một Surveyor để phân công chụp lại.');
+    })).rejects.toThrow('Không tìm thấy Surveyor nào đang hoạt động trong hệ thống để phân công nhiệm vụ chụp lại.');
   });
 
   it('assigns recapture request to specified surveyor when staff provides assignedSurveyorId', async () => {

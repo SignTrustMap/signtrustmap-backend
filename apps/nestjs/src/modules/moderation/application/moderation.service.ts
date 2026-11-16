@@ -1390,8 +1390,36 @@ export class ModerationService {
       } catch {}
     }
 
-    // Case B: No qualified surveyor currently responsible -> require Staff/Admin to select
-    throw new BadRequestException('Báo cáo chưa có Surveyor hợp lệ phụ trách. Vui lòng chọn một Surveyor để phân công chụp lại.');
+    // Random fallback: Automatically assign a random active surveyor from the pool of qualified surveyors
+    let randomSurveyorRows: any[] = [];
+    if (typeof manager.query === 'function') {
+      try {
+        randomSurveyorRows = await manager.query(
+          `SELECT u.id, u.full_name, u.email
+           FROM users u
+           JOIN user_roles ur ON ur.user_id = u.id AND ur.is_active = true
+           JOIN roles r ON r.id = ur.role_id AND r.code = 'SURVEYOR'
+           WHERE u.status = 'ACTIVE'
+           ORDER BY RANDOM()
+           LIMIT 1`,
+        );
+      } catch (err) {
+        this.logger.warn('Failed to select random surveyor via query: ' + (err as any)?.message);
+      }
+    }
+    if (randomSurveyorRows && randomSurveyorRows.length > 0) {
+      return randomSurveyorRows[0].id;
+    }
+
+    if (typeof manager.getRepository === 'function') {
+      try {
+        const userRepo = manager.getRepository(User);
+        const randomUser = await userRepo?.findOne?.({ where: { status: UserStatus.ACTIVE } });
+        if (randomUser) return randomUser.id;
+      } catch {}
+    }
+
+    throw new BadRequestException('Không tìm thấy Surveyor nào đang hoạt động trong hệ thống để phân công nhiệm vụ chụp lại.');
   }
 
   private async requestMissingReportRecapture(
