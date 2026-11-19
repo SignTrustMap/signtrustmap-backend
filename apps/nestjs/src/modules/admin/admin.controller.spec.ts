@@ -29,6 +29,7 @@ describe('AdminController (Phase 1 Ledger Adjustments & Admin Operations)', () =
       listRewardRules: jest.fn(),
       getRewardRule: jest.fn(),
       updateRewardRule: jest.fn(),
+      getUserById: jest.fn(),
       getUserStatistics: jest.fn(),
       getUsersSummaryStatistics: jest.fn(),
       getTaskHistory: jest.fn(),
@@ -152,6 +153,21 @@ describe('AdminController (Phase 1 Ledger Adjustments & Admin Operations)', () =
     const result = await controller.getUserStatistics('u1');
 
     expect(adminService.getUserStatistics).toHaveBeenCalledWith('u1');
+    expect(result).toBe(expected);
+  });
+
+  it('getUserById delegates to adminService.getUserById with UUID', async () => {
+    const expected = {
+      id: 'u1',
+      email: 'user1@stm.dev',
+      fullName: 'User 1',
+      roles: ['ADMIN'],
+    };
+    (adminService.getUserById as jest.Mock).mockResolvedValue(expected as any);
+
+    const result = await controller.getUserById('u1');
+
+    expect(adminService.getUserById).toHaveBeenCalledWith('u1');
     expect(result).toBe(expected);
   });
 

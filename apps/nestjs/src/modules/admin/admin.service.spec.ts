@@ -658,6 +658,41 @@ describe('AdminService', () => {
     });
   });
 
+  describe('getUserById', () => {
+    it('throws NotFoundException if user does not exist', async () => {
+      dataSource.getRepository.mockReturnValueOnce({
+        findOne: jest.fn().mockResolvedValue(null),
+      });
+
+      await expect(service.getUserById('missing-id')).rejects.toThrow(NotFoundException);
+    });
+
+    it('returns user profile with mapped roles and statistics', async () => {
+      const mockUser = {
+        id: 'u1',
+        fullName: 'Test User',
+        email: 'test@stm.dev',
+        phone: '0901234567',
+        avatarUrl: 'https://example.com/avatar.jpg',
+        status: 'ACTIVE',
+        userRoles: [{ isActive: true, role: { code: 'ADMIN' } }],
+        createdAt: new Date('2026-01-01'),
+        updatedAt: new Date('2026-01-02'),
+      };
+      dataSource.getRepository.mockReturnValueOnce({
+        findOne: jest.fn().mockResolvedValue(mockUser),
+      });
+      dataSource.query.mockResolvedValue([]);
+
+      const result = await service.getUserById('u1');
+      expect(result.id).toBe('u1');
+      expect(result.email).toBe('test@stm.dev');
+      expect(result.fullName).toBe('Test User');
+      expect(result.roles).toEqual(['ADMIN']);
+      expect(result.statistics).toBeDefined();
+    });
+  });
+
   describe('getUsersSummaryStatistics', () => {
     it('aggregates platform metrics across users, reviews, and surveys', async () => {
       dataSource.query.mockImplementation((sql: string) => {

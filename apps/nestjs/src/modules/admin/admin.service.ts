@@ -60,7 +60,7 @@ export class AdminService {
     const qb = this.dataSource
       .getRepository(User)
       .createQueryBuilder('u')
-      .leftJoinAndSelect('u.userRoles', 'ur', 'ur.isActive = true')
+      .leftJoinAndSelect('u.userRoles', 'ur', 'ur.is_active = true')
       .leftJoinAndSelect('ur.role', 'r');
 
     if (q.status) {
@@ -556,18 +556,36 @@ export class AdminService {
   }
 
   async getUserById(userId: string) {
-    const user = await this.dataSource.getRepository(User).findOne({
-      where: { id: userId },
-      relations: ['userRoles', 'userRoles.role'],
-    });
+    let user: User | null = null;
+    if (this.userRepo && typeof this.userRepo.findOne === 'function') {
+      user = await this.userRepo.findOne({
+        where: { id: userId },
+        relations: ['userRoles', 'userRoles.role'],
+      });
+    } else if (this.dataSource) {
+      user = await this.dataSource.getRepository(User).findOne({
+        where: { id: userId },
+        relations: ['userRoles', 'userRoles.role'],
+      });
+    }
     if (!user) throw new NotFoundException('User ' + userId + ' not found');
 
     const statsMap = await this.batchLoadUserStatistics([userId]);
     const statistics = statsMap.get(userId) || this.defaultUserStatistics();
-    const roles = (user.userRoles || [])
+    let roles = (user.userRoles || [])
       .filter((ur) => ur.isActive)
       .map((ur) => ur.role?.code)
       .filter((code): code is string => Boolean(code));
+
+    if (roles.length === 0 && this.dataSource) {
+      try {
+        const roleRows: any[] = await this.dataSource.query(
+          `SELECT r.code FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = $1 AND ur.is_active = true`,
+          [userId],
+        );
+        roles = roleRows.map((r) => r.code);
+      } catch {}
+    }
 
     return {
       id: user.id,
