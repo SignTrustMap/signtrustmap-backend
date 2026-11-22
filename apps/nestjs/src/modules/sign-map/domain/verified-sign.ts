@@ -115,6 +115,7 @@ export interface NearbySignCandidate {
 
 export interface ConfirmSignRequest {
   isPresent: boolean;
+  reportType?: 'MISSING' | 'OUTDATED' | 'WRONG_INFO';
   latitude?: number;
   longitude?: number;
   photoEvidenceUrl?: string;
@@ -125,6 +126,7 @@ export interface ConfirmSignResponse {
   success: boolean;
   signId: string;
   isPresent: boolean;
+  reportType?: 'MISSING' | 'OUTDATED' | 'WRONG_INFO';
   creditsAwarded: number;
   cooldownActive: boolean;
   revalidationTaskId?: string;

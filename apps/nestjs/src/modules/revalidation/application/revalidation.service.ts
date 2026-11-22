@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, ForbiddenException, HttpException, HttpStatus, Logger, Optional } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ConflictException, ForbiddenException, HttpException, HttpStatus, Logger, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, EntityManager, In } from 'typeorm';
 import { RevalidationDecision, RevalDecision } from '../infrastructure/persistence/revalidation-decision.entity';
@@ -19,6 +19,9 @@ import { ModerationCase } from '../../moderation/infrastructure/persistence/mode
 import { SurveyorProfile } from '../../survey/infrastructure/persistence/surveyor-profile.entity';
 import { TrafficSignType } from '../../catalog/traffic-sign-type.entity';
 import { ConsensusConfig } from '../../consensus/infrastructure/persistence/consensus-config.entity';
+import { SystemParametersService } from '../../system-parameters/system-parameters.service';
+import { decodeMedia, validateFileSignature } from '../../survey/domain/media-validator';
+import { MediaFileType } from '../../survey/domain/submission-contract';
 
 const DEFAULT_MIN_VOTES_REQUIRED = 1;
 const DEFAULT_MAX_PROXIMITY_METERS = 50;
@@ -52,7 +55,9 @@ export interface RevalidationConsensusSummary {
   escalatedToModeration?: boolean;
   creditedSubmitters?: number;
   creditedReviewers?: number;
+  creditedReporters?: number;
   rewardPerSubmitter?: number;
+  rewardPolicy?: string;
   taskId?: string;
   earlyClassification?: EarlyClassificationResult | null;
 }
@@ -78,6 +83,7 @@ export class RevalidationService {
     @Optional() @InjectRepository(SurveyorProfile) private readonly surveyorProfiles?: Repository<SurveyorProfile>,
     @Optional() @InjectRepository(TrafficSignType) private readonly signTypes?: Repository<TrafficSignType>,
     @Optional() @InjectRepository(ConsensusConfig) private readonly consensusConfigs?: Repository<ConsensusConfig>,
+    @Optional() private readonly paramService?: SystemParametersService,
   ) {}
   async listTasks(
     page = 1,
@@ -540,8 +546,50 @@ export class RevalidationService {
       throw new HttpException(`Daily submission limit of ${dailySubmissionLimit} evidences per task exceeded (last 24h: ${recentCount})`, HttpStatus.TOO_MANY_REQUESTS);
     }
 
+    // ---- Duplicate submission guard for same surveyor on same task (unless previous evidence was marked UNCLEAR/INVALID) ----
+    if (typeof this.dataSource?.query === 'function') {
+      const dupRows: any[] = await this.dataSource.query(
+        `SELECT ev.id
+         FROM revalidation_evidences ev
+         WHERE ev.task_id = $1
+           AND ev.user_id = $2
+           AND NOT EXISTS (
+             SELECT 1 FROM revalidation_decisions rd
+             WHERE rd.evidence_id = ev.id AND rd.decision IN ('UNCLEAR', 'INVALID')
+           )
+         LIMIT 1`,
+        [taskId, userId],
+      );
+      if (Array.isArray(dupRows) && dupRows.length > 0) {
+        throw new ConflictException(
+          'You have already submitted active evidence for this revalidation task (duplicate submission rejected)',
+        );
+      }
+    }
+
     let mediaUrl = dto.mediaUrl ?? null;
     if (file) {
+      const maxEvidenceMb = this.paramService
+        ? await this.paramService.getNumber('revalidation.max_evidence_size_mb', 20)
+        : 20;
+      const maxEvidenceBytes = Math.max(1, maxEvidenceMb) * 1024 * 1024;
+      if (!file.buffer || file.size <= 0 || file.size > maxEvidenceBytes) {
+        throw new BadRequestException(
+          `Evidence file size is invalid. Allowed range: 1 byte to ${maxEvidenceMb} MB.`,
+        );
+      }
+      const sigResult = validateFileSignature(MediaFileType.IMAGE, file.buffer);
+      if (!sigResult.valid) {
+        throw new BadRequestException(
+          sigResult.error ?? 'Uploaded evidence file is not a valid image signature (JPEG, PNG, WebP, HEIF)',
+        );
+      }
+      const decodeResult = decodeMedia(MediaFileType.IMAGE, file.buffer);
+      if (!decodeResult.valid) {
+        throw new BadRequestException(
+          decodeResult.error ?? 'Uploaded evidence image is corrupted or cannot be decoded',
+        );
+      }
       const key = 'revalidation/' + taskId + '/' + randomUUID() + '-' + file.originalname;
       await this.storage.putObject('stm-sign-crops', key, file.buffer, file.mimetype);
       mediaUrl = this.toS3Url(key, taskId);
@@ -1483,7 +1531,9 @@ export class RevalidationService {
       signAction,
       creditedSubmitters: rewards.creditedSubmitters,
       creditedReviewers: rewards.creditedReviewers,
+      creditedReporters: rewards.creditedReporters,
       rewardPerSubmitter: rewards.rewardPerSubmitter,
+      rewardPolicy: rewards.rewardPolicy,
       taskId: task.id,
       earlyClassification: aiEarlyClassification,
     };
@@ -1514,6 +1564,14 @@ export class RevalidationService {
     const query = manager ? manager.query.bind(manager) : this.dataSource.query.bind(this.dataSource);
     const latestEvidenceMediaUrl = latestEvidence?.media_url ?? null;
     try {
+      const snapRows: any[] = await query(
+        `SELECT sign_type_id, location, traffic_direction, sign_crop_url
+         FROM verified_traffic_signs
+         WHERE id = $1`,
+        [signId],
+      );
+      const prevSnap = snapRows[0] ?? {};
+
       if (winningDecision === RevalDecision.UNCHANGED || winningDecision === RevalDecision.STILL_ACTIVE) {
         if (latestEvidenceMediaUrl) {
           await query(
@@ -1535,11 +1593,34 @@ export class RevalidationService {
             [signId],
           );
         }
-        await query("INSERT INTO verified_sign_history (verified_sign_id, change_reason) VALUES ($1, 'REVALIDATION_UPDATE')", [signId]);
+        await query(
+          `INSERT INTO verified_sign_history
+             (verified_sign_id, previous_sign_type_id, previous_location, previous_traffic_direction, previous_crop_url, change_reason)
+           VALUES ($1, $2, $3, $4, $5, 'REVALIDATION_UPDATE')`,
+          [
+            signId,
+            prevSnap.sign_type_id ?? null,
+            prevSnap.location ?? null,
+            prevSnap.traffic_direction ?? null,
+            prevSnap.sign_crop_url ?? null,
+          ],
+        );
         await query("INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, note) VALUES ($1,'REVALIDATED','STILL_ACTIVE: freshness refreshed')", [signId]);
         return 'REFRESHED';
       } else if (winningDecision === RevalDecision.MISSING || winningDecision === RevalDecision.REMOVED) {
         await query("UPDATE verified_traffic_signs SET status='DECOMMISSIONED', freshness_score=0, updated_at=now() WHERE id=$1", [signId]);
+        await query(
+          `INSERT INTO verified_sign_history
+             (verified_sign_id, previous_sign_type_id, previous_location, previous_traffic_direction, previous_crop_url, change_reason)
+           VALUES ($1, $2, $3, $4, $5, 'REVALIDATION_DECOMMISSIONED')`,
+          [
+            signId,
+            prevSnap.sign_type_id ?? null,
+            prevSnap.location ?? null,
+            prevSnap.traffic_direction ?? null,
+            prevSnap.sign_crop_url ?? null,
+          ],
+        );
         await query("INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, note) VALUES ($1,'DECOMMISSIONED','Revalidation: REMOVED / DECOMMISSIONED')", [signId]);
         return 'DECOMMISSIONED';
       } else if (winningDecision === RevalDecision.CHANGED && suggestedSignTypeId != null) {
@@ -1555,8 +1636,7 @@ export class RevalidationService {
             this.logger.warn(`AI classification fallback failed in applySignOutcome: ${e?.message}`);
           }
         }
-        const prevRows: any[] = await query('SELECT sign_type_id FROM verified_traffic_signs WHERE id=$1', [signId]);
-        const previousType = prevRows.length ? prevRows[0].sign_type_id : null;
+        const previousType = prevSnap.sign_type_id ?? null;
         if (latestEvidenceMediaUrl) {
           await query(
             `UPDATE verified_traffic_signs
@@ -1578,8 +1658,16 @@ export class RevalidationService {
           );
         }
         await query(
-          "INSERT INTO verified_sign_history (verified_sign_id, previous_sign_type_id, change_reason) VALUES ($1, $2, 'REVALIDATION_UPDATE')",
-          [signId, previousType],
+          `INSERT INTO verified_sign_history
+             (verified_sign_id, previous_sign_type_id, previous_location, previous_traffic_direction, previous_crop_url, change_reason)
+           VALUES ($1, $2, $3, $4, $5, 'REVALIDATION_UPDATE')`,
+          [
+            signId,
+            previousType,
+            prevSnap.location ?? null,
+            prevSnap.traffic_direction ?? null,
+            prevSnap.sign_crop_url ?? null,
+          ],
         );
         const lifecycleNote = aiEarlyClassification?.standardCode
           ? `CHANGED: sign type updated to #${suggestedSignTypeId} (AI early classification: ${aiEarlyClassification.standardCode}, conf: ${aiEarlyClassification.confidence?.toFixed(2) ?? 'N/A'})`
@@ -1602,13 +1690,57 @@ export class RevalidationService {
     decisionRows: RevalDecisionRow[],
     evidenceRows: EvidenceRow[],
     winningDecision: RevalDecision,
-  ): Promise<{ creditedSubmitters: number; creditedReviewers: number; rewardPerSubmitter: number }> {
+  ): Promise<{
+    creditedSubmitters: number;
+    creditedReviewers: number;
+    creditedReporters: number;
+    rewardPerSubmitter: number;
+    rewardPolicy: string;
+  }> {
     const isDecommission = winningDecision === RevalDecision.MISSING || winningDecision === RevalDecision.REMOVED;
+    const isChanged = winningDecision === RevalDecision.CHANGED;
     const txType = isDecommission ? TransactionType.SIGN_DECOMMISSION_REWARD : TransactionType.REVALIDATION_REWARD;
     const defaultAmount = isDecommission ? 30 : (task.rewardCredits || 10);
     const rewardAmount = await this.walletService.resolveRewardAmount(txType, defaultAmount);
 
-    const uniqueSubmitters = [...new Set(evidenceRows.map(e => e.user_id as string))];
+    const rawPolicy = this.paramService
+      ? await this.paramService.getString('revalidation.reward_policy', 'ALIGNED_ONLY')
+      : 'ALIGNED_ONLY';
+    const rewardPolicy = ['ALIGNED_ONLY', 'FIRST_VALID', 'SPLIT_EQUAL'].includes(rawPolicy.toUpperCase())
+      ? rawPolicy.toUpperCase()
+      : 'ALIGNED_ONLY';
+
+    // Determine aligned evidence rows (ordered earliest-first for FIRST_VALID attribution)
+    const alignedTypes = isChanged
+      ? ['CHANGED']
+      : isDecommission
+        ? ['REMOVED', 'MISSING']
+        : ['STILL_ACTIVE', 'UNCHANGED'];
+    const chronologicalEvidences = [...evidenceRows].reverse();
+    const explicitlyAligned = chronologicalEvidences.filter((e) =>
+      alignedTypes.includes(String(e.evidence_type ?? '').toUpperCase()),
+    );
+    const eligibleEvidenceRows =
+      explicitlyAligned.length > 0
+        ? explicitlyAligned
+        : chronologicalEvidences.filter((e) => !e.evidence_type);
+    const uniqueSubmitters = [
+      ...new Set(
+        (eligibleEvidenceRows.length > 0 ? eligibleEvidenceRows : chronologicalEvidences)
+          .map((e) => e.user_id as string)
+          .filter(Boolean),
+      ),
+    ];
+
+    const rewardedSubmitters =
+      rewardPolicy === 'FIRST_VALID' && uniqueSubmitters.length > 0
+        ? [uniqueSubmitters[0]]
+        : uniqueSubmitters;
+    const rewardPerSubmitter =
+      rewardPolicy === 'SPLIT_EQUAL' && rewardedSubmitters.length > 1
+        ? Math.max(1, Math.floor(rewardAmount / rewardedSubmitters.length))
+        : rewardAmount;
+
     const alignedReviewers = [...new Set(decisionRows.filter(d => {
       if (isDecommission) return d.decision === RevalDecision.MISSING || d.decision === RevalDecision.REMOVED;
       if (winningDecision === RevalDecision.UNCHANGED || winningDecision === RevalDecision.STILL_ACTIVE) {
@@ -1617,12 +1749,16 @@ export class RevalidationService {
       return d.decision === winningDecision;
     }).map(d => d.reviewer_id as string))];
 
-    let creditedSubmitters = 0; let creditedReviewers = 0;
-    for (const uid of uniqueSubmitters) {
+    let creditedSubmitters = 0;
+    let creditedReviewers = 0;
+    let creditedReporters = 0;
+    const creditedUsers = new Set<string>();
+
+    for (const uid of rewardedSubmitters) {
       try {
         await this.walletService.creditUser(
           uid,
-          rewardAmount,
+          rewardPerSubmitter,
           txType,
           'revalidation_task',
           task.id,
@@ -1630,13 +1766,15 @@ export class RevalidationService {
           { idempotencyKey: `revalidation:${task.id}:${txType}:${uid}` },
         );
         creditedSubmitters++;
+        creditedUsers.add(uid);
       } catch (e: any) {
         this.logger.error('revalidation credit failed for task ' + task.id + ', user ' + uid + ': ' + e?.message);
         throw e;
       }
     }
+
     for (const rid of alignedReviewers) {
-      if (uniqueSubmitters.includes(rid)) continue; // already credited as submitter
+      if (creditedUsers.has(rid)) continue; // already credited as submitter
       try {
         await this.walletService.creditUser(
           rid,
@@ -1648,12 +1786,63 @@ export class RevalidationService {
           { idempotencyKey: `revalidation:${task.id}:${txType}:${rid}` },
         );
         creditedReviewers++;
+        creditedUsers.add(rid);
       } catch (e: any) {
         this.logger.error('revalidation reviewer credit failed for task ' + task.id + ', user ' + rid + ': ' + e?.message);
         throw e;
       }
     }
-    return { creditedSubmitters, creditedReviewers, rewardPerSubmitter: rewardAmount };
+
+    // Issue #4: Credit Drivers who initially reported this sign as missing/outdated when consensus confirms REMOVED or CHANGED
+    if ((isDecommission || isChanged) && typeof this.dataSource?.query === 'function') {
+      try {
+        const reporterReward = this.paramService
+          ? await this.paramService.getNumber('revalidation.reporter_reward_credits', 10)
+          : 10;
+        if (reporterReward > 0) {
+          const reporterRows: Array<{ user_id: string }> = await this.dataSource.query(
+            `SELECT DISTINCT user_id
+             FROM sign_confirmations
+             WHERE sign_id = $1
+               AND is_present = FALSE
+               AND COALESCE(credits_awarded, 0) = 0
+               AND created_at >= now() - interval '30 days'`,
+            [task.verifiedSignId],
+          );
+          for (const row of reporterRows) {
+            const driverId = row.user_id;
+            if (!driverId || creditedUsers.has(driverId)) continue;
+            await this.walletService.creditUser(
+              driverId,
+              reporterReward,
+              TransactionType.REVALIDATION_REWARD,
+              'revalidation_task',
+              task.id,
+              `Driver outdated/missing sign report verified (${winningDecision})`,
+              { idempotencyKey: `revalidation-reporter:${task.id}:${driverId}` },
+            );
+            await this.dataSource.query(
+              `UPDATE sign_confirmations
+               SET credits_awarded = $1
+               WHERE sign_id = $2 AND user_id = $3 AND is_present = FALSE AND COALESCE(credits_awarded, 0) = 0`,
+              [reporterReward, task.verifiedSignId, driverId],
+            );
+            creditedReporters++;
+            creditedUsers.add(driverId);
+          }
+        }
+      } catch (e: any) {
+        this.logger.warn(`Driver reporter reward attribution failed for task ${task.id}: ${e?.message}`);
+      }
+    }
+
+    return {
+      creditedSubmitters,
+      creditedReviewers,
+      creditedReporters,
+      rewardPerSubmitter,
+      rewardPolicy,
+    };
   }
 
   private async notifySubmitters(taskId: string, evidenceRows: EvidenceRow[], winningDecision: RevalDecision, rewardAmount: number) {
@@ -1711,6 +1900,57 @@ export class RevalidationService {
     }
 
     await this.notifySurveyorsForMissingSign(task, signId);
+
+    return task;
+  }
+
+  /**
+   * WBS #52 — Creates or escalates a revalidation task when an automated pipeline
+   * or field signal detects a discrepancy/change at an existing verified sign.
+   */
+  async triggerDetectedChangeTask(
+    signId: string,
+    detectedSignTypeId?: number,
+    reason?: string,
+  ): Promise<RevalidationTask> {
+    let task = await this.tasks.findOne({
+      where: {
+        verifiedSignId: signId,
+        status: In([TaskStatus.OPEN, TaskStatus.EVALUATING]),
+      },
+    });
+
+    if (task) {
+      task.priority = TaskPriority.HIGH;
+      task.rewardCredits = Math.max(task.rewardCredits, 15);
+      task = await this.tasks.save(task);
+    } else {
+      task = this.tasks.create({
+        verifiedSignId: signId,
+        priority: TaskPriority.HIGH,
+        rewardCredits: 15,
+        status: TaskStatus.OPEN,
+      });
+      task = await this.tasks.save(task);
+    }
+
+    const note =
+      reason ||
+      (detectedSignTypeId != null
+        ? `Detected potential sign change (observed sign_type_id=#${detectedSignTypeId})`
+        : 'Detected potential physical change at verified sign location');
+
+    if (typeof this.dataSource?.query === 'function') {
+      try {
+        await this.dataSource.query(
+          `INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, note)
+           VALUES ($1, 'CHANGE_DETECTED', $2)`,
+          [signId, note],
+        );
+      } catch (e: any) {
+        this.logger.warn(`Failed to log CHANGE_DETECTED lifecycle event for ${signId}: ${e?.message}`);
+      }
+    }
 
     return task;
   }
