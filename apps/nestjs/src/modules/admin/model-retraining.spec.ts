@@ -251,4 +251,111 @@ describe('ModelRetrainingSpec (MLOps Flow 14 & Req 1.5)', () => {
     const pipeStatus = await mlopsController.getPipelineStatus();
     expect(pipeStatus.status).toBe('HEALTHY');
   });
+
+  it('ML-010: compares candidate model version against active model using promotion gate thresholds', async () => {
+    mockDataSource.query
+      .mockResolvedValueOnce([
+        {
+          id: 50,
+          model_type: 'YOLO26',
+          version_tag: 'yolo26-v3.0',
+          is_active: false,
+          evaluation_metrics: { mAP50: 0.93, precision: 0.94, recall: 0.91 },
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: 49,
+          model_type: 'YOLO26',
+          version_tag: 'yolo26-v2.9',
+          is_active: true,
+          evaluation_metrics: { mAP50: 0.90, precision: 0.91, recall: 0.89 },
+        },
+      ]);
+
+    const comparison = await adminService.compareModelVersion(50);
+
+    expect(comparison.eligibleForPromotion).toBe(true);
+    expect(comparison.deltas.map50Delta).toBe(0.03);
+    expect(comparison.reasons).toEqual([]);
+  });
+
+  it('ML-011: blocks promoteModelVersion when candidate regresses beyond maxMetricRegression unless force=true', async () => {
+    mockDataSource.query
+      .mockResolvedValueOnce([
+        {
+          id: 51,
+          model_type: 'YOLO26',
+          version_tag: 'yolo26-bad',
+          is_active: false,
+          evaluation_metrics: { mAP50: 0.80 },
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: 49,
+          version_tag: 'yolo26-v2.9',
+          evaluation_metrics: { mAP50: 0.90 },
+        },
+      ]);
+
+    await expect(
+      adminService.promoteModelVersion(51, 'admin-uuid-1', '127.0.0.1'),
+    ).rejects.toThrow('Model promotion blocked');
+
+    // Now force override with reason
+    mockDataSource.query
+      .mockResolvedValueOnce([
+        {
+          id: 51,
+          model_type: 'YOLO26',
+          version_tag: 'yolo26-bad',
+          is_active: false,
+          evaluation_metrics: { mAP50: 0.80 },
+        },
+      ])
+      .mockResolvedValueOnce([]) // deactivate active
+      .mockResolvedValueOnce([]) // activate candidate
+      .mockResolvedValueOnce([]); // audit log
+
+    const forced = await adminService.promoteModelVersion(51, 'admin-uuid-1', '127.0.0.1', {
+      force: true,
+      reason: 'Emergency hotfix for nighttime signs',
+    });
+    expect(forced.isActive).toBe(true);
+    expect(forced.forcedOverride).toBe(true);
+  });
+
+  it('ML-012: supports targeted rollbackModelVersion to a specific targetVersionId and rejects mismatched model_type', async () => {
+    mockDataSource.query
+      .mockResolvedValueOnce([
+        { id: 52, model_type: 'YOLO26', version_tag: 'yolo26-v3.1', is_active: true },
+      ])
+      .mockResolvedValueOnce([
+        { id: 48, model_type: 'CLIP', version_tag: 'clip-v1.0' },
+      ]);
+
+    await expect(
+      adminService.rollbackModelVersion(52, 'admin-uuid-1', '127.0.0.1', { targetVersionId: 48 }),
+    ).rejects.toThrow('does not match');
+
+    mockDataSource.query
+      .mockResolvedValueOnce([
+        { id: 52, model_type: 'YOLO26', version_tag: 'yolo26-v3.1', is_active: true },
+      ])
+      .mockResolvedValueOnce([
+        { id: 47, model_type: 'YOLO26', version_tag: 'yolo26-v2.7-stable' },
+      ])
+      .mockResolvedValueOnce([]) // deactivate 52
+      .mockResolvedValueOnce([]) // activate 47
+      .mockResolvedValueOnce([]); // audit log
+
+    const rolled = await adminService.rollbackModelVersion(52, 'admin-uuid-1', '127.0.0.1', {
+      targetVersionId: 47,
+      reason: 'Reverting latency regression',
+    });
+    expect(rolled.rolledBack).toBe(true);
+    expect(rolled.reactivatedVersionId).toBe(47);
+    expect(rolled.reactivatedVersion).toBe('yolo26-v2.7-stable');
+  });
 });

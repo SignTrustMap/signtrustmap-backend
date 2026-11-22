@@ -11,8 +11,11 @@ import { UserStatusHistory } from './user-status-history.entity';
 import { ConsensusConfig } from '../consensus/infrastructure/persistence/consensus-config.entity';
 import { FreshnessRule } from '../revalidation/infrastructure/persistence/freshness-rule.entity';
 import { RewardRule } from '../rewards/infrastructure/persistence/reward-rule.entity';
+import { SystemParametersService } from '../system-parameters/system-parameters.service';
 import {
   BanWaveDto,
+  PromoteModelVersionDto,
+  RollbackModelVersionDto,
   UpdateConsensusConfigDto,
   UpdateRouteMatrixDto,
   TriggerRetrainDto,
@@ -44,6 +47,7 @@ export class AdminService {
     @Optional() @InjectRepository(ConsensusConfig) private readonly consensusConfigRepo?: Repository<ConsensusConfig>,
     @Optional() @InjectRepository(FreshnessRule) private readonly freshnessRuleRepo?: Repository<FreshnessRule>,
     @Optional() @InjectRepository(RewardRule) private readonly rewardRuleRepo?: Repository<RewardRule>,
+    @Optional() private readonly paramService?: SystemParametersService,
   ) {}
   async listUsers(q: {
     role?: string;
@@ -2000,26 +2004,54 @@ export class AdminService {
       [ps, offset],
     );
 
-    const items = rows.map((r: any) => ({
-      id: r.id,
-      modelType: r.model_type,
-      modelName: r.model_type === 'CLIP'
-        ? 'CLIP-ZeroShot-Classifier'
-        : (r.model_type === 'TRACKER' ? 'TrackTrack' : 'YOLO26-Detector'),
-      version: r.version_tag || `${String(r.model_type || '').toLowerCase()}-candidate`,
-      triggeredBy: r.triggered_by_name || 'System Admin',
-      startedAt: r.started_at,
-      completedAt: r.completed_at,
-      duration: r.completed_at && r.started_at
-        ? `${Math.round((new Date(r.completed_at).getTime() - new Date(r.started_at).getTime()) / 60000)}m`
-        : 'Running',
-      trainingSamplesCount: 50,
-      metricBefore: 88.4,
-      metricAfter: 91.2,
-      metricGain: '+2.8%',
-      status: r.status === 'COMPLETED' ? 'Active Deployed' : r.status === 'RUNNING' ? 'Evaluating' : r.status,
-      evaluationSummary: r.evaluation_summary,
-    }));
+    const items = rows.map((r: any) => {
+      let parsedMetrics: Record<string, any> = {};
+      if (r.evaluation_summary) {
+        try {
+          parsedMetrics =
+            typeof r.evaluation_summary === 'string'
+              ? JSON.parse(r.evaluation_summary)
+              : r.evaluation_summary;
+        } catch {}
+      }
+      const rawMap50 = parsedMetrics?.mAP50 ?? parsedMetrics?.map50;
+      const metricAfter =
+        rawMap50 != null && Number.isFinite(Number(rawMap50))
+          ? Number((Number(rawMap50) <= 1 ? Number(rawMap50) * 100 : Number(rawMap50)).toFixed(2))
+          : null;
+      const rawBefore = parsedMetrics?.metricBefore ?? parsedMetrics?.previousMap50;
+      const metricBefore =
+        rawBefore != null && Number.isFinite(Number(rawBefore))
+          ? Number((Number(rawBefore) <= 1 ? Number(rawBefore) * 100 : Number(rawBefore)).toFixed(2))
+          : null;
+      const metricGain =
+        metricAfter != null && metricBefore != null
+          ? `${metricAfter >= metricBefore ? '+' : ''}${(metricAfter - metricBefore).toFixed(2)}%`
+          : null;
+
+      return {
+        id: r.id,
+        modelType: r.model_type,
+        modelName: r.model_type === 'CLIP'
+          ? 'CLIP-ZeroShot-Classifier'
+          : (r.model_type === 'TRACKER' ? 'TrackTrack' : 'YOLO26-Detector'),
+        version: r.version_tag || `${String(r.model_type || '').toLowerCase()}-candidate`,
+        triggeredBy: r.triggered_by_name || 'System Admin',
+        startedAt: r.started_at,
+        completedAt: r.completed_at,
+        duration: r.completed_at && r.started_at
+          ? `${Math.round((new Date(r.completed_at).getTime() - new Date(r.started_at).getTime()) / 60000)}m`
+          : 'Running',
+        trainingSamplesCount: parsedMetrics?.trainingSamplesCount ?? parsedMetrics?.samplesCount ?? null,
+        metricBefore,
+        metricAfter,
+        metricGain,
+        precision: parsedMetrics?.precision ?? null,
+        recall: parsedMetrics?.recall ?? null,
+        status: r.status === 'COMPLETED' ? 'Active Deployed' : r.status === 'RUNNING' ? 'Evaluating' : r.status,
+        evaluationSummary: r.evaluation_summary,
+      };
+    });
 
     return {
       items,
@@ -2082,14 +2114,148 @@ export class AdminService {
     }));
   }
 
+  private parseEvaluationMetrics(raw: any): Record<string, any> {
+    if (!raw) return {};
+    if (typeof raw === 'string') {
+      try {
+        return JSON.parse(raw);
+      } catch {
+        return {};
+      }
+    }
+    return typeof raw === 'object' ? raw : {};
+  }
+
+  private extractMap50(metrics: Record<string, any>): number | null {
+    const val = metrics?.mAP50 ?? metrics?.map50 ?? metrics?.f1 ?? metrics?.accuracy;
+    if (val == null || Number.isNaN(Number(val))) return null;
+    const num = Number(val);
+    return num > 1 ? Number((num / 100).toFixed(4)) : num;
+  }
+
+  /**
+   * Compares a candidate AI model version against the currently active production version
+   * of the same model_type using configurable promotion gate thresholds (Issue #9).
+   */
+  async compareModelVersion(id: number) {
+    const rows = await this.dataSource.query(
+      `SELECT id, model_type, version_tag, artifact_url, trained_at, is_active, evaluation_metrics, created_at
+       FROM ai_model_versions WHERE id = $1`,
+      [id],
+    );
+    if (rows.length === 0) {
+      throw new NotFoundException(`AI model version #${id} not found`);
+    }
+    const candidate = rows[0];
+    const activeRows = await this.dataSource.query(
+      `SELECT id, model_type, version_tag, artifact_url, trained_at, is_active, evaluation_metrics, created_at
+       FROM ai_model_versions
+       WHERE model_type = $1 AND is_active = true AND id <> $2
+       ORDER BY created_at DESC LIMIT 1`,
+      [candidate.model_type, id],
+    );
+    const active = activeRows[0] ?? null;
+
+    const minMap50 = this.paramService
+      ? await this.paramService.getNumber('ai.model.min_map50', 0.75)
+      : 0.75;
+    const maxRegression = this.paramService
+      ? await this.paramService.getNumber('ai.model.max_metric_regression', 0.02)
+      : 0.02;
+
+    const candidateMetrics = this.parseEvaluationMetrics(candidate.evaluation_metrics);
+    const activeMetrics = active ? this.parseEvaluationMetrics(active.evaluation_metrics) : {};
+    const candidateMap50 = this.extractMap50(candidateMetrics);
+    const activeMap50 = this.extractMap50(activeMetrics);
+
+    const reasons: string[] = [];
+    if (candidateMap50 != null && candidateMap50 < minMap50) {
+      reasons.push(
+        `Candidate mAP50 (${candidateMap50}) is below minimum threshold (${minMap50})`,
+      );
+    }
+    if (candidateMap50 != null && activeMap50 != null && candidateMap50 < activeMap50 - maxRegression) {
+      reasons.push(
+        `Candidate mAP50 (${candidateMap50}) regresses by ${(activeMap50 - candidateMap50).toFixed(4)} vs active (${activeMap50}), exceeding max allowed regression (${maxRegression})`,
+      );
+    }
+
+    return {
+      candidate: {
+        id: candidate.id,
+        modelType: candidate.model_type,
+        versionTag: candidate.version_tag,
+        isActive: candidate.is_active,
+        evaluationMetrics: candidateMetrics,
+        map50: candidateMap50,
+      },
+      active: active
+        ? {
+            id: active.id,
+            modelType: active.model_type,
+            versionTag: active.version_tag,
+            isActive: active.is_active,
+            evaluationMetrics: activeMetrics,
+            map50: activeMap50,
+          }
+        : null,
+      thresholds: {
+        minMap50,
+        maxMetricRegression: maxRegression,
+      },
+      deltas: {
+        map50Delta:
+          candidateMap50 != null && activeMap50 != null
+            ? Number((candidateMap50 - activeMap50).toFixed(4))
+            : null,
+      },
+      eligibleForPromotion: reasons.length === 0,
+      reasons,
+    };
+  }
+
   /**
    * Governed promotion of candidate AI model version to active production
    */
-  async promoteModelVersion(id: number, adminUserId: string, ip?: string) {
+  async promoteModelVersion(
+    id: number,
+    adminUserId: string,
+    ip?: string,
+    options?: PromoteModelVersionDto,
+  ) {
+    const force = options?.force ?? false;
+    const reason = options?.reason?.trim() || null;
+
     if (this.aiModelVersionRepo && this.auditLogRepo) {
       const target = await this.aiModelVersionRepo.findOne({ where: { id } });
       if (!target) {
         throw new NotFoundException(`AI model version #${id} not found`);
+      }
+      const candidateMetrics = this.parseEvaluationMetrics(target.evaluationMetrics);
+      const candidateMap50 = this.extractMap50(candidateMetrics);
+      if (candidateMap50 != null && !force) {
+        const minMap50 = this.paramService
+          ? await this.paramService.getNumber('ai.model.min_map50', 0.75)
+          : 0.75;
+        const maxRegression = this.paramService
+          ? await this.paramService.getNumber('ai.model.max_metric_regression', 0.02)
+          : 0.02;
+        if (candidateMap50 < minMap50) {
+          throw new BadRequestException(
+            `Model promotion blocked: candidate mAP50 (${candidateMap50}) is below minimum threshold (${minMap50}). Pass force=true with reason to override.`,
+          );
+        }
+        const activeModel = await this.aiModelVersionRepo.findOne({
+          where: { modelType: target.modelType, isActive: true },
+        });
+        if (activeModel && activeModel.id !== id) {
+          const activeMap50 = this.extractMap50(this.parseEvaluationMetrics(activeModel.evaluationMetrics));
+          if (activeMap50 != null && candidateMap50 < activeMap50 - maxRegression) {
+            throw new BadRequestException(
+              `Model promotion blocked: candidate mAP50 (${candidateMap50}) regresses below active model (${activeMap50}) beyond max regression (${maxRegression}). Pass force=true with reason to override.`,
+            );
+          }
+        }
       }
       await this.aiModelVersionRepo.update({ modelType: target.modelType, isActive: true }, { isActive: false });
       await this.aiModelVersionRepo.update(id, { isActive: true });
@@ -2100,7 +2266,13 @@ export class AdminService {
           resourceName: 'ai_model_versions',
           resourceId: String(id),
           oldValues: { is_active: false },
-          newValues: { is_active: true, versionTag: target.versionTag, modelType: target.modelType },
+          newValues: {
+            is_active: true,
+            versionTag: target.versionTag,
+            modelType: target.modelType,
+            forcedOverride: force,
+            reason,
+          },
           ipAddress: ip ?? null,
         }),
       );
@@ -2109,6 +2281,7 @@ export class AdminService {
         modelType: target.modelType,
         versionTag: target.versionTag,
         isActive: true,
+        forcedOverride: force,
         promotedAt: new Date(),
       };
     }
@@ -2121,6 +2294,39 @@ export class AdminService {
       throw new NotFoundException(`AI model version #${id} not found`);
     }
     const target = rows[0];
+
+    // Promotion Gate: compare candidate evaluation_metrics against configured thresholds & active version
+    const candidateMetrics = this.parseEvaluationMetrics(target.evaluation_metrics);
+    const candidateMap50 = this.extractMap50(candidateMetrics);
+    if (candidateMap50 != null && !force) {
+      const minMap50 = this.paramService
+        ? await this.paramService.getNumber('ai.model.min_map50', 0.75)
+        : 0.75;
+      const maxRegression = this.paramService
+        ? await this.paramService.getNumber('ai.model.max_metric_regression', 0.02)
+        : 0.02;
+
+      if (candidateMap50 < minMap50) {
+        throw new BadRequestException(
+          `Model promotion blocked: candidate mAP50 (${candidateMap50}) is below minimum threshold (${minMap50}). Pass force=true with reason to override.`,
+        );
+      }
+
+      const activeRows = await this.dataSource.query(
+        `SELECT id, version_tag, evaluation_metrics FROM ai_model_versions
+         WHERE model_type = $1 AND is_active = true AND id <> $2
+         ORDER BY created_at DESC LIMIT 1`,
+        [target.model_type, id],
+      );
+      if (activeRows.length > 0) {
+        const activeMap50 = this.extractMap50(this.parseEvaluationMetrics(activeRows[0].evaluation_metrics));
+        if (activeMap50 != null && candidateMap50 < activeMap50 - maxRegression) {
+          throw new BadRequestException(
+            `Model promotion blocked: candidate mAP50 (${candidateMap50}) regresses below active model (${activeMap50}) beyond max regression (${maxRegression}). Pass force=true with reason to override.`,
+          );
+        }
+      }
+    }
 
     // Deactivate previous active version of same model type
     await this.dataSource.query(
@@ -2142,7 +2348,13 @@ export class AdminService {
         adminUserId,
         String(id),
         JSON.stringify({ is_active: false }),
-        JSON.stringify({ is_active: true, versionTag: target.version_tag, modelType: target.model_type }),
+        JSON.stringify({
+          is_active: true,
+          versionTag: target.version_tag,
+          modelType: target.model_type,
+          forcedOverride: force,
+          reason,
+        }),
         ip ?? null,
       ],
     );
@@ -2152,25 +2364,48 @@ export class AdminService {
       modelType: target.model_type,
       versionTag: target.version_tag,
       isActive: true,
+      forcedOverride: force,
       promotedAt: new Date(),
     };
   }
 
   /**
-   * Rollback an active model version to previous stable deployment
+   * Rollback an active model version to a specific stable targetVersionId or previous deployment
    */
-  async rollbackModelVersion(id: number, adminUserId: string, ip?: string) {
+  async rollbackModelVersion(
+    id: number,
+    adminUserId: string,
+    ip?: string,
+    options?: RollbackModelVersionDto,
+  ) {
+    const targetVersionId = options?.targetVersionId;
+    const reason = options?.reason?.trim() || null;
+
     if (this.aiModelVersionRepo && this.auditLogRepo) {
       const target = await this.aiModelVersionRepo.findOne({ where: { id } });
       if (!target) {
         throw new NotFoundException(`AI model version #${id} not found`);
       }
+      let prev: AiModelVersion | null = null;
+      if (targetVersionId != null) {
+        if (targetVersionId === id) {
+          throw new BadRequestException('targetVersionId must differ from the version being rolled back');
+        }
+        prev = await this.aiModelVersionRepo.findOne({ where: { id: targetVersionId } });
+        if (!prev) {
+          throw new NotFoundException(`Rollback target AI model version #${targetVersionId} not found`);
+        }
+        if (prev.modelType !== target.modelType) {
+          throw new BadRequestException(`Rollback target modelType (${prev.modelType}) does not match (${target.modelType})`);
+        }
+      } else {
+        prev = await this.aiModelVersionRepo
+          .createQueryBuilder('m')
+          .where('m.modelType = :modelType AND m.id != :id', { modelType: target.modelType, id })
+          .orderBy('m.createdAt', 'DESC')
+          .getOne();
+      }
       await this.aiModelVersionRepo.update(id, { isActive: false });
-      const prev = await this.aiModelVersionRepo
-        .createQueryBuilder('m')
-        .where('m.modelType = :modelType AND m.id != :id', { modelType: target.modelType, id })
-        .orderBy('m.createdAt', 'DESC')
-        .getOne();
       if (prev) {
         await this.aiModelVersionRepo.update(prev.id, { isActive: true });
       }
@@ -2181,13 +2416,14 @@ export class AdminService {
           resourceName: 'ai_model_versions',
           resourceId: String(id),
           oldValues: { wasActive: target.isActive },
-          newValues: { reactivatedId: prev?.id },
+          newValues: { reactivatedId: prev?.id ?? null, reason },
           ipAddress: ip ?? null,
         }),
       );
       return {
         versionId: id,
         rolledBack: true,
+        reactivatedVersionId: prev?.id ?? null,
         reactivatedVersion: prev ? prev.versionTag : null,
       };
     }
@@ -2201,23 +2437,46 @@ export class AdminService {
     }
     const target = rows[0];
 
+    let reactivated: any = null;
+    if (targetVersionId != null) {
+      if (targetVersionId === id) {
+        throw new BadRequestException('targetVersionId must differ from the version being rolled back');
+      }
+      const explicitRows = await this.dataSource.query(
+        `SELECT id, model_type, version_tag FROM ai_model_versions WHERE id = $1`,
+        [targetVersionId],
+      );
+      if (explicitRows.length === 0) {
+        throw new NotFoundException(`Rollback target AI model version #${targetVersionId} not found`);
+      }
+      if (explicitRows[0].model_type !== target.model_type) {
+        throw new BadRequestException(
+          `Rollback target model_type (${explicitRows[0].model_type}) does not match (${target.model_type})`,
+        );
+      }
+      reactivated = explicitRows[0];
+    }
+
     await this.dataSource.query(
       `UPDATE ai_model_versions SET is_active = false WHERE id = $1`,
       [id],
     );
 
-    // Reactivate previous candidate if available
-    const prevRows = await this.dataSource.query(
-      `SELECT id, version_tag FROM ai_model_versions WHERE model_type = $1 AND id <> $2 ORDER BY created_at DESC LIMIT 1`,
-      [target.model_type, id],
-    );
-    let reactivated = null;
-    if (prevRows.length > 0) {
+    if (!reactivated) {
+      const prevRows = await this.dataSource.query(
+        `SELECT id, version_tag FROM ai_model_versions WHERE model_type = $1 AND id <> $2 ORDER BY created_at DESC LIMIT 1`,
+        [target.model_type, id],
+      );
+      if (prevRows.length > 0) {
+        reactivated = prevRows[0];
+      }
+    }
+
+    if (reactivated) {
       await this.dataSource.query(
         `UPDATE ai_model_versions SET is_active = true WHERE id = $1`,
-        [prevRows[0].id],
+        [reactivated.id],
       );
-      reactivated = prevRows[0];
     }
 
     await this.dataSource.query(
@@ -2227,7 +2486,7 @@ export class AdminService {
         adminUserId,
         String(id),
         JSON.stringify({ wasActive: target.is_active }),
-        JSON.stringify({ reactivatedId: reactivated?.id }),
+        JSON.stringify({ reactivatedId: reactivated?.id ?? null, reason }),
         ip ?? null,
       ],
     );
@@ -2235,6 +2494,7 @@ export class AdminService {
     return {
       versionId: id,
       rolledBack: true,
+      reactivatedVersionId: reactivated?.id ?? null,
       reactivatedVersion: reactivated ? reactivated.version_tag : null,
     };
   }
