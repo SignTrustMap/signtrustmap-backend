@@ -50,4 +50,16 @@ export class RevalidationTask {
 
   @Column({ name: 'expired_at', type: 'timestamptz', nullable: true })
   expiredAt: Date | null;
+
+  @Column({ name: 'is_promoted', type: 'boolean', default: false })
+  isPromoted: boolean;
+
+  @Column({ name: 'promoted_at', type: 'timestamptz', nullable: true })
+  promotedAt?: Date | null;
+
+  @Column({ name: 'votes_count', type: 'int', default: 0 })
+  votesCount: number;
+
+  @Column({ name: 'first_voted_at', type: 'timestamptz', nullable: true })
+  firstVotedAt?: Date | null;
 }

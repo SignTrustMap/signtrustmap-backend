@@ -35,6 +35,15 @@ export class RevalidationDecision {
   @Column({ type: 'text', nullable: true })
   note: string | null;
 
+  @Column({ name: 'reviewer_location', type: 'geometry', spatialFeatureType: 'Point', srid: 4326, nullable: true })
+  reviewerLocation: any;
+
+  @Column({ name: 'accuracy_meters', type: 'double precision', nullable: true })
+  accuracyMeters: number | null;
+
+  @Column({ name: 'quest_claim_id', type: 'uuid', nullable: true })
+  questClaimId: string | null;
+
   @CreateDateColumn({ name: 'decided_at', type: 'timestamptz' })
   decidedAt: Date;
 }

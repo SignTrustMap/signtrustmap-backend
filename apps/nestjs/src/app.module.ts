@@ -35,6 +35,7 @@ import { SignMapModule } from './modules/sign-map/sign-map.module';
 import { HealthModule } from './modules/health/health.module';
 import { SpatialAdminModule } from './modules/spatial-admin/spatial-admin.module';
 import { RewardsModule } from './modules/rewards/rewards.module';
+import { SystemParametersModule } from './modules/system-parameters/system-parameters.module';
 // TEMPORARILY DISABLED: Road hazard reporting feature
 // import { HazardsModule } from './modules/hazards/hazards.module';
 
@@ -93,6 +94,7 @@ import { RewardsModule } from './modules/rewards/rewards.module';
     RevalidationModule,
     PaymentsModule,
     SystemSwitchModule,
+    SystemParametersModule,
     AdminModule,
     LeaderboardModule,
     PlacesModule,

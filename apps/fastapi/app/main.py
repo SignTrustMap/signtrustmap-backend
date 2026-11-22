@@ -10,6 +10,7 @@ Spins up a FastAPI instance with:
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -22,12 +23,19 @@ from app.api.v1.router import api_v1_router
 from app.config import settings
 from app.database import engine
 from app.schemas.spatial import HealthResponse
+from app.tasks.config_sync import listen_parameter_updates
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
-    """Clean up the async engine when the worker shuts down."""
+    """Initialize background parameter hot-reloader and clean up async engine on shutdown."""
+    sync_task = asyncio.create_task(listen_parameter_updates())
     yield
+    sync_task.cancel()
+    try:
+        await sync_task
+    except asyncio.CancelledError:
+        pass
     await engine.dispose()
 
 

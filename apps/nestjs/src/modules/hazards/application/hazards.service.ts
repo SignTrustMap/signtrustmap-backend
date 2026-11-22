@@ -27,6 +27,7 @@ import { NotificationsService } from '../../notifications/notifications.service'
 import { MinioStorageService } from '../../../integrations/minio/minio-storage.service';
 // import { createHash } from 'crypto';
 import { HazardEvidence /* , HazardEvidenceType */ } from '../infrastructure/persistence/hazard-evidence.entity';
+import { SystemParametersService } from '../../system-parameters/system-parameters.service';
 // import { validateFileSignature } from '../../survey/domain/media-validator';
 // import { MediaFileType, MEDIA_SIZE_LIMITS } from '../../survey/domain/submission-contract';
 
@@ -75,6 +76,7 @@ export class HazardsService {
     @Optional() private readonly storageService?: MinioStorageService,
     @InjectRepository(HazardEvidence)
     @Optional() private readonly evidenceRepo?: Repository<HazardEvidence>,
+    @Optional() private readonly paramService?: SystemParametersService,
   ) {}
 // 
 //   /**

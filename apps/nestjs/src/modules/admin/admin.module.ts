@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { AdminService } from './admin.service';
 import { AdminController } from './admin.controller';
 import { MlopsController } from './mlops.controller';
+import { AdminAiopsProxyController } from './aiops-proxy.controller';
 import { WalletModule } from '../wallet/wallet.module';
 import { User } from '../auth/infrastructure/persistence/user.entity';
 import { UserRole } from '../auth/infrastructure/persistence/user-role.entity';
@@ -35,7 +36,7 @@ import { SystemSwitchModule } from './system-switch.module';
       SystemFeatureFlag,
     ]),
   ],
-  controllers: [AdminController, MlopsController],
+  controllers: [AdminController, MlopsController, AdminAiopsProxyController],
   providers: [AdminService],
   exports: [AdminService, SystemSwitchModule],
 })
