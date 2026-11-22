@@ -26,6 +26,8 @@ import {
   UpdateConsensusConfigDto,
   UpdateRouteMatrixDto,
   TriggerRetrainDto,
+  PromoteModelVersionDto,
+  RollbackModelVersionDto,
   CreateFreshnessRuleDto,
   UpdateFreshnessRuleDto,
   UpdateRewardRuleDto,
@@ -424,31 +426,46 @@ export class AdminController {
   }
 
   @ApiOperation({
+    summary: 'Compare candidate model version against active production version',
+    description: 'Evaluates mAP50, precision, and recall deltas against configured promotion gate thresholds before deployment',
+  })
+  @Get('models/versions/:id/compare')
+  compareModelVersion(@Param('id', ParseIntPipe) id: number) {
+    return this.svc.compareModelVersion(id);
+  }
+
+  @ApiOperation({
     summary: 'Promote model version to production',
-    description: 'Governed deployment promoting a candidate version to production active with audit logging',
+    description: 'Governed deployment promoting a candidate version to production active after checking evaluation metric gate (supports force override with audit reason)',
   })
   @Post('models/versions/:id/promote')
   promoteModelVersion(
     @Param('id', ParseIntPipe) id: number,
     @CurrentUser() user: any,
     @Req() req: any,
+    @Body() dto?: PromoteModelVersionDto,
   ) {
     const ip = req.ip || req.headers['x-forwarded-for'] || null;
-    return this.svc.promoteModelVersion(id, user.id, ip);
+    return dto && (dto.force !== undefined || dto.reason !== undefined)
+      ? this.svc.promoteModelVersion(id, user.id, ip, dto)
+      : this.svc.promoteModelVersion(id, user.id, ip);
   }
 
   @ApiOperation({
     summary: 'Rollback model version',
-    description: 'Admin operation to rollback model deployment with audit logging',
+    description: 'Admin operation to rollback model deployment to a specific targetVersionId or previous stable version with audit logging',
   })
   @Post('models/versions/:id/rollback')
   rollbackModelVersion(
     @Param('id', ParseIntPipe) id: number,
     @CurrentUser() user: any,
     @Req() req: any,
+    @Body() dto?: RollbackModelVersionDto,
   ) {
     const ip = req.ip || req.headers['x-forwarded-for'] || null;
-    return this.svc.rollbackModelVersion(id, user.id, ip);
+    return dto && (dto.targetVersionId !== undefined || dto.reason !== undefined)
+      ? this.svc.rollbackModelVersion(id, user.id, ip, dto)
+      : this.svc.rollbackModelVersion(id, user.id, ip);
   }
 
   @ApiOperation({

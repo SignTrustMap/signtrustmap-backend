@@ -254,6 +254,34 @@ export class ActiveLearningConfigDto {
   defaultTopK?: number;
 }
 
+export class PromoteModelVersionDto {
+  @ApiPropertyOptional({ description: 'Force promotion even if evaluation metrics fail the promotion gate', default: false })
+  @IsOptional()
+  @IsBoolean()
+  force?: boolean;
+
+  @ApiPropertyOptional({ description: 'Audit reason for model promotion or gate override', maxLength: 500 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
+}
+
+export class RollbackModelVersionDto {
+  @ApiPropertyOptional({ description: 'Optional specific stable model version ID of the same modelType to reactivate' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  targetVersionId?: number;
+
+  @ApiPropertyOptional({ description: 'Audit reason for model rollback', maxLength: 500 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
+}
+
 export class CreateFreshnessRuleDto {
   @ApiPropertyOptional({ description: 'ID of sign category', example: 1 })
   @IsOptional()
