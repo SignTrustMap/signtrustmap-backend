@@ -8,6 +8,8 @@ import { ModerationController } from './presentation/moderation.controller';
 import { SignCategory } from '../catalog/sign-category.entity';
 import { TrafficSignType } from '../catalog/traffic-sign-type.entity';
 import { UnverifiedSignCandidate } from '../survey/infrastructure/persistence/unverified-sign-candidate.entity';
+import { SurveyorProfile } from '../survey/infrastructure/persistence/surveyor-profile.entity';
+import { SurveyorReputationHistory } from '../survey/infrastructure/persistence/surveyor-reputation-history.entity';
 import { CandidateRecaptureRequest } from '../reviews/infrastructure/persistence/candidate-recapture-request.entity';
 import { User } from '../auth/infrastructure/persistence/user.entity';
 import { SignTypeImage } from '../catalog/sign-type-image.entity';
@@ -18,6 +20,8 @@ import { NotificationsModule } from '../notifications/notifications.module';
 import { CatalogModule } from '../catalog/catalog.module';
 import { CatalogSyncModule } from '../../integrations/catalog-sync/catalog-sync.module';
 import { MinioModule } from '../../integrations/minio/minio.module';
+import { WalletModule } from '../wallet/wallet.module';
+
 @Module({
   imports: [
     TypeOrmModule.forFeature([
@@ -27,6 +31,8 @@ import { MinioModule } from '../../integrations/minio/minio.module';
       SignCategory,
       TrafficSignType,
       UnverifiedSignCandidate,
+      SurveyorProfile,
+      SurveyorReputationHistory,
       CandidateRecaptureRequest,
       User,
       SignTypeImage,
@@ -38,6 +44,7 @@ import { MinioModule } from '../../integrations/minio/minio.module';
     CatalogModule,
     CatalogSyncModule,
     MinioModule,
+    WalletModule,
   ],
   controllers: [ModerationController],
   providers: [ModerationService],
