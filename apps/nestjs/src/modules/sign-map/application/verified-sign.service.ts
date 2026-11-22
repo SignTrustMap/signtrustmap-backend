@@ -372,7 +372,10 @@ export class VerifiedSignService {
       }
 
       // Log sign lifecycle dispute event
-      const disputeNote = request.note ?? 'Sign reported missing by user confirmation';
+      const reportType = request.reportType ?? 'MISSING';
+      const disputeNote = request.reportType
+        ? (request.note ? `[${request.reportType}] ${request.note}` : `Sign reported ${request.reportType.toLowerCase()} by user confirmation`)
+        : (request.note ?? 'Sign reported missing by user confirmation');
       try {
         if (this.lifecycleRepo && typeof this.lifecycleRepo.save === 'function') {
           await this.lifecycleRepo.save(
@@ -406,7 +409,7 @@ export class VerifiedSignService {
           userId,
           request.photoEvidenceUrl,
           location,
-          request.note,
+          disputeNote,
         );
         revalidationTaskId = task.id;
       }
@@ -415,12 +418,108 @@ export class VerifiedSignService {
         success: true,
         signId,
         isPresent: false,
+        reportType,
         creditsAwarded: 0,
         cooldownActive: false,
         revalidationTaskId,
-        message: 'Sign reported as missing. High-priority revalidation task created.',
+        message: 'Sign reported as missing/outdated. High-priority revalidation task created.',
       };
     }
+  }
+
+  async getSignHistory(signId: string) {
+    const sign = await this.repository.findById(signId);
+    if (!sign) {
+      throw new NotFoundException(`Verified sign ${signId} was not found`);
+    }
+
+    let historyRows: any[] = [];
+    let lifecycleRows: any[] = [];
+
+    if (typeof this.dataSource?.query === 'function') {
+      try {
+        historyRows = await this.dataSource.query(
+          `SELECT
+             h.id,
+             h.verified_sign_id,
+             h.previous_sign_type_id,
+             tst.sign_code AS previous_sign_code,
+             tst.name_vi AS previous_sign_name_vi,
+             tst.name_en AS previous_sign_name_en,
+             ST_Y(h.previous_location::geometry) AS previous_latitude,
+             ST_X(h.previous_location::geometry) AS previous_longitude,
+             h.previous_traffic_direction,
+             h.previous_crop_url,
+             h.change_reason,
+             h.changed_at
+           FROM verified_sign_history h
+           LEFT JOIN traffic_sign_types tst ON tst.id = h.previous_sign_type_id
+           WHERE h.verified_sign_id = $1
+           ORDER BY h.changed_at DESC, h.id DESC`,
+          [signId],
+        );
+      } catch (e: any) {
+        this.logger.warn(`Failed to load verified_sign_history for ${signId}: ${e?.message}`);
+      }
+
+      try {
+        lifecycleRows = await this.dataSource.query(
+          `SELECT
+             e.id,
+             e.verified_sign_id,
+             e.event_type,
+             e.triggered_by,
+             u.full_name AS triggered_by_name,
+             e.note,
+             e.created_at
+           FROM sign_lifecycle_events e
+           LEFT JOIN users u ON u.id = e.triggered_by
+           WHERE e.verified_sign_id = $1
+           ORDER BY e.created_at DESC, e.id DESC`,
+          [signId],
+        );
+      } catch (e: any) {
+        this.logger.warn(`Failed to load sign_lifecycle_events for ${signId}: ${e?.message}`);
+      }
+    }
+
+    return {
+      signId,
+      currentSign: {
+        id: sign.id,
+        status: sign.status,
+        signType: sign.signType,
+        latitude: sign.latitude,
+        longitude: sign.longitude,
+        trafficDirection: sign.trafficDirection,
+        signCropUrl: sign.signCropUrl,
+        freshnessScore: sign.freshnessScore,
+        lastVerifiedAt: sign.lastVerifiedAt,
+      },
+      history: historyRows.map((h) => ({
+        id: h.id,
+        verifiedSignId: h.verified_sign_id,
+        previousSignTypeId: h.previous_sign_type_id != null ? Number(h.previous_sign_type_id) : null,
+        previousSignCode: h.previous_sign_code ?? null,
+        previousSignNameVi: h.previous_sign_name_vi ?? null,
+        previousSignNameEn: h.previous_sign_name_en ?? null,
+        previousLatitude: h.previous_latitude != null ? Number(h.previous_latitude) : null,
+        previousLongitude: h.previous_longitude != null ? Number(h.previous_longitude) : null,
+        previousTrafficDirection: h.previous_traffic_direction != null ? Number(h.previous_traffic_direction) : null,
+        previousCropUrl: h.previous_crop_url ?? null,
+        changeReason: h.change_reason,
+        changedAt: h.changed_at,
+      })),
+      lifecycleEvents: lifecycleRows.map((e) => ({
+        id: e.id,
+        verifiedSignId: e.verified_sign_id,
+        eventType: e.event_type,
+        triggeredBy: e.triggered_by ?? null,
+        triggeredByName: e.triggered_by_name ?? null,
+        note: e.note ?? null,
+        createdAt: e.created_at,
+      })),
+    };
   }
 
   private async requireActiveSignType(id: number): Promise<void> {
