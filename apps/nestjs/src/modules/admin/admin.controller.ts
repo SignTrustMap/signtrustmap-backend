@@ -19,6 +19,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { AdminService } from './admin.service';
 import {
   UpdateUserStatusDto,
+  BanWaveDto,
   AssignRoleDto,
   ManualAdjustmentDto,
   FreezeWalletDto,
@@ -56,6 +57,9 @@ export class AdminController {
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'pageSize', required: false, type: Number })
   @ApiQuery({ name: 'includeStats', required: false, type: Boolean, description: 'Include user performance statistics (default: true)' })
+  @ApiQuery({ name: 'maxReliability', required: false, type: Number, description: 'Filter users with reliability score strictly below this threshold (%)' })
+  @ApiQuery({ name: 'minReliability', required: false, type: Number, description: 'Filter users with reliability score >= this threshold (%)' })
+  @ApiQuery({ name: 'lowReliabilityOnly', required: false, type: Boolean, description: 'Filter only users below the active consensus minReliabilityThreshold' })
   @Get('users')
   listUsers(
     @Query('role') role?: string,
@@ -64,10 +68,16 @@ export class AdminController {
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
     @Query('includeStats') includeStats?: string,
+    @Query('maxReliability') maxReliability?: string,
+    @Query('minReliability') minReliability?: string,
+    @Query('lowReliabilityOnly') lowReliabilityOnly?: string,
   ) {
     const p = page ? parseInt(page, 10) : 1;
     const ps = pageSize ? parseInt(pageSize, 10) : 20;
     const stats = includeStats === undefined ? true : includeStats !== 'false' && includeStats !== '0';
+    const maxRel = maxReliability !== undefined && maxReliability !== '' ? Number(maxReliability) : undefined;
+    const minRel = minReliability !== undefined && minReliability !== '' ? Number(minReliability) : undefined;
+    const lowOnly = lowReliabilityOnly === 'true' || lowReliabilityOnly === '1';
     return this.svc.listUsers({
       role,
       status,
@@ -75,7 +85,54 @@ export class AdminController {
       page: Number.isNaN(p) ? 1 : p,
       pageSize: Number.isNaN(ps) ? 20 : ps,
       includeStats: stats,
+      ...(maxRel !== undefined && !Number.isNaN(maxRel) ? { maxReliability: maxRel } : {}),
+      ...(minRel !== undefined && !Number.isNaN(minRel) ? { minReliability: minRel } : {}),
+      ...(lowOnly ? { lowReliabilityOnly: true } : {}),
     });
+  }
+
+  @ApiOperation({
+    summary: 'List low-reliability users (warning list for ban wave)',
+    description: 'Admin operation to list non-admin/non-staff accounts whose reliability score falls below the specified threshold (defaults to active consensus minReliabilityThreshold)',
+  })
+  @ApiQuery({ name: 'threshold', required: false, type: Number, description: 'Reliability threshold (%) — defaults to active consensus minReliabilityThreshold' })
+  @ApiQuery({ name: 'includeProvisional', required: false, type: Boolean, description: 'Include provisional (new) accounts (default: true)' })
+  @ApiQuery({ name: 'minReviews', required: false, type: Number, description: 'Minimum reviews required (default: 1)' })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'pageSize', required: false, type: Number })
+  @Get('users/low-reliability')
+  listLowReliabilityUsers(
+    @Query('threshold') threshold?: string,
+    @Query('includeProvisional') includeProvisional?: string,
+    @Query('minReviews') minReviews?: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+  ) {
+    const t = threshold !== undefined && threshold !== '' ? Number(threshold) : undefined;
+    const mr = minReviews !== undefined && minReviews !== '' ? parseInt(minReviews, 10) : undefined;
+    const p = page ? parseInt(page, 10) : 1;
+    const ps = pageSize ? parseInt(pageSize, 10) : 20;
+    return this.svc.listLowReliabilityUsers({
+      threshold: t !== undefined && !Number.isNaN(t) ? t : undefined,
+      includeProvisional: includeProvisional === undefined ? true : includeProvisional !== 'false' && includeProvisional !== '0',
+      minReviews: mr !== undefined && !Number.isNaN(mr) ? mr : 1,
+      page: Number.isNaN(p) ? 1 : p,
+      pageSize: Number.isNaN(ps) ? 20 : ps,
+    });
+  }
+
+  @ApiOperation({
+    summary: 'Execute reliability ban wave (bulk ban)',
+    description: 'Admin operation to bulk-ban all eligible non-admin/non-staff accounts with reliability score strictly below the given threshold, with full status history and audit logging. Supports dryRun=true to preview targets.',
+  })
+  @Post('users/ban-wave')
+  executeBanWave(
+    @Body() dto: BanWaveDto,
+    @CurrentUser() user: any,
+    @Req() req: any,
+  ) {
+    const ip = req.ip || req.headers['x-forwarded-for'] || null;
+    return this.svc.executeBanWave(dto, user.id, ip);
   }
 
   @ApiOperation({

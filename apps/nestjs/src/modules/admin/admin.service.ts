@@ -12,6 +12,7 @@ import { ConsensusConfig } from '../consensus/infrastructure/persistence/consens
 import { FreshnessRule } from '../revalidation/infrastructure/persistence/freshness-rule.entity';
 import { RewardRule } from '../rewards/infrastructure/persistence/reward-rule.entity';
 import {
+  BanWaveDto,
   UpdateConsensusConfigDto,
   UpdateRouteMatrixDto,
   TriggerRetrainDto,
@@ -51,11 +52,20 @@ export class AdminService {
     page?: number;
     pageSize?: number;
     includeStats?: boolean;
+    maxReliability?: number;
+    minReliability?: number;
+    lowReliabilityOnly?: boolean;
   }) {
     const page = Math.max(1, q.page ?? 1);
     const pageSize = Math.min(Math.max(1, q.pageSize ?? 20), 100);
     const skip = (page - 1) * pageSize;
     const includeStats = q.includeStats ?? true;
+
+    let effectiveMaxReliability = q.maxReliability;
+    if (q.lowReliabilityOnly && effectiveMaxReliability === undefined) {
+      const cfg = await this.getConsensusConfig();
+      effectiveMaxReliability = cfg.minReliabilityThreshold ?? 50.0;
+    }
 
     const qb = this.dataSource
       .getRepository(User)
@@ -81,6 +91,26 @@ export class AdminService {
           WHERE sub_ur.user_id = u.id AND sub_ur.is_active = true AND sub_r.code = :role
         )`,
         { role: q.role },
+      );
+    }
+
+    if (effectiveMaxReliability !== undefined) {
+      qb.andWhere(
+        `EXISTS (
+          SELECT 1 FROM reviewer_profiles rp
+          WHERE rp.user_id = u.id AND rp.reliability_score < :maxReliability
+        )`,
+        { maxReliability: effectiveMaxReliability },
+      );
+    }
+
+    if (q.minReliability !== undefined) {
+      qb.andWhere(
+        `EXISTS (
+          SELECT 1 FROM reviewer_profiles rp
+          WHERE rp.user_id = u.id AND rp.reliability_score >= :minReliability
+        )`,
+        { minReliability: q.minReliability },
       );
     }
 
@@ -827,6 +857,267 @@ export class AdminService {
     await this.dataSource.query("INSERT INTO audit_logs (user_id, action, resource_name, resource_id, old_values, new_values, ip_address) VALUES ($1,'UPDATE_USER_STATUS','users',$2,$3,$4,$5)", [changedBy, userId, JSON.stringify({ status: oldStatus }), JSON.stringify({ status: newStatus, reason }), ip ?? null]);
     return { userId, oldStatus, newStatus };
   }
+
+  /**
+   * Lists non-admin/non-staff accounts whose reliability score falls below the given threshold
+   * (defaults to active consensus minReliabilityThreshold) for Admin warning UI & ban-wave preview.
+   */
+  async listLowReliabilityUsers(q: {
+    threshold?: number;
+    includeProvisional?: boolean;
+    minReviews?: number;
+    page?: number;
+    pageSize?: number;
+  }) {
+    const page = Math.max(1, q.page ?? 1);
+    const pageSize = Math.min(Math.max(1, q.pageSize ?? 20), 100);
+    const offset = (page - 1) * pageSize;
+    const includeProvisional = q.includeProvisional ?? true;
+    const minReviews = Math.max(0, q.minReviews ?? 1);
+
+    let threshold = q.threshold;
+    if (threshold === undefined) {
+      const cfg = await this.getConsensusConfig();
+      threshold = cfg.minReliabilityThreshold ?? 50.0;
+    }
+
+    const params: any[] = [threshold, minReviews];
+    const provisionalClause = includeProvisional ? '' : 'AND COALESCE(rp.is_provisional, false) = false';
+
+    const countRows: any[] = await this.dataSource.query(
+      `SELECT COUNT(*)::int AS cnt
+       FROM users u
+       JOIN reviewer_profiles rp ON rp.user_id = u.id
+       WHERE u.status <> 'BANNED'
+         AND rp.reliability_score < $1
+         AND COALESCE(rp.total_reviews, 0) >= $2
+         ${provisionalClause}
+         AND NOT EXISTS (
+           SELECT 1 FROM user_roles ur
+           JOIN roles r ON r.id = ur.role_id
+           WHERE ur.user_id = u.id AND ur.is_active = true AND r.code IN ('ADMIN', 'STAFF')
+         )`,
+      params,
+    );
+    const total = Number(countRows[0]?.cnt ?? 0);
+
+    const rows: any[] = await this.dataSource.query(
+      `SELECT
+         u.id,
+         u.email,
+         u.full_name,
+         u.avatar_url,
+         u.status,
+         u.created_at,
+         rp.reliability_score,
+         rp.total_reviews,
+         rp.correct_reviews,
+         rp.total_correct_votes,
+         rp.total_false_votes,
+         rp.consecutive_errors,
+         rp.is_provisional,
+         rp.is_review_suspended,
+         rp.suspension_reason,
+         rp.last_reviewed_at,
+         COALESCE(
+           (SELECT array_agg(r.code)
+            FROM user_roles ur
+            JOIN roles r ON r.id = ur.role_id
+            WHERE ur.user_id = u.id AND ur.is_active = true),
+           ARRAY[]::text[]
+         ) AS roles
+       FROM users u
+       JOIN reviewer_profiles rp ON rp.user_id = u.id
+       WHERE u.status <> 'BANNED'
+         AND rp.reliability_score < $1
+         AND COALESCE(rp.total_reviews, 0) >= $2
+         ${provisionalClause}
+         AND NOT EXISTS (
+           SELECT 1 FROM user_roles ur
+           JOIN roles r ON r.id = ur.role_id
+           WHERE ur.user_id = u.id AND ur.is_active = true AND r.code IN ('ADMIN', 'STAFF')
+         )
+       ORDER BY rp.reliability_score ASC, rp.consecutive_errors DESC, u.created_at DESC
+       LIMIT $3 OFFSET $4`,
+      [threshold, minReviews, pageSize, offset],
+    );
+
+    const items = rows.map((r) => ({
+      id: r.id,
+      email: r.email,
+      fullName: r.full_name,
+      full_name: r.full_name,
+      avatarUrl: r.avatar_url,
+      status: r.status,
+      createdAt: r.created_at,
+      roles: Array.isArray(r.roles) ? r.roles : [],
+      reliabilityScore: Number(r.reliability_score ?? 0),
+      totalReviews: Number(r.total_reviews ?? 0),
+      correctReviews: Number(r.correct_reviews ?? 0),
+      totalCorrectVotes: Number(r.total_correct_votes ?? 0),
+      totalFalseVotes: Number(r.total_false_votes ?? 0),
+      consecutiveErrors: Number(r.consecutive_errors ?? 0),
+      isProvisional: Boolean(r.is_provisional),
+      isReviewSuspended: Boolean(r.is_review_suspended),
+      suspensionReason: r.suspension_reason ?? null,
+      lastReviewedAt: r.last_reviewed_at ?? null,
+      isLowReliability: true,
+    }));
+
+    return {
+      threshold,
+      includeProvisional,
+      minReviews,
+      items,
+      total,
+      page,
+      pageSize,
+      totalPages: Math.ceil(total / pageSize),
+    };
+  }
+
+  /**
+   * Executes a bulk ban wave for all eligible non-admin/non-staff accounts whose reliability score
+   * is strictly below dto.reliabilityThreshold. Supports dryRun=true to preview targets safely.
+   */
+  async executeBanWave(dto: BanWaveDto, adminUserId: string, ip?: string) {
+    const threshold = dto.reliabilityThreshold;
+    if (typeof threshold !== 'number' || Number.isNaN(threshold) || threshold < 0 || threshold > 100) {
+      throw new BadRequestException('reliabilityThreshold must be a number between 0 and 100');
+    }
+
+    const includeProvisional = dto.includeProvisional ?? true;
+    const minReviews = Math.max(0, dto.minReviews ?? 1);
+    const dryRun = dto.dryRun ?? false;
+    const reason =
+      dto.reason?.trim() ||
+      `Ban wave: Điểm uy tín dưới ngưỡng cho phép (< ${threshold}%)`;
+
+    const provisionalClause = includeProvisional ? '' : 'AND COALESCE(rp.is_provisional, false) = false';
+    const hasExplicitIds = Array.isArray(dto.userIds) && dto.userIds.length > 0;
+    const params: any[] = [threshold, minReviews, adminUserId];
+    let explicitIdsClause = '';
+    if (hasExplicitIds) {
+      params.push(dto.userIds);
+      explicitIdsClause = `AND u.id = ANY($${params.length}::uuid[])`;
+    }
+
+    const selectTargetsSql = `SELECT
+         u.id,
+         u.email,
+         u.full_name,
+         u.status AS old_status,
+         rp.reliability_score,
+         rp.total_reviews,
+         rp.consecutive_errors,
+         rp.is_provisional
+       FROM users u
+       JOIN reviewer_profiles rp ON rp.user_id = u.id
+       WHERE u.status <> 'BANNED'
+         AND u.id <> $3
+         AND rp.reliability_score < $1
+         AND COALESCE(rp.total_reviews, 0) >= $2
+         ${provisionalClause}
+         ${explicitIdsClause}
+         AND NOT EXISTS (
+           SELECT 1 FROM user_roles ur
+           JOIN roles r ON r.id = ur.role_id
+           WHERE ur.user_id = u.id AND ur.is_active = true AND r.code IN ('ADMIN', 'STAFF')
+         )
+       ORDER BY rp.reliability_score ASC, u.created_at DESC`;
+
+    const targets: any[] = await this.dataSource.query(selectTargetsSql, params);
+
+    const mappedTargets = targets.map((t) => ({
+      id: t.id,
+      email: t.email,
+      fullName: t.full_name,
+      oldStatus: t.old_status,
+      newStatus: dryRun ? t.old_status : 'BANNED',
+      reliabilityScore: Number(t.reliability_score ?? 0),
+      totalReviews: Number(t.total_reviews ?? 0),
+      consecutiveErrors: Number(t.consecutive_errors ?? 0),
+      isProvisional: Boolean(t.is_provisional),
+    }));
+
+    if (dryRun || targets.length === 0) {
+      return {
+        dryRun,
+        threshold,
+        includeProvisional,
+        minReviews,
+        reason,
+        matchedCount: mappedTargets.length,
+        bannedCount: 0,
+        bannedUsers: mappedTargets,
+      };
+    }
+
+    const targetIds = targets.map((t) => t.id);
+
+    const applyBan = async (executor: { query: (sql: string, p?: any[]) => Promise<any> }) => {
+      await executor.query(
+        `UPDATE users SET status = 'BANNED', updated_at = now() WHERE id = ANY($1::uuid[])`,
+        [targetIds],
+      );
+
+      await executor.query(
+        `UPDATE reviewer_profiles
+         SET is_review_suspended = true,
+             suspended_at = now(),
+             suspended_until = NULL,
+             suspension_reason = 'BAN_WAVE',
+             updated_at = now()
+         WHERE user_id = ANY($1::uuid[])`,
+        [targetIds],
+      );
+
+      for (const t of targets) {
+        await executor.query(
+          `INSERT INTO user_status_history (user_id, old_status, new_status, reason, changed_by)
+           VALUES ($1, $2, 'BANNED', $3, $4)`,
+          [t.id, t.old_status, reason, adminUserId],
+        );
+      }
+
+      await executor.query(
+        `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, old_values, new_values, ip_address)
+         VALUES ($1, 'BAN_WAVE', 'users', 'bulk', $2, $3, $4)`,
+        [
+          adminUserId,
+          JSON.stringify({ matchedCount: targets.length }),
+          JSON.stringify({
+            reliabilityThreshold: threshold,
+            includeProvisional,
+            minReviews,
+            reason,
+            bannedCount: targets.length,
+            bannedUserIds: targetIds,
+          }),
+          ip ?? null,
+        ],
+      );
+    };
+
+    if (typeof this.dataSource?.transaction === 'function') {
+      await this.dataSource.transaction(async (manager) => {
+        await applyBan(manager);
+      });
+    } else {
+      await applyBan(this.dataSource);
+    }
+
+    return {
+      dryRun: false,
+      threshold,
+      includeProvisional,
+      minReviews,
+      reason,
+      matchedCount: mappedTargets.length,
+      bannedCount: mappedTargets.length,
+      bannedUsers: mappedTargets,
+    };
+  }
   async assignRole(userId: string, roleCode: string, assignedBy: string, isActive = true) {
     if (this.userRepo && this.roleRepo && this.userRoleRepo && this.auditLogRepo) {
       const user = await this.userRepo.findOne({ where: { id: userId } });
@@ -1071,6 +1362,9 @@ export class AdminService {
           consecutiveErrorLimit: 3,
           suspensionCooldownDays: 7,
           provisionalVoteWeight: 0.5,
+          provisionalMinReliabilityThreshold: 40.0,
+          provisionalConsecutiveErrorLimit: 2,
+          provisionalAutoBanEnabled: true,
           isActive: true,
         };
       }
@@ -1088,6 +1382,9 @@ export class AdminService {
         consecutiveErrorLimit: Number(c.consecutiveErrorLimit),
         suspensionCooldownDays: Number(c.suspensionCooldownDays),
         provisionalVoteWeight: Number(c.provisionalVoteWeight),
+        provisionalMinReliabilityThreshold: Number(c.provisionalMinReliabilityThreshold ?? 40.0),
+        provisionalConsecutiveErrorLimit: Number(c.provisionalConsecutiveErrorLimit ?? 2),
+        provisionalAutoBanEnabled: c.provisionalAutoBanEnabled ?? true,
         createdBy: c.createdBy,
         isActive: c.isActive,
         effectiveFrom: c.effectiveFrom,
@@ -1111,6 +1408,9 @@ export class AdminService {
         consecutiveErrorLimit: 3,
         suspensionCooldownDays: 7,
         provisionalVoteWeight: 0.5,
+        provisionalMinReliabilityThreshold: 40.0,
+        provisionalConsecutiveErrorLimit: 2,
+        provisionalAutoBanEnabled: true,
         isActive: true,
       };
     }
@@ -1129,6 +1429,9 @@ export class AdminService {
       consecutiveErrorLimit: Number(c.consecutive_error_limit),
       suspensionCooldownDays: Number(c.suspension_cooldown_days),
       provisionalVoteWeight: Number(c.provisional_vote_weight),
+      provisionalMinReliabilityThreshold: Number(c.provisional_min_reliability_threshold ?? 40.0),
+      provisionalConsecutiveErrorLimit: Number(c.provisional_consecutive_error_limit ?? 2),
+      provisionalAutoBanEnabled: c.provisional_auto_ban_enabled ?? true,
       createdBy: c.created_by,
       isActive: c.is_active,
       effectiveFrom: c.effective_from,
@@ -1152,6 +1455,12 @@ export class AdminService {
     const consecutiveErrorLimit = dto.consecutiveErrorLimit ?? current.consecutiveErrorLimit;
     const suspensionCooldownDays = dto.suspensionCooldownDays ?? current.suspensionCooldownDays;
     const provisionalVoteWeight = dto.provisionalVoteWeight ?? current.provisionalVoteWeight;
+    const provisionalMinReliabilityThreshold =
+      dto.provisionalMinReliabilityThreshold ?? current.provisionalMinReliabilityThreshold ?? 40.0;
+    const provisionalConsecutiveErrorLimit =
+      dto.provisionalConsecutiveErrorLimit ?? current.provisionalConsecutiveErrorLimit ?? 2;
+    const provisionalAutoBanEnabled =
+      dto.provisionalAutoBanEnabled ?? current.provisionalAutoBanEnabled ?? true;
 
     if (this.consensusConfigRepo && this.auditLogRepo) {
       await this.consensusConfigRepo.update({ isActive: true }, { isActive: false });
@@ -1168,6 +1477,9 @@ export class AdminService {
         consecutiveErrorLimit,
         suspensionCooldownDays,
         provisionalVoteWeight,
+        provisionalMinReliabilityThreshold,
+        provisionalConsecutiveErrorLimit,
+        provisionalAutoBanEnabled,
         createdBy: adminUserId,
         isActive: true,
         effectiveFrom: new Date(),
@@ -1198,6 +1510,9 @@ export class AdminService {
         consecutiveErrorLimit: Number(inserted.consecutiveErrorLimit),
         suspensionCooldownDays: Number(inserted.suspensionCooldownDays),
         provisionalVoteWeight: Number(inserted.provisionalVoteWeight),
+        provisionalMinReliabilityThreshold: Number(inserted.provisionalMinReliabilityThreshold ?? 40.0),
+        provisionalConsecutiveErrorLimit: Number(inserted.provisionalConsecutiveErrorLimit ?? 2),
+        provisionalAutoBanEnabled: inserted.provisionalAutoBanEnabled ?? true,
         createdBy: inserted.createdBy,
         isActive: inserted.isActive,
         effectiveFrom: inserted.effectiveFrom,
@@ -1212,8 +1527,9 @@ export class AdminService {
         approval_threshold, rejection_threshold, min_votes_required, max_votes_limit, alpha_smoothing_factor,
         weight_correct, penalty_false, min_sample_baseline, min_reliability_threshold,
         consecutive_error_limit, suspension_cooldown_days, provisional_vote_weight,
+        provisional_min_reliability_threshold, provisional_consecutive_error_limit, provisional_auto_ban_enabled,
         created_by, is_active, effective_from
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, true, NOW())
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, true, NOW())
       RETURNING *`,
       [
         approvalThreshold,
@@ -1228,6 +1544,9 @@ export class AdminService {
         consecutiveErrorLimit,
         suspensionCooldownDays,
         provisionalVoteWeight,
+        provisionalMinReliabilityThreshold,
+        provisionalConsecutiveErrorLimit,
+        provisionalAutoBanEnabled,
         adminUserId,
       ],
     );
@@ -1259,6 +1578,9 @@ export class AdminService {
       consecutiveErrorLimit: Number(inserted.consecutive_error_limit),
       suspensionCooldownDays: Number(inserted.suspension_cooldown_days),
       provisionalVoteWeight: Number(inserted.provisional_vote_weight),
+      provisionalMinReliabilityThreshold: Number(inserted.provisional_min_reliability_threshold ?? 40.0),
+      provisionalConsecutiveErrorLimit: Number(inserted.provisional_consecutive_error_limit ?? 2),
+      provisionalAutoBanEnabled: inserted.provisional_auto_ban_enabled ?? true,
       createdBy: inserted.created_by,
       isActive: inserted.is_active,
       effectiveFrom: inserted.effective_from,

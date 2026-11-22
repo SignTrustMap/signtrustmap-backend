@@ -82,6 +82,9 @@ export class ConsensusService {
         consecutiveErrorLimit: 3,
         suspensionCooldownDays: 7,
         provisionalVoteWeight: 1.0,
+        provisionalMinReliabilityThreshold: 40.0,
+        provisionalConsecutiveErrorLimit: 2,
+        provisionalAutoBanEnabled: true,
         createdBy: null,
         isActive: true,
         effectiveFrom: new Date(),
@@ -728,14 +731,47 @@ export class ConsensusService {
 
       const errorLimit = config.consecutiveErrorLimit ?? 3;
       const minReliability = config.minReliabilityThreshold ?? 50.0;
+      const provisionalErrorLimit = config.provisionalConsecutiveErrorLimit ?? 2;
+      const provisionalMinReliability = config.provisionalMinReliabilityThreshold ?? 40.0;
+      const provisionalAutoBanEnabled = config.provisionalAutoBanEnabled ?? true;
 
-      if (consecutiveErrors >= errorLimit) {
+      let shouldAutoBan = false;
+      let autoBanReason: string | null = null;
+
+      if (isProvisional) {
+        if (consecutiveErrors >= provisionalErrorLimit) {
+          isSuspended = true;
+          suspendedAt = new Date();
+          const cooldownDays = config.suspensionCooldownDays ?? 7;
+          suspendedUntil = provisionalAutoBanEnabled
+            ? null
+            : new Date(Date.now() + cooldownDays * 24 * 60 * 60 * 1000);
+          suspensionReason = provisionalAutoBanEnabled
+            ? 'PROVISIONAL_AUTOBAN_CONSECUTIVE_ERRORS'
+            : 'CONSECUTIVE_ERRORS';
+          if (provisionalAutoBanEnabled) {
+            shouldAutoBan = true;
+            autoBanReason = `Tự động khóa tài khoản mới (provisional): sai liên tiếp ${consecutiveErrors}/${provisionalErrorLimit} lần`;
+          }
+        } else if (totalVotes >= 2 && newScore < provisionalMinReliability) {
+          isSuspended = true;
+          suspendedAt = new Date();
+          suspendedUntil = null;
+          suspensionReason = provisionalAutoBanEnabled
+            ? 'PROVISIONAL_AUTOBAN_LOW_RELIABILITY'
+            : 'BELOW_MIN_RELIABILITY';
+          if (provisionalAutoBanEnabled) {
+            shouldAutoBan = true;
+            autoBanReason = `Tự động khóa tài khoản mới (provisional): điểm uy tín ${newScore}% dưới ngưỡng ${provisionalMinReliability}%`;
+          }
+        }
+      } else if (consecutiveErrors >= errorLimit) {
         isSuspended = true;
         suspendedAt = new Date();
         const cooldownDays = config.suspensionCooldownDays ?? 7;
         suspendedUntil = new Date(Date.now() + cooldownDays * 24 * 60 * 60 * 1000);
         suspensionReason = 'CONSECUTIVE_ERRORS';
-      } else if (!isProvisional && newScore < minReliability) {
+      } else if (newScore < minReliability) {
         isSuspended = true;
         suspendedAt = new Date();
         suspendedUntil = null;
@@ -818,6 +854,67 @@ export class ConsensusService {
         );
       }
 
+      let autoBanned = false;
+      if (shouldAutoBan && typeof this.dataSource?.query === 'function') {
+        try {
+          const eligibleRows: Array<{ id: string; status: string }> = await this.dataSource.query(
+            `SELECT u.id, u.status
+             FROM users u
+             WHERE u.id = $1
+               AND u.status <> 'BANNED'
+               AND NOT EXISTS (
+                 SELECT 1 FROM user_roles ur
+                 JOIN roles r ON r.id = ur.role_id
+                 WHERE ur.user_id = u.id AND ur.is_active = true AND r.code IN ('ADMIN', 'STAFF')
+               )
+             LIMIT 1`,
+            [reviewerId],
+          );
+          if (eligibleRows && eligibleRows.length > 0) {
+            const oldStatus = eligibleRows[0].status;
+            await this.dataSource.query(
+              `UPDATE users SET status = 'BANNED', updated_at = now() WHERE id = $1`,
+              [reviewerId],
+            );
+            await this.dataSource.query(
+              `INSERT INTO user_status_history (user_id, old_status, new_status, reason, changed_by)
+               VALUES ($1, $2, 'BANNED', $3, NULL)`,
+              [reviewerId, oldStatus, autoBanReason],
+            );
+            await this.dataSource.query(
+              `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, old_values, new_values)
+               VALUES (NULL, 'AUTO_BAN_PROVISIONAL_REVIEWER', 'users', $1, $2, $3)`,
+              [
+                reviewerId,
+                JSON.stringify({ status: oldStatus }),
+                JSON.stringify({
+                  status: 'BANNED',
+                  reason: autoBanReason,
+                  reliabilityScore: newScore,
+                  consecutiveErrors,
+                  totalVotes,
+                }),
+              ],
+            );
+            autoBanned = true;
+            if (this.notificationsService && typeof this.notificationsService.create === 'function') {
+              await this.notificationsService
+                .create(
+                  reviewerId,
+                  'ACCOUNT_AUTOBANNED',
+                  'Tài khoản đã bị khóa tự động',
+                  autoBanReason || 'Tài khoản mới vi phạm ngưỡng uy tín / chuỗi đánh giá sai.',
+                  'user',
+                  reviewerId,
+                )
+                .catch(() => {});
+            }
+          }
+        } catch (banErr: any) {
+          this.logger.warn('Auto-ban provisional reviewer ' + reviewerId + ' failed: ' + banErr?.message);
+        }
+      }
+
       return {
         user_id: reviewerId,
         reliability_score: newScore,
@@ -827,6 +924,8 @@ export class ConsensusService {
         is_provisional: isProvisional,
         is_review_suspended: isSuspended,
         suspension_reason: suspensionReason,
+        auto_banned: autoBanned,
+        auto_ban_reason: autoBanned ? autoBanReason : null,
       };
     } catch (e: any) {
       this.logger.warn('updateReviewerProfile ' + reviewerId + ': ' + e?.message);

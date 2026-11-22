@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsString, IsOptional, IsEnum, MaxLength, IsBoolean, IsNumber, IsInt, Min, Max, IsObject } from 'class-validator';
+import { IsString, IsOptional, IsEnum, MaxLength, IsBoolean, IsNumber, IsInt, Min, Max, IsObject, IsArray, IsUUID } from 'class-validator';
 import { RulePriority } from '../../revalidation/infrastructure/persistence/freshness-rule.entity';
 
 export class UpdateUserStatusDto {
@@ -13,6 +13,44 @@ export class UpdateUserStatusDto {
   @IsString()
   @MaxLength(500)
   reason?: string;
+}
+
+export class BanWaveDto {
+  @ApiProperty({ description: 'Ban all eligible accounts with reliability score strictly below this threshold (%)', example: 40, minimum: 0, maximum: 100 })
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  reliabilityThreshold: number;
+
+  @ApiPropertyOptional({ description: 'Audit reason recorded for every banned user', maxLength: 500 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
+
+  @ApiPropertyOptional({ description: 'Include provisional (new) accounts in the ban wave (default: true)', default: true })
+  @IsOptional()
+  @IsBoolean()
+  includeProvisional?: boolean;
+
+  @ApiPropertyOptional({ description: 'Minimum number of reviews required before an account is targeted (default: 1)', default: 1, minimum: 0 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  minReviews?: number;
+
+  @ApiPropertyOptional({ description: 'Optional explicit subset of user UUIDs to restrict the ban wave to', type: [String] })
+  @IsOptional()
+  @IsArray()
+  @IsUUID('4', { each: true })
+  userIds?: string[];
+
+  @ApiPropertyOptional({ description: 'If true, only previews matched accounts without banning them', default: false })
+  @IsOptional()
+  @IsBoolean()
+  dryRun?: boolean;
 }
 
 export class AssignRoleDto {
@@ -103,6 +141,26 @@ export class UpdateConsensusConfigDto {
   @Type(() => Number)
   @IsNumber()
   provisionalVoteWeight?: number;
+
+  @ApiPropertyOptional({ description: 'Minimum reliability threshold (%) for provisional (new) accounts before auto-ban', example: 40, minimum: 0, maximum: 100 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  provisionalMinReliabilityThreshold?: number;
+
+  @ApiPropertyOptional({ description: 'Consecutive error limit for provisional (new) accounts before auto-ban', example: 2, minimum: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  provisionalConsecutiveErrorLimit?: number;
+
+  @ApiPropertyOptional({ description: 'Enable automatic account ban (users.status = BANNED) when provisional accounts violate thresholds', default: true })
+  @IsOptional()
+  @IsBoolean()
+  provisionalAutoBanEnabled?: boolean;
 
   @ApiPropertyOptional({ description: 'Audit reason for config change', maxLength: 500 })
   @IsOptional()

@@ -936,4 +936,162 @@ describe('AdminService', () => {
       expect(result.items[0].reviewerName).toBe('Reviewer One');
     });
   });
+
+  describe('listLowReliabilityUsers & executeBanWave', () => {
+    it('lists low-reliability users below explicit threshold', async () => {
+      dataSource.query
+        .mockResolvedValueOnce([{ cnt: 2 }])
+        .mockResolvedValueOnce([
+          {
+            id: 'u-low-1',
+            email: 'low1@stm.dev',
+            full_name: 'Low One',
+            avatar_url: null,
+            status: 'ACTIVE',
+            created_at: new Date(),
+            reliability_score: 25.0,
+            total_reviews: 6,
+            correct_reviews: 2,
+            total_correct_votes: 2,
+            total_false_votes: 3,
+            consecutive_errors: 3,
+            is_provisional: false,
+            is_review_suspended: true,
+            suspension_reason: 'BELOW_MIN_RELIABILITY',
+            last_reviewed_at: new Date(),
+            roles: ['REVIEWER'],
+          },
+        ]);
+
+      const result = await service.listLowReliabilityUsers({ threshold: 40, page: 1, pageSize: 20 });
+
+      expect(result.threshold).toBe(40);
+      expect(result.total).toBe(2);
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0].id).toBe('u-low-1');
+      expect(result.items[0].reliabilityScore).toBe(25.0);
+      expect(result.items[0].isLowReliability).toBe(true);
+    });
+
+    it('previews ban wave targets without mutating DB when dryRun is true', async () => {
+      dataSource.query.mockResolvedValueOnce([
+        {
+          id: 'u-low-1',
+          email: 'low1@stm.dev',
+          full_name: 'Low One',
+          old_status: 'ACTIVE',
+          reliability_score: 20.0,
+          total_reviews: 5,
+          consecutive_errors: 2,
+          is_provisional: false,
+        },
+      ]);
+
+      const result = await service.executeBanWave(
+        { reliabilityThreshold: 35, dryRun: true },
+        'admin-1',
+        '127.0.0.1',
+      );
+
+      expect(result.dryRun).toBe(true);
+      expect(result.matchedCount).toBe(1);
+      expect(result.bannedCount).toBe(0);
+      expect(result.bannedUsers[0].newStatus).toBe('ACTIVE');
+      expect(dataSource.query).toHaveBeenCalledTimes(1);
+    });
+
+    it('executes bulk ban wave, records status history and audit log', async () => {
+      dataSource.query
+        .mockResolvedValueOnce([
+          {
+            id: 'u-low-1',
+            email: 'low1@stm.dev',
+            full_name: 'Low One',
+            old_status: 'ACTIVE',
+            reliability_score: 20.0,
+            total_reviews: 5,
+            consecutive_errors: 2,
+            is_provisional: false,
+          },
+          {
+            id: 'u-low-2',
+            email: 'low2@stm.dev',
+            full_name: 'Low Two',
+            old_status: 'SUSPENDED',
+            reliability_score: 10.0,
+            total_reviews: 4,
+            consecutive_errors: 3,
+            is_provisional: true,
+          },
+        ])
+        .mockResolvedValueOnce([]) // UPDATE users
+        .mockResolvedValueOnce([]) // UPDATE reviewer_profiles
+        .mockResolvedValueOnce([]) // INSERT user_status_history #1
+        .mockResolvedValueOnce([]) // INSERT user_status_history #2
+        .mockResolvedValueOnce([]); // INSERT audit_logs
+
+      const result = await service.executeBanWave(
+        { reliabilityThreshold: 35, reason: 'Monthly cleanup ban wave' },
+        'admin-1',
+        '10.0.0.5',
+      );
+
+      expect(result.dryRun).toBe(false);
+      expect(result.matchedCount).toBe(2);
+      expect(result.bannedCount).toBe(2);
+      expect(result.bannedUsers[0].newStatus).toBe('BANNED');
+      expect(dataSource.query).toHaveBeenCalledWith(
+        expect.stringContaining("UPDATE users SET status = 'BANNED'"),
+        [['u-low-1', 'u-low-2']],
+      );
+      expect(dataSource.query).toHaveBeenCalledWith(
+        expect.stringContaining("VALUES ($1, 'BAN_WAVE', 'users', 'bulk'"),
+        expect.arrayContaining(['admin-1', '10.0.0.5']),
+      );
+    });
+
+    it('updates provisional autoban thresholds in updateConsensusConfig', async () => {
+      dataSource.query
+        .mockResolvedValueOnce([{ id: 1, approval_threshold: 2.0, rejection_threshold: -2.0 }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([
+          {
+            id: 3,
+            approval_threshold: 2.0,
+            rejection_threshold: -2.0,
+            min_votes_required: 3,
+            max_votes_limit: 9,
+            alpha_smoothing_factor: 0.1,
+            weight_correct: 1.0,
+            penalty_false: 2.0,
+            min_sample_baseline: 5,
+            min_reliability_threshold: 50.0,
+            consecutive_error_limit: 3,
+            suspension_cooldown_days: 7,
+            provisional_vote_weight: 0.5,
+            provisional_min_reliability_threshold: 35.0,
+            provisional_consecutive_error_limit: 2,
+            provisional_auto_ban_enabled: true,
+            created_by: 'admin-1',
+            is_active: true,
+            effective_from: new Date(),
+          },
+        ])
+        .mockResolvedValueOnce([]);
+
+      const result = await service.updateConsensusConfig(
+        {
+          provisionalMinReliabilityThreshold: 35.0,
+          provisionalConsecutiveErrorLimit: 2,
+          provisionalAutoBanEnabled: true,
+        },
+        'admin-1',
+        '127.0.0.1',
+      );
+
+      expect(result.provisionalMinReliabilityThreshold).toBe(35.0);
+      expect(result.provisionalConsecutiveErrorLimit).toBe(2);
+      expect(result.provisionalAutoBanEnabled).toBe(true);
+    });
+  });
 });
