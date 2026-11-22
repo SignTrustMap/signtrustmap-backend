@@ -29,6 +29,10 @@ async def listen_parameter_updates():
                         settings.NAVIGATION_SEARCH_RADIUS_M = int(val)
                     elif key == "navigation.heading_threshold_deg":
                         settings.NAVIGATION_HEADING_THRESHOLD_DEG = float(val)
+                    elif key == "survey.raw_media_retention_days":
+                        settings.RAW_MEDIA_RETENTION_DAYS = int(val)
+                    elif key == "survey.max_video_duration_seconds":
+                        settings.MAX_VIDEO_DURATION_SECONDS = int(val)
                 except Exception as e:
                     logger.error(f"Failed to process parameter update payload: {e}")
     except asyncio.CancelledError:
