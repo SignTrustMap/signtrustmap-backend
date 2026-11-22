@@ -66,6 +66,10 @@ class Settings(BaseSettings):
     # How many navigation_route_points to buffer before a bulk INSERT.
     NAVIGATION_ROUTE_POINT_BUFFER_SIZE: int = Field(default=5, ge=1, le=100)
 
+    # ---- Ingestion & Raw Media Retention (Issue #7) -------------------------
+    MAX_VIDEO_DURATION_SECONDS: int = Field(default=900, ge=30, le=7200)
+    RAW_MEDIA_RETENTION_DAYS: int = Field(default=30, ge=1, le=3650)
+
     @field_validator("DATABASE_URL")
     @classmethod
     def validate_database_url(cls, v: str) -> str:
