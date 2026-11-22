@@ -27,6 +27,11 @@ import { validateFileSignature } from '../../survey/domain/media-validator';
 import { MediaFileType } from '../../survey/domain/submission-contract';
 import { SystemSwitchService } from '../../admin/system-switch.service';
 import { AdminService } from '../../admin/admin.service';
+import { SurveyorProfile } from '../../survey/infrastructure/persistence/surveyor-profile.entity';
+import { SurveyorReputationHistory } from '../../survey/infrastructure/persistence/surveyor-reputation-history.entity';
+import { WalletService } from '../../wallet/application/wallet.service';
+import { TransactionType } from '../../wallet/infrastructure/persistence/credit-transaction.entity';
+import { SystemParametersService } from '../../system-parameters/system-parameters.service';
 
 export interface CandidateEnriched {
   id: string;
@@ -68,6 +73,10 @@ export class ModerationService {
     @Optional() @InjectRepository(AuditLog) private readonly auditLogRepo?: Repository<AuditLog>,
     @Optional() private readonly systemSwitchService?: SystemSwitchService,
     @Optional() private readonly adminService?: AdminService,
+    @Optional() private readonly walletService?: WalletService,
+    @Optional() private readonly paramService?: SystemParametersService,
+    @Optional() @InjectRepository(SurveyorProfile) private readonly surveyorProfileRepo?: Repository<SurveyorProfile>,
+    @Optional() @InjectRepository(SurveyorReputationHistory) private readonly surveyorReputationRepo?: Repository<SurveyorReputationHistory>,
   ) {}
 
   /**
@@ -2676,6 +2685,10 @@ export class ModerationService {
       throw new BadRequestException('Case is already resolved');
     }
 
+    if (mc.caseType === ModerationType.MANUAL_SURVEY_ANNOTATION) {
+      return this.resolveManualAnnotationCase(staffId, id, dto);
+    }
+
     if (actionType === 'REQUEST_RECAPTURE' && mc.targetEntityType === 'candidate' && mc.targetEntityId) {
       return this.resolveRecaptureCase(id, staffId, dto);
     }
@@ -3382,5 +3395,341 @@ export class ModerationService {
     try {
       if (report.reporterId) await this.notificationsService.create(report.reporterId, 'MISSING_TYPE_' + type, title, message, 'missing_sign_type_report', report.id);
     } catch (e) { this.logger.warn('reporter notification failed: ' + (e as any)?.message); }
+  }
+
+  async resolveManualAnnotationCase(
+    staffId: string,
+    caseId: string,
+    dto: ResolveCaseDto,
+  ) {
+    const modCase = await this.cases.findOne({ where: { id: caseId } });
+    if (!modCase) throw new NotFoundException('ModerationCase ' + caseId + ' not found');
+    if (modCase.status === ModerationStatus.RESOLVED) {
+      throw new BadRequestException('Case is already resolved');
+    }
+    if (modCase.caseType !== ModerationType.MANUAL_SURVEY_ANNOTATION) {
+      throw new BadRequestException('Invalid case type for manual annotation settlement');
+    }
+
+    const candidate = await this.candRepo.findOne({
+      where: { id: modCase.targetEntityId },
+      relations: ['submission'],
+    });
+    if (!candidate) throw new NotFoundException('Target sign candidate not found');
+
+    const surveyorId = candidate.manualAnnotationBy;
+    if (!surveyorId) throw new BadRequestException('Candidate missing manual annotator ID');
+
+    let surveyorProfile: SurveyorProfile | null = null;
+    if (this.surveyorProfileRepo) {
+      surveyorProfile = await this.surveyorProfileRepo.findOne({ where: { userId: surveyorId } });
+      if (!surveyorProfile) {
+        surveyorProfile = this.surveyorProfileRepo.create({
+          userId: surveyorId,
+          reliabilityScore: 1.0,
+          totalManualAnnotations: 0,
+          approvedManualAnnotations: 0,
+          rejectedManualAnnotations: 0,
+          consecutiveAnnotationErrors: 0,
+          isAnnotationSuspended: false,
+        });
+      }
+    } else if (typeof this.dataSource?.query === 'function') {
+      const pRows = await this.dataSource.query('SELECT * FROM surveyor_profiles WHERE user_id = $1', [surveyorId]);
+      if (pRows[0]) {
+        surveyorProfile = pRows[0];
+      } else {
+        await this.dataSource.query(
+          'INSERT INTO surveyor_profiles (user_id, reliability_score) VALUES ($1, 1.0) ON CONFLICT (user_id) DO NOTHING',
+          [surveyorId],
+        );
+        const refetched = await this.dataSource.query('SELECT * FROM surveyor_profiles WHERE user_id = $1', [surveyorId]);
+        surveyorProfile = refetched[0];
+      }
+    }
+
+    const actionType = (dto.actionType || 'RESOLVE').toUpperCase();
+    const isApproved = actionType === 'APPROVE' || actionType === 'APPROVED' || actionType === 'RESOLVE';
+
+    if (isApproved) {
+      // ── SETTLEMENT: APPROVAL (TRUE POSITIVE GROUND TRUTH) ──
+      const rewardCredits = this.paramService
+        ? await this.paramService.getNumber('survey.manual_annotation_reward_credits', 35)
+        : 35;
+      const repBoost = this.paramService
+        ? await this.paramService.getNumber('survey.manual_annotation_reward_reputation_boost', 0.05)
+        : 0.05;
+
+      // 1. Credit wallet bonus (higher than standard contribution)
+      if (this.walletService && rewardCredits > 0) {
+        try {
+          await this.walletService.creditUser(
+            surveyorId,
+            rewardCredits,
+            TransactionType.SURVEY_REWARD,
+            'unverified_sign_candidates',
+            candidate.id,
+            `Reward for verified manual sign annotation (sign type #${candidate.predictedSignTypeId})`,
+            { idempotencyKey: `manual_ann_reward:${candidate.id}` },
+          );
+        } catch (e: any) {
+          this.logger.warn(`Failed to credit user ${surveyorId}: ${e?.message}`);
+        }
+      }
+
+      // 2. Boost surveyor reliability score
+      const prevScore = surveyorProfile ? Number(surveyorProfile.reliabilityScore ?? 1.0) : 1.0;
+      const newScore = Math.min(1.0, Math.round((prevScore + repBoost) * 100) / 100);
+
+      if (this.surveyorProfileRepo && surveyorProfile) {
+        surveyorProfile.reliabilityScore = newScore;
+        surveyorProfile.approvedManualAnnotations = (Number(surveyorProfile.approvedManualAnnotations) || 0) + 1;
+        surveyorProfile.totalManualAnnotations = (Number(surveyorProfile.totalManualAnnotations) || 0) + 1;
+        surveyorProfile.consecutiveAnnotationErrors = 0;
+        await this.surveyorProfileRepo.save(surveyorProfile);
+      } else if (typeof this.dataSource?.query === 'function') {
+        await this.dataSource.query(
+          `UPDATE surveyor_profiles
+           SET reliability_score = $1,
+               approved_manual_annotations = approved_manual_annotations + 1,
+               total_manual_annotations = total_manual_annotations + 1,
+               consecutive_annotation_errors = 0,
+               updated_at = NOW()
+           WHERE user_id = $2`,
+          [newScore, surveyorId],
+        );
+      }
+
+      // 3. Record reputation audit history
+      await this.recordReputationHistory(
+        surveyorId,
+        prevScore,
+        newScore,
+        repBoost,
+        'MANUAL_ANNOTATION_APPROVED',
+        'unverified_sign_candidates',
+        candidate.id,
+      );
+
+      // 4. Register to Active Learning dataset for retraining
+      try {
+        if (typeof this.dataSource?.query === 'function') {
+          await this.dataSource.query(
+            `INSERT INTO active_learning_selections (candidate_id, selection_reason, selected_at)
+             VALUES ($1, 'UNCERTAIN', NOW())
+             ON CONFLICT DO NOTHING`,
+            [candidate.id],
+          );
+        }
+      } catch (alErr: any) {
+        this.logger.warn(`Failed to log active learning selection for ${candidate.id}: ${alErr?.message}`);
+      }
+
+      // 5. Publish verified sign to map
+      try {
+        if (typeof this.dataSource?.query === 'function') {
+          await this.dataSource.query(
+            `INSERT INTO verified_traffic_signs (
+               id, sign_type_id, origin_candidate_id, location,
+               sign_crop_url, status, freshness_score, last_verified_at,
+               lifetime_multiplier, effective_lifetime_days, degraded_consensus_ratio
+             ) SELECT
+               gen_random_uuid(), c.predicted_sign_type_id, c.id,
+               COALESCE(cge.sign_location, ST_SetSRID(ST_MakePoint(105.85, 21.02), 4326)),
+               c.sign_crop_url, 'ACTIVE', 1, now(),
+               1.0, 30, 1.0
+             FROM unverified_sign_candidates c
+             LEFT JOIN candidate_geo_estimations cge ON c.id = cge.candidate_id
+             WHERE c.id = $1
+             ON CONFLICT (origin_candidate_id) DO NOTHING`,
+            [candidate.id],
+          );
+        }
+      } catch (pubErr: any) {
+        this.logger.warn(`Failed to publish verified sign from candidate ${candidate.id}: ${pubErr?.message}`);
+      }
+
+      // 6. Update candidate status to VERIFIED
+      candidate.status = CandidateStatus.VERIFIED;
+      await this.candRepo.save(candidate);
+
+      // 7. Update survey submission
+      if (candidate.submissionId && typeof this.dataSource?.query === 'function') {
+        await this.dataSource.query(
+          `UPDATE survey_submissions SET manual_annotation_status = 'APPROVED', updated_at = NOW() WHERE id = $1`,
+          [candidate.submissionId],
+        );
+      }
+
+      // 8. Notify Surveyor
+      try {
+        await this.notificationsService.create(
+          surveyorId,
+          'MANUAL_ANNOTATION_APPROVED',
+          'Gán nhãn biển báo đã được phê duyệt',
+          `Quản trị viên đã xác nhận biển báo bạn vẽ. Bạn nhận được +${rewardCredits} credits và tăng điểm uy tín!`,
+          'candidate',
+          candidate.id,
+        );
+      } catch {}
+    } else {
+      // ── SETTLEMENT: REJECTION (SPAM / BOGUS ANNOTATION) ──
+      const penaltyCredits = this.paramService
+        ? await this.paramService.getNumber('survey.manual_annotation_penalty_credits', 20)
+        : 20;
+      const repDrop = this.paramService
+        ? await this.paramService.getNumber('survey.manual_annotation_penalty_reputation_drop', 0.15)
+        : 0.15;
+      const errLimit = this.paramService
+        ? await this.paramService.getNumber('survey.manual_annotation_consecutive_error_limit', 3)
+        : 3;
+      const cooldownDays = this.paramService
+        ? await this.paramService.getNumber('survey.manual_annotation_suspension_cooldown_days', 7)
+        : 7;
+
+      // 1. Debit penalty credits
+      if (this.walletService && penaltyCredits > 0) {
+        try {
+          const w = await this.walletService.getWallet(surveyorId);
+          const bal = w?.wallet ? Number(w.wallet.balance) : 0;
+          const actualDeduct = Math.min(penaltyCredits, bal);
+          if (actualDeduct > 0) {
+            await this.walletService.deductUser(
+              surveyorId,
+              actualDeduct,
+              TransactionType.MANUAL_ADJUSTMENT,
+              'unverified_sign_candidates',
+              candidate.id,
+              `Penalty for rejected manual sign annotation: ${dto.actionNote || dto.resolutionNote || 'No sign visible'}`,
+              { idempotencyKey: `manual_ann_penalty:${candidate.id}` },
+            );
+          }
+        } catch (e: any) {
+          this.logger.warn(`Failed to deduct penalty credits from ${surveyorId}: ${e?.message}`);
+        }
+      }
+
+      // 2. Reduce surveyor reliability score
+      const prevScore = surveyorProfile ? Number(surveyorProfile.reliabilityScore ?? 1.0) : 1.0;
+      const newScore = Math.max(0.0, Math.round((prevScore - repDrop) * 100) / 100);
+      const consecutiveErrors = (Number(surveyorProfile?.consecutiveAnnotationErrors) || 0) + 1;
+      const isSuspended = consecutiveErrors >= errLimit;
+      const suspendedUntil = isSuspended ? new Date(Date.now() + cooldownDays * 86400 * 1000) : null;
+      const suspensionReason = isSuspended ? `Exceeded consecutive bogus manual annotation limit (${errLimit}).` : null;
+
+      if (this.surveyorProfileRepo && surveyorProfile) {
+        surveyorProfile.reliabilityScore = newScore;
+        surveyorProfile.rejectedManualAnnotations = (Number(surveyorProfile.rejectedManualAnnotations) || 0) + 1;
+        surveyorProfile.totalManualAnnotations = (Number(surveyorProfile.totalManualAnnotations) || 0) + 1;
+        surveyorProfile.consecutiveAnnotationErrors = consecutiveErrors;
+        if (isSuspended) {
+          surveyorProfile.isAnnotationSuspended = true;
+          surveyorProfile.suspendedUntil = suspendedUntil;
+          surveyorProfile.suspensionReason = suspensionReason;
+        }
+        await this.surveyorProfileRepo.save(surveyorProfile);
+      } else if (typeof this.dataSource?.query === 'function') {
+        await this.dataSource.query(
+          `UPDATE surveyor_profiles
+           SET reliability_score = $1,
+               rejected_manual_annotations = rejected_manual_annotations + 1,
+               total_manual_annotations = total_manual_annotations + 1,
+               consecutive_annotation_errors = $2,
+               is_annotation_suspended = $3,
+               suspended_until = $4,
+               suspension_reason = $5,
+               updated_at = NOW()
+           WHERE user_id = $6`,
+          [newScore, consecutiveErrors, isSuspended, suspendedUntil, suspensionReason, surveyorId],
+        );
+      }
+
+      // 3. Record reputation audit history
+      await this.recordReputationHistory(
+        surveyorId,
+        prevScore,
+        newScore,
+        -repDrop,
+        'MANUAL_ANNOTATION_REJECTED',
+        'unverified_sign_candidates',
+        candidate.id,
+      );
+
+      // 4. Update Candidate status to REJECTED
+      candidate.status = CandidateStatus.REJECTED;
+      await this.candRepo.save(candidate);
+
+      // 5. Update survey submission
+      if (candidate.submissionId && typeof this.dataSource?.query === 'function') {
+        await this.dataSource.query(
+          `UPDATE survey_submissions SET manual_annotation_status = 'REJECTED', updated_at = NOW() WHERE id = $1`,
+          [candidate.submissionId],
+        );
+      }
+
+      // 6. Notify Surveyor
+      try {
+        await this.notificationsService.create(
+          surveyorId,
+          'MANUAL_ANNOTATION_REJECTED',
+          'Gán nhãn biển báo bị từ chối',
+          `Quản trị viên không tìm thấy biển báo hợp lệ trong khu vực bạn vẽ (${dto.actionNote || dto.resolutionNote || 'Không có biển báo'}). Điểm uy tín của bạn đã bị trừ.`,
+          'candidate',
+          candidate.id,
+        );
+      } catch {}
+    }
+
+    // Finalize Moderation Case & Action
+    modCase.status = ModerationStatus.RESOLVED;
+    modCase.assignedStaffId = staffId;
+    modCase.resolutionNote = dto.actionNote || dto.resolutionNote;
+    modCase.resolvedAt = new Date();
+    await this.cases.save(modCase);
+
+    const act = this.actions.create({
+      caseId: modCase.id,
+      actionType: isApproved ? 'APPROVE' : 'REJECT',
+      performedBy: staffId,
+      note: dto.actionNote ?? dto.resolutionNote,
+    } as any);
+    await this.actions.save(act);
+
+    return modCase;
+  }
+
+  private async recordReputationHistory(
+    surveyorId: string,
+    previousScore: number,
+    newScore: number,
+    delta: number,
+    changeReason: string,
+    referenceEntityType?: string,
+    referenceEntityId?: string,
+  ) {
+    try {
+      if (this.surveyorReputationRepo) {
+        const hist = this.surveyorReputationRepo.create({
+          surveyorId,
+          previousScore,
+          newScore,
+          delta,
+          changeReason,
+          referenceEntityType,
+          referenceEntityId,
+        });
+        await this.surveyorReputationRepo.save(hist);
+      } else if (typeof this.dataSource?.query === 'function') {
+        await this.dataSource.query(
+          `INSERT INTO surveyor_reputation_history (
+             surveyor_id, previous_score, new_score, delta, change_reason,
+             reference_entity_type, reference_entity_id, created_at
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
+          [surveyorId, previousScore, newScore, delta, changeReason, referenceEntityType ?? null, referenceEntityId ?? null],
+        );
+      }
+    } catch (err: any) {
+      this.logger.warn(`Failed to record reputation history for surveyor ${surveyorId}: ${err?.message}`);
+    }
   }
 }

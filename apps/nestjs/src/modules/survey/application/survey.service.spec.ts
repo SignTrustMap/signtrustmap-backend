@@ -53,6 +53,8 @@ describe('SurveyService submission contract', () => {
       correctionRequirements: [],
       failureReason: null,
       totalCandidatesExtracted: 0,
+      hasManualAnnotation: false,
+      manualAnnotationStatus: null,
       createdAt: new Date(),
       updatedAt: new Date(),
     };

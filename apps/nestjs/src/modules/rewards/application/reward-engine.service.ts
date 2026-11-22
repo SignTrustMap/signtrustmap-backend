@@ -5,6 +5,7 @@ import { RewardRule } from '../infrastructure/persistence/reward-rule.entity';
 import { CreditRule } from '../infrastructure/persistence/credit-rule.entity';
 import { CreateRewardRuleDto, UpdateRewardRuleDto } from '../presentation/dto/reward-rule.dto';
 import { CreditTransaction, TransactionType } from '../../wallet/infrastructure/persistence/credit-transaction.entity';
+import { SystemParametersService } from '../../system-parameters/system-parameters.service';
 
 export interface RewardEvaluationResult {
   eligible: boolean;
@@ -30,6 +31,8 @@ export class RewardEngineService {
     @Optional()
     @InjectRepository(CreditTransaction)
     private readonly txRepo?: Repository<CreditTransaction>,
+    @Optional()
+    private readonly paramService?: SystemParametersService,
   ) {}
 
   /**
@@ -42,6 +45,43 @@ export class RewardEngineService {
     context?: { reliabilityScore?: number; candidateCount?: number; baseFallback?: number },
   ): Promise<RewardEvaluationResult> {
     const now = new Date();
+
+    // Resolve dynamic scaling configuration for SURVEY_REWARD
+    let scalingEnabled = true;
+    let floorPct = 0.10;
+    if (this.paramService) {
+      scalingEnabled = await this.paramService.getBoolean('survey.reward_scaling_enabled', true);
+      floorPct = (await this.paramService.getNumber('survey.reward_scaling_floor_pct', 10.0)) / 100.0;
+    } else if (typeof this.dataSource?.query === 'function') {
+      try {
+        const pRows: any[] = await this.dataSource.query(
+          `SELECT key, value FROM system_parameters WHERE key IN ('survey.reward_scaling_enabled', 'survey.reward_scaling_floor_pct')`,
+        );
+        for (const r of pRows) {
+          if (r.key === 'survey.reward_scaling_enabled') scalingEnabled = r.value?.toLowerCase() === 'true';
+          else if (r.key === 'survey.reward_scaling_floor_pct') {
+            const num = parseFloat(r.value);
+            if (!isNaN(num)) floorPct = num / 100.0;
+          }
+        }
+      } catch {}
+    }
+
+    const getSurveyorReliability = async (): Promise<number | undefined> => {
+      if (context?.reliabilityScore !== undefined) return Number(context.reliabilityScore);
+      if (userId && typeof this.dataSource?.query === 'function') {
+        try {
+          const sRows: any[] = await this.dataSource.query(
+            `SELECT reliability_score FROM surveyor_profiles WHERE user_id = $1`,
+            [userId],
+          );
+          if (sRows.length && sRows[0]?.reliability_score !== undefined && sRows[0]?.reliability_score !== null) {
+            return Number(sRows[0].reliability_score);
+          }
+        } catch {}
+      }
+      return undefined;
+    };
 
     // 1. Resolve matching active reward rule
     const rule = await this.ruleRepo.findOne({
@@ -73,6 +113,15 @@ export class RewardEngineService {
           }
         }
       } catch {}
+
+      if (String(activityType) === String(TransactionType.SURVEY_REWARD) && scalingEnabled) {
+        const rel = await getSurveyorReliability();
+        if (rel !== undefined) {
+          const relRatio = rel > 1.0 ? rel / 100.0 : rel;
+          const multiplier = Math.max(floorPct, Math.min(1.0, relRatio));
+          fallbackAmount = Math.max(1, Math.round(fallbackAmount * multiplier));
+        }
+      }
 
       return {
         eligible: true,
@@ -171,6 +220,16 @@ export class RewardEngineService {
     if (config.candidate_multiplier && context?.candidateCount !== undefined) {
       const bonusPerCandidate = Number(config.bonus_per_candidate ?? 5);
       calculatedAmount = rule.baseAmount + Math.max(0, context.candidateCount * bonusPerCandidate);
+    }
+
+    // Surveyor reputation scaling: scales standard contribution rewards by surveyor reliability
+    if (String(activityType) === String(TransactionType.SURVEY_REWARD) && scalingEnabled) {
+      const rel = await getSurveyorReliability();
+      if (rel !== undefined) {
+        const relRatio = rel > 1.0 ? rel / 100.0 : rel;
+        const multiplier = Math.max(floorPct, Math.min(1.0, relRatio));
+        calculatedAmount = Math.max(1, Math.round(calculatedAmount * multiplier));
+      }
     }
 
     return {
