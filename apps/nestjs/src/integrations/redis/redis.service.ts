@@ -103,6 +103,24 @@ export class RedisService implements OnModuleDestroy {
     return false;
   }
 
+  /**
+   * Publish a message to a Redis Pub/Sub channel
+   */
+  async publish(channel: string, message: string): Promise<number> {
+    if (this.isConnected && this.client) {
+      try {
+        return await this.client.publish(channel, message);
+      } catch (err: any) {
+        this.logger.debug(`Redis publish failed (${err.message}) on channel ${channel}`);
+      }
+    }
+    return 0;
+  }
+
+  getClient(): Redis | null {
+    return this.client;
+  }
+
   async onModuleDestroy() {
     if (this.client) {
       try {

@@ -17,6 +17,7 @@ import { AuditLog } from '../admin/audit-log.entity';
 import { WalletService } from '../wallet/application/wallet.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RedisService } from '../../integrations/redis/redis.service';
+import { SystemParametersService } from '../system-parameters/system-parameters.service';
 
 export interface DailyTaskWithProgress {
   id: number;
@@ -83,7 +84,27 @@ export class DailyTasksService {
     @Optional()
     @InjectRepository(CreditTransaction)
     private readonly creditTransactionRepo?: Repository<CreditTransaction>,
+    @Optional()
+    private readonly paramService?: SystemParametersService,
   ) {}
+
+  private async getVerifyThreeReward(): Promise<number> {
+    return this.paramService
+      ? await this.paramService.getNumber('missions.verify_three_signs_reward', VERIFY_THREE_SIGNS_REWARD)
+      : VERIFY_THREE_SIGNS_REWARD;
+  }
+
+  private async getApprovedAnomalyReward(): Promise<number> {
+    return this.paramService
+      ? await this.paramService.getNumber('missions.approved_anomaly_reward', APPROVED_ANOMALY_REWARD)
+      : APPROVED_ANOMALY_REWARD;
+  }
+
+  private async getWeeklyFiveReward(): Promise<number> {
+    return this.paramService
+      ? await this.paramService.getNumber('missions.weekly_five_reward', WEEKLY_FIVE_MISSIONS_REWARD)
+      : WEEKLY_FIVE_MISSIONS_REWARD;
+  }
 
   /**
    * List all active daily tasks
@@ -263,6 +284,9 @@ export class DailyTasksService {
       );
     }
     const streakBonusCredits = await this.getConfiguredStreakBonus();
+    const verifyThreeReward = await this.getVerifyThreeReward();
+    const approvedAnomalyReward = await this.getApprovedAnomalyReward();
+    const weeklyFiveReward = await this.getWeeklyFiveReward();
 
     return {
       timeZone,
@@ -277,7 +301,7 @@ export class DailyTasksService {
             progress: Math.min(verifiedSignsToday, 3),
             target: 3,
             completed: verifiedSignsToday >= 3,
-            rewardCredits: VERIFY_THREE_SIGNS_REWARD,
+            rewardCredits: verifyThreeReward,
             rewardGranted:
               verifiedSignsToday >= 3 &&
               (await this.hasReward(this.dailySignRewardKey(userId, today))),
@@ -290,7 +314,7 @@ export class DailyTasksService {
             progress: approvedAnomaliesToday,
             target: 1,
             completed: approvedAnomaliesToday > 0,
-            rewardCredits: APPROVED_ANOMALY_REWARD,
+            rewardCredits: approvedAnomalyReward,
             rewardGranted:
               approvedAnomaliesToday > 0 &&
               Number(todayActivity.rewarded_anomaly_count) === approvedAnomaliesToday,
@@ -307,7 +331,7 @@ export class DailyTasksService {
         completedMissions: weeklyCompletedMissions,
         target: 5,
         completed: weeklyCompletedMissions >= 5,
-        bonusCredits: WEEKLY_FIVE_MISSIONS_REWARD,
+        bonusCredits: weeklyFiveReward,
         bonusGranted: weeklyBonusGranted,
       },
       streak: {
@@ -365,11 +389,14 @@ export class DailyTasksService {
     const dayPeriod = this.getPeriod(contributionDate, 1, timeZone);
     const dayRows = await this.getMissionActivityDays(userId, dayPeriod, timeZone);
     const verifiedSignCount = Number(dayRows[0]?.verified_sign_count ?? 0);
+    const verifyThreeReward = await this.getVerifyThreeReward();
+    const approvedAnomalyReward = await this.getApprovedAnomalyReward();
+    const weeklyFiveReward = await this.getWeeklyFiveReward();
 
     if (verifiedSignCount >= 3) {
       await this.walletService.creditUser(
         userId,
-        VERIFY_THREE_SIGNS_REWARD,
+        verifyThreeReward,
         TransactionType.MISSION_REWARD,
         'daily_mission',
         sourceId,
@@ -384,7 +411,7 @@ export class DailyTasksService {
     if (eventType === 'APPROVED_ANOMALY') {
       await this.walletService.creditUser(
         userId,
-        APPROVED_ANOMALY_REWARD,
+        approvedAnomalyReward,
         TransactionType.MISSION_REWARD,
         'road_hazard_event',
         sourceId,
@@ -409,7 +436,7 @@ export class DailyTasksService {
     if (completedMissions >= 5) {
       await this.walletService.creditUser(
         userId,
-        WEEKLY_FIVE_MISSIONS_REWARD,
+        weeklyFiveReward,
         TransactionType.MISSION_REWARD,
         'weekly_mission',
         sourceId,
@@ -559,6 +586,13 @@ export class DailyTasksService {
   }
 
   private async getConfiguredStreakBonus(): Promise<number> {
+    if (this.paramService) {
+      const bonus = await this.paramService.getNumber(STREAK_BONUS_PARAMETER, 0);
+      if (!Number.isSafeInteger(bonus) || bonus < 0) {
+        throw new Error(`${STREAK_BONUS_PARAMETER} must be a non-negative integer`);
+      }
+      return bonus;
+    }
     const rows: Array<{ value: string }> = await this.dataSource.query(
       'SELECT value FROM system_parameters WHERE key = $1',
       [STREAK_BONUS_PARAMETER],

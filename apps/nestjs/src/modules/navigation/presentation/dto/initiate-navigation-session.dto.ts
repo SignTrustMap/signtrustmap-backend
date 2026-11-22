@@ -40,4 +40,9 @@ export class InitiateNavigationSessionDto {
   @IsOptional()
   @IsString()
   idempotencyKey?: string;
+
+  @ApiPropertyOptional({ description: 'Target sign ID for reviewer quest verification (eligible for free navigation within 5km)', format: 'uuid' })
+  @IsOptional()
+  @IsString()
+  targetSignId?: string;
 }

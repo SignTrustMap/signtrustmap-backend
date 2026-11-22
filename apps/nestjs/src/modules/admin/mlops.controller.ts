@@ -15,7 +15,6 @@ import { TriggerRetrainDto, ActiveLearningConfigDto } from './dto/admin.dto';
 
 @ApiTags('MLOps Operations')
 @ApiBearerAuth()
-@Roles('ADMIN', 'STAFF')
 @Controller('mlops')
 export class MlopsController {
   constructor(private readonly adminService: AdminService) {}
@@ -24,6 +23,7 @@ export class MlopsController {
     summary: 'Get ML Pipeline status',
     description: 'Returns health, active detector/classifier versions, and queue state',
   })
+  @Roles('ADMIN', 'STAFF')
   @Get('pipeline/status')
   getPipelineStatus() {
     return this.adminService.getPipelineStatus();
@@ -33,6 +33,7 @@ export class MlopsController {
     summary: 'List model retraining runs',
     description: 'Returns historical retraining runs matching frontend ModelRetrainingRun schema',
   })
+  @Roles('ADMIN', 'STAFF')
   @Get('retraining-runs')
   async listRetrainingRuns(
     @Query('page') page?: string,
@@ -48,6 +49,7 @@ export class MlopsController {
     summary: 'Trigger manual model retraining run',
     description: 'Queues a retraining run with active learning dataset samples',
   })
+  @Roles('ADMIN')
   @Post('retraining-runs/trigger')
   triggerRetrainingRun(
     @Body() dto: TriggerRetrainDto,
@@ -60,6 +62,7 @@ export class MlopsController {
     summary: 'Get Active Learning configuration',
     description: 'Retrieves current active learning uncertainty margin and auto-retrain thresholds',
   })
+  @Roles('ADMIN', 'STAFF')
   @Get('active-learning/config')
   getActiveLearningConfig() {
     return this.adminService.getActiveLearningConfig();
@@ -69,6 +72,7 @@ export class MlopsController {
     summary: 'Update Active Learning configuration',
     description: 'Updates active learning hyperparameters with audit logging',
   })
+  @Roles('ADMIN')
   @Put('active-learning/config')
   updateActiveLearningConfig(
     @Body() dto: ActiveLearningConfigDto,
