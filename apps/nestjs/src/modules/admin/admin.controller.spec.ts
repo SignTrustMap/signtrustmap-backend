@@ -13,6 +13,8 @@ describe('AdminController (Phase 1 Ledger Adjustments & Admin Operations)', () =
   beforeEach(() => {
     adminService = {
       listUsers: jest.fn(),
+      listLowReliabilityUsers: jest.fn(),
+      executeBanWave: jest.fn(),
       updateUserStatus: jest.fn(),
       assignRole: jest.fn(),
       listAuditLogs: jest.fn(),
@@ -252,6 +254,33 @@ describe('AdminController (Phase 1 Ledger Adjustments & Admin Operations)', () =
       mockAdmin.id,
       '127.0.0.1',
     );
+    expect(result).toBe(expected);
+  });
+
+  it('listLowReliabilityUsers delegates to adminService.listLowReliabilityUsers', async () => {
+    const expected = { threshold: 45, total: 1, items: [] };
+    adminService.listLowReliabilityUsers.mockResolvedValue(expected as any);
+
+    const result = await controller.listLowReliabilityUsers('45', 'true', '2', '1', '20');
+
+    expect(adminService.listLowReliabilityUsers).toHaveBeenCalledWith({
+      threshold: 45,
+      includeProvisional: true,
+      minReviews: 2,
+      page: 1,
+      pageSize: 20,
+    });
+    expect(result).toBe(expected);
+  });
+
+  it('executeBanWave delegates to adminService.executeBanWave with IP capture', async () => {
+    const dto = { reliabilityThreshold: 40, reason: 'Low reliability ban wave', dryRun: false };
+    const expected = { dryRun: false, threshold: 40, matchedCount: 3, bannedCount: 3, bannedUsers: [] };
+    adminService.executeBanWave.mockResolvedValue(expected as any);
+
+    const result = await controller.executeBanWave(dto, mockAdmin, mockReq);
+
+    expect(adminService.executeBanWave).toHaveBeenCalledWith(dto, mockAdmin.id, '127.0.0.1');
     expect(result).toBe(expected);
   });
 
