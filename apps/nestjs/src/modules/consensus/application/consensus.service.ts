@@ -24,6 +24,7 @@ import { SurveyorProfile } from '../../survey/infrastructure/persistence/surveyo
 import { ModerationCase } from '../../moderation/infrastructure/persistence/moderation-case.entity';
 import { RevalidationTask, TaskStatus } from '../../revalidation/infrastructure/persistence/revalidation-task.entity';
 import { SystemSwitchService } from '../../admin/system-switch.service';
+import { SystemParametersService } from '../../system-parameters/system-parameters.service';
 
 @Injectable()
 export class ConsensusService {
@@ -50,6 +51,7 @@ export class ConsensusService {
     @Optional() @InjectRepository(ModerationCase) private readonly moderationCaseRepo?: Repository<ModerationCase>,
     @Optional() @InjectRepository(ReviewerReliabilityHistory) private readonly reviewerHistoryRepo?: Repository<ReviewerReliabilityHistory>,
     @Optional() private readonly systemSwitchService?: SystemSwitchService,
+    @Optional() private readonly paramService?: SystemParametersService,
   ) {}
 
   async evaluate(candidateId: string): Promise<ConsensusLog | null> {
@@ -80,10 +82,32 @@ export class ConsensusService {
         consecutiveErrorLimit: 3,
         suspensionCooldownDays: 7,
         provisionalVoteWeight: 1.0,
+        provisionalMinReliabilityThreshold: 40.0,
+        provisionalConsecutiveErrorLimit: 2,
+        provisionalAutoBanEnabled: true,
         createdBy: null,
         isActive: true,
         effectiveFrom: new Date(),
       } as unknown as ConsensusConfig;
+    }
+
+    // Dynamic parameter resolution from SystemParametersService
+    if (this.paramService) {
+      config = {
+        ...config,
+        approvalThreshold: await this.paramService.getNumber('consensus.approval_threshold', config.approvalThreshold),
+        rejectionThreshold: await this.paramService.getNumber('consensus.rejection_threshold', config.rejectionThreshold),
+        minVotesRequired: await this.paramService.getNumber('consensus.min_votes_required', config.minVotesRequired),
+        maxVotesLimit: await this.paramService.getNumber('consensus.max_votes_limit', config.maxVotesLimit ?? 9),
+        alphaSmoothingFactor: await this.paramService.getNumber('consensus.alpha_smoothing_factor', config.alphaSmoothingFactor),
+        weightCorrect: await this.paramService.getNumber('consensus.weight_correct', config.weightCorrect),
+        penaltyFalse: await this.paramService.getNumber('consensus.penalty_false', config.penaltyFalse),
+        minSampleBaseline: await this.paramService.getNumber('consensus.min_sample_baseline', config.minSampleBaseline),
+        minReliabilityThreshold: await this.paramService.getNumber('consensus.min_reliability_threshold', config.minReliabilityThreshold),
+        consecutiveErrorLimit: await this.paramService.getNumber('consensus.consecutive_error_limit', config.consecutiveErrorLimit),
+        suspensionCooldownDays: await this.paramService.getNumber('consensus.suspension_cooldown_days', config.suspensionCooldownDays),
+        provisionalVoteWeight: await this.paramService.getNumber('consensus.provisional_vote_weight', config.provisionalVoteWeight),
+      } as ConsensusConfig;
     }
 
     const reviews = await this.reviewRepo.find({ where: { candidateId } });
@@ -465,11 +489,17 @@ export class ConsensusService {
       const profile = await this.updateReviewerProfile(v.reviewerId, aligned, config, log.id);
       if (aligned === 1) {
         try {
-          // Reputation-Weighted Review Reward Bonus Multiplier:
-          // ReviewReward = BaseReward * (0.5 + 0.5 * (Reliability / 100))
+          // Reputation-Weighted Review Reward Bonus Multiplier
           const relScore = profile ? Number(profile.reliabilityScore ?? profile.reliability_score ?? 100) : 100;
           const normalizedPct = relScore <= 1.0 ? relScore * 100 : relScore;
-          const multiplier = 0.5 + 0.5 * (normalizedPct / 100);
+          const isScalingEnabled = this.paramService
+            ? await this.paramService.getBoolean('reviewer.reward_scaling_enabled', true)
+            : true;
+          const floorPct = this.paramService
+            ? await this.paramService.getNumber('reviewer.reward_scaling_floor_pct', 10.0)
+            : 10.0;
+          const effPct = isScalingEnabled ? Math.max(floorPct, normalizedPct) : 100;
+          const multiplier = 0.5 + 0.5 * (effPct / 100);
           const finalReward = Math.max(1, Math.round(baseReward * multiplier));
 
           await this.walletService.creditUser(
@@ -543,7 +573,14 @@ export class ConsensusService {
         try {
           const relScore = profile ? Number(profile.reliabilityScore ?? profile.reliability_score ?? 100) : 100;
           const normalizedPct = relScore <= 1.0 ? relScore * 100 : relScore;
-          const multiplier = 0.5 + 0.5 * (normalizedPct / 100);
+          const isScalingEnabled = this.paramService
+            ? await this.paramService.getBoolean('reviewer.reward_scaling_enabled', true)
+            : true;
+          const floorPct = this.paramService
+            ? await this.paramService.getNumber('reviewer.reward_scaling_floor_pct', 10.0)
+            : 10.0;
+          const effPct = isScalingEnabled ? Math.max(floorPct, normalizedPct) : 100;
+          const multiplier = 0.5 + 0.5 * (effPct / 100);
           const finalReward = Math.max(1, Math.round(baseReward * multiplier));
 
           await this.walletService.creditUser(
@@ -694,14 +731,47 @@ export class ConsensusService {
 
       const errorLimit = config.consecutiveErrorLimit ?? 3;
       const minReliability = config.minReliabilityThreshold ?? 50.0;
+      const provisionalErrorLimit = config.provisionalConsecutiveErrorLimit ?? 2;
+      const provisionalMinReliability = config.provisionalMinReliabilityThreshold ?? 40.0;
+      const provisionalAutoBanEnabled = config.provisionalAutoBanEnabled ?? true;
 
-      if (consecutiveErrors >= errorLimit) {
+      let shouldAutoBan = false;
+      let autoBanReason: string | null = null;
+
+      if (isProvisional) {
+        if (consecutiveErrors >= provisionalErrorLimit) {
+          isSuspended = true;
+          suspendedAt = new Date();
+          const cooldownDays = config.suspensionCooldownDays ?? 7;
+          suspendedUntil = provisionalAutoBanEnabled
+            ? null
+            : new Date(Date.now() + cooldownDays * 24 * 60 * 60 * 1000);
+          suspensionReason = provisionalAutoBanEnabled
+            ? 'PROVISIONAL_AUTOBAN_CONSECUTIVE_ERRORS'
+            : 'CONSECUTIVE_ERRORS';
+          if (provisionalAutoBanEnabled) {
+            shouldAutoBan = true;
+            autoBanReason = `Tự động khóa tài khoản mới (provisional): sai liên tiếp ${consecutiveErrors}/${provisionalErrorLimit} lần`;
+          }
+        } else if (totalVotes >= 2 && newScore < provisionalMinReliability) {
+          isSuspended = true;
+          suspendedAt = new Date();
+          suspendedUntil = null;
+          suspensionReason = provisionalAutoBanEnabled
+            ? 'PROVISIONAL_AUTOBAN_LOW_RELIABILITY'
+            : 'BELOW_MIN_RELIABILITY';
+          if (provisionalAutoBanEnabled) {
+            shouldAutoBan = true;
+            autoBanReason = `Tự động khóa tài khoản mới (provisional): điểm uy tín ${newScore}% dưới ngưỡng ${provisionalMinReliability}%`;
+          }
+        }
+      } else if (consecutiveErrors >= errorLimit) {
         isSuspended = true;
         suspendedAt = new Date();
         const cooldownDays = config.suspensionCooldownDays ?? 7;
         suspendedUntil = new Date(Date.now() + cooldownDays * 24 * 60 * 60 * 1000);
         suspensionReason = 'CONSECUTIVE_ERRORS';
-      } else if (!isProvisional && newScore < minReliability) {
+      } else if (newScore < minReliability) {
         isSuspended = true;
         suspendedAt = new Date();
         suspendedUntil = null;
@@ -784,6 +854,67 @@ export class ConsensusService {
         );
       }
 
+      let autoBanned = false;
+      if (shouldAutoBan && typeof this.dataSource?.query === 'function') {
+        try {
+          const eligibleRows: Array<{ id: string; status: string }> = await this.dataSource.query(
+            `SELECT u.id, u.status
+             FROM users u
+             WHERE u.id = $1
+               AND u.status <> 'BANNED'
+               AND NOT EXISTS (
+                 SELECT 1 FROM user_roles ur
+                 JOIN roles r ON r.id = ur.role_id
+                 WHERE ur.user_id = u.id AND ur.is_active = true AND r.code IN ('ADMIN', 'STAFF')
+               )
+             LIMIT 1`,
+            [reviewerId],
+          );
+          if (eligibleRows && eligibleRows.length > 0) {
+            const oldStatus = eligibleRows[0].status;
+            await this.dataSource.query(
+              `UPDATE users SET status = 'BANNED', updated_at = now() WHERE id = $1`,
+              [reviewerId],
+            );
+            await this.dataSource.query(
+              `INSERT INTO user_status_history (user_id, old_status, new_status, reason, changed_by)
+               VALUES ($1, $2, 'BANNED', $3, NULL)`,
+              [reviewerId, oldStatus, autoBanReason],
+            );
+            await this.dataSource.query(
+              `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, old_values, new_values)
+               VALUES (NULL, 'AUTO_BAN_PROVISIONAL_REVIEWER', 'users', $1, $2, $3)`,
+              [
+                reviewerId,
+                JSON.stringify({ status: oldStatus }),
+                JSON.stringify({
+                  status: 'BANNED',
+                  reason: autoBanReason,
+                  reliabilityScore: newScore,
+                  consecutiveErrors,
+                  totalVotes,
+                }),
+              ],
+            );
+            autoBanned = true;
+            if (this.notificationsService && typeof this.notificationsService.create === 'function') {
+              await this.notificationsService
+                .create(
+                  reviewerId,
+                  'ACCOUNT_AUTOBANNED',
+                  'Tài khoản đã bị khóa tự động',
+                  autoBanReason || 'Tài khoản mới vi phạm ngưỡng uy tín / chuỗi đánh giá sai.',
+                  'user',
+                  reviewerId,
+                )
+                .catch(() => {});
+            }
+          }
+        } catch (banErr: any) {
+          this.logger.warn('Auto-ban provisional reviewer ' + reviewerId + ' failed: ' + banErr?.message);
+        }
+      }
+
       return {
         user_id: reviewerId,
         reliability_score: newScore,
@@ -793,6 +924,8 @@ export class ConsensusService {
         is_provisional: isProvisional,
         is_review_suspended: isSuspended,
         suspension_reason: suspensionReason,
+        auto_banned: autoBanned,
+        auto_ban_reason: autoBanned ? autoBanReason : null,
       };
     } catch (e: any) {
       this.logger.warn('updateReviewerProfile ' + reviewerId + ': ' + e?.message);
@@ -831,5 +964,81 @@ export class ConsensusService {
       }));
       if (notifs.length) await this.notificationsService.createBulk(notifs as any);
     } catch {}
+  }
+
+  /**
+   * Degraded Consensus Calculation Worker
+   * Evaluates stale unfinalized candidates exceeding degraded timeout with minimum votes.
+   */
+  async checkDegradedConsensus(): Promise<{ processedCount: number; approvedCount: number }> {
+    const isDegradedEnabled = this.paramService
+      ? await this.paramService.getBoolean('consensus.degraded_consensus_enabled', true)
+      : true;
+    if (!isDegradedEnabled) return { processedCount: 0, approvedCount: 0 };
+
+    const timeoutHours = this.paramService
+      ? await this.paramService.getNumber('consensus.degraded_timeout_hours', 48)
+      : 48;
+    const minVotes = this.paramService
+      ? await this.paramService.getNumber('consensus.degraded_min_votes', 1)
+      : 1;
+    const threshold = this.paramService
+      ? await this.paramService.getNumber('consensus.min_votes_required', 3)
+      : 3;
+
+    const staleCandidates = await this.candidateRepo
+      .createQueryBuilder('c')
+      .where("c.status IN ('PENDING_REVIEW', 'IN_CONSENSUS')")
+      .andWhere("c.first_voted_at < NOW() - INTERVAL '1 hour' * :timeoutHours", { timeoutHours })
+      .andWhere('c.votes_count >= :minVotes', { minVotes })
+      .getMany();
+
+    let approvedCount = 0;
+    for (const candidate of staleCandidates) {
+      const reviews = await this.reviewRepo.find({ where: { candidateId: candidate.id } });
+      if (reviews.length === 0) continue;
+
+      const n = reviews.length;
+      const ratio = Math.min(1.0, n / threshold);
+
+      let sumScore = 0;
+      for (const r of reviews) sumScore += r.vote;
+      const isApproved = sumScore > 0;
+
+      if (isApproved) {
+        const defaultLifetime = 30; // standard freshness days
+        const effectiveLifetime = Math.max(3, Math.round(defaultLifetime * ratio));
+
+        await this.candidateRepo.update(candidate.id, { status: CandidateStatus.VERIFIED });
+
+        if (this.dataSource && typeof this.dataSource.query === 'function') {
+          await this.dataSource.query(
+            `INSERT INTO verified_traffic_signs (
+               id, sign_type_id, origin_candidate_id, location,
+               sign_crop_url, status, freshness_score, last_verified_at,
+               lifetime_multiplier, effective_lifetime_days, degraded_consensus_ratio
+             ) SELECT
+               gen_random_uuid(), c.predicted_sign_type_id, c.id,
+               COALESCE(cge.sign_location, ST_SetSRID(ST_MakePoint(105.85, 21.02), 4326)),
+               c.sign_crop_url, 'ACTIVE', 1, now(),
+               $1, $2, $3
+             FROM unverified_sign_candidates c
+             LEFT JOIN candidate_geo_estimations cge ON c.id = cge.candidate_id
+             WHERE c.id = $4
+             ON CONFLICT (origin_candidate_id) DO NOTHING`,
+            [ratio, effectiveLifetime, ratio, candidate.id],
+          );
+        }
+        approvedCount++;
+      } else {
+        await this.candidateRepo.update(candidate.id, { status: CandidateStatus.REJECTED });
+      }
+    }
+
+    if (staleCandidates.length > 0) {
+      this.logger.log(`Degraded consensus processed ${staleCandidates.length} candidates (${approvedCount} approved).`);
+    }
+
+    return { processedCount: staleCandidates.length, approvedCount };
   }
 }

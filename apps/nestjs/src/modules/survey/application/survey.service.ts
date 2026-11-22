@@ -32,7 +32,11 @@ import { UploadChunk } from '../infrastructure/persistence/upload-chunk.entity';
 import { UploadSession, UploadStatus } from '../infrastructure/persistence/upload-session.entity';
 import { SubmissionStatusHistory } from '../infrastructure/persistence/submission-status-history.entity';
 import { SurveyorProfile } from '../infrastructure/persistence/surveyor-profile.entity';
-import { UnverifiedSignCandidate } from '../infrastructure/persistence/unverified-sign-candidate.entity';
+import { UnverifiedSignCandidate, CandidateStatus, SpatialConfidenceLevel } from '../infrastructure/persistence/unverified-sign-candidate.entity';
+import { ModerationCase, ModerationStatus, ModerationType } from '../../moderation/infrastructure/persistence/moderation-case.entity';
+import { SurveyorReputationHistory } from '../infrastructure/persistence/surveyor-reputation-history.entity';
+import { SubmitManualAnnotationDto, ConfirmNegativeSubmissionDto } from '../presentation/dto/manual-annotation.dto';
+import { SystemParametersService } from '../../system-parameters/system-parameters.service';
 import { DailyTask } from '../../daily-tasks/daily-task.entity';
 import { RevalidationTask } from '../../revalidation/infrastructure/persistence/revalidation-task.entity';
 import { TransactionType } from '../../wallet/infrastructure/persistence/credit-transaction.entity';
@@ -70,6 +74,14 @@ export class SurveyService {
     @Optional()
     @InjectRepository(UnverifiedSignCandidate)
     private readonly candidateRepo?: Repository<UnverifiedSignCandidate>,
+    @Optional()
+    @InjectRepository(ModerationCase)
+    private readonly moderationCaseRepo?: Repository<ModerationCase>,
+    @Optional()
+    @InjectRepository(SurveyorReputationHistory)
+    private readonly surveyorReputationRepo?: Repository<SurveyorReputationHistory>,
+    @Optional()
+    private readonly paramService?: SystemParametersService,
   ) {}
 
   private validateCapturedAt(capturedAt: string) {
@@ -302,9 +314,26 @@ export class SurveyService {
     }
 
     const limits = MEDIA_SIZE_LIMITS[dto.mediaType];
-    if (dto.totalSizeBytes <= 0 || dto.totalSizeBytes > limits.maxBytes) {
+    let maxAllowedBytes = limits.maxBytes;
+    if (this.paramService) {
+      if (dto.mediaType === MediaFileType.IMAGE) {
+        const mb = await this.paramService.getNumber('survey.max_image_size_mb', 50);
+        maxAllowedBytes = mb * 1024 * 1024;
+      } else if (dto.mediaType === MediaFileType.VIDEO) {
+        const mb = await this.paramService.getNumber('survey.max_video_size_mb', 2048);
+        maxAllowedBytes = mb * 1024 * 1024;
+      }
+    }
+
+    let maxChunkBytes = MAX_CHUNK_SIZE_BYTES;
+    if (this.paramService) {
+      const chunkMb = await this.paramService.getNumber('survey.max_chunk_size_mb', 50);
+      maxChunkBytes = chunkMb * 1024 * 1024;
+    }
+
+    if (dto.totalSizeBytes <= 0 || dto.totalSizeBytes > maxAllowedBytes) {
       throw new BadRequestException(
-        `Total file size ${dto.totalSizeBytes} bytes is invalid for ${dto.mediaType}. Allowed range: 1 to ${limits.maxBytes} bytes.`,
+        `Total file size ${dto.totalSizeBytes} bytes is invalid for ${dto.mediaType}. Allowed range: 1 to ${maxAllowedBytes} bytes.`,
       );
     }
     if (dto.totalChunks < 1 || dto.totalChunks > MAX_CHUNKS_PER_SESSION) {
@@ -312,9 +341,9 @@ export class SurveyService {
         `Total chunks ${dto.totalChunks} is invalid. Allowed range: 1 to ${MAX_CHUNKS_PER_SESSION}.`,
       );
     }
-    if (dto.totalSizeBytes > dto.totalChunks * MAX_CHUNK_SIZE_BYTES) {
+    if (dto.totalSizeBytes > dto.totalChunks * maxChunkBytes) {
       throw new BadRequestException(
-        `Total file size cannot exceed totalChunks * ${MAX_CHUNK_SIZE_BYTES} bytes.`,
+        `Total file size cannot exceed totalChunks * ${maxChunkBytes} bytes.`,
       );
     }
 
@@ -1305,11 +1334,26 @@ export class SurveyService {
     const candidatesCount = sub.totalCandidatesExtracted ?? 0;
     let rewardAmount = 0;
     if (candidatesCount > 0) {
+      let surveyorReliability = 1.0;
+      try {
+        if (this.surveyorProfileRepo) {
+          const profile = await this.surveyorProfileRepo.findOne({ where: { userId: sub.surveyorId } });
+          if (profile && typeof profile.reliabilityScore === 'number') {
+            surveyorReliability = profile.reliabilityScore;
+          }
+        } else if (typeof this.dataSource?.query === 'function') {
+          const rows = await this.dataSource.query('SELECT reliability_score FROM surveyor_profiles WHERE user_id = $1', [sub.surveyorId]);
+          if (rows[0]?.reliability_score !== undefined) {
+            surveyorReliability = Number(rows[0].reliability_score);
+          }
+        }
+      } catch {}
+
       rewardAmount = await this.walletService.resolveRewardAmount(
         TransactionType.SURVEY_REWARD,
         10,
         sub.surveyorId,
-        { candidateCount: candidatesCount },
+        { candidateCount: candidatesCount, reliabilityScore: surveyorReliability },
       );
       if (rewardAmount > 0) {
         try {
@@ -1409,5 +1453,213 @@ export class SurveyService {
       expiresIn,
       mediaType: dto.mediaType,
     };
+  }
+
+  async submitManualAnnotation(
+    surveyorId: string,
+    submissionId: string,
+    dto: SubmitManualAnnotationDto,
+  ) {
+    // 1. Verify feature enabled
+    const isEnabled = this.paramService
+      ? await this.paramService.getBoolean('survey.manual_annotation_enabled', true)
+      : true;
+    if (!isEnabled) {
+      throw new ForbiddenException('Manual annotation feedback loop is currently disabled.');
+    }
+
+    // 2. Fetch submission & verify ownership and status
+    const submission = await this.submissionRepo.findOne({ where: { id: submissionId } });
+    if (!submission) throw new NotFoundException(`Survey submission ${submissionId} not found.`);
+    if (submission.surveyorId !== surveyorId) {
+      throw new ForbiddenException('You can only annotate your own survey submissions.');
+    }
+    if (submission.status !== SubmissionStatus.NO_SIGN_DETECTED) {
+      throw new BadRequestException('Manual annotations can only be submitted for submissions with NO_SIGN_DETECTED status.');
+    }
+
+    // 3. Check review window limit
+    const maxHours = this.paramService
+      ? await this.paramService.getNumber('survey.negative_review_window_hours', 72)
+      : 72;
+    const updatedAt = submission.updatedAt ? new Date(submission.updatedAt).getTime() : Date.now();
+    const expiryTime = new Date(updatedAt + maxHours * 3600 * 1000);
+    if (new Date() > expiryTime) {
+      throw new BadRequestException(`The review window for this submission has expired (${maxHours} hours limit).`);
+    }
+
+    // 4. Check surveyor reliability and suspension status
+    let profile: SurveyorProfile | null = null;
+    if (this.surveyorProfileRepo) {
+      profile = await this.surveyorProfileRepo.findOne({ where: { userId: surveyorId } });
+    } else if (typeof this.dataSource?.query === 'function') {
+      const pRows = await this.dataSource.query('SELECT * FROM surveyor_profiles WHERE user_id = $1', [surveyorId]);
+      if (pRows[0]) {
+        profile = pRows[0] as any;
+      }
+    }
+
+    if (profile?.isAnnotationSuspended) {
+      if (profile.suspendedUntil && new Date(profile.suspendedUntil) > new Date()) {
+        throw new ForbiddenException(`Manual annotation privileges suspended until ${new Date(profile.suspendedUntil).toISOString()}.`);
+      }
+      // Cooldown passed: lift suspension
+      if (this.surveyorProfileRepo) {
+        profile.isAnnotationSuspended = false;
+        profile.consecutiveAnnotationErrors = 0;
+        await this.surveyorProfileRepo.save(profile);
+      } else if (typeof this.dataSource?.query === 'function') {
+        await this.dataSource.query(
+          'UPDATE surveyor_profiles SET is_annotation_suspended = false, consecutive_annotation_errors = 0 WHERE user_id = $1',
+          [surveyorId],
+        );
+      }
+    }
+
+    const minRel = this.paramService
+      ? await this.paramService.getNumber('survey.manual_annotation_min_reliability_threshold', 0.4)
+      : 0.4;
+    const currentRel = profile ? Number(profile.reliabilityScore ?? 1.0) : 1.0;
+    if (currentRel < minRel) {
+      throw new ForbiddenException(`Surveyor reliability score (${currentRel}) is below minimum threshold (${minRel}).`);
+    }
+
+    // 5. Validate bounding box geometry
+    const bb = dto.boundingBox;
+    if (bb.xmax <= bb.xmin || bb.ymax <= bb.ymin) {
+      throw new BadRequestException('Invalid bounding box coordinates: xmax/ymax must exceed xmin/ymin.');
+    }
+
+    // 6. Get media file
+    let mediaFile: SubmissionMediaFile | null = null;
+    if (this.mediaFileRepo) {
+      mediaFile = await this.mediaFileRepo.findOne({ where: { id: dto.mediaFileId, submissionId } });
+    } else if (typeof this.dataSource?.query === 'function') {
+      const rows = await this.dataSource.query('SELECT * FROM submission_media_files WHERE id = $1 AND submission_id = $2', [dto.mediaFileId, submissionId]);
+      if (rows[0]) mediaFile = rows[0];
+    }
+    if (!mediaFile) {
+      throw new NotFoundException(`Media file ${dto.mediaFileId} not found in this submission.`);
+    }
+
+    const fileUrl = (mediaFile as any).fileUrl || (mediaFile as any).file_url || '';
+    const signCropUrl = fileUrl ? `${fileUrl}#box=${bb.xmin},${bb.ymin},${bb.xmax},${bb.ymax}` : '';
+    const bountyCredits = this.paramService
+      ? await this.paramService.getNumber('survey.manual_annotation_reward_credits', 35)
+      : 35;
+
+    // 7. Create unverified sign candidate
+    let savedCandId: string;
+    if (this.candidateRepo) {
+      const cand = this.candidateRepo.create({
+        submissionId,
+        predictedSignTypeId: dto.signTypeId,
+        confidenceScore: 1.0,
+        bestFrameUrl: fileUrl,
+        signCropUrl,
+        spatialConfidence: SpatialConfidenceLevel.HIGH,
+        activeLearningPriority: 1.0,
+        status: CandidateStatus.ESCALATED_MODERATION,
+        isManualAnnotation: true,
+        manualAnnotationBy: surveyorId,
+        manualBoundingBox: bb,
+        manualAnnotationNotes: dto.notes ?? null,
+        bountyCredits,
+      });
+      const saved = await this.candidateRepo.save(cand);
+      savedCandId = saved.id;
+    } else {
+      const candRows = await this.dataSource.query(
+        `INSERT INTO unverified_sign_candidates (
+           submission_id, predicted_sign_type_id, confidence_score, best_frame_url, sign_crop_url,
+           spatial_confidence, active_learning_priority, status, is_manual_annotation,
+           manual_annotation_by, manual_bounding_box, manual_annotation_notes, bounty_credits
+         ) VALUES ($1, $2, 1.0, $3, $4, 'HIGH', 1.0, 'ESCALATED_MODERATION', true, $5, $6, $7, $8) RETURNING id`,
+        [submissionId, dto.signTypeId, fileUrl, signCropUrl, surveyorId, JSON.stringify(bb), dto.notes ?? null, bountyCredits],
+      );
+      savedCandId = candRows[0].id;
+    }
+
+    // 8. Create ModerationCase for Staff
+    let caseId: string | null = null;
+    if (this.moderationCaseRepo) {
+      const mc = this.moderationCaseRepo.create({
+        caseType: ModerationType.MANUAL_SURVEY_ANNOTATION,
+        targetEntityType: 'unverified_sign_candidates',
+        targetEntityId: savedCandId,
+        status: ModerationStatus.PENDING,
+      });
+      const savedCase = await this.moderationCaseRepo.save(mc);
+      caseId = savedCase.id;
+    } else if (typeof this.dataSource?.query === 'function') {
+      const caseRows = await this.dataSource.query(
+        `INSERT INTO moderation_cases (case_type, target_entity_type, target_entity_id, status)
+         VALUES ($1, $2, $3, 'PENDING') RETURNING id`,
+        ['MANUAL_SURVEY_ANNOTATION', 'unverified_sign_candidates', savedCandId],
+      );
+      caseId = caseRows[0]?.id ?? null;
+    }
+
+    // 9. Update submission status
+    submission.hasManualAnnotation = true;
+    submission.manualAnnotationStatus = 'PENDING_STAFF';
+    await this.submissionRepo.save(submission);
+
+    return {
+      candidateId: savedCandId,
+      caseId,
+      status: 'SUBMITTED_FOR_STAFF_VERIFICATION',
+      message: 'Manual annotation submitted successfully and queued for staff verification.',
+    };
+  }
+
+  async confirmNegativeSubmission(
+    surveyorId: string,
+    submissionId: string,
+    dto: ConfirmNegativeSubmissionDto,
+  ) {
+    const submission = await this.submissionRepo.findOne({ where: { id: submissionId } });
+    if (!submission) throw new NotFoundException(`Survey submission ${submissionId} not found.`);
+    if (submission.surveyorId !== surveyorId) {
+      throw new ForbiddenException('You can only confirm your own survey submissions.');
+    }
+    if (submission.status !== SubmissionStatus.NO_SIGN_DETECTED) {
+      throw new BadRequestException('Confirmation can only be applied to submissions with NO_SIGN_DETECTED status.');
+    }
+
+    submission.manualAnnotationStatus = 'CONFIRMED_NEGATIVE';
+    if (dto.note) {
+      submission.note = submission.note ? `${submission.note}; ${dto.note}` : dto.note;
+    }
+    await this.submissionRepo.save(submission);
+
+    return {
+      submissionId: submission.id,
+      manualAnnotationStatus: submission.manualAnnotationStatus,
+      message: 'Surveyor confirmed no traffic signs in submission.',
+    };
+  }
+
+  async getSubmissionMediaFiles(submissionId: string, surveyorId?: string) {
+    const submission = await this.submissionRepo.findOne({ where: { id: submissionId } });
+    if (!submission) throw new NotFoundException(`Survey submission ${submissionId} not found.`);
+    if (surveyorId && submission.surveyorId !== surveyorId) {
+      throw new ForbiddenException('You do not have permission to view media for this submission.');
+    }
+
+    if (this.mediaFileRepo) {
+      return this.mediaFileRepo.find({
+        where: { submissionId },
+        order: { uploadedAt: 'ASC' },
+      });
+    }
+
+    if (typeof this.dataSource?.query === 'function') {
+      return this.dataSource.query(
+        'SELECT * FROM submission_media_files WHERE submission_id = $1 ORDER BY uploaded_at ASC',
+        [submissionId],
+      );
+    }
+    return [];
   }
 }

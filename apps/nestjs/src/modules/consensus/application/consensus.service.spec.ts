@@ -454,5 +454,143 @@ describe('ConsensusService', () => {
       expect(result.consecutive_errors).toBe(0);
       expect(result.is_review_suspended).toBe(false);
     });
+
+    it('auto-bans provisional account when provisionalConsecutiveErrorLimit is reached', async () => {
+      query.mockImplementation(async (sql: string) => {
+        if (sql.includes('SELECT * FROM reviewer_profiles')) {
+          return [
+            {
+              reliability_score: 0.0,
+              total_correct_votes: 0,
+              total_false_votes: 1,
+              consecutive_errors: 1,
+              total_reviews: 1,
+              correct_reviews: 0,
+            },
+          ];
+        }
+        if (sql.includes('SELECT u.id, u.status')) {
+          return [{ id: 'u-new-1', status: 'ACTIVE' }];
+        }
+        return [];
+      });
+
+      const config: any = {
+        weightCorrect: 1.0,
+        penaltyFalse: 2.0,
+        minSampleBaseline: 5,
+        minReliabilityThreshold: 50.0,
+        consecutiveErrorLimit: 3,
+        provisionalMinReliabilityThreshold: 40.0,
+        provisionalConsecutiveErrorLimit: 2,
+        provisionalAutoBanEnabled: true,
+      };
+
+      const result = await service.updateReviewerProfile('u-new-1', 0, config, 'log-1');
+
+      expect(result.is_provisional).toBe(true);
+      expect(result.consecutive_errors).toBe(2);
+      expect(result.is_review_suspended).toBe(true);
+      expect(result.suspension_reason).toBe('PROVISIONAL_AUTOBAN_CONSECUTIVE_ERRORS');
+      expect(result.auto_banned).toBe(true);
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining("UPDATE users SET status = 'BANNED'"),
+        ['u-new-1'],
+      );
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining('INSERT INTO user_status_history'),
+        expect.arrayContaining(['u-new-1', 'ACTIVE']),
+      );
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining("AUTO_BAN_PROVISIONAL_REVIEWER"),
+        expect.arrayContaining(['u-new-1']),
+      );
+    });
+
+    it('auto-bans provisional account when reliability drops below provisionalMinReliabilityThreshold (N >= 2)', async () => {
+      // 1 correct, 1 wrong -> next wrong makes 1 correct, 2 wrong -> score = 1/(1+4) = 20% < 40%
+      // Here consecutiveErrors = 1 (< provisionalConsecutiveErrorLimit = 3), so reliability threshold triggers autoban!
+      query.mockImplementation(async (sql: string) => {
+        if (sql.includes('SELECT * FROM reviewer_profiles')) {
+          return [
+            {
+              reliability_score: 50.0,
+              total_correct_votes: 1,
+              total_false_votes: 1,
+              consecutive_errors: 0,
+              total_reviews: 2,
+              correct_reviews: 1,
+            },
+          ];
+        }
+        if (sql.includes('SELECT u.id, u.status')) {
+          return [{ id: 'u-new-2', status: 'ACTIVE' }];
+        }
+        return [];
+      });
+
+      const config: any = {
+        weightCorrect: 1.0,
+        penaltyFalse: 2.0,
+        minSampleBaseline: 5,
+        minReliabilityThreshold: 50.0,
+        consecutiveErrorLimit: 5,
+        provisionalMinReliabilityThreshold: 40.0,
+        provisionalConsecutiveErrorLimit: 3,
+        provisionalAutoBanEnabled: true,
+      };
+
+      const result = await service.updateReviewerProfile('u-new-2', 0, config, 'log-1');
+
+      expect(result.is_provisional).toBe(true);
+      expect(result.reliability_score).toBe(20.0);
+      expect(result.is_review_suspended).toBe(true);
+      expect(result.suspension_reason).toBe('PROVISIONAL_AUTOBAN_LOW_RELIABILITY');
+      expect(result.auto_banned).toBe(true);
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining("UPDATE users SET status = 'BANNED'"),
+        ['u-new-2'],
+      );
+    });
+
+    it('only suspends (does not autoban) provisional account when provisionalAutoBanEnabled is false', async () => {
+      query.mockImplementation(async (sql: string) => {
+        if (sql.includes('SELECT * FROM reviewer_profiles')) {
+          return [
+            {
+              reliability_score: 0.0,
+              total_correct_votes: 0,
+              total_false_votes: 1,
+              consecutive_errors: 1,
+              total_reviews: 1,
+              correct_reviews: 0,
+            },
+          ];
+        }
+        return [];
+      });
+
+      const config: any = {
+        weightCorrect: 1.0,
+        penaltyFalse: 2.0,
+        minSampleBaseline: 5,
+        minReliabilityThreshold: 50.0,
+        consecutiveErrorLimit: 3,
+        provisionalMinReliabilityThreshold: 40.0,
+        provisionalConsecutiveErrorLimit: 2,
+        provisionalAutoBanEnabled: false,
+      };
+
+      const result = await service.updateReviewerProfile('u-new-3', 0, config, 'log-1');
+
+      expect(result.is_provisional).toBe(true);
+      expect(result.is_review_suspended).toBe(true);
+      expect(result.suspension_reason).toBe('CONSECUTIVE_ERRORS');
+      expect(result.auto_banned).toBe(false);
+      expect(query).not.toHaveBeenCalledWith(
+        expect.stringContaining("UPDATE users SET status = 'BANNED'"),
+        expect.anything(),
+      );
+    });
   });
 });

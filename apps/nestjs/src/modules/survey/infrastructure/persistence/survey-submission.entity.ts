@@ -70,6 +70,12 @@ export class SurveySubmission {
   @Column({ name: 'idempotency_key', type: 'varchar', length: 128, nullable: true })
   idempotencyKey?: string | null;
 
+  @Column({ name: 'has_manual_annotation', type: 'boolean', default: false })
+  hasManualAnnotation: boolean;
+
+  @Column({ name: 'manual_annotation_status', type: 'varchar', length: 32, nullable: true })
+  manualAnnotationStatus?: string | null;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 

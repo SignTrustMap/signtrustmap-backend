@@ -49,6 +49,15 @@ export class VerifiedSignOrmEntity {
   @Column({ name: 'display_address', type: 'text', nullable: true })
   displayAddress: string | null;
 
+  @Column({ name: 'lifetime_multiplier', type: 'float', default: 1.0 })
+  lifetimeMultiplier: number;
+
+  @Column({ name: 'effective_lifetime_days', type: 'int', nullable: true })
+  effectiveLifetimeDays: number | null;
+
+  @Column({ name: 'degraded_consensus_ratio', type: 'float', nullable: true })
+  degradedConsensusRatio: number | null;
+
   @Column({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 

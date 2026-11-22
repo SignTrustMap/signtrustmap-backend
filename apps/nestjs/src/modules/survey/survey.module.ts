@@ -14,6 +14,8 @@ import { SubmissionStatusHistory } from './infrastructure/persistence/submission
 import { CandidateGeoEstimation } from './infrastructure/persistence/candidate-geo-estimation.entity';
 import { UploadChunk } from './infrastructure/persistence/upload-chunk.entity';
 import { UploadSession } from './infrastructure/persistence/upload-session.entity';
+import { SurveyorReputationHistory } from './infrastructure/persistence/surveyor-reputation-history.entity';
+import { ModerationCase } from '../moderation/infrastructure/persistence/moderation-case.entity';
 import { AuditLog } from '../admin/audit-log.entity';
 import { SurveyController } from './presentation/survey.controller';
 import { WalletModule } from '../wallet/wallet.module';
@@ -32,8 +34,10 @@ import { DailyTasksModule } from '../daily-tasks/daily-tasks.module';
       UnverifiedSignCandidate,
       CameraCalibrationProfile,
       SurveyorProfile,
+      SurveyorReputationHistory,
       SubmissionStatusHistory,
       CandidateGeoEstimation,
+      ModerationCase,
       AuditLog,
     ]),
     WalletModule,

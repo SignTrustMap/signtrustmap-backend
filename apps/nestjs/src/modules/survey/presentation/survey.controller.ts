@@ -15,6 +15,7 @@ import { UpdateSubmissionStatusDto, MarkSubmissionCompletedDto } from './dto/upd
 import { CreateFrameBatchSessionDto } from './dto/create-frame-batch.dto';
 import { CompleteBatchSurveyDto, CreateBatchSurveyDto } from './dto/create-batch-survey.dto';
 import { CreatePresignedUrlDto } from './dto/create-presigned-url.dto';
+import { SubmitManualAnnotationDto, ConfirmNegativeSubmissionDto } from './dto/manual-annotation.dto';
 import { BatchSurveyService } from '../application/batch-survey.service';
 
 @ApiTags('Survey Submissions')
@@ -166,4 +167,36 @@ export class SurveyController {
   @ApiOperation({ summary: 'Get survey upload session details', description: 'Retrieve metadata and chunk progress for an active upload session' })
   @Get('uploads/:sessionId')
   async getSession(@CurrentUser() user: any, @Param('sessionId', ParseUUIDPipe) sessionId: string) { return this.surveyService.getSession(user.id, sessionId); }
+
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Submit manual annotation on false-negative survey', description: 'Surveyor draws bounding box and selects sign class when AI missed detection' })
+  @Post(':submissionId/manual-annotation')
+  async submitManualAnnotation(
+    @CurrentUser() user: any,
+    @Param('submissionId', ParseUUIDPipe) submissionId: string,
+    @Body() dto: SubmitManualAnnotationDto,
+  ) {
+    return this.surveyService.submitManualAnnotation(user.id, submissionId, dto);
+  }
+
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Confirm negative survey without signs', description: 'Surveyor confirms there are indeed no signs in the frame sequence' })
+  @Post(':submissionId/negative-confirm')
+  async confirmNegativeSubmission(
+    @CurrentUser() user: any,
+    @Param('submissionId', ParseUUIDPipe) submissionId: string,
+    @Body() dto: ConfirmNegativeSubmissionDto,
+  ) {
+    return this.surveyService.confirmNegativeSubmission(user.id, submissionId, dto);
+  }
+
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get media files for a survey submission', description: 'Retrieve media files and URLs associated with a survey submission for manual inspection' })
+  @Get(':submissionId/media-files')
+  async getSubmissionMediaFiles(
+    @CurrentUser() user: any,
+    @Param('submissionId', ParseUUIDPipe) submissionId: string,
+  ) {
+    return this.surveyService.getSubmissionMediaFiles(submissionId, user.id);
+  }
 }

@@ -41,6 +41,15 @@ export class ConsensusConfig {
   @Column({ name: 'provisional_vote_weight', type: 'float', default: 0.5 })
   provisionalVoteWeight: number;
 
+  @Column({ name: 'provisional_min_reliability_threshold', type: 'float', default: 40.0 })
+  provisionalMinReliabilityThreshold: number;
+
+  @Column({ name: 'provisional_consecutive_error_limit', type: 'int', default: 2 })
+  provisionalConsecutiveErrorLimit: number;
+
+  @Column({ name: 'provisional_auto_ban_enabled', type: 'boolean', default: true })
+  provisionalAutoBanEnabled: boolean;
+
   @Column({ name: 'created_by', type: 'uuid', nullable: true })
   createdBy: string | null;
 

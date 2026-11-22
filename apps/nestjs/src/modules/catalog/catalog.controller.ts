@@ -7,7 +7,6 @@ import {
   ParseIntPipe,
   Patch,
   Post,
-  Put,
   Query,
   UploadedFile,
   UseInterceptors,
@@ -26,7 +25,6 @@ import {
   SetSupportShotPinDto,
   UpdateSignCategoryDto,
   UpdateSignTypeDto,
-  UpsertSystemParameterDto,
 } from './dto/catalog.dto';
 
 @ApiTags('Catalog')
@@ -148,23 +146,7 @@ export class CatalogController {
   @Delete('catalog/sign-types/:id')
   deleteSignType(@Param('id', ParseIntPipe) id: number) { return this.svc.deleteSignType(id); }
 
-  // System parameters: ADMIN only (Flow 13).
-  @Roles('ADMIN')
-  @ApiOperation({ summary: 'List system parameters', description: 'Admin operation to retrieve global application configuration parameters' })
-  @Get('admin/system-parameters')
-  listParams() { return this.svc.listParameters(); }
 
-  @Roles('ADMIN')
-  @ApiOperation({ summary: 'Get system parameter by key', description: 'Admin operation to retrieve single configuration parameter' })
-  @Get('admin/system-parameters/:key')
-  getParam(@Param('key') key: string) { return this.svc.getParameter(key); }
-
-  @Roles('ADMIN')
-  @ApiOperation({ summary: 'Upsert system parameter', description: 'Admin operation to update or insert a system configuration parameter' })
-  @Put('admin/system-parameters/:key')
-  upsertParam(@Param('key') key: string, @Body() dto: UpsertSystemParameterDto, @CurrentUser() user: any) {
-    return this.svc.upsertParameter(key, dto, user.id);
-  }
 
   // --- Support Shots (Few-shot learning) Management: ADMIN / STAFF ---
 

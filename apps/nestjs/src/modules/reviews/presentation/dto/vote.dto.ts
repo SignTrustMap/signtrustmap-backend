@@ -33,6 +33,33 @@ export class VoteDto {
   @IsString()
   @MaxLength(500)
   declineNote?: string;
+
+  @ApiPropertyOptional({ description: 'Reviewer physical latitude at time of on-site verification', example: 21.0285 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(-90)
+  @Max(90)
+  latitude?: number;
+
+  @ApiPropertyOptional({ description: 'Reviewer physical longitude at time of on-site verification', example: 105.8542 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(-180)
+  @Max(180)
+  longitude?: number;
+
+  @ApiPropertyOptional({ description: 'GPS accuracy in meters reported by device', example: 5.0 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  accuracyMeters?: number;
+
+  @ApiPropertyOptional({ description: 'Optional associated Bounty Quest Claim ID', format: 'uuid' })
+  @IsOptional()
+  @IsUUID()
+  questClaimId?: string;
 }
 
 export class ReportDto {

@@ -68,6 +68,33 @@ export class UnverifiedSignCandidate {
   @Column({ name: 'selection_reason', type: 'varchar', length: 500, nullable: true })
   selectionReason?: string | null;
 
+  @Column({ name: 'bounty_credits', type: 'int', default: 10 })
+  bountyCredits: number;
+
+  @Column({ name: 'is_promoted', type: 'boolean', default: false })
+  isPromoted: boolean;
+
+  @Column({ name: 'promoted_at', type: 'timestamptz', nullable: true })
+  promotedAt?: Date | null;
+
+  @Column({ name: 'votes_count', type: 'int', default: 0 })
+  votesCount: number;
+
+  @Column({ name: 'first_voted_at', type: 'timestamptz', nullable: true })
+  firstVotedAt?: Date | null;
+
+  @Column({ name: 'is_manual_annotation', type: 'boolean', default: false })
+  isManualAnnotation: boolean;
+
+  @Column({ name: 'manual_annotation_by', type: 'uuid', nullable: true })
+  manualAnnotationBy?: string | null;
+
+  @Column({ name: 'manual_bounding_box', type: 'jsonb', nullable: true })
+  manualBoundingBox?: { xmin: number; ymin: number; xmax: number; ymax: number; imgWidth?: number; imgHeight?: number } | null;
+
+  @Column({ name: 'manual_annotation_notes', type: 'text', nullable: true })
+  manualAnnotationNotes?: string | null;
+
   top5?: any;
   remedySigns?: any;
   predictedSignTypes?: any;

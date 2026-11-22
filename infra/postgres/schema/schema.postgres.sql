@@ -602,6 +602,9 @@ CREATE TABLE "consensus_configs" (
   "consecutive_error_limit" int NOT NULL DEFAULT 3,
   "suspension_cooldown_days" int NOT NULL DEFAULT 7,
   "provisional_vote_weight" float NOT NULL DEFAULT 0.5,
+  "provisional_min_reliability_threshold" float NOT NULL DEFAULT 40.0,
+  "provisional_consecutive_error_limit" int NOT NULL DEFAULT 2,
+  "provisional_auto_ban_enabled" boolean NOT NULL DEFAULT true,
   "created_by" uuid,
   "is_active" boolean NOT NULL DEFAULT true,
   "effective_from" timestamptz NOT NULL DEFAULT (now())

@@ -182,6 +182,32 @@ describe('RewardEngineService (Phase 2 Dynamic Rewards)', () => {
       expect(res.eligible).toBe(true);
       expect(res.amount).toBe(40);
     });
+
+    it('should scale survey reward proportionally when surveyor reliability is low', async () => {
+      ruleRepo.findOne.mockResolvedValue({
+        id: 4,
+        activityType: 'SURVEY_REWARD',
+        baseAmount: 100,
+        dailyLimit: 20,
+        isActive: true,
+        effectiveFrom: new Date(Date.now() - 86400000),
+        effectiveTo: null,
+        multiplierConfig: {},
+      });
+      dataSource.query.mockResolvedValue([{ cnt: 0 }]);
+
+      // Reliability = 0.40 (40%): 100 * 0.40 = 40
+      const res40 = await service.calculateReward('user-1', TransactionType.SURVEY_REWARD, {
+        reliabilityScore: 0.40,
+      });
+      expect(res40.amount).toBe(40);
+
+      // Reliability = 0.05 (5%): floor at 10% -> 100 * 0.10 = 10
+      const resLow = await service.calculateReward('user-1', TransactionType.SURVEY_REWARD, {
+        reliabilityScore: 0.05,
+      });
+      expect(resLow.amount).toBe(10);
+    });
   });
 
   describe('Admin Rule Management', () => {

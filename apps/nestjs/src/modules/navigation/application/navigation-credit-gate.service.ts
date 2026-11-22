@@ -3,6 +3,7 @@ import {
   NotFoundException,
   BadRequestException,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
@@ -16,6 +17,7 @@ import { InitiateNavigationSessionDto } from '../presentation/dto/initiate-navig
 import { CreateAlertProfileDto } from '../presentation/dto/create-alert-profile.dto';
 import { WalletService } from '../../wallet/application/wallet.service';
 import { TransactionType } from '../../wallet/infrastructure/persistence/credit-transaction.entity';
+import { SystemParametersService } from '../../system-parameters/system-parameters.service';
 
 const NAVIGATION_SESSION_FEE = 5;
 const CUSTOM_PROFILE_FEE = 20;
@@ -31,14 +33,16 @@ export class NavigationCreditGateService {
     private readonly profileRepo: Repository<CustomAlertProfile>,
     private readonly dataSource: DataSource,
     private readonly walletService: WalletService,
+    @Optional() private readonly paramService?: SystemParametersService,
   ) {}
 
   /**
    * Intercepts turn-by-turn routing initiation:
    * Atomically verifies balance, deducts NAVIGATION_FEE from wallet, and starts navigation session.
+   * If reviewer is navigating to verify a claimed quest sign within 5km, session fee is waived to 0.
    */
   async initiateSession(driverId: string, dto: InitiateNavigationSessionDto) {
-    const { origin, destination, idempotencyKey } = dto || {};
+    const { origin, destination, idempotencyKey, targetSignId } = dto || {};
 
     if (
       !origin ||
@@ -59,32 +63,73 @@ export class NavigationCreditGateService {
       throw new BadRequestException('Invalid origin or destination coordinates');
     }
 
-    const fee = await this.walletService.resolveRewardAmount(
+    const defaultFee = this.paramService
+      ? await this.paramService.getNumber('navigation.session_fee', NAVIGATION_SESSION_FEE)
+      : NAVIGATION_SESSION_FEE;
+
+    let fee = await this.walletService.resolveRewardAmount(
       TransactionType.NAVIGATION_FEE,
-      NAVIGATION_SESSION_FEE,
+      defaultFee,
     );
+
+    let isReviewerFreeRoute = false;
+    let waiverReason: string | null = null;
+
+    // Feature 6: Reviewer 5km Free Navigation Check
+    if (targetSignId && this.paramService) {
+      const isFreeRouteEnabled = await this.paramService.getBoolean('navigation.reviewer_free_route_enabled', true);
+      const maxFreeRadiusKm = await this.paramService.getNumber('navigation.reviewer_free_route_radius_km', 5.0);
+
+      if (isFreeRouteEnabled && this.dataSource && typeof this.dataSource.query === 'function') {
+        try {
+          const distRows: any[] = await this.dataSource.query(
+            `SELECT ST_DistanceSphere(
+               ST_SetSRID(ST_MakePoint($1, $2), 4326),
+               COALESCE(
+                 (SELECT sign_location FROM candidate_geo_estimations WHERE candidate_id = $3),
+                 (SELECT location FROM verified_traffic_signs WHERE id = $3)
+               )
+             ) AS distance_meters`,
+            [origin.longitude, origin.latitude, targetSignId],
+          );
+
+          if (distRows.length > 0 && distRows[0].distance_meters != null) {
+            const distanceKm = parseFloat(distRows[0].distance_meters) / 1000.0;
+            if (distanceKm <= maxFreeRadiusKm) {
+              fee = 0;
+              isReviewerFreeRoute = true;
+              waiverReason = `REVIEWER_QUEST_VERIFICATION (${distanceKm.toFixed(2)}km <= ${maxFreeRadiusKm}km)`;
+            }
+          }
+        } catch (err: any) {
+          this.logger.warn(`Failed to calculate distance to target sign: ${err?.message}`);
+        }
+      }
+    }
 
     const sessionId = randomUUID();
     const effectiveIdempotencyKey =
       idempotencyKey ?? `nav_session:${driverId}:${Date.now()}`;
 
-    // 1. Atomic debit of navigation fee
-    let debitResult: { walletId: string; newBalance: number; txId: string };
-    try {
-      debitResult = await this.walletService.deductUser(
-        driverId,
-        fee,
-        TransactionType.NAVIGATION_FEE,
-        'navigation_session',
-        sessionId,
-        'Turn-by-turn navigation session fee',
-        { idempotencyKey: effectiveIdempotencyKey },
-      );
-    } catch (err: any) {
-      if (err instanceof BadRequestException && err.message.includes('Insufficient balance')) {
-        throw new BadRequestException('Insufficient credits to initiate turn-by-turn navigation session');
+    // 1. Atomic debit of navigation fee (if fee > 0)
+    let debitResult: { walletId: string; newBalance: number; txId: string } | null = null;
+    if (fee > 0) {
+      try {
+        debitResult = await this.walletService.deductUser(
+          driverId,
+          fee,
+          TransactionType.NAVIGATION_FEE,
+          'navigation_session',
+          sessionId,
+          'Turn-by-turn navigation session fee',
+          { idempotencyKey: effectiveIdempotencyKey },
+        );
+      } catch (err: any) {
+        if (err instanceof BadRequestException && err.message.includes('Insufficient balance')) {
+          throw new BadRequestException('Insufficient credits to initiate turn-by-turn navigation session');
+        }
+        throw err;
       }
-      throw err;
     }
 
     // 2. Persist navigation session record with spatial PostGIS origin and destination
@@ -102,15 +147,18 @@ export class NavigationCreditGateService {
             creditsDeducted: fee,
             status: NavSessionStatus.ACTIVE,
             startedAt: new Date(),
+            isReviewerFreeRoute,
+            targetSignId: targetSignId ?? null,
+            waiverReason,
           })
           .execute();
       } catch {
         if (typeof this.dataSource?.query === 'function') {
           await this.dataSource.query(
             `INSERT INTO navigation_sessions
-               (id, driver_id, origin, destination, credits_deducted, status, started_at)
+               (id, driver_id, origin, destination, credits_deducted, status, started_at, is_reviewer_free_route, target_sign_id, waiver_reason)
              VALUES
-               ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326), ST_SetSRID(ST_MakePoint($5, $6), 4326), $7, 'ACTIVE', NOW())`,
+               ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326), ST_SetSRID(ST_MakePoint($5, $6), 4326), $7, 'ACTIVE', NOW(), $8, $9, $10)`,
             [
               sessionId,
               driverId,
@@ -119,6 +167,9 @@ export class NavigationCreditGateService {
               destination.longitude,
               destination.latitude,
               fee,
+              isReviewerFreeRoute,
+              targetSignId ?? null,
+              waiverReason,
             ],
           );
         }
@@ -126,9 +177,9 @@ export class NavigationCreditGateService {
     } else if (typeof this.dataSource?.query === 'function') {
       await this.dataSource.query(
         `INSERT INTO navigation_sessions
-           (id, driver_id, origin, destination, credits_deducted, status, started_at)
+           (id, driver_id, origin, destination, credits_deducted, status, started_at, is_reviewer_free_route, target_sign_id, waiver_reason)
          VALUES
-           ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326), ST_SetSRID(ST_MakePoint($5, $6), 4326), $7, 'ACTIVE', NOW())`,
+           ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326), ST_SetSRID(ST_MakePoint($5, $6), 4326), $7, 'ACTIVE', NOW(), $8, $9, $10)`,
         [
           sessionId,
           driverId,
@@ -137,6 +188,9 @@ export class NavigationCreditGateService {
           destination.longitude,
           destination.latitude,
           fee,
+          isReviewerFreeRoute,
+          targetSignId ?? null,
+          waiverReason,
         ],
       );
     }
@@ -202,9 +256,13 @@ export class NavigationCreditGateService {
    * Creates a multi-slot custom alert profile and deducts CUSTOM_PROFILE_SPEND credits.
    */
   async createAlertProfile(userId: string, dto: CreateAlertProfileDto) {
+    const defaultProfileFee = this.paramService
+      ? await this.paramService.getNumber('navigation.custom_profile_fee', CUSTOM_PROFILE_FEE)
+      : CUSTOM_PROFILE_FEE;
+
     const fee = await this.walletService.resolveRewardAmount(
       TransactionType.CUSTOM_PROFILE_SPEND,
-      CUSTOM_PROFILE_FEE,
+      defaultProfileFee,
     );
 
     const profileId = randomUUID();
