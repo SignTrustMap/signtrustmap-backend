@@ -24,6 +24,9 @@ import { validateFileSignature, decodeMedia } from '../../survey/domain/media-va
 import { AiInferenceService, TopCandidateResult } from '../../../integrations/ai-inference/ai-inference.service';
 import { SignRemedySuggestion } from './sign-remedies.constants';
 import { SystemSwitchService } from '../../admin/system-switch.service';
+import { ReviewerQuestClaim, QuestClaimStatus } from '../infrastructure/persistence/reviewer-quest-claim.entity';
+import { SystemParametersService } from '../../system-parameters/system-parameters.service';
+import { UpdateVoteDto } from '../presentation/dto/bounty-board.dto';
 
 const RECAPTURE_GEOFENCE_METERS = 100;
 const RECAPTURE_QUEST_RADIUS_KM = 5;
@@ -69,6 +72,8 @@ export class ReviewsService {
     @Optional() @InjectRepository(ReviewFlag) private readonly reviewFlagRepo?: Repository<ReviewFlag>,
     @Optional() @InjectRepository(ReviewerReliabilityHistory) private readonly reliabilityHistoryRepo?: Repository<ReviewerReliabilityHistory>,
     @Optional() private readonly systemSwitchService?: SystemSwitchService,
+    @Optional() @InjectRepository(ReviewerQuestClaim) private readonly questClaimRepo?: Repository<ReviewerQuestClaim>,
+    @Optional() private readonly paramService?: SystemParametersService,
   ) {}
 
   async getSignRemedies(candidateId: string): Promise<{ candidateId: string; items: SignRemedySuggestion[] }> {
@@ -284,17 +289,96 @@ export class ReviewsService {
     if (dto.vote === -1 && dto.declineReason && !['Poor Image Quality','Incorrect Location','Sign Not Found','Duplicate Submission','Other'].includes(dto.declineReason)) {
       // allow any string but warn -- not strict
     }
+
+    // Physical On-Site Verification (GPS Geofence) Check
+    const isGpsEnforced = this.paramService
+      ? await this.paramService.getBoolean('reviewer.gps_enforcement_enabled', false)
+      : false;
+    const maxGeofenceRadius = this.paramService
+      ? await this.paramService.getNumber('reviewer.gps_geofence_radius_meters', 50.0)
+      : 50.0;
+
+    if (isGpsEnforced) {
+      if (dto.latitude == null || dto.longitude == null) {
+        throw new BadRequestException('Physical coordinates (latitude, longitude) are required for on-site verification.');
+      }
+
+      if (this.dataSource && typeof this.dataSource.query === 'function') {
+        const geoRows: any[] = await this.dataSource.query(
+          `SELECT ST_DistanceSphere(
+             ST_SetSRID(ST_MakePoint($1, $2), 4326),
+             sign_location
+           ) AS distance_meters
+           FROM candidate_geo_estimations
+           WHERE candidate_id = $3`,
+          [dto.longitude, dto.latitude, candidateId],
+        );
+
+        if (geoRows.length > 0 && geoRows[0].distance_meters != null) {
+          const dist = parseFloat(geoRows[0].distance_meters);
+          if (dist > maxGeofenceRadius) {
+            throw new BadRequestException(
+              `Physical on-site verification failed. You are ${dist.toFixed(1)}m away from the sign (Maximum allowed: ${maxGeofenceRadius}m).`,
+            );
+          }
+        }
+      }
+    }
+
     const review: any = this.reviewRepo.create({
-      candidateId, reviewerId, vote: dto.vote,
+      candidateId,
+      reviewerId,
+      vote: dto.vote,
       suggestedSignTypeId: dto.suggestedSignTypeId ?? null,
       declineReason: (dto as any).declineReason ?? null,
       declineNote: (dto as any).declineNote ?? null,
+      reviewerLocation:
+        dto.latitude != null && dto.longitude != null
+          ? () => `ST_SetSRID(ST_MakePoint(${dto.longitude}, ${dto.latitude}), 4326)`
+          : null,
+      accuracyMeters: dto.accuracyMeters ?? null,
+      questClaimId: dto.questClaimId ?? null,
     } as any);
     let saved: any;
     try { saved = await this.reviewRepo.save(review); } catch (err: any) {
       if (err?.code === '23505' || String(err?.message).includes('duplicate')) throw new ConflictException('You have already voted on this candidate');
       throw err;
     }
+
+    // Complete active bounty quest claim if applicable
+    try {
+      if (this.questClaimRepo) {
+        const claim = dto.questClaimId
+          ? await this.questClaimRepo.findOne({ where: { id: dto.questClaimId, reviewerId } })
+          : await this.questClaimRepo.findOne({
+              where: {
+                targetId: candidateId,
+                reviewerId,
+                status: QuestClaimStatus.CLAIMED,
+              },
+            });
+        if (claim && claim.status === QuestClaimStatus.CLAIMED) {
+          claim.status = QuestClaimStatus.COMPLETED;
+          claim.completedAt = new Date();
+          await this.questClaimRepo.save(claim);
+        }
+      }
+    } catch {}
+
+    // Track candidate votes count and bounty promotion
+    try {
+      const newVotes = (candidate.votesCount || 0) + 1;
+      const updateData: any = {
+        votesCount: newVotes,
+        firstVotedAt: candidate.firstVotedAt || new Date(),
+      };
+      if (newVotes > 0 && newVotes < 3) {
+        updateData.isPromoted = true;
+        updateData.promotedAt = candidate.promotedAt || new Date();
+      }
+      await this.candidateRepo.update(candidateId, updateData);
+    } catch {}
+
     // trigger consensus evaluation (fire-and-forget style but await to surface log if needed)
     let consensusLog = null;
     try { consensusLog = await this.consensusService.evaluate(candidateId); } catch (e) { /* consensus failure must not rollback the vote */ }
@@ -303,6 +387,69 @@ export class ReviewsService {
     if (this.dailyTasksService) {
       this.dailyTasksService.recordProgress(reviewerId, 'REVIEW', 1).catch(() => {});
     }
+
+    return { review: saved, consensusLog };
+  }
+
+  /**
+   * Pre-Consensus Vote Update Engine
+   * Allows reviewers to amend their vote before consensus is reached, within configured time window.
+   */
+  async updateVote(candidateId: string, reviewerId: string, dto: UpdateVoteDto) {
+    const allowUpdate = this.paramService
+      ? await this.paramService.getBoolean('reviewer.allow_vote_update', true)
+      : true;
+    const maxWindowMinutes = this.paramService
+      ? await this.paramService.getNumber('reviewer.vote_update_window_minutes', 60)
+      : 60;
+
+    if (!allowUpdate) {
+      throw new BadRequestException('Vote updates are currently disabled by platform administrator.');
+    }
+
+    const existingReview = await this.reviewRepo.findOne({ where: { candidateId, reviewerId } });
+    if (!existingReview) {
+      throw new NotFoundException('No prior vote found to update.');
+    }
+
+    const elapsedMinutes = (Date.now() - new Date(existingReview.reviewedAt).getTime()) / (1000 * 60);
+    if (elapsedMinutes > maxWindowMinutes) {
+      throw new BadRequestException(
+        `Vote update window expired (${elapsedMinutes.toFixed(0)}m > ${maxWindowMinutes}m limit).`,
+      );
+    }
+
+    const candidate = await this.candidateRepo.findOne({ where: { id: candidateId } });
+    if (!candidate) {
+      throw new NotFoundException(`Candidate '${candidateId}' not found.`);
+    }
+
+    if (
+      candidate.status !== CandidateStatus.PENDING_REVIEW &&
+      candidate.status !== CandidateStatus.IN_CONSENSUS
+    ) {
+      throw new BadRequestException('Consensus has already finalized for this candidate. Vote is locked.');
+    }
+
+    if (dto.suggestedSignTypeId != null) {
+      const typeExists = await this.signTypeRepo.findOne({ where: { id: dto.suggestedSignTypeId } });
+      if (!typeExists) {
+        throw new BadRequestException(`suggestedSignTypeId ${dto.suggestedSignTypeId} does not exist`);
+      }
+      existingReview.suggestedSignTypeId = dto.suggestedSignTypeId;
+    }
+
+    existingReview.vote = dto.vote;
+    if (dto.declineReason !== undefined) existingReview.declineReason = dto.declineReason;
+    if (dto.declineNote !== undefined) existingReview.declineNote = dto.declineNote;
+    existingReview.reviewedAt = new Date();
+
+    const saved = await this.reviewRepo.save(existingReview);
+
+    let consensusLog = null;
+    try {
+      consensusLog = await this.consensusService.evaluate(candidateId);
+    } catch {}
 
     return { review: saved, consensusLog };
   }

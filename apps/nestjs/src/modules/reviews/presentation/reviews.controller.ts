@@ -1,4 +1,4 @@
-import { Controller, Body, Param, ParseUUIDPipe, Post, Query, Get, Patch, Delete, UseGuards, UseInterceptors, UploadedFiles, ForbiddenException, Optional } from '@nestjs/common';
+import { Controller, Body, Param, ParseUUIDPipe, Post, Put, Query, Get, Patch, Delete, UseGuards, UseInterceptors, UploadedFiles, ForbiddenException, Optional } from '@nestjs/common';
 import { FileFieldsInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
@@ -20,6 +20,7 @@ import {
   CanNotIdentifyDto,
   ReviewerCandidatesQueryDto,
 } from './dto/vote.dto';
+import { UpdateVoteDto } from './dto/bounty-board.dto';
 import { InternalTokenGuard } from '../../../common/guards/internal-token.guard';
 
 @ApiTags('Reviews')
@@ -388,5 +389,35 @@ export class ReviewsController {
   @Post(':candidateId/vote')
   async vote(@CurrentUser() user: any, @Param('candidateId', ParseUUIDPipe) candidateId: string, @Body() dto: VoteDto) {
     return this.reviewsService.vote(user.id, candidateId, dto);
+  }
+
+  @ApiBearerAuth()
+  @Roles('REVIEWER', 'ADMIN')
+  @ApiOperation({
+    summary: 'Update vote before consensus',
+    description: 'Allows reviewer to update their vote on a pending candidate within the configured time window.',
+  })
+  @Put(':candidateId/vote')
+  async updateVote(
+    @CurrentUser() user: any,
+    @Param('candidateId', ParseUUIDPipe) candidateId: string,
+    @Body() dto: UpdateVoteDto,
+  ) {
+    return this.reviewsService.updateVote(candidateId, user.id, dto);
+  }
+
+  @ApiBearerAuth()
+  @Roles('REVIEWER', 'ADMIN')
+  @ApiOperation({
+    summary: 'Update vote before consensus (candidates alias path)',
+    description: 'Allows reviewer to update their vote on a pending candidate within the configured time window.',
+  })
+  @Put('candidates/:candidateId/vote')
+  async updateCandidateVote(
+    @CurrentUser() user: any,
+    @Param('candidateId', ParseUUIDPipe) candidateId: string,
+    @Body() dto: UpdateVoteDto,
+  ) {
+    return this.reviewsService.updateVote(candidateId, user.id, dto);
   }
 }
