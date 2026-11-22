@@ -196,6 +196,30 @@ describe('MediaValidator (Domain Logic)', () => {
       const emptyManifest = Buffer.from('{"frames":[]}', 'utf8');
       expect(decodeMedia(MediaFileType.FRAME_SEQUENCE, emptyManifest).valid).toBe(false);
     });
+
+    it('decodes MP4 mvhd box and extracts durationSeconds', () => {
+      // ftyp box (12 bytes) + moov container (40 bytes) containing mvhd v0 (32 bytes)
+      const ftyp = Buffer.alloc(12);
+      ftyp.writeUInt32BE(12, 0);
+      ftyp.write('ftyp', 4, 'ascii');
+      ftyp.write('isom', 8, 'ascii');
+
+      const mvhd = Buffer.alloc(32);
+      mvhd.writeUInt32BE(32, 0);
+      mvhd.write('mvhd', 4, 'ascii');
+      mvhd[8] = 0; // version 0
+      mvhd.writeUInt32BE(1000, 20); // timescale = 1000
+      mvhd.writeUInt32BE(950000, 24); // duration = 950000 => 950 seconds
+
+      const moovHeader = Buffer.alloc(8);
+      moovHeader.writeUInt32BE(8 + mvhd.length, 0);
+      moovHeader.write('moov', 4, 'ascii');
+
+      const mp4Buf = Buffer.concat([ftyp, moovHeader, mvhd]);
+      const res = decodeMedia(MediaFileType.VIDEO, mp4Buf);
+      expect(res.valid).toBe(true);
+      expect(res.durationSeconds).toBe(950);
+    });
   });
 
   describe('parseGpx', () => {

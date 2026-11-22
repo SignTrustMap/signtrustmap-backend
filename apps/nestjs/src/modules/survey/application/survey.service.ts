@@ -322,6 +322,9 @@ export class SurveyService {
       } else if (dto.mediaType === MediaFileType.VIDEO) {
         const mb = await this.paramService.getNumber('survey.max_video_size_mb', 2048);
         maxAllowedBytes = mb * 1024 * 1024;
+      } else if (dto.mediaType === MediaFileType.GPX) {
+        const mb = await this.paramService.getNumber('survey.max_gpx_size_mb', 20);
+        maxAllowedBytes = mb * 1024 * 1024;
       }
     }
 
@@ -853,6 +856,32 @@ export class SurveyService {
       if (decodeResult.durationSeconds && !mediaFile.durationSeconds) {
         mediaFile.durationSeconds = decodeResult.durationSeconds;
         await manager.save(SubmissionMediaFile, mediaFile);
+      }
+
+      if (mediaFile.mediaType === MediaFileType.VIDEO) {
+        const effectiveDuration = decodeResult.durationSeconds ?? mediaFile.durationSeconds;
+        const maxVideoDurationSeconds = this.paramService
+          ? await this.paramService.getNumber('survey.max_video_duration_seconds', 900)
+          : 900;
+        if (
+          effectiveDuration != null &&
+          Number.isFinite(effectiveDuration) &&
+          effectiveDuration > maxVideoDurationSeconds
+        ) {
+          validationErrors.push({
+            code: SubmissionValidationCode.VIDEO_DURATION_EXCEEDED,
+            field: 'mediaFiles',
+            mediaType: MediaFileType.VIDEO,
+            message: `Video duration (${Math.round(effectiveDuration)}s) exceeds maximum allowed limit of ${maxVideoDurationSeconds}s`,
+          });
+          correctionRequirements.push({
+            code: CorrectionRequirementCode.REPLACE_FILE,
+            field: 'mediaFiles',
+            mediaType: MediaFileType.VIDEO,
+            message: `Upload a video shorter than or equal to ${maxVideoDurationSeconds} seconds`,
+          });
+          continue;
+        }
       }
 
       // 3. GPX Trajectory Parsing, GPS Validation & Timestamp-Range Matching
