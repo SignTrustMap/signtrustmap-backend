@@ -2,7 +2,6 @@ import {
   Controller,
   Get,
   Put,
-  Post,
   Param,
   Body,
   Query,
@@ -109,7 +108,7 @@ export class SystemParametersController {
   @ApiResponse({ status: 400, description: 'Rollback validation failed' })
   @ApiResponse({ status: 404, description: 'Target audit log record not found' })
   @HttpCode(HttpStatus.OK)
-  @Post(':key/rollback')
+  @Put(':key/rollback')
   async rollbackParameter(
     @Param('key') key: string,
     @Body() dto: RollbackSystemParameterDto,

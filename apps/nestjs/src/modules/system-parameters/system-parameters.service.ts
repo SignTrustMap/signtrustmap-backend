@@ -328,7 +328,9 @@ export class SystemParametersService implements OnModuleInit {
   ): Promise<SystemParameter> {
     const param = await this.paramRepo.findOne({ where: { key } });
     if (!param) {
-      throw new NotFoundException(`System parameter '${key}' not found.`);
+      throw new NotFoundException(
+        `System parameter '${key}' not found. Adding new variables to system configuration is not permitted; configuration is GET and PUT on existing variables only.`,
+      );
     }
 
     if (!changeReason || changeReason.trim().length === 0) {

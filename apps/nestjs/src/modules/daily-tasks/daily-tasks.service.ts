@@ -604,7 +604,7 @@ export class DailyTasksService {
       [STREAK_BONUS_PARAMETER],
     );
     if (!rows.length) {
-      throw new Error(`Missing system parameter ${STREAK_BONUS_PARAMETER}`);
+      return 0;
     }
     const bonus = Number(rows[0].value);
     if (!Number.isSafeInteger(bonus) || bonus < 0) {
