@@ -194,6 +194,32 @@ describe('SystemParametersService & Input Range Guidance', () => {
       expect(mockRedisService.publish).toHaveBeenCalled();
     });
 
+    it('update updates description when provided', async () => {
+      const param = {
+        key: 'ai.active_learning.strategy',
+        value: 'r3_cec',
+        category: ParameterCategory.AIOPS,
+        dataType: ParameterDataType.STRING,
+        validationRules: { allowedValues: ['r3_cec', 'entropy', 'margin'] },
+        description: 'Old description',
+      };
+      mockParamRepo.findOne.mockResolvedValue(param);
+
+      const updated = await service.update(
+        'ai.active_learning.strategy',
+        'entropy',
+        'switch to entropy',
+        'admin-uuid',
+        null,
+        null,
+        'Updated description',
+      );
+
+      expect(updated.value).toBe('entropy');
+      expect(updated.description).toBe('Updated description');
+      expect(mockParamRepo.save).toHaveBeenCalled();
+    });
+
     it('rollback restores previous value from audit history and preserves domain and range', async () => {
       const param = {
         key: 'consensus.consecutive_error_limit',

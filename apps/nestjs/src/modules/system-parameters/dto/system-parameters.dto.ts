@@ -93,6 +93,14 @@ export class UpdateSystemParameterDto {
   @IsNotEmpty()
   value: string;
 
+  @ApiPropertyOptional({
+    description: 'Updated operational description',
+    example: 'Tuning road hazard initial TTL for rush hour traffic',
+  })
+  @IsOptional()
+  @IsString()
+  description?: string;
+
   @ApiProperty({
     description: 'Operational justification for modifying the configuration',
     example: 'Tuning road hazard initial TTL for rush hour traffic',

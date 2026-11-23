@@ -81,6 +81,7 @@ export class SystemParametersController {
       user.id,
       ip,
       userAgent,
+      dto.description,
     )) as any;
   }
 
