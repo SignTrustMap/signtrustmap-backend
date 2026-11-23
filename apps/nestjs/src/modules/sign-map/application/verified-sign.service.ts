@@ -213,6 +213,7 @@ export class VerifiedSignService {
         } catch {}
       }
       if (!cooldownActive && typeof this.dataSource?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const recentRows: any[] = await this.dataSource.query(
           `SELECT id FROM sign_confirmations
            WHERE sign_id = $1 AND user_id = $2 AND created_at >= $3
@@ -242,6 +243,7 @@ export class VerifiedSignService {
             .execute();
         } catch {
           if (typeof this.dataSource?.query === 'function') {
+            // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
             await this.dataSource.query(
               `UPDATE verified_traffic_signs
                SET last_verified_at = NOW(),
@@ -254,6 +256,7 @@ export class VerifiedSignService {
           }
         }
       } else if (typeof this.dataSource?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await this.dataSource.query(
           `UPDATE verified_traffic_signs
            SET last_verified_at = NOW(),
@@ -278,6 +281,7 @@ export class VerifiedSignService {
           );
         } catch {
           if (typeof this.dataSource?.query === 'function') {
+            // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
             await this.dataSource.query(
               `INSERT INTO sign_confirmations (id, sign_id, user_id, is_present, credits_awarded, created_at)
                VALUES (gen_random_uuid(), $1, $2, TRUE, $3, NOW())`,
@@ -286,6 +290,7 @@ export class VerifiedSignService {
           }
         }
       } else if (typeof this.dataSource?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await this.dataSource.query(
           `INSERT INTO sign_confirmations (id, sign_id, user_id, is_present, credits_awarded, created_at)
            VALUES (gen_random_uuid(), $1, $2, TRUE, $3, NOW())`,
@@ -306,6 +311,7 @@ export class VerifiedSignService {
             }),
           );
         } else if (typeof this.dataSource?.query === 'function') {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           await this.dataSource.query(
             `INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, triggered_by, note)
              VALUES ($1, 'CONFIRMED', $2, $3)`,
@@ -356,6 +362,7 @@ export class VerifiedSignService {
           );
         } catch {
           if (typeof this.dataSource?.query === 'function') {
+            // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
             await this.dataSource.query(
               `INSERT INTO sign_confirmations (id, sign_id, user_id, is_present, credits_awarded, created_at)
                VALUES (gen_random_uuid(), $1, $2, FALSE, 0, NOW())`,
@@ -364,6 +371,7 @@ export class VerifiedSignService {
           }
         }
       } else if (typeof this.dataSource?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await this.dataSource.query(
           `INSERT INTO sign_confirmations (id, sign_id, user_id, is_present, credits_awarded, created_at)
            VALUES (gen_random_uuid(), $1, $2, FALSE, 0, NOW())`,
@@ -387,6 +395,7 @@ export class VerifiedSignService {
             }),
           );
         } else if (typeof this.dataSource?.query === 'function') {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           await this.dataSource.query(
             `INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, triggered_by, note)
              VALUES ($1, 'DISPUTED', $2, $3)`,
@@ -438,6 +447,7 @@ export class VerifiedSignService {
 
     if (typeof this.dataSource?.query === 'function') {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         historyRows = await this.dataSource.query(
           `SELECT
              h.id,
@@ -463,6 +473,7 @@ export class VerifiedSignService {
       }
 
       try {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         lifecycleRows = await this.dataSource.query(
           `SELECT
              e.id,

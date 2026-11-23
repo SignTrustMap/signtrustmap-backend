@@ -20,6 +20,7 @@ export class HealthService {
 
   async readiness(): Promise<HealthResponse> {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: standard lightweight database ping
       await this.dataSource.query('SELECT 1');
       return {
         ...this.response('ready'),

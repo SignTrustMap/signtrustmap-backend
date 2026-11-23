@@ -275,6 +275,7 @@ export class DailyTasksService {
       });
       badgeRows = badges.map((b) => ({ badge_code: b.badgeCode, earned_at: b.earnedAt }));
     } else {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       badgeRows = await this.dataSource.query(
         `SELECT badge_code, earned_at
          FROM user_badges
@@ -367,6 +368,7 @@ export class DailyTasksService {
         .orIgnore()
         .execute();
     } else {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       await this.dataSource.query(
         `INSERT INTO mission_contribution_events (user_id, event_type, source_id, occurred_at)
          VALUES ($1, $2, $3, $4)
@@ -472,6 +474,7 @@ export class DailyTasksService {
         .orIgnore()
         .execute();
     } else {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       await this.dataSource.query(
         `INSERT INTO user_badges (user_id, badge_code, earned_at)
          VALUES ($1, $2, $3)
@@ -536,6 +539,7 @@ export class DailyTasksService {
         .setParameters({ timeZone })
         .getRawMany();
     }
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     return this.dataSource.query(
       `SELECT to_char(occurred_at AT TIME ZONE $4, 'YYYY-MM-DD') AS contribution_day,
               COUNT(*) FILTER (WHERE event_type = 'VERIFIED_SIGN')::int AS verified_sign_count,
@@ -574,6 +578,7 @@ export class DailyTasksService {
         .getRawMany();
       return rows.map((row) => row.contribution_day);
     }
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows: Array<{ contribution_day: string }> = await this.dataSource.query(
       `SELECT DISTINCT to_char(occurred_at AT TIME ZONE $3, 'YYYY-MM-DD') AS contribution_day
        FROM mission_contribution_events
@@ -593,6 +598,7 @@ export class DailyTasksService {
       }
       return bonus;
     }
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows: Array<{ value: string }> = await this.dataSource.query(
       'SELECT value FROM system_parameters WHERE key = $1',
       [STREAK_BONUS_PARAMETER],
@@ -614,6 +620,7 @@ export class DailyTasksService {
       });
       return count > 0;
     }
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows: Array<{ exists: boolean }> = await this.dataSource.query(
       'SELECT EXISTS (SELECT 1 FROM credit_transactions WHERE idempotency_key = $1) AS exists',
       [idempotencyKey],
@@ -823,6 +830,7 @@ export class DailyTasksService {
             },
           });
         } else {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           await this.dataSource.query(
             `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, new_values)
              VALUES ($1, 'CLAIM_DAILY_TASK', 'daily_task_completions', $2, $3)`,

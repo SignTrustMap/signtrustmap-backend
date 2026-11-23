@@ -24,6 +24,7 @@ export class LeaderboardService {
     }
 
     try {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: PostgreSQL materialized view reading
       const rows: any[] = await this.dataSource.query(
         'SELECT * FROM mv_community_leaderboard ORDER BY rank ASC LIMIT 500',
       );
@@ -60,6 +61,7 @@ export class LeaderboardService {
             .limit(500)
             .getRawMany();
         } else {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           rows = await this.dataSource.query(
             `SELECT u.id AS user_id, u.full_name, u.avatar_url,
                     COALESCE(rp.total_reviews,0) AS total_reviews,
@@ -89,11 +91,13 @@ export class LeaderboardService {
 
   async refreshMaterializedView(): Promise<{ refreshed: boolean; error?: string }> {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: PostgreSQL materialized view maintenance stored procedure
       await this.dataSource.query('SELECT refresh_community_leaderboard()');
       this.cache = null;
       return { refreshed: true };
     } catch (e: any) {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: PostgreSQL DDL REFRESH MATERIALIZED VIEW
         await this.dataSource.query('REFRESH MATERIALIZED VIEW CONCURRENTLY mv_community_leaderboard');
         this.cache = null;
         return { refreshed: true };

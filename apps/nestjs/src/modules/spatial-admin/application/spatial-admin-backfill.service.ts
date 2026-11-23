@@ -57,6 +57,7 @@ export class SpatialAdminBackfillService implements OnApplicationBootstrap, OnAp
         const remainingLimit = Math.min(batchSize, maxTotal - totalProcessed);
         const hasProcessedIds = processedIds.size > 0;
         const rows: Array<{ id: string; longitude: number; latitude: number }> =
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           await this.dataSource.query(
             `SELECT
                id,
@@ -92,6 +93,7 @@ export class SpatialAdminBackfillService implements OnApplicationBootstrap, OnAp
             );
 
             if (resolved.displayAddress) {
+              // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
               await this.dataSource.query(
                 `UPDATE verified_traffic_signs
                  SET

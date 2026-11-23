@@ -31,5 +31,13 @@ module.exports = {
         varsIgnorePattern: '^_',
       },
     ],
+    'no-restricted-syntax': [
+      'error',
+      {
+        selector: "CallExpression[callee.property.name='query']",
+        message:
+          'Raw SQL execution via .query() is strictly prohibited. Use TypeORM Repository methods (find, findOne, save, update) or SelectQueryBuilder with parameter binding (:param). If raw SQL is mandatory (e.g. DDL / REFRESH MATERIALIZED VIEW), you must add an explicit eslint-disable comment with rationale.',
+      },
+    ],
   },
 };

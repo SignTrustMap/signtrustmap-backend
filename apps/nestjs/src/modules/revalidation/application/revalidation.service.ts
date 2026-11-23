@@ -117,6 +117,7 @@ export class RevalidationService {
       }
 
       const whereClause = 'WHERE ' + conditions.join(' AND ');
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const countRows: any[] = await this.dataSource.query(
         `SELECT COUNT(*)::int AS cnt 
          FROM revalidation_tasks rt 
@@ -133,6 +134,7 @@ export class RevalidationService {
             ? 'rt.urgency DESC'
             : 'distance_meters ASC';
 
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const rows: any[] = await this.dataSource.query(
         `SELECT rt.id,
                 rt.verified_sign_id AS "signId",
@@ -183,6 +185,7 @@ export class RevalidationService {
       conditions.push(`rt.status IN ('OPEN', 'EVALUATING')`);
     }
     const whereClause = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const countRows: any[] = await this.dataSource.query(
       `SELECT COUNT(*)::int AS cnt FROM revalidation_tasks rt JOIN verified_traffic_signs vts ON vts.id = rt.verified_sign_id ${whereClause}`,
       params,
@@ -195,6 +198,7 @@ export class RevalidationService {
           ? 'rt.urgency DESC'
           : 'rt.created_at DESC';
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows: any[] = await this.dataSource.query(
       `SELECT rt.*, vts.sign_type_id, vts.status AS sign_status, vts.freshness_score,
               ST_X(vts.location::geometry) AS longitude, ST_Y(vts.location::geometry) AS latitude,
@@ -244,11 +248,13 @@ export class RevalidationService {
       params.push(q.priority);
     }
     const whereClause = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const countRows: any[] = await this.dataSource.query(
       `SELECT COUNT(*)::int AS cnt FROM revalidation_tasks rt JOIN verified_traffic_signs vts ON vts.id = rt.verified_sign_id ${whereClause}`,
       params,
     );
     const total = countRows[0]?.cnt ?? 0;
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows: any[] = await this.dataSource.query(
       `SELECT rt.*, vts.sign_type_id, vts.status AS sign_status, vts.freshness_score,
               ST_X(vts.location::geometry) AS longitude, ST_Y(vts.location::geometry) AS latitude,
@@ -296,6 +302,7 @@ export class RevalidationService {
     let evs: any[] = [];
     if (typeof this.dataSource?.query === 'function') {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         evs = await this.dataSource.query(
           `SELECT ev.id, ev.task_id, ev.user_id, u.full_name AS surveyor_name, u.email AS surveyor_email,
                   ev.media_url, ev.evidence_type, ev.is_live_capture, ev.accuracy_meters, ev.heading_degrees,
@@ -327,6 +334,7 @@ export class RevalidationService {
       } catch {}
     }
     if (evs.length === 0 && typeof this.dataSource?.query === 'function') {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       evs = await this.dataSource.query(
         'SELECT id, task_id, user_id, media_url, evidence_type, submitted_at, ST_AsText(location) as location_wkt FROM revalidation_evidences WHERE task_id=$1 ORDER BY submitted_at ASC',
         [id],
@@ -337,6 +345,7 @@ export class RevalidationService {
     const decisionsMap = new Map<string, any[]>();
     if (evidenceIds.length > 0 && typeof this.dataSource?.query === 'function') {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const dRows: any[] = await this.dataSource.query(
           `SELECT rd.id, rd.evidence_id, rd.reviewer_id, u.full_name AS reviewer_name, u.email AS reviewer_email,
                   rd.decision, rd.suggested_sign_type_id, rd.note, rd.decided_at,
@@ -416,6 +425,7 @@ export class RevalidationService {
         } catch {}
       }
       if (!sRow && typeof this.dataSource?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const sRows: any[] = await this.dataSource.query(
           'SELECT ST_Y(location::geometry) as lat, ST_X(location::geometry) as lon FROM verified_traffic_signs WHERE id=$1',
           [t.verifiedSignId],
@@ -474,6 +484,7 @@ export class RevalidationService {
 
     // ---- GPS proximity guardrail (PostGIS) ----
     const { maxProximityMeters } = await this.resolveRuleLimits(task);
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const distanceRows: any[] = await this.dataSource.query(
       `SELECT ST_DistanceSphere(
                 ST_SetSRID(ST_MakePoint($1, $2), 4326),
@@ -492,6 +503,7 @@ export class RevalidationService {
 
     // ---- Issue B: Ambiguous nearby signs detection (e.g. multiple similar signs within 50m) ----
     if (this.dataSource?.query) {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const targetSignRows: any[] = await this.dataSource.query(
         `SELECT id, sign_type_id FROM verified_traffic_signs WHERE id = $1`,
         [task.verifiedSignId],
@@ -499,6 +511,7 @@ export class RevalidationService {
       const targetSignTypeId = targetSignRows[0]?.sign_type_id;
 
       if (targetSignTypeId != null) {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const nearbySimilarRows: any[] = await this.dataSource.query(
           `SELECT vts.id, tst.sign_code, vts.sign_type_id,
                   ST_DistanceSphere(vts.location, ST_SetSRID(ST_MakePoint($1, $2), 4326)) AS distance_meters
@@ -536,6 +549,7 @@ export class RevalidationService {
 
     // ---- Daily submission limit (anti spam / sybil bounty abuse) ----
     const { dailySubmissionLimit } = await this.resolveRuleLimits(task);
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const recentRows: any[] = await this.dataSource.query(
       `SELECT COUNT(*)::int AS cnt
        FROM revalidation_evidences
@@ -549,6 +563,7 @@ export class RevalidationService {
 
     // ---- Duplicate submission guard for same surveyor on same task (unless previous evidence was marked UNCLEAR/INVALID) ----
     if (typeof this.dataSource?.query === 'function') {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const dupRows: any[] = await this.dataSource.query(
         `SELECT ev.id
          FROM revalidation_evidences ev
@@ -605,6 +620,7 @@ export class RevalidationService {
         : 'STILL_ACTIVE';
     const id = randomUUID();
     await this.dataSource.transaction(async (manager) => {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const lockedTasks: any[] = await manager.query(
         `SELECT status
          FROM revalidation_tasks
@@ -616,6 +632,7 @@ export class RevalidationService {
       if (![TaskStatus.OPEN, TaskStatus.EVALUATING].includes(lockedTasks[0].status)) {
         throw new BadRequestException('Task ' + taskId + ' is not open for new evidence (status=' + lockedTasks[0].status + ')');
       }
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const lockedRecentRows: any[] = await manager.query(
         `SELECT COUNT(*)::int AS cnt
          FROM revalidation_evidences
@@ -629,6 +646,7 @@ export class RevalidationService {
           HttpStatus.TOO_MANY_REQUESTS,
         );
       }
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       await manager.query(
         `INSERT INTO revalidation_evidences
            (id, task_id, user_id, media_url, location, evidence_type, is_live_capture, accuracy_meters, heading_degrees)
@@ -647,6 +665,7 @@ export class RevalidationService {
         ],
       );
       if (lockedTasks[0].status === TaskStatus.OPEN) {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await manager.query(
           `UPDATE revalidation_tasks
            SET status = 'EVALUATING'
@@ -727,6 +746,7 @@ export class RevalidationService {
     const { maxProximityMeters, dailySubmissionLimit } = await this.resolveRuleLimits(task);
 
     // Compute PostGIS spherical distance to target traffic sign
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const distanceRows: any[] = await this.dataSource.query(
       `SELECT ST_DistanceSphere(
                 ST_SetSRID(ST_MakePoint($1, $2), 4326),
@@ -750,6 +770,7 @@ export class RevalidationService {
     const remainingDistanceMeters = Math.max(0, Math.round((distanceMeters - maxProximityMeters) * 10) / 10);
 
     // Check daily submission limit in the last 24 hours
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const recentRows: any[] = await this.dataSource.query(
       `SELECT COUNT(*)::int AS cnt
        FROM revalidation_evidences
@@ -811,6 +832,7 @@ export class RevalidationService {
     let rows: any[] = [];
     if (typeof this.dataSource?.query === 'function') {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         rows = await this.dataSource.query(
           `SELECT ev.id, ev.task_id, ev.user_id, u.full_name AS surveyor_name, u.email AS surveyor_email,
                   ev.media_url, ev.evidence_type, ev.is_live_capture, ev.accuracy_meters, ev.heading_degrees,
@@ -822,6 +844,7 @@ export class RevalidationService {
           [taskId],
         );
       } catch {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         rows = await this.dataSource.query(
           'SELECT id, task_id, user_id, media_url, evidence_type, is_live_capture, accuracy_meters, heading_degrees, submitted_at, ST_AsText(location) as location_wkt FROM revalidation_evidences WHERE task_id=$1 ORDER BY submitted_at ASC',
           [taskId],
@@ -832,6 +855,7 @@ export class RevalidationService {
     const decisionsMap = new Map<string, any[]>();
     if (evIds.length > 0 && typeof this.dataSource?.query === 'function') {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const dRows: any[] = await this.dataSource.query(
           `SELECT rd.id, rd.evidence_id, rd.reviewer_id, u.full_name AS reviewer_name, u.email AS reviewer_email,
                   rd.decision, rd.suggested_sign_type_id, rd.note, rd.decided_at
@@ -897,6 +921,7 @@ export class RevalidationService {
     let rows: any[] = [];
     if (typeof this.dataSource?.query === 'function') {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         rows = await this.dataSource.query(
           `SELECT ev.id, ev.task_id, ev.user_id, u.full_name AS surveyor_name, u.email AS surveyor_email,
                   ev.media_url, ev.evidence_type, ev.is_live_capture, ev.accuracy_meters, ev.heading_degrees,
@@ -909,6 +934,7 @@ export class RevalidationService {
           [signId],
         );
       } catch {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         rows = await this.dataSource.query(
           `SELECT ev.id, ev.task_id, ev.user_id, ev.media_url, ev.evidence_type, ev.is_live_capture, ev.accuracy_meters, ev.heading_degrees, ev.submitted_at, ST_AsText(ev.location) as location_wkt
            FROM revalidation_evidences ev
@@ -955,6 +981,7 @@ export class RevalidationService {
       SELECT 1 FROM revalidation_decisions mine
       WHERE mine.evidence_id = ev.id AND mine.reviewer_id = $1
     )`;
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const countRows: any[] = await this.dataSource.query(
       `SELECT COUNT(*)::int AS cnt
        FROM revalidation_evidences ev
@@ -963,6 +990,7 @@ export class RevalidationService {
       [reviewerId],
     );
     const total = countRows[0]?.cnt ?? 0;
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows: any[] = await this.dataSource.query(
       `SELECT
          ev.id AS evidence_id,
@@ -1034,10 +1062,12 @@ export class RevalidationService {
     }
     const decision = this.assertDecision(dto.decision);
     if (dto.suggestedSignTypeId != null) {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const typeRows: any[] = await this.dataSource.query('SELECT id FROM traffic_sign_types WHERE id=$1', [dto.suggestedSignTypeId]);
       if (typeRows.length === 0) throw new BadRequestException('suggestedSignTypeId ' + dto.suggestedSignTypeId + ' does not exist');
     }
     const saved = await this.dataSource.transaction(async (manager) => {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const taskRows: any[] = await manager.query(
         `SELECT rt.status
          FROM revalidation_tasks rt
@@ -1076,6 +1106,7 @@ export class RevalidationService {
     let rows: any[] = [];
     if (typeof this.dataSource?.query === 'function') {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         rows = await this.dataSource.query(
           `SELECT rd.id, rd.evidence_id, rd.reviewer_id, u.full_name AS reviewer_name, u.email AS reviewer_email,
                   rd.decision, rd.suggested_sign_type_id, rd.note, rd.decided_at,
@@ -1126,6 +1157,7 @@ export class RevalidationService {
     const note = dto.note?.trim() || null;
 
     await this.dataSource.transaction(async (manager) => {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const taskRows: any[] = await manager.query(
         `SELECT rt.status
          FROM revalidation_tasks rt
@@ -1177,6 +1209,7 @@ export class RevalidationService {
     let reviewerEmail: string | null = null;
     if (typeof this.dataSource?.query === 'function') {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const userRows: any[] = await this.dataSource.query(
           `SELECT id, full_name, email FROM users WHERE id = ANY($1::uuid[])`,
           [[ev.userId, reviewerId]],
@@ -1254,6 +1287,7 @@ export class RevalidationService {
   // ---------------------------------------------------------------------------
 
   private async lockTaskForConsensus(manager: EntityManager, taskId: string): Promise<RevalidationTask> {
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const taskRefs: any[] = await manager.query(
       `SELECT verified_sign_id
        FROM revalidation_tasks
@@ -1262,6 +1296,7 @@ export class RevalidationService {
     );
     if (!taskRefs[0]) throw new NotFoundException('RevalidationTask ' + taskId + ' not found');
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const signRows: any[] = await manager.query(
       `SELECT id
        FROM verified_traffic_signs
@@ -1273,6 +1308,7 @@ export class RevalidationService {
       throw new NotFoundException('VerifiedTrafficSign ' + taskRefs[0].verified_sign_id + ' not found');
     }
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows: any[] = await manager.query(
       `SELECT id, verified_sign_id, freshness_rule_id, reward_credits, status
        FROM revalidation_tasks
@@ -1294,6 +1330,7 @@ export class RevalidationService {
     taskId: string,
     manager: EntityManager,
   ): Promise<{ evidenceRows: EvidenceRow[]; decisions: RevalDecisionRow[] }> {
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const evidenceRows: any[] = await manager.query(
       `SELECT id, user_id, media_url, evidence_type, submitted_at,
               ST_Y(location::geometry) AS latitude, ST_X(location::geometry) AS longitude
@@ -1304,6 +1341,7 @@ export class RevalidationService {
     );
     const evIds = evidenceRows.map(e => e.id as string);
     const decisions: any[] = evIds.length
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       ? await manager.query('SELECT decision, reviewer_id, evidence_id, suggested_sign_type_id FROM revalidation_decisions WHERE evidence_id = ANY($1)', [evIds])
       : [];
     return { evidenceRows, decisions: (decisions as RevalDecisionRow[]) };
@@ -1323,6 +1361,7 @@ export class RevalidationService {
         } catch {}
       }
       if (minVotes == null && typeof this.dataSource?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const rows: any[] = await this.dataSource.query(
           `SELECT min_votes_required
            FROM consensus_configs
@@ -1505,6 +1544,7 @@ export class RevalidationService {
       manager,
     );
     const rewards = await this.creditRewards(task, decisionRows, evidenceRows, winningDecision);
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     await manager.query(
       `UPDATE revalidation_tasks
        SET status = 'COMPLETED'
@@ -1513,6 +1553,7 @@ export class RevalidationService {
     );
 
     // Automatically complete / clear any remaining active revalidation tasks for this sign
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     await manager.query(
       `UPDATE revalidation_tasks
        SET status = 'COMPLETED'
@@ -1541,12 +1582,14 @@ export class RevalidationService {
   }
 
   private async escalateToModeration(task: RevalidationTask, note: string, manager: EntityManager) {
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     await manager.query(
       `INSERT INTO moderation_cases (id, case_type, target_entity_type, target_entity_id, status, resolution_note, created_at)
        VALUES (gen_random_uuid(), 'REVIEW_CONFLICT', 'revalidation_task', $1, 'PENDING', $2, now())`,
       [task.id, note],
     );
     task.status = TaskStatus.ESCALATED_MODERATION;
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     await manager.query(
       `UPDATE revalidation_tasks SET status = 'ESCALATED_MODERATION' WHERE id = $1`,
       [task.id],
@@ -1801,6 +1844,7 @@ export class RevalidationService {
           ? await this.paramService.getNumber('revalidation.reporter_reward_credits', 10)
           : 10;
         if (reporterReward > 0) {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           const reporterRows: Array<{ user_id: string }> = await this.dataSource.query(
             `SELECT DISTINCT user_id
              FROM sign_confirmations
@@ -1822,6 +1866,7 @@ export class RevalidationService {
               `Driver outdated/missing sign report verified (${winningDecision})`,
               { idempotencyKey: `revalidation-reporter:${task.id}:${driverId}` },
             );
+            // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
             await this.dataSource.query(
               `UPDATE sign_confirmations
                SET credits_awarded = $1
@@ -1890,6 +1935,7 @@ export class RevalidationService {
       const lon = location?.longitude ?? 0;
       const s3PhotoUrl = this.toS3Url(photoUrl, task.id);
       try {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await this.dataSource.query(
           `INSERT INTO revalidation_evidences (id, task_id, user_id, media_url, location)
            VALUES ($1, $2, $3, $4, ST_SetSRID(ST_MakePoint($5, $6), 4326))`,
@@ -1943,6 +1989,7 @@ export class RevalidationService {
 
     if (typeof this.dataSource?.query === 'function') {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await this.dataSource.query(
           `INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, note)
            VALUES ($1, 'CHANGE_DETECTED', $2)`,
@@ -1970,6 +2017,7 @@ export class RevalidationService {
         } catch {}
       }
       if (surveyorRows.length === 0 && typeof this.dataSource?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         surveyorRows = await this.dataSource.query(
           `SELECT sp.user_id
            FROM surveyor_profiles sp
@@ -2014,6 +2062,7 @@ export class RevalidationService {
           } catch {}
         }
         if (!signType && typeof this.dataSource?.query === 'function') {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           const rows = await this.dataSource.query(
             'SELECT id FROM traffic_sign_types WHERE UPPER(sign_code) = UPPER($1) LIMIT 1',
             [aiResult.standardCode],
@@ -2034,6 +2083,7 @@ export class RevalidationService {
           } catch {}
         }
         if (!signType && typeof this.dataSource?.query === 'function') {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           const rows = await this.dataSource.query(
             'SELECT id FROM traffic_sign_types WHERE LOWER(name_en) = LOWER($1) OR LOWER(name_vi) = LOWER($1) OR LOWER(sign_code) = LOWER($1) LIMIT 1',
             [name],
@@ -2050,6 +2100,7 @@ export class RevalidationService {
           } catch {}
         }
         if (!signType && typeof this.dataSource?.query === 'function') {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           const rows = await this.dataSource.query(
             'SELECT id FROM traffic_sign_types WHERE id = $1 LIMIT 1',
             [aiResult.classId],
@@ -2072,6 +2123,7 @@ export class RevalidationService {
     if (!task) throw new NotFoundException('RevalidationTask ' + taskId + ' not found');
     let targetUrl = explicitMediaUrl;
     if (!targetUrl) {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const evs: any[] = await this.dataSource.query(
         "SELECT media_url, evidence_type FROM revalidation_evidences WHERE task_id=$1 ORDER BY (evidence_type = 'CHANGED') DESC, submitted_at DESC LIMIT 1",
         [taskId],

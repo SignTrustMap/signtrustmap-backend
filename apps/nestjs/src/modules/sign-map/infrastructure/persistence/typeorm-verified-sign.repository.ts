@@ -107,6 +107,7 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
   ) {}
 
   private async queryWithHealing<T>(sql: string, parameters?: unknown[]): Promise<T> {
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     return (await this.repository.query(sql, parameters)) as T;
   }
 
@@ -120,6 +121,7 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
   }
 
   async create(sign: CreateVerifiedSign): Promise<VerifiedSign> {
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows = (await this.repository.query(
       `INSERT INTO verified_traffic_signs (
          sign_type_id,
@@ -207,6 +209,7 @@ export class TypeOrmVerifiedSignRepository implements VerifiedSignRepository {
 
     assignments.push('updated_at = NOW()');
     const idParameter = parameter(id);
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows = (await this.repository.query(
       `UPDATE verified_traffic_signs
        SET ${assignments.join(', ')}

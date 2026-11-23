@@ -22,6 +22,7 @@ All code modifications in this codebase must comply with the rules documented in
 4. **Database & Workers**:
    - Never use `asyncpg` inside synchronous Celery worker tasks; use synchronous `psycopg`.
    - TypeORM is strictly `synchronize: false` in production.
+   - Zero raw SQL policy: never use `.query()` in NestJS or unmapped `sa_text()` in FastAPI. Use TypeORM Repository methods or QueryBuilder.
    - See: [`docs/coding-conventions/04-database-and-async-workers.md`](./docs/coding-conventions/04-database-and-async-workers.md)
 
 5. **Security & RBAC**:
