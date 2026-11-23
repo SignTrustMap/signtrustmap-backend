@@ -97,6 +97,7 @@ export class BountyBoardService {
         candidateSql += ` ORDER BY c.is_promoted DESC, c.created_at DESC LIMIT 50`;
       }
 
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const candidateRows: any[] = await this.dataSource.query(candidateSql, params);
 
       for (const row of candidateRows) {
@@ -164,6 +165,7 @@ export class BountyBoardService {
         taskSql += ` ORDER BY rt.urgency DESC, rt.created_at DESC LIMIT 50`;
       }
 
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const taskRows: any[] = await this.dataSource.query(taskSql, taskParams);
 
       for (const row of taskRows) {
@@ -350,6 +352,7 @@ export class BountyBoardService {
 
       // Deduct reputation penalty
       try {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await this.dataSource.query(
           `UPDATE reviewer_profiles 
            SET reliability_score = GREATEST(0, reliability_score - $1),

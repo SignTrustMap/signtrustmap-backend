@@ -253,6 +253,7 @@ export class AdminService {
           dailyTaskStats,
           badgeStats,
         ] = await Promise.all([
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           this.dataSource.query(
             `SELECT
                user_id,
@@ -271,6 +272,7 @@ export class AdminService {
              WHERE user_id = ANY($1::uuid[])`,
             [userIds],
           ).catch(() => []),
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           this.dataSource.query(
             `SELECT
                cr.reviewer_id AS user_id,
@@ -285,6 +287,7 @@ export class AdminService {
              GROUP BY cr.reviewer_id`,
             [userIds],
           ).catch(() => []),
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           this.dataSource.query(
             `SELECT reviewer_id AS user_id, COUNT(*)::int AS skipped_count
              FROM reviewer_skipped_candidates
@@ -292,6 +295,7 @@ export class AdminService {
              GROUP BY reviewer_id`,
             [userIds],
           ).catch(() => []),
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           this.dataSource.query(
             `SELECT cr.reviewer_id AS user_id, COUNT(rf.id)::int AS flagged_count
              FROM candidate_reviews cr
@@ -300,6 +304,7 @@ export class AdminService {
              GROUP BY cr.reviewer_id`,
             [userIds],
           ).catch(() => []),
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           this.dataSource.query(
             `SELECT
                s.surveyor_id AS user_id,
@@ -317,12 +322,14 @@ export class AdminService {
              GROUP BY s.surveyor_id`,
             [userIds],
           ).catch(() => []),
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           this.dataSource.query(
             `SELECT user_id, total_submissions, total_verified_signs, total_credits_earned
              FROM surveyor_profiles
              WHERE user_id = ANY($1::uuid[])`,
             [userIds],
           ).catch(() => []),
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           this.dataSource.query(
             `SELECT
                h.reported_by AS user_id,
@@ -337,6 +344,7 @@ export class AdminService {
              GROUP BY h.reported_by`,
             [userIds],
           ).catch(() => []),
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           this.dataSource.query(
             `SELECT
                ns.driver_id AS user_id,
@@ -350,18 +358,22 @@ export class AdminService {
              GROUP BY ns.driver_id`,
             [userIds],
           ).catch(() => []),
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           this.dataSource.query(
             `SELECT user_id, balance, is_frozen FROM wallets WHERE user_id = ANY($1::uuid[])`,
             [userIds],
           ).catch(() => []),
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           this.dataSource.query(
             `SELECT user_id, COUNT(*)::int AS cnt FROM revalidation_evidences WHERE user_id = ANY($1::uuid[]) GROUP BY user_id`,
             [userIds],
           ).catch(() => []),
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           this.dataSource.query(
             `SELECT user_id, COUNT(*)::int AS cnt FROM daily_task_completions WHERE user_id = ANY($1::uuid[]) GROUP BY user_id`,
             [userIds],
           ).catch(() => []),
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           this.dataSource.query(
             `SELECT user_id, COUNT(*)::int AS cnt FROM user_badges WHERE user_id = ANY($1::uuid[]) GROUP BY user_id`,
             [userIds],
@@ -530,6 +542,7 @@ export class AdminService {
     let recentReviews: any[] = [];
     try {
       if (typeof this.dataSource?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         recentReviews = await this.dataSource.query(
           `SELECT cr.id, cr.candidate_id, cr.vote, cr.reviewed_at, usc.best_frame_url, usc.status AS candidate_status
            FROM candidate_reviews cr
@@ -545,6 +558,7 @@ export class AdminService {
     let recentSubmissions: any[] = [];
     try {
       if (typeof this.dataSource?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         recentSubmissions = await this.dataSource.query(
           `SELECT id, submission_type, status, reward_status, reward_amount, total_candidates_extracted, created_at
            FROM survey_submissions
@@ -559,6 +573,7 @@ export class AdminService {
     let recentHazards: any[] = [];
     try {
       if (typeof this.dataSource?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         recentHazards = await this.dataSource.query(
           `SELECT id, hazard_type, title, severity, status, confirmations_count, dismissals_count, created_at
            FROM road_hazard_events
@@ -613,6 +628,7 @@ export class AdminService {
 
     if (roles.length === 0 && this.dataSource) {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const roleRows: any[] = await this.dataSource.query(
           `SELECT r.code FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = $1 AND ur.is_active = true`,
           [userId],
@@ -645,6 +661,7 @@ export class AdminService {
     const usersByRole = { surveyor: 0, reviewer: 0, driver: 0, staff: 0, admin: 0 };
 
     try {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const statusRows = await this.dataSource.query(`SELECT status, COUNT(*)::int AS cnt FROM users GROUP BY status`);
       for (const r of statusRows) {
         totalUsers += Number(r.cnt);
@@ -656,6 +673,7 @@ export class AdminService {
     } catch {}
 
     try {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const roleRows = await this.dataSource.query(
         `SELECT r.code, COUNT(ur.user_id)::int AS cnt
          FROM user_roles ur
@@ -683,6 +701,7 @@ export class AdminService {
       reviewersSuspended: 0,
     };
     try {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const revProfileAgg = await this.dataSource.query(
         `SELECT
            COALESCE(SUM(total_correct_votes), 0)::int AS correct,
@@ -696,6 +715,7 @@ export class AdminService {
         reviewsSummary.reviewersSuspended = Number(revProfileAgg[0].suspended);
       }
 
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const crAgg = await this.dataSource.query(
         `SELECT
            COUNT(*)::int AS total_votes,
@@ -710,6 +730,7 @@ export class AdminService {
         reviewsSummary.totalPendingConsensus = Number(crAgg[0].pending_consensus);
       }
 
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const totalCast = await this.dataSource.query(`SELECT COUNT(*)::int AS cnt FROM candidate_reviews`);
       reviewsSummary.totalVotesCast = totalCast.length ? Number(totalCast[0].cnt) : (reviewsSummary.totalCorrectVotes + reviewsSummary.totalFalseVotes);
       const evalVotes = reviewsSummary.totalCorrectVotes + reviewsSummary.totalFalseVotes;
@@ -729,6 +750,7 @@ export class AdminService {
       activeSurveyors30d: 0,
     };
     try {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const subAgg = await this.dataSource.query(
         `SELECT
            COUNT(*)::int AS total,
@@ -755,6 +777,7 @@ export class AdminService {
         surveysSummary.platformAcceptanceRate = finished > 0 ? Number(((surveysSummary.acceptedSubmissions / finished) * 100).toFixed(2)) : 0;
       }
 
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const verSigns = await this.dataSource.query(`SELECT COUNT(*)::int AS cnt FROM verified_traffic_signs`);
       if (verSigns.length > 0) {
         surveysSummary.totalVerifiedSignsGenerated = Number(verSigns[0].cnt);
@@ -769,6 +792,7 @@ export class AdminService {
       platformConfirmedRatio: 0,
     };
     try {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const hzAgg = await this.dataSource.query(
         `SELECT
            COUNT(*)::int AS total,
@@ -795,6 +819,7 @@ export class AdminService {
       activeSessions: 0,
     };
     try {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const navAgg = await this.dataSource.query(
         `SELECT
            COUNT(*)::int AS total,
@@ -852,12 +877,16 @@ export class AdminService {
       return { userId, oldStatus, newStatus };
     }
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows: any[] = await this.dataSource.query('SELECT id, status FROM users WHERE id=$1', [userId]);
     if (rows.length === 0) throw new NotFoundException('User ' + userId + ' not found');
     const oldStatus = rows[0].status;
     if (oldStatus === newStatus) throw new BadRequestException('User is already ' + newStatus);
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     await this.dataSource.query('UPDATE users SET status=$1, updated_at=now() WHERE id=$2', [newStatus, userId]);
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     await this.dataSource.query('INSERT INTO user_status_history (user_id, old_status, new_status, reason, changed_by) VALUES ($1,$2,$3,$4,$5)', [userId, oldStatus, newStatus, reason ?? null, changedBy]);
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     await this.dataSource.query("INSERT INTO audit_logs (user_id, action, resource_name, resource_id, old_values, new_values, ip_address) VALUES ($1,'UPDATE_USER_STATUS','users',$2,$3,$4,$5)", [changedBy, userId, JSON.stringify({ status: oldStatus }), JSON.stringify({ status: newStatus, reason }), ip ?? null]);
     return { userId, oldStatus, newStatus };
   }
@@ -888,6 +917,7 @@ export class AdminService {
     const params: any[] = [threshold, minReviews];
     const provisionalClause = includeProvisional ? '' : 'AND COALESCE(rp.is_provisional, false) = false';
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const countRows: any[] = await this.dataSource.query(
       `SELECT COUNT(*)::int AS cnt
        FROM users u
@@ -905,6 +935,7 @@ export class AdminService {
     );
     const total = Number(countRows[0]?.cnt ?? 0);
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows: any[] = await this.dataSource.query(
       `SELECT
          u.id,
@@ -1030,6 +1061,7 @@ export class AdminService {
          )
        ORDER BY rp.reliability_score ASC, u.created_at DESC`;
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const targets: any[] = await this.dataSource.query(selectTargetsSql, params);
 
     const mappedTargets = targets.map((t) => ({
@@ -1060,11 +1092,13 @@ export class AdminService {
     const targetIds = targets.map((t) => t.id);
 
     const applyBan = async (executor: { query: (sql: string, p?: any[]) => Promise<any> }) => {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       await executor.query(
         `UPDATE users SET status = 'BANNED', updated_at = now() WHERE id = ANY($1::uuid[])`,
         [targetIds],
       );
 
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       await executor.query(
         `UPDATE reviewer_profiles
          SET is_review_suspended = true,
@@ -1077,6 +1111,7 @@ export class AdminService {
       );
 
       for (const t of targets) {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await executor.query(
           `INSERT INTO user_status_history (user_id, old_status, new_status, reason, changed_by)
            VALUES ($1, $2, 'BANNED', $3, $4)`,
@@ -1084,6 +1119,7 @@ export class AdminService {
         );
       }
 
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       await executor.query(
         `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, old_values, new_values, ip_address)
          VALUES ($1, 'BAN_WAVE', 'users', 'bulk', $2, $3, $4)`,
@@ -1154,14 +1190,20 @@ export class AdminService {
       return { userId, roleCode, roleId, isActive };
     }
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const uRows: any[] = await this.dataSource.query('SELECT id FROM users WHERE id=$1', [userId]);
     if (uRows.length === 0) throw new NotFoundException('User ' + userId + ' not found');
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rRows: any[] = await this.dataSource.query('SELECT id, code FROM roles WHERE code=$1', [roleCode]);
     if (rRows.length === 0) throw new NotFoundException('Role ' + roleCode + ' not found');
     const roleId = rRows[0].id;
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const existing: any[] = await this.dataSource.query('SELECT id, is_active FROM user_roles WHERE user_id=$1 AND role_id=$2', [userId, roleId]);
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     if (existing.length > 0) await this.dataSource.query('UPDATE user_roles SET is_active=$1 WHERE user_id=$2 AND role_id=$3', [isActive, userId, roleId]);
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     else await this.dataSource.query('INSERT INTO user_roles (user_id, role_id, assigned_by, is_active) VALUES ($1,$2,$3,$4)', [userId, roleId, assignedBy, isActive]);
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     await this.dataSource.query("INSERT INTO audit_logs (user_id, action, resource_name, resource_id, new_values) VALUES ($1,'ASSIGN_ROLE','user_roles',$2,$3)", [assignedBy, userId, JSON.stringify({ roleCode, isActive })]);
     return { userId, roleCode, roleId, isActive };
   }
@@ -1214,6 +1256,7 @@ export class AdminService {
   async exportSigns(format: string, status?: string) {
     const where = status ? 'WHERE v.status = $1' : '';
     const params: any[] = status ? [status] : [];
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows: any[] = await this.dataSource.query(
       `SELECT
          v.id,
@@ -1395,6 +1438,7 @@ export class AdminService {
       };
     }
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows = await this.dataSource.query(
       `SELECT * FROM consensus_configs WHERE is_active = true ORDER BY effective_from DESC LIMIT 1`,
     );
@@ -1524,8 +1568,10 @@ export class AdminService {
     }
 
     // Deactivate previous active configs
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     await this.dataSource.query(`UPDATE consensus_configs SET is_active = false WHERE is_active = true`);
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const result = await this.dataSource.query(
       `INSERT INTO consensus_configs (
         approval_threshold, rejection_threshold, min_votes_required, max_votes_limit, alpha_smoothing_factor,
@@ -1556,6 +1602,7 @@ export class AdminService {
     );
 
     const inserted = result[0];
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     await this.dataSource.query(
       `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, old_values, new_values, ip_address)
        VALUES ($1, 'UPDATE_CONSENSUS_CONFIG', 'consensus_configs', $2, $3, $4, $5)`,
@@ -1595,6 +1642,7 @@ export class AdminService {
    * Retrieves route classifications and spatial freshness decay parameters
    */
   async getRouteMatrix() {
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows = await this.dataSource.query(
       `SELECT id, name, road_type, default_lifetime_days, revalidation_threshold_days, spatial_buffer_meters, created_at
        FROM route_classifications
@@ -1615,6 +1663,7 @@ export class AdminService {
    * Updates route classification decay and spatial buffer parameters
    */
   async updateRouteMatrix(id: number, dto: UpdateRouteMatrixDto, adminUserId: string, ip?: string) {
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows = await this.dataSource.query(
       `SELECT * FROM route_classifications WHERE id = $1`,
       [id],
@@ -1629,6 +1678,7 @@ export class AdminService {
     const revalidationThresholdDays = dto.revalidationThresholdDays ?? current.revalidation_threshold_days;
     const spatialBufferMeters = dto.spatialBufferMeters ?? current.spatial_buffer_meters;
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     await this.dataSource.query(
       `UPDATE route_classifications
        SET road_type = $1, default_lifetime_days = $2, revalidation_threshold_days = $3, spatial_buffer_meters = $4
@@ -1636,6 +1686,7 @@ export class AdminService {
       [roadType, defaultLifetimeDays, revalidationThresholdDays, spatialBufferMeters, id],
     );
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     await this.dataSource.query(
       `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, old_values, new_values, ip_address)
        VALUES ($1, 'UPDATE_ROUTE_MATRIX', 'route_classifications', $2, $3, $4, $5)`,
@@ -1664,6 +1715,7 @@ export class AdminService {
   // ---------------------------------------------------------------------------
 
   async listFreshnessRules() {
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows = await this.dataSource.query(
       `SELECT fr.id, fr.sign_category_id AS "signCategoryId",
               sc.code AS "categoryCode", sc.name_en AS "categoryNameEn", sc.name_vi AS "categoryNameVi",
@@ -1693,6 +1745,7 @@ export class AdminService {
   }
 
   async getFreshnessRule(id: number) {
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows = await this.dataSource.query(
       `SELECT fr.id, fr.sign_category_id AS "signCategoryId",
               sc.code AS "categoryCode", sc.name_en AS "categoryNameEn", sc.name_vi AS "categoryNameVi",
@@ -1734,6 +1787,7 @@ export class AdminService {
     const dailySubmissionLimit = dto.dailySubmissionLimit ?? 3;
     const isActive = dto.isActive ?? true;
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const res = await this.dataSource.query(
       `INSERT INTO freshness_rules (
         sign_category_id, freshness_period_days, default_priority,
@@ -1744,6 +1798,7 @@ export class AdminService {
     );
     const inserted = res[0];
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     await this.dataSource.query(
       `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, old_values, new_values, ip_address)
        VALUES ($1, 'CREATE_FRESHNESS_RULE', 'freshness_rules', $2, NULL, $3, $4)`,
@@ -1768,6 +1823,7 @@ export class AdminService {
   }
 
   async updateFreshnessRule(id: number, dto: UpdateFreshnessRuleDto, adminUserId: string, ip?: string) {
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows = await this.dataSource.query(`SELECT * FROM freshness_rules WHERE id = $1`, [id]);
     if (!rows.length) {
       throw new NotFoundException(`FreshnessRule #${id} not found`);
@@ -1781,6 +1837,7 @@ export class AdminService {
     const dailySubmissionLimit = dto.dailySubmissionLimit ?? current.daily_submission_limit;
     const isActive = dto.isActive !== undefined ? dto.isActive : current.is_active;
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     await this.dataSource.query(
       `UPDATE freshness_rules
        SET sign_category_id = $1, freshness_period_days = $2, default_priority = $3,
@@ -1789,6 +1846,7 @@ export class AdminService {
       [signCategoryId, freshnessPeriodDays, defaultPriority, maxProximityMeters, dailySubmissionLimit, isActive, id],
     );
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     await this.dataSource.query(
       `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, old_values, new_values, ip_address)
        VALUES ($1, 'UPDATE_FRESHNESS_RULE', 'freshness_rules', $2, $3, $4, $5)`,
@@ -1814,12 +1872,15 @@ export class AdminService {
   }
 
   async deleteFreshnessRule(id: number, adminUserId: string, ip?: string) {
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows = await this.dataSource.query(`SELECT * FROM freshness_rules WHERE id = $1`, [id]);
     if (!rows.length) {
       throw new NotFoundException(`FreshnessRule #${id} not found`);
     }
     const current = rows[0];
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     await this.dataSource.query(`UPDATE freshness_rules SET is_active = false WHERE id = $1`, [id]);
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     await this.dataSource.query(
       `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, old_values, new_values, ip_address)
        VALUES ($1, 'DEACTIVATE_FRESHNESS_RULE', 'freshness_rules', $2, $3, $4, $5)`,
@@ -1833,6 +1894,7 @@ export class AdminService {
   // ---------------------------------------------------------------------------
 
   async listRewardRules() {
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows = await this.dataSource.query(
       `SELECT id, activity_type, base_amount, daily_limit, multiplier_config, is_active, effective_from, effective_to, created_at, updated_at
        FROM reward_rules
@@ -1853,6 +1915,7 @@ export class AdminService {
   }
 
   async getRewardRule(activityType: string) {
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows = await this.dataSource.query(
       `SELECT id, activity_type, base_amount, daily_limit, multiplier_config, is_active, effective_from, effective_to, created_at, updated_at
        FROM reward_rules
@@ -1878,6 +1941,7 @@ export class AdminService {
   }
 
   async updateRewardRule(activityType: string, dto: UpdateRewardRuleDto, adminUserId: string, ip?: string) {
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows = await this.dataSource.query(
       `SELECT * FROM reward_rules WHERE UPPER(activity_type) = UPPER($1)`,
       [activityType],
@@ -1892,6 +1956,7 @@ export class AdminService {
     const multiplierConfig = dto.multiplierConfig !== undefined ? dto.multiplierConfig : current.multiplier_config;
     const isActive = dto.isActive !== undefined ? dto.isActive : current.is_active;
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     await this.dataSource.query(
       `UPDATE reward_rules
        SET base_amount = $1, daily_limit = $2, multiplier_config = $3, is_active = $4, updated_at = NOW()
@@ -1899,6 +1964,7 @@ export class AdminService {
       [baseAmount, dailyLimit, JSON.stringify(multiplierConfig), isActive, current.id],
     );
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     await this.dataSource.query(
       `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, old_values, new_values, ip_address)
        VALUES ($1, 'UPDATE_REWARD_RULE', 'reward_rules', $2, $3, $4, $5)`,
@@ -1926,6 +1992,7 @@ export class AdminService {
    * Triggers an automated model fine-tuning run with dataset baseline validation
    */
   async triggerModelRetraining(dto: TriggerRetrainDto, adminUserId: string) {
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const countRows = await this.dataSource.query(
       `SELECT COUNT(*)::int AS cnt FROM verified_traffic_signs WHERE status = 'ACTIVE'`,
     );
@@ -1948,6 +2015,7 @@ export class AdminService {
     const splitRatio = dto.datasetSplitRatio ?? 0.8;
     const notes = dto.notes || `Triggered by admin (${modelType} split ${splitRatio})`;
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows = await this.dataSource.query(
       `INSERT INTO model_training_jobs (
         model_type, triggered_by, status, evaluation_summary, started_at
@@ -1957,6 +2025,7 @@ export class AdminService {
     );
     const job = rows[0];
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     await this.dataSource.query(
       `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, new_values)
        VALUES ($1, 'TRIGGER_MODEL_RETRAINING', 'model_training_jobs', $2, $3)`,
@@ -1989,11 +2058,13 @@ export class AdminService {
     const ps = Math.min(Math.max(1, q?.pageSize ?? 20), 100);
     const offset = (p - 1) * ps;
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const countRows = await this.dataSource.query(
       `SELECT COUNT(*)::int AS cnt FROM model_training_jobs`,
     );
     const total = countRows[0]?.cnt ?? 0;
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows = await this.dataSource.query(
       `SELECT j.*, u.full_name AS triggered_by_name, mv.version_tag
        FROM model_training_jobs j
@@ -2066,6 +2137,7 @@ export class AdminService {
    * Retrieves single training job details by ID
    */
   async getTrainingJob(id: string) {
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows = await this.dataSource.query(
       `SELECT j.*, u.full_name AS triggered_by_name, mv.version_tag
        FROM model_training_jobs j
@@ -2097,6 +2169,7 @@ export class AdminService {
    * Retrieves all registered AI model versions
    */
   async listModelVersions() {
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows = await this.dataSource.query(
       `SELECT id, model_type, version_tag, artifact_url, trained_at, is_active, evaluation_metrics, created_at
        FROM ai_model_versions
@@ -2138,6 +2211,7 @@ export class AdminService {
    * of the same model_type using configurable promotion gate thresholds (Issue #9).
    */
   async compareModelVersion(id: number) {
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows = await this.dataSource.query(
       `SELECT id, model_type, version_tag, artifact_url, trained_at, is_active, evaluation_metrics, created_at
        FROM ai_model_versions WHERE id = $1`,
@@ -2147,6 +2221,7 @@ export class AdminService {
       throw new NotFoundException(`AI model version #${id} not found`);
     }
     const candidate = rows[0];
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const activeRows = await this.dataSource.query(
       `SELECT id, model_type, version_tag, artifact_url, trained_at, is_active, evaluation_metrics, created_at
        FROM ai_model_versions
@@ -2286,6 +2361,7 @@ export class AdminService {
       };
     }
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows = await this.dataSource.query(
       `SELECT * FROM ai_model_versions WHERE id = $1`,
       [id],
@@ -2312,6 +2388,7 @@ export class AdminService {
         );
       }
 
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const activeRows = await this.dataSource.query(
         `SELECT id, version_tag, evaluation_metrics FROM ai_model_versions
          WHERE model_type = $1 AND is_active = true AND id <> $2
@@ -2329,18 +2406,21 @@ export class AdminService {
     }
 
     // Deactivate previous active version of same model type
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     await this.dataSource.query(
       `UPDATE ai_model_versions SET is_active = false WHERE model_type = $1 AND is_active = true`,
       [target.model_type],
     );
 
     // Promote target version
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     await this.dataSource.query(
       `UPDATE ai_model_versions SET is_active = true WHERE id = $1`,
       [id],
     );
 
     // Log to audit trail
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     await this.dataSource.query(
       `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, old_values, new_values, ip_address)
        VALUES ($1, 'PROMOTE_MODEL_VERSION', 'ai_model_versions', $2, $3, $4, $5)`,
@@ -2428,6 +2508,7 @@ export class AdminService {
       };
     }
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows = await this.dataSource.query(
       `SELECT * FROM ai_model_versions WHERE id = $1`,
       [id],
@@ -2442,6 +2523,7 @@ export class AdminService {
       if (targetVersionId === id) {
         throw new BadRequestException('targetVersionId must differ from the version being rolled back');
       }
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const explicitRows = await this.dataSource.query(
         `SELECT id, model_type, version_tag FROM ai_model_versions WHERE id = $1`,
         [targetVersionId],
@@ -2457,12 +2539,14 @@ export class AdminService {
       reactivated = explicitRows[0];
     }
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     await this.dataSource.query(
       `UPDATE ai_model_versions SET is_active = false WHERE id = $1`,
       [id],
     );
 
     if (!reactivated) {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const prevRows = await this.dataSource.query(
         `SELECT id, version_tag FROM ai_model_versions WHERE model_type = $1 AND id <> $2 ORDER BY created_at DESC LIMIT 1`,
         [target.model_type, id],
@@ -2473,12 +2557,14 @@ export class AdminService {
     }
 
     if (reactivated) {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       await this.dataSource.query(
         `UPDATE ai_model_versions SET is_active = true WHERE id = $1`,
         [reactivated.id],
       );
     }
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     await this.dataSource.query(
       `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, old_values, new_values, ip_address)
        VALUES ($1, 'ROLLBACK_MODEL_VERSION', 'ai_model_versions', $2, $3, $4, $5)`,
@@ -2531,15 +2617,19 @@ export class AdminService {
       };
     }
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const yoloRows = await this.dataSource.query(
       `SELECT version_tag FROM ai_model_versions WHERE model_type IN ('YOLO26', 'YOLO12') AND is_active = true LIMIT 1`,
     );
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const clipRows = await this.dataSource.query(
       `SELECT version_tag FROM ai_model_versions WHERE model_type = 'CLIP' AND is_active = true LIMIT 1`,
     );
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const pendingRows = await this.dataSource.query(
       `SELECT COUNT(*)::int AS cnt FROM model_training_jobs WHERE status IN ('QUEUED', 'RUNNING')`,
     );
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const lastCompletedRows = await this.dataSource.query(
       `SELECT completed_at FROM model_training_jobs WHERE status = 'COMPLETED' ORDER BY completed_at DESC LIMIT 1`,
     );
@@ -2557,6 +2647,7 @@ export class AdminService {
    * Retrieves Active Learning sampling configuration
    */
   async getActiveLearningConfig() {
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows = await this.dataSource.query(
       `SELECT value FROM system_parameters WHERE key = 'ACTIVE_LEARNING_CONFIG'`,
     );
@@ -2580,6 +2671,7 @@ export class AdminService {
     const current = await this.getActiveLearningConfig();
     const merged = { ...current, ...dto };
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     await this.dataSource.query(
       `INSERT INTO system_parameters (key, value, description, updated_by, updated_at)
        VALUES ('ACTIVE_LEARNING_CONFIG', $1, 'Active Learning sampling configuration', $2, NOW())
@@ -2587,6 +2679,7 @@ export class AdminService {
       [JSON.stringify(merged), adminUserId],
     );
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     await this.dataSource.query(
       `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, old_values, new_values, ip_address)
        VALUES ($1, 'UPDATE_ACTIVE_LEARNING_CONFIG', 'system_parameters', 'ACTIVE_LEARNING_CONFIG', $2, $3, $4)`,
@@ -2609,6 +2702,7 @@ export class AdminService {
     }
 
     // 1. Try finding as a RevalidationTask
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const revalTaskRows = await this.dataSource.query(
       `SELECT rt.id, rt.verified_sign_id, rt.freshness_rule_id, rt.priority, rt.reward_credits,
               rt.status, rt.urgency, rt.route_classification_id, rt.created_at, rt.expired_at,
@@ -2626,6 +2720,7 @@ export class AdminService {
       const task = revalTaskRows[0];
 
       // Query surveyor evidences submitted for this revalidation task
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const evidenceRows = await this.dataSource.query(
         `SELECT ev.id, ev.task_id, ev.user_id, u.full_name AS surveyor_name, u.email AS surveyor_email,
                 ev.media_url, ev.evidence_type, ev.is_live_capture, ev.accuracy_meters, ev.heading_degrees,
@@ -2642,6 +2737,7 @@ export class AdminService {
       // Query reviewer decisions/votes on these evidences
       let decisionRows: any[] = [];
       if (evidenceIds.length > 0) {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         decisionRows = await this.dataSource.query(
           `SELECT rd.id, rd.evidence_id, rd.reviewer_id, u.full_name AS reviewer_name, u.email AS reviewer_email,
                   rd.decision, rd.suggested_sign_type_id, rd.note, rd.decided_at,
@@ -2837,6 +2933,7 @@ export class AdminService {
     }
 
     // 2. Try finding as Candidate verification task (UnverifiedSignCandidate)
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const candidateRows = await this.dataSource.query(
       `SELECT c.id, c.submission_id, c.predicted_sign_type_id, c.confidence_score,
               c.best_frame_url, c.sign_crop_url, c.status, c.created_at,
@@ -2859,6 +2956,7 @@ export class AdminService {
         : { id: 'anonymous', fullName: 'Khảo sát viên ẩn danh', role: 'SURVEYOR' };
 
       // Query candidate recapture requests sent to surveyor
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const recaptureRows = await this.dataSource.query(
         `SELECT crr.id, crr.candidate_id, crr.reviewer_id, crr.surveyor_id,
                 crr.reason, crr.note, crr.created_at, crr.completed_at,
@@ -2873,6 +2971,7 @@ export class AdminService {
       ).catch(() => []);
 
       // Query candidate reviews cast by reviewers
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const reviewRows = await this.dataSource.query(
         `SELECT cr.id, cr.candidate_id, cr.reviewer_id, cr.vote,
                 cr.suggested_sign_type_id, cr.decline_reason, cr.decline_note, cr.reviewed_at,
@@ -3096,11 +3195,13 @@ export class AdminService {
       LEFT JOIN users surv ON surv.id = ev.user_id
     `;
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const countRows: any[] = await this.dataSource.query(
       `SELECT COUNT(*)::int AS cnt FROM (${unionQuery}) t`,
     ).catch(() => [{ cnt: 0 }]);
     const total = Number(countRows[0]?.cnt ?? countRows[0]?.count ?? (countRows[0]?.id ? countRows.length : 0));
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows: any[] = await this.dataSource.query(
       `SELECT * FROM (${unionQuery}) t
        ORDER BY occurred_at DESC

@@ -82,6 +82,7 @@ export class NavigationCreditGateService {
 
       if (isFreeRouteEnabled && this.dataSource && typeof this.dataSource.query === 'function') {
         try {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           const distRows: any[] = await this.dataSource.query(
             `SELECT ST_DistanceSphere(
                ST_SetSRID(ST_MakePoint($1, $2), 4326),
@@ -154,6 +155,7 @@ export class NavigationCreditGateService {
           .execute();
       } catch {
         if (typeof this.dataSource?.query === 'function') {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           await this.dataSource.query(
             `INSERT INTO navigation_sessions
                (id, driver_id, origin, destination, credits_deducted, status, started_at, is_reviewer_free_route, target_sign_id, waiver_reason)
@@ -175,6 +177,7 @@ export class NavigationCreditGateService {
         }
       }
     } else if (typeof this.dataSource?.query === 'function') {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       await this.dataSource.query(
         `INSERT INTO navigation_sessions
            (id, driver_id, origin, destination, credits_deducted, status, started_at, is_reviewer_free_route, target_sign_id, waiver_reason)

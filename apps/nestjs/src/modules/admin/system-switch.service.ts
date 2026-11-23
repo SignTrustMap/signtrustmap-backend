@@ -2,6 +2,7 @@ import { Injectable, Optional, Logger, NotFoundException } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { SystemFeatureFlag } from './system-feature-flag.entity';
+import { AuditLog } from './audit-log.entity';
 
 export interface CachedFlag {
   isEnabled: boolean;
@@ -75,8 +76,13 @@ export class SystemSwitchService {
     }
 
     try {
-      if (this.flagRepo && typeof this.flagRepo.findOne === 'function') {
-        const entity = await this.flagRepo.findOne({ where: { key } });
+      const repo =
+        this.flagRepo ??
+        (typeof this.dataSource?.getRepository === 'function'
+          ? this.dataSource.getRepository(SystemFeatureFlag)
+          : null);
+      if (repo && typeof repo.findOne === 'function') {
+        const entity = await repo.findOne({ where: { key } });
         if (entity) {
           this.cache.set(key, {
             isEnabled: entity.isEnabled,
@@ -84,29 +90,6 @@ export class SystemSwitchService {
             expiresAt: now + this.cacheTtlMs,
           });
           return entity;
-        }
-      } else if (this.dataSource && typeof this.dataSource.query === 'function') {
-        const rows = await this.dataSource.query(
-          `SELECT * FROM system_feature_flags WHERE key = $1 LIMIT 1`,
-          [key],
-        );
-        if (rows[0]) {
-          const mapped: SystemFeatureFlag = {
-            key: rows[0].key,
-            name: rows[0].name,
-            description: rows[0].description,
-            category: rows[0].category,
-            isEnabled: Boolean(rows[0].is_enabled),
-            metadata: rows[0].metadata || {},
-            updatedAt: rows[0].updated_at,
-            updatedBy: rows[0].updated_by,
-          };
-          this.cache.set(key, {
-            isEnabled: mapped.isEnabled,
-            metadata: mapped.metadata || {},
-            expiresAt: now + this.cacheTtlMs,
-          });
-          return mapped;
         }
       }
     } catch (err: any) {
@@ -131,23 +114,13 @@ export class SystemSwitchService {
    */
   async getAllFlags(): Promise<SystemFeatureFlag[]> {
     try {
-      if (this.flagRepo && typeof this.flagRepo.find === 'function') {
-        return await this.flagRepo.find({ order: { category: 'ASC', key: 'ASC' } });
-      }
-      if (this.dataSource && typeof this.dataSource.query === 'function') {
-        const rows = await this.dataSource.query(
-          `SELECT * FROM system_feature_flags ORDER BY category ASC, key ASC`,
-        );
-        return rows.map((r: any) => ({
-          key: r.key,
-          name: r.name,
-          description: r.description,
-          category: r.category,
-          isEnabled: Boolean(r.is_enabled),
-          metadata: r.metadata || {},
-          updatedAt: r.updated_at,
-          updatedBy: r.updated_by,
-        }));
+      const repo =
+        this.flagRepo ??
+        (typeof this.dataSource?.getRepository === 'function'
+          ? this.dataSource.getRepository(SystemFeatureFlag)
+          : null);
+      if (repo && typeof repo.find === 'function') {
+        return await repo.find({ order: { category: 'ASC', key: 'ASC' } });
       }
     } catch (err: any) {
       this.logger.warn(`Failed to list feature flags: ${err?.message}`);
@@ -173,18 +146,16 @@ export class SystemSwitchService {
 
     const mergedMetadata = metadata !== undefined ? metadata : (existing.metadata || {});
 
-    if (this.flagRepo && typeof this.flagRepo.save === 'function') {
+    const repo =
+      this.flagRepo ??
+      (typeof this.dataSource?.getRepository === 'function'
+        ? this.dataSource.getRepository(SystemFeatureFlag)
+        : null);
+    if (repo && typeof repo.save === 'function') {
       existing.isEnabled = isEnabled;
       existing.metadata = mergedMetadata;
       existing.updatedBy = userId ?? null;
-      await this.flagRepo.save(existing);
-    } else if (this.dataSource && typeof this.dataSource.query === 'function') {
-      await this.dataSource.query(
-        `UPDATE system_feature_flags
-         SET is_enabled = $1, metadata = $2, updated_by = $3, updated_at = NOW()
-         WHERE key = $4`,
-        [isEnabled, JSON.stringify(mergedMetadata), userId ?? null, key],
-      );
+      await repo.save(existing);
     }
 
     this.cache.set(key, {
@@ -195,21 +166,25 @@ export class SystemSwitchService {
 
     // Record in audit_logs
     try {
-      if (this.dataSource && typeof this.dataSource.query === 'function') {
-        await this.dataSource.query(
-          `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, old_values, new_values, ip_address)
-           VALUES ($1, 'UPDATE_SYSTEM_FLAG', 'system_feature_flags', $2, $3, $4, $5)`,
-          [
-            userId ?? null,
-            key,
-            JSON.stringify({ isEnabled: existing.isEnabled, metadata: existing.metadata }),
-            JSON.stringify({ isEnabled, metadata: mergedMetadata, reason: reason ?? null }),
-            ipAddress ?? null,
-          ],
+      const auditRepo =
+        typeof this.dataSource?.getRepository === 'function'
+          ? this.dataSource.getRepository(AuditLog)
+          : null;
+      if (auditRepo && typeof auditRepo.save === 'function') {
+        await auditRepo.save(
+          auditRepo.create({
+            userId: userId ?? null,
+            action: 'UPDATE_SYSTEM_FLAG',
+            resourceName: 'system_feature_flags',
+            resourceId: key,
+            oldValues: { isEnabled: existing.isEnabled, metadata: existing.metadata },
+            newValues: { isEnabled, metadata: mergedMetadata, reason: reason ?? null },
+            ipAddress: ipAddress ?? null,
+          }),
         );
       }
-    } catch (auditErr: any) {
-      this.logger.warn(`Audit log failed for setFlag(${key}): ${auditErr?.message}`);
+    } catch (err: any) {
+      this.logger.warn(`Failed to audit feature flag change: ${err?.message}`);
     }
 
     return this.getFlag(key) as Promise<SystemFeatureFlag>;

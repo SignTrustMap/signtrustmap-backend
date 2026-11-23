@@ -124,6 +124,7 @@ export class ConsensusService {
         });
       }
       if (!profile && typeof this.dataSource?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const rows: any[] = await this.dataSource.query(
           'SELECT reliability_score, is_provisional, total_correct_votes, total_false_votes FROM reviewer_profiles WHERE user_id=$1',
           [r.reviewerId],
@@ -271,6 +272,7 @@ export class ConsensusService {
           .getRawOne();
       }
       if (!geoRow && typeof this.dataSource?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const rows: any[] = await this.dataSource.query(
           'SELECT ST_AsText(sign_location) AS sign_wkt, ST_AsText(vehicle_location) AS vehicle_wkt, traffic_direction FROM candidate_geo_estimations WHERE candidate_id=$1',
           [candidate.id],
@@ -340,6 +342,7 @@ export class ConsensusService {
         });
         if (vSign) newSignId = vSign.id;
       } else if (typeof this.dataSource?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await this.dataSource.query(
           `INSERT INTO verified_traffic_signs (
              id, sign_type_id, origin_candidate_id, location, traffic_direction,
@@ -352,6 +355,7 @@ export class ConsensusService {
            ) ON CONFLICT (origin_candidate_id) DO NOTHING`,
           [signTypeId, candidate.id, lon, lat, bearing, candidate.signCropUrl, communeCode, roadName, displayAddress],
         );
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const vRows: any[] = await this.dataSource.query(
           'SELECT id FROM verified_traffic_signs WHERE origin_candidate_id=$1',
           [candidate.id],
@@ -371,6 +375,7 @@ export class ConsensusService {
               }),
             );
           } else if (typeof this.dataSource?.query === 'function') {
+            // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
             await this.dataSource.query(
               "INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, note) VALUES ($1,'PUBLISHED','Consensus APPROVED')",
               [newSignId],
@@ -393,6 +398,7 @@ export class ConsensusService {
               )
               .getRawMany();
           } else if (typeof this.dataSource?.query === 'function') {
+            // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
             oldSigns = await this.dataSource.query(
               `SELECT id FROM verified_traffic_signs
                WHERE id != $1
@@ -413,6 +419,7 @@ export class ConsensusService {
                 updatedAt: new Date(),
               });
             } else if (typeof this.dataSource?.query === 'function') {
+              // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
               await this.dataSource.query(
                 "UPDATE verified_traffic_signs SET status = 'DECOMMISSIONED', updated_at = NOW() WHERE id = $1",
                 [oldSign.id],
@@ -428,6 +435,7 @@ export class ConsensusService {
                 }),
               );
             } else if (typeof this.dataSource?.query === 'function') {
+              // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
               await this.dataSource.query(
                 "INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, note) VALUES ($1, 'DECOMMISSIONED', $2)",
                 [oldSign.id, `Superseded by verified sign #${newSignId}`],
@@ -443,6 +451,7 @@ export class ConsensusService {
                   }),
                 );
               } else if (typeof this.dataSource?.query === 'function') {
+                // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
                 await this.dataSource.query(
                   "INSERT INTO verified_sign_history (verified_sign_id, change_reason) VALUES ($1, $2)",
                   [oldSign.id, `Superseded by verified sign #${newSignId}`],
@@ -459,6 +468,7 @@ export class ConsensusService {
                 .andWhere("status IN ('OPEN', 'EVALUATING')")
                 .execute();
             } else if (typeof this.dataSource?.query === 'function') {
+              // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
               await this.dataSource.query(
                 "UPDATE revalidation_tasks SET status = 'COMPLETED' WHERE verified_sign_id = $1 AND status IN ('OPEN', 'EVALUATING')",
                 [oldSign.id],
@@ -527,6 +537,7 @@ export class ConsensusService {
         if (sub) surveyorId = sub.surveyorId;
       }
       if (!surveyorId && typeof this.dataSource?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const subRows: any[] = await this.dataSource.query('SELECT surveyor_id FROM survey_submissions WHERE id=$1', [
           candidate.submissionId,
         ]);
@@ -548,6 +559,7 @@ export class ConsensusService {
             .onConflict('(user_id) DO UPDATE SET total_verified_signs = surveyor_profiles.total_verified_signs + 1')
             .execute();
         } else if (typeof this.dataSource?.query === 'function') {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           await this.dataSource.query(
             'INSERT INTO surveyor_profiles (user_id, total_submissions, total_verified_signs, total_credits_earned) VALUES ($1, 0, 1, 0) ON CONFLICT (user_id) DO UPDATE SET total_verified_signs = surveyor_profiles.total_verified_signs + 1',
             [surveyorId],
@@ -617,6 +629,7 @@ export class ConsensusService {
           }),
         );
       } else if (typeof this.dataSource?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await this.dataSource.query(
           "INSERT INTO moderation_cases (id, case_type, target_entity_type, target_entity_id, status, created_at) VALUES (gen_random_uuid(), 'REVIEW_CONFLICT', 'unverified_sign_candidate', $1, 'PENDING', now())",
           [candidate.id],
@@ -644,6 +657,7 @@ export class ConsensusService {
         r = await this.reviewerProfileRepo.findOne({ where: { userId: reviewerId } });
       }
       if (!r && typeof this.dataSource?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const rows: any[] = await this.dataSource.query('SELECT * FROM reviewer_profiles WHERE user_id=$1', [reviewerId]);
         if (rows.length > 0) r = rows[0];
       }
@@ -686,6 +700,7 @@ export class ConsensusService {
             .orIgnore()
             .execute();
         } else if (typeof this.dataSource?.query === 'function') {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           await this.dataSource.query(
             `INSERT INTO reviewer_profiles (
               user_id, reliability_score, total_reviews, correct_reviews, accuracy_rate, current_streak,
@@ -799,6 +814,7 @@ export class ConsensusService {
           updatedAt: new Date(),
         });
       } else if (typeof this.dataSource?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await this.dataSource.query(
           `UPDATE reviewer_profiles SET
             reliability_score = $1,
@@ -847,6 +863,7 @@ export class ConsensusService {
           }),
         );
       } else if (typeof this.dataSource?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await this.dataSource.query(
           `INSERT INTO reviewer_reliability_history (reviewer_id, consensus_log_id, old_score, new_score, alignment_value)
            VALUES ($1, $2, $3, $4, $5)`,
@@ -857,6 +874,7 @@ export class ConsensusService {
       let autoBanned = false;
       if (shouldAutoBan && typeof this.dataSource?.query === 'function') {
         try {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           const eligibleRows: Array<{ id: string; status: string }> = await this.dataSource.query(
             `SELECT u.id, u.status
              FROM users u
@@ -872,15 +890,18 @@ export class ConsensusService {
           );
           if (eligibleRows && eligibleRows.length > 0) {
             const oldStatus = eligibleRows[0].status;
+            // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
             await this.dataSource.query(
               `UPDATE users SET status = 'BANNED', updated_at = now() WHERE id = $1`,
               [reviewerId],
             );
+            // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
             await this.dataSource.query(
               `INSERT INTO user_status_history (user_id, old_status, new_status, reason, changed_by)
                VALUES ($1, $2, 'BANNED', $3, NULL)`,
               [reviewerId, oldStatus, autoBanReason],
             );
+            // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
             await this.dataSource.query(
               `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, old_values, new_values)
                VALUES (NULL, 'AUTO_BAN_PROVISIONAL_REVIEWER', 'users', $1, $2, $3)`,
@@ -1012,6 +1033,7 @@ export class ConsensusService {
         await this.candidateRepo.update(candidate.id, { status: CandidateStatus.VERIFIED });
 
         if (this.dataSource && typeof this.dataSource.query === 'function') {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           await this.dataSource.query(
             `INSERT INTO verified_traffic_signs (
                id, sign_type_id, origin_candidate_id, location,

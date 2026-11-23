@@ -253,6 +253,7 @@ export class ReviewsService {
           }
         }
       } else if (typeof (this.candidateRepo.manager as any)?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const rRows: any[] = await (this.candidateRepo.manager as any).query(
           'SELECT * FROM reviewer_profiles WHERE user_id = $1',
           [reviewerId],
@@ -262,6 +263,7 @@ export class ReviewsService {
           if (profile.is_review_suspended) {
             if (profile.suspended_until && new Date() > new Date(profile.suspended_until)) {
               // 7-day cooldown expired: automatically lift suspension
+              // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
               await (this.candidateRepo.manager as any).query(
                 `UPDATE reviewer_profiles 
                  SET is_review_suspended = FALSE, consecutive_errors = 0, suspended_until = NULL, suspension_reason = NULL, updated_at = NOW() 
@@ -304,6 +306,7 @@ export class ReviewsService {
       }
 
       if (this.dataSource && typeof this.dataSource.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const geoRows: any[] = await this.dataSource.query(
           `SELECT ST_DistanceSphere(
              ST_SetSRID(ST_MakePoint($1, $2), 4326),
@@ -466,6 +469,7 @@ export class ReviewsService {
         }),
       );
     } else if (typeof (this.candidateRepo.manager as any)?.query === 'function') {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       await (this.candidateRepo.manager as any).query(
         `INSERT INTO reviewer_skipped_candidates (reviewer_id, candidate_id, skipped_at)
          VALUES ($1, $2, now())
@@ -490,6 +494,7 @@ export class ReviewsService {
   private async getSignRepresentativeImage(signTypeId: number): Promise<string | null> {
     try {
       if (typeof (this.candidateRepo?.manager as any)?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const rows: any[] = await (this.candidateRepo.manager as any).query(
           `SELECT image_url FROM sign_type_images WHERE sign_type_id = $1 AND (is_primary = true OR image_type = 'REPRESENTATIVE') ORDER BY is_primary DESC LIMIT 1`,
           [signTypeId],
@@ -509,6 +514,7 @@ export class ReviewsService {
     } catch {
       try {
         if (typeof (this.candidateRepo?.manager as any)?.query === 'function') {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           await (this.candidateRepo.manager as any).query(
             `UPDATE unverified_sign_candidates SET possible_signs = $1 WHERE id = $2`,
             [JSON.stringify(signs), candidateId],
@@ -541,6 +547,7 @@ export class ReviewsService {
             ORDER BY (UPPER(t.sign_code) = UPPER($1)) DESC, (img.is_primary = true) DESC
             LIMIT 1
           `;
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           const rows: any[] = await (this.candidateRepo.manager as any).query(query, [
             standardCode || '',
             classId ?? -1,
@@ -643,6 +650,7 @@ export class ReviewsService {
 
     try {
       if (typeof (this.candidateRepo?.manager as any)?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const rows: any[] = await (this.candidateRepo.manager as any).query(
           `SELECT t.id, t.sign_code, t.name_vi, t.name_en, t.description, t.shape, t.color_scheme,
                   img.image_url as representative_image
@@ -758,6 +766,7 @@ export class ReviewsService {
     // 2. Database persisted possible_signs
     if (candidate.id && typeof (this.candidateRepo?.manager as any)?.query === 'function') {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const rows: any[] = await (this.candidateRepo.manager as any).query(
           `SELECT possible_signs FROM unverified_sign_candidates WHERE id = $1`,
           [candidate.id],
@@ -810,6 +819,7 @@ export class ReviewsService {
     if (!candidate) throw new NotFoundException('Candidate ' + candidateId + ' not found');
     let submissionExtra: any = null;
     try {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const rows: any[] = await (this.candidateRepo.manager as any).query(
         `SELECT s.surveyor_id, u.full_name AS surveyor_name, u.email AS surveyor_email,
                 s.captured_at, s.submission_type, s.status AS submission_status, s.note
@@ -839,6 +849,7 @@ export class ReviewsService {
 
     let reviews: any[] = [];
     try {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const revRows: any[] = await (this.candidateRepo.manager as any).query(
         `SELECT cr.id, cr.candidate_id, cr.reviewer_id, u.full_name AS reviewer_name, u.email AS reviewer_email,
                 cr.vote, cr.suggested_sign_type_id, cr.confidence, cr.comment, cr.reviewed_at,
@@ -894,6 +905,7 @@ export class ReviewsService {
       let lon: number | null = null;
       let direction: number | null = null;
 
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const geoRows: any[] = await (this.candidateRepo.manager as any).query(
         `SELECT ST_X(sign_location::geometry) AS lon, ST_Y(sign_location::geometry) AS lat, traffic_direction
          FROM candidate_geo_estimations WHERE candidate_id = $1`,
@@ -993,6 +1005,7 @@ export class ReviewsService {
     const userMap = new Map<string, any>();
     if (surveyorIds.length > 0) {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const uRows: any[] = await (this.candidateRepo.manager as any).query(
           `SELECT id, full_name, email FROM users WHERE id = ANY($1::uuid[])`,
           [surveyorIds],
@@ -1270,6 +1283,7 @@ export class ReviewsService {
     const userMap = new Map<string, any>();
     if (surveyorIds.length > 0) {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const uRows: any[] = await (this.candidateRepo.manager as any).query(
           `SELECT id, full_name, email FROM users WHERE id = ANY($1::uuid[])`,
           [surveyorIds],
@@ -1395,6 +1409,7 @@ export class ReviewsService {
       if (this.reviewerProfileRepo) {
         profile = await this.reviewerProfileRepo.findOne({ where: { userId: reviewerId } });
       } else if (typeof (this.candidateRepo.manager as any)?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const rows: any[] = await (this.candidateRepo.manager as any).query(
           'SELECT * FROM reviewer_profiles WHERE user_id = $1',
           [reviewerId],
@@ -1479,21 +1494,25 @@ export class ReviewsService {
     if (!dto.reason?.trim()) throw new BadRequestException('Report reason is required');
     const candidate = await this.candidateRepo.findOne({ where: { id: candidateId } });
     if (!candidate) throw new NotFoundException('Candidate ' + candidateId + ' not found');
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const already = await (this.candidateRepo.manager as any).query(
       `SELECT id FROM moderation_cases WHERE target_entity_id=$1 AND target_entity_type='candidate' AND status IN ('PENDING','IN_REVIEW')`,
       [candidateId],
     );
     if (already.length) return { alreadyReported: true, caseId: already[0].id };
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const mc: any = await (this.candidateRepo.manager as any).query(
       `INSERT INTO moderation_cases (case_type, target_entity_type, target_entity_id, status) VALUES ('REVIEW_CONFLICT','candidate',$1,'PENDING') RETURNING *`,
       [candidateId],
     );
     const note = dto.reason.trim().slice(0, 500);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       await (this.candidateRepo.manager as any).query(
         `INSERT INTO moderation_actions (case_id, action_type, performed_by, note) VALUES ($1,'REPORT_FROM_REVIEW',$2,$3)`,
         [mc[0].id, reviewerId, note],
       );
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       await (this.candidateRepo.manager as any).query(
         `INSERT INTO review_flags (review_id, flag_reason, note) SELECT id, 'FRAUD', $2 FROM candidate_reviews WHERE candidate_id=$1 AND reviewer_id=$3`,
         [candidateId, note, reviewerId],
@@ -1595,6 +1614,7 @@ export class ReviewsService {
           await this.reviewerProfileRepo.update({ userId: reviewerId }, { isReviewSuspended: false });
         }
       } else if (typeof (this.candidateRepo.manager as any)?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await (this.candidateRepo.manager as any).query(
           `INSERT INTO reviewer_profiles (
             user_id, reliability_score, total_reviews, correct_reviews, accuracy_rate, current_streak,
@@ -1675,6 +1695,7 @@ export class ReviewsService {
       if (this.skippedRepo) {
         await this.skippedRepo.delete({ reviewerId, candidateId: In(targetIds) } as any);
       } else if (typeof (this.candidateRepo.manager as any)?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await (this.candidateRepo.manager as any).query(
           'DELETE FROM reviewer_skipped_candidates WHERE reviewer_id = $1 AND candidate_id = ANY($2)',
           [reviewerId, targetIds],
@@ -1687,6 +1708,7 @@ export class ReviewsService {
       if (typeof this.reviewRepo?.delete === 'function') {
         await this.reviewRepo.delete({ reviewerId, candidateId: In(targetIds) } as any);
       } else if (typeof (this.candidateRepo.manager as any)?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await (this.candidateRepo.manager as any).query(
           'DELETE FROM candidate_reviews WHERE reviewer_id = $1 AND candidate_id = ANY($2)',
           [reviewerId, targetIds],
@@ -1705,6 +1727,7 @@ export class ReviewsService {
         .execute();
     } catch {
       if (typeof (this.candidateRepo.manager as any)?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await (this.candidateRepo.manager as any).query(
           "UPDATE unverified_sign_candidates SET status = 'PENDING_REVIEW' WHERE id = ANY($1) AND status != 'VERIFIED'",
           [targetIds],
@@ -1754,6 +1777,7 @@ export class ReviewsService {
     let surveyorId: string | null = null;
     let assignedSurveyors: any[] = [];
     if (dto.assignedSurveyorId) {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const surveyorRows: any[] = await (this.candidateRepo.manager as any).query(
         `SELECT u.id
          FROM users u
@@ -1776,6 +1800,7 @@ export class ReviewsService {
         const meta = await this.systemSwitchService?.getMetadata<{ targetEmail?: string }>('AUTO_ASSIGN_RECAPTURE_EMAIL');
         const targetEmail = meta?.targetEmail || 'demo@stm.dev';
         try {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           const demoRows = await (this.candidateRepo.manager as any).query(
             `SELECT id FROM users WHERE email = $1 AND status = 'ACTIVE' LIMIT 1`,
             [targetEmail],
@@ -1788,6 +1813,7 @@ export class ReviewsService {
         surveyorId = candidate.submission?.surveyorId ?? null;
         if (!surveyorId && candidate.submissionId) {
           try {
+            // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
             const rows = await (this.candidateRepo.manager as any).query(
               'SELECT surveyor_id FROM survey_submissions WHERE id = $1',
               [candidate.submissionId],
@@ -1799,6 +1825,7 @@ export class ReviewsService {
 
       if (!surveyorId) {
         try {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           const randomRows = await (this.candidateRepo.manager as any).query(
             `SELECT u.id, u.full_name, u.email
              FROM users u
@@ -1820,6 +1847,7 @@ export class ReviewsService {
     const note = dto.note?.trim() || null;
     const idempotencyKey = dto.idempotencyKey?.trim() || null;
     if (idempotencyKey) {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const existingRows = await (this.candidateRepo.manager as any).query(
         `SELECT * FROM candidate_recapture_requests
          WHERE reviewer_id = $1 AND idempotency_key = $2
@@ -1835,6 +1863,7 @@ export class ReviewsService {
         const userIds = [existing.reviewer_id, existing.surveyor_id].filter(Boolean) as string[];
         if (userIds.length > 0) {
           try {
+            // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
             const uRows: any[] = await (this.candidateRepo.manager as any).query(
               `SELECT id, full_name, email FROM users WHERE id = ANY($1::uuid[])`,
               [userIds],
@@ -1874,6 +1903,7 @@ export class ReviewsService {
       }
     }
     const persistRequest = async (manager: any) => {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const candidateRows = await manager.query(
         `SELECT status FROM unverified_sign_candidates WHERE id = $1 FOR UPDATE`,
         [candidateId],
@@ -1884,6 +1914,7 @@ export class ReviewsService {
           `Cannot request recapture for candidate ${candidateId} with status ${candidateRows[0].status}`,
         );
       }
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const activeRows = await manager.query(
         `SELECT id FROM candidate_recapture_requests
          WHERE candidate_id = $1 AND completed_at IS NULL
@@ -1893,6 +1924,7 @@ export class ReviewsService {
       if (activeRows.length > 0) {
         throw new ConflictException(`An active recapture request already exists for candidate ${candidateId}`);
       }
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const reportRows = await manager.query(
         `SELECT id, status FROM missing_sign_type_reports
          WHERE candidate_id = $1 AND status = 'INCOMPLETE'
@@ -1905,6 +1937,7 @@ export class ReviewsService {
         );
       }
       const reportId = reportRows[0].id;
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const candidateUpdate = await manager.query(
         `UPDATE unverified_sign_candidates
          SET status = 'RECAPTURE_REQUESTED'
@@ -1918,6 +1951,7 @@ export class ReviewsService {
       const finalNote = assignedIds.length > 1
         ? (note ? `${note}\n[ASSIGNED_SURVEYORS:${assignedIds.join(',')}]` : `[ASSIGNED_SURVEYORS:${assignedIds.join(',')}]`)
         : note;
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const rows = await manager.query(
         `INSERT INTO candidate_recapture_requests
            (candidate_id, reviewer_id, surveyor_id, missing_type_report_id, reason, note, idempotency_key)
@@ -1935,6 +1969,7 @@ export class ReviewsService {
     } catch (error: any) {
       if (error?.code === '23505' || String(error?.detail ?? '').includes('uq_candidate_recapture_requests_one_active')) {
         if (idempotencyKey) {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           const existingRows = await (this.candidateRepo.manager as any).query(
             `SELECT * FROM candidate_recapture_requests
              WHERE reviewer_id = $1 AND idempotency_key = $2
@@ -1950,6 +1985,7 @@ export class ReviewsService {
             const userIds = [existing.reviewer_id, existing.surveyor_id].filter(Boolean) as string[];
             if (userIds.length > 0) {
               try {
+                // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
                 const uRows: any[] = await (this.candidateRepo.manager as any).query(
                   `SELECT id, full_name, email FROM users WHERE id = ANY($1::uuid[])`,
                   [userIds],
@@ -1995,6 +2031,7 @@ export class ReviewsService {
 
     // Audit log in moderation case
     try {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       await (this.candidateRepo.manager as any).query(
         `INSERT INTO moderation_cases (case_type, target_entity_type, target_entity_id, status, resolution_note)
          VALUES ('RECAPTURE_REQUEST', 'candidate', $1, 'RESOLVED', $2)`,
@@ -2040,6 +2077,7 @@ export class ReviewsService {
     const userIds = [reviewerId, surveyorId].filter(Boolean) as string[];
     if (userIds.length > 0) {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const uRows: any[] = await (this.candidateRepo.manager as any).query(
           `SELECT id, full_name, email FROM users WHERE id = ANY($1::uuid[])`,
           [userIds],
@@ -2113,6 +2151,7 @@ export class ReviewsService {
       ? await this.systemSwitchService.isEnabled('BYPASS_RECAPTURE_GEOFENCE')
       : false;
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const requestRows: any[] = await (this.candidateRepo.manager as any).query(
       `SELECT id, missing_type_report_id, completed_at
        FROM candidate_recapture_requests
@@ -2128,6 +2167,7 @@ export class ReviewsService {
     );
     if (requestRows.length !== 1) {
       if (dto.idempotencyKey?.trim()) {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const completedRows: any[] = await (this.candidateRepo.manager as any).query(
           `SELECT id, missing_type_report_id, completed_at
            FROM candidate_recapture_requests
@@ -2154,6 +2194,7 @@ export class ReviewsService {
       // Check if this candidate is assigned to another surveyor
       let otherSurveyorRows: any[] = [];
       try {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         otherSurveyorRows = await (this.candidateRepo.manager as any).query(
           `SELECT id, surveyor_id, note
            FROM candidate_recapture_requests
@@ -2183,6 +2224,7 @@ export class ReviewsService {
       throw new BadRequestException('Invalid latitude/longitude');
     }
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const locationRows: any[] = await (this.candidateRepo.manager as any).query(
       `SELECT ST_DistanceSphere(
          cge.sign_location,
@@ -2215,6 +2257,7 @@ export class ReviewsService {
       for (const object of objects) await this.storageService.putObject(object.bucket, object.objectName, object.file.buffer, object.file.mimetype);
       const manager: any = this.candidateRepo.manager;
       const persist = async (tx: any) => {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const locked = await tx.query(
           `SELECT c.status, c.submission_id, crr.id AS request_id, crr.missing_type_report_id, r.status AS report_status
            FROM unverified_sign_candidates c
@@ -2232,6 +2275,7 @@ export class ReviewsService {
         );
         if (locked.length !== 1 || locked[0].status !== CandidateStatus.RECAPTURE_REQUESTED) throw new BadRequestException('Recapture request is no longer active');
         if (locked[0].report_status !== 'INCOMPLETE') throw new BadRequestException('Associated Missing Type Report is not incomplete');
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const updated = await tx.query(
           `UPDATE unverified_sign_candidates
            SET sign_crop_url = $1, best_frame_url = $2, status = 'NEW_TYPE_HOLD'
@@ -2239,6 +2283,7 @@ export class ReviewsService {
           [`${uploaded[0].bucket}/${uploaded[0].objectName}`, `${uploaded[1].bucket}/${uploaded[1].objectName}`, candidateId],
         );
         if (getAffectedRowCount(updated) !== 1) throw new BadRequestException('Candidate recapture state changed before persistence');
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const submissionOwner = await tx.query(
           `UPDATE survey_submissions
            SET surveyor_id = $1
@@ -2249,6 +2294,7 @@ export class ReviewsService {
         if (getAffectedRowCount(submissionOwner) !== 1) {
           throw new BadRequestException('Candidate submission owner changed before recapture persistence');
         }
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const report = await tx.query(
           `UPDATE missing_sign_type_reports
            SET reporter_id = $1, status = 'PENDING', updated_at = NOW()
@@ -2256,6 +2302,7 @@ export class ReviewsService {
           [surveyorId, request.missing_type_report_id, candidateId],
         );
         if (getAffectedRowCount(report) !== 1) throw new BadRequestException('Associated Missing Type Report is no longer incomplete');
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const location = await tx.query(
           `UPDATE candidate_geo_estimations
            SET sign_location = ST_SetSRID(ST_MakePoint($1, $2), 4326)
@@ -2269,6 +2316,7 @@ export class ReviewsService {
           ? await this.systemSwitchService.isEnabled('BYPASS_RECAPTURE_GEOFENCE')
           : false;
 
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const consumed = await tx.query(
           `UPDATE candidate_recapture_requests
            SET surveyor_id = $3, completed_at = NOW(), submission_idempotency_key = $2
@@ -2305,6 +2353,7 @@ export class ReviewsService {
     let rows: any[] = [];
     if (this.candidateRepo?.manager) {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         rows = await (this.candidateRepo.manager as any).query(
           `SELECT crr.id, crr.candidate_id, crr.reason, crr.note,
                   crr.reviewer_id, u_rev.full_name AS reviewer_name, u_rev.email AS reviewer_email,
@@ -2407,6 +2456,7 @@ export class ReviewsService {
     let total = 0;
     let items: any[] = [];
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const countRows = await (this.candidateRepo.manager as any).query(
       `SELECT COUNT(*)::int AS cnt
        FROM candidate_recapture_requests crr
@@ -2444,6 +2494,7 @@ export class ReviewsService {
     );
     total = countRows[0]?.cnt ?? 0;
 
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     items = await (this.candidateRepo.manager as any).query(
       `SELECT
          crr.id AS request_id,

@@ -18,18 +18,18 @@ from sqlalchemy import text
 
 from app.config import settings
 from app.db_sync import get_sync_db
+from app.models.pipeline import SystemParameter
+from sqlalchemy import select
 
 logger = logging.getLogger(__name__)
 
 _RAW_BUCKETS = ("stm-raw-videos", "stm-gpx-logs")
 _TERMINAL_SUBMISSION_STATUSES = ("COMPLETED", "NO_SIGN_DETECTED", "REJECTED", "FAILED")
 
-_SELECT_RETENTION_PARAM_SQL = text(
-    """
-    SELECT value FROM system_parameters
-    WHERE key = 'survey.raw_media_retention_days'
-    LIMIT 1
-    """
+_SELECT_RETENTION_PARAM_STMT = (
+    select(SystemParameter.value)
+    .where(SystemParameter.key == "survey.raw_media_retention_days")
+    .limit(1)
 )
 
 _SELECT_EXPIRED_RAW_MEDIA_SQL = text(
@@ -82,7 +82,7 @@ def _get_minio_client():
 
 def _resolve_retention_days(db) -> int:
     try:
-        row = db.execute(_SELECT_RETENTION_PARAM_SQL).first()
+        row = db.execute(_SELECT_RETENTION_PARAM_STMT).first()
         if row and row[0] is not None:
             parsed = int(row[0])
             if parsed >= 1:

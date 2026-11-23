@@ -9,6 +9,7 @@ import {
 import { TopupPackage } from '../../payments/infrastructure/persistence/topup-package.entity';
 import { PaymentOrder } from '../../payments/infrastructure/persistence/payment-order.entity';
 import { PaymentMethod } from '../infrastructure/persistence/payment-method.entity';
+import { AuditLog } from '../../admin/audit-log.entity';
 
 describe('WalletService (Phase 1 Ledger & Double-Entry Tests)', () => {
   let service: WalletService;
@@ -372,9 +373,13 @@ describe('WalletService (Phase 1 Ledger & Double-Entry Tests)', () => {
       );
 
       expect(mockManager.update).toHaveBeenCalledWith(Wallet, { id: 'w-1' }, { balance: '150' });
-      expect(mockManager.query).toHaveBeenCalledWith(
-        expect.stringContaining('INSERT INTO audit_logs'),
-        expect.arrayContaining(['admin-1', 'w-1']),
+      expect(mockManager.save).toHaveBeenCalledWith(
+        AuditLog,
+        expect.objectContaining({
+          userId: 'admin-1',
+          action: 'MANUAL_WALLET_ADJUSTMENT',
+          resourceId: 'w-1',
+        }),
       );
       expect(res.oldBalance).toBe(100);
       expect(res.newBalance).toBe(150);
@@ -464,9 +469,13 @@ describe('WalletService (Phase 1 Ledger & Double-Entry Tests)', () => {
 
       expect(targetWallet.isFrozen).toBe(true);
       expect(mockManager.save).toHaveBeenCalledWith(targetWallet);
-      expect(mockManager.query).toHaveBeenCalledWith(
-        expect.stringContaining('INSERT INTO audit_logs'),
-        expect.arrayContaining(['admin-1', 'w-1']),
+      expect(mockManager.save).toHaveBeenCalledWith(
+        AuditLog,
+        expect.objectContaining({
+          userId: 'admin-1',
+          action: 'FREEZE_WALLET',
+          resourceId: 'w-1',
+        }),
       );
       expect(res.isFrozen).toBe(true);
     });

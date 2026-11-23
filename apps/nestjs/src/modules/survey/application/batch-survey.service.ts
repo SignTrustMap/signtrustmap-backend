@@ -89,6 +89,7 @@ export class BatchSurveyService {
           }),
         );
       } else {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await this.dataSource.query(
           `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, new_values)
            VALUES ($1, 'CREATE_BATCH_SUBMISSION', 'batch_submissions', $2, $3)`,
@@ -272,6 +273,7 @@ export class BatchSurveyService {
           );
         }
       } else {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await this.dataSource.query(
           `INSERT INTO surveyor_profiles (user_id, total_submissions, total_verified_signs, total_credits_earned)
            VALUES ($1, $2, 0, $3)

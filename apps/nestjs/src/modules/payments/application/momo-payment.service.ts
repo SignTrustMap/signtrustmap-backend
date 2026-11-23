@@ -93,19 +93,17 @@ export class MomoPaymentService {
       creditAmount = amount;
       let pricePerCredit = 1000;
       try {
-        if (this.creditRuleRepo && typeof this.creditRuleRepo.findOne === 'function') {
-          const cRule = await this.creditRuleRepo.findOne({
+        const cRepo =
+          this.creditRuleRepo ??
+          (typeof this.dataSource?.getRepository === 'function'
+            ? this.dataSource.getRepository(CreditRule)
+            : null);
+        if (cRepo) {
+          const cRule = await cRepo.findOne({
             where: { transactionType: 'TOP_UP' as any, isActive: true },
           });
           if (cRule && Number(cRule.rewardAmount)) {
             pricePerCredit = cRule.rewardAmount;
-          }
-        } else {
-          const rows: any[] = await this.dataSource.query(
-            `SELECT reward_amount::int AS price FROM credit_rules WHERE transaction_type='TOP_UP' AND is_active=true LIMIT 1`,
-          );
-          if (rows.length && Number(rows[0].price)) {
-            pricePerCredit = rows[0].price;
           }
         }
       } catch {}
@@ -321,21 +319,9 @@ export class MomoPaymentService {
       isValid,
     });
     const savedCb = await this.callbackRepo.save(cb);
-    if (this.callbackRepo?.update) {
-      try {
-        await this.callbackRepo.update(savedCb.id, { isValid, processedAt: new Date() });
-      } catch {
-        await this.dataSource.query(
-          `UPDATE payment_callbacks SET is_valid=$1, processed_at=now() WHERE id=$2`,
-          [isValid, savedCb.id],
-        );
-      }
-    } else {
-      await this.dataSource.query(
-        `UPDATE payment_callbacks SET is_valid=$1, processed_at=now() WHERE id=$2`,
-        [isValid, savedCb.id],
-      );
-    }
+    savedCb.isValid = isValid;
+    savedCb.processedAt = new Date();
+    await this.callbackRepo.save(savedCb);
 
     if (!isValid) {
       this.logger.warn(`Invalid signature in MoMo IPN callback for order ${dto.orderId}`);

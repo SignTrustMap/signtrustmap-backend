@@ -54,6 +54,7 @@ export class RewardEngineService {
       floorPct = (await this.paramService.getNumber('survey.reward_scaling_floor_pct', 10.0)) / 100.0;
     } else if (typeof this.dataSource?.query === 'function') {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const pRows: any[] = await this.dataSource.query(
           `SELECT key, value FROM system_parameters WHERE key IN ('survey.reward_scaling_enabled', 'survey.reward_scaling_floor_pct')`,
         );
@@ -71,6 +72,7 @@ export class RewardEngineService {
       if (context?.reliabilityScore !== undefined) return Number(context.reliabilityScore);
       if (userId && typeof this.dataSource?.query === 'function') {
         try {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           const sRows: any[] = await this.dataSource.query(
             `SELECT reliability_score FROM surveyor_profiles WHERE user_id = $1`,
             [userId],
@@ -104,6 +106,7 @@ export class RewardEngineService {
             fallbackAmount = Number(cRule.rewardAmount);
           }
         } else {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           const rows: any[] = await this.dataSource.query(
             `SELECT reward_amount FROM credit_rules WHERE transaction_type=$1 AND is_active=true LIMIT 1`,
             [activityType],
@@ -169,6 +172,7 @@ export class RewardEngineService {
           .andWhere('ct.created_at >= :startOfUtcDay', { startOfUtcDay })
           .getCount();
       } else {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const countRows: any[] = await this.dataSource.query(
           `SELECT COUNT(*)::int AS cnt
            FROM credit_transactions ct
@@ -181,6 +185,7 @@ export class RewardEngineService {
         todayCount = countRows[0]?.cnt ?? 0;
       }
     } catch {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const countRows: any[] = await this.dataSource.query(
         `SELECT COUNT(*)::int AS cnt
          FROM credit_transactions ct
