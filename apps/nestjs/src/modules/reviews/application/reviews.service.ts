@@ -1428,6 +1428,21 @@ export class ReviewsService {
       });
     } catch {}
 
+    const rawAccuracy = profile
+      ? Number(profile.accuracyRate ?? profile.accuracy_rate ?? 0)
+      : 0;
+    const accuracyRate =
+      rawAccuracy > 0
+        ? rawAccuracy
+        : totalVotes > 0
+          ? Number((totalCorrect / totalVotes).toFixed(4))
+          : 0;
+    const currentStreak = profile
+      ? Number(profile.currentStreak ?? profile.current_streak ?? 0)
+      : 0;
+    const suspendedUntil = profile?.suspendedUntil ?? profile?.suspended_until ?? null;
+    const suspensionReason = profile?.suspensionReason ?? profile?.suspension_reason ?? null;
+
     return {
       reviewerId,
       reliabilityScore,
@@ -1436,13 +1451,13 @@ export class ReviewsService {
       isProvisional,
       isSuspended,
       consecutiveErrors,
-      suspendedUntil: profile?.suspended_until ?? null,
-      suspensionReason: profile?.suspension_reason ?? null,
+      suspendedUntil,
+      suspensionReason,
       totalReviews,
       approved,
       rejected,
-      accuracyRate: profile ? Number(profile.accuracy_rate ?? 0) : 0,
-      currentStreak: profile ? Number(profile.current_streak ?? 0) : 0,
+      accuracyRate,
+      currentStreak,
       profile,
       recentActivity,
     };
