@@ -440,19 +440,15 @@ export class CatalogService {
   }
 
   async upsertParameter(key: string, dto: UpsertSystemParameterDto, by: string) {
-    let parameter = await this.parameters.findOne({ where: { key } });
-    if (parameter) {
-      parameter.value = dto.value;
-      if (dto.description !== undefined) parameter.description = dto.description;
-      parameter.updatedBy = by;
-      return this.parameters.save(parameter);
+    const parameter = await this.parameters.findOne({ where: { key } });
+    if (!parameter) {
+      throw new NotFoundException(
+        `System parameter "${key}" not found. Adding new variables to system configuration is not permitted; configuration is GET and PUT on existing variables only.`,
+      );
     }
-    parameter = this.parameters.create({
-      key,
-      value: dto.value,
-      description: dto.description ?? null,
-      updatedBy: by,
-    });
+    parameter.value = dto.value;
+    if (dto.description !== undefined) parameter.description = dto.description;
+    parameter.updatedBy = by;
     return this.parameters.save(parameter);
   }
 

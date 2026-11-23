@@ -177,7 +177,6 @@ VALUES
   ('missions.verify_three_signs_reward', '15', 'Reward credits for completing daily mission: Verify 3 Traffic Signs', 'ECONOMY', 'INTEGER', '{"min": 0, "max": 200, "step": 5}'),
   ('missions.approved_anomaly_reward', '20', 'Reward credits for completing daily mission: Have 1 Anomaly Report Approved', 'ECONOMY', 'INTEGER', '{"min": 0, "max": 200, "step": 5}'),
   ('missions.weekly_five_reward', '50', 'Reward credits for completing weekly challenge: Complete 5 Daily Missions', 'ECONOMY', 'INTEGER', '{"min": 0, "max": 500, "step": 10}'),
-  ('MISSIONS_STREAK_BONUS_CREDITS', '0', 'Bonus credits granted at consecutive seven-day streak milestones', 'ECONOMY', 'INTEGER', '{"min": 0, "max": 1000, "step": 10}'),
 
   -- Ingestion & Uploads
   ('survey.max_image_size_mb', '50', 'Maximum single image file upload size in megabytes', 'INGESTION', 'INTEGER', '{"min": 1, "max": 100, "step": 5}'),

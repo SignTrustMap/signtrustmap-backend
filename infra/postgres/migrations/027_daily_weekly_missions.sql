@@ -21,11 +21,3 @@ CREATE TABLE IF NOT EXISTS "user_badges" (
     "earned_at" timestamptz NOT NULL DEFAULT NOW(),
     CONSTRAINT "pk_user_badges" PRIMARY KEY ("user_id", "badge_code")
 );
-
-INSERT INTO "system_parameters" ("key", "value", "description")
-VALUES (
-    'MISSIONS_STREAK_BONUS_CREDITS',
-    '0',
-    'Credits granted at each consecutive seven-day streak milestone; configure to a non-negative integer. The badge itself is granted once.'
-)
-ON CONFLICT ("key") DO NOTHING;
