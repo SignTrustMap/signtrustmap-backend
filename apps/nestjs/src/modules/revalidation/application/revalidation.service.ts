@@ -500,9 +500,10 @@ export class RevalidationService {
 
       if (targetSignTypeId != null) {
         const nearbySimilarRows: any[] = await this.dataSource.query(
-          `SELECT vts.id, vts.sign_code, vts.sign_type_id,
+          `SELECT vts.id, tst.sign_code, vts.sign_type_id,
                   ST_DistanceSphere(vts.location, ST_SetSRID(ST_MakePoint($1, $2), 4326)) AS distance_meters
            FROM verified_traffic_signs vts
+           LEFT JOIN traffic_sign_types tst ON tst.id = vts.sign_type_id
            WHERE vts.id <> $3
              AND vts.sign_type_id = $4
              AND vts.status = 'ACTIVE'

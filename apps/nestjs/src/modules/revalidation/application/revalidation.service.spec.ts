@@ -340,6 +340,11 @@ describe('RevalidationService', () => {
         }),
       });
 
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining('LEFT JOIN traffic_sign_types tst ON tst.id = vts.sign_type_id'),
+        expect.any(Array),
+      );
+
       // With explicit confirmation -> succeeds
       const txQuery = jest.fn(async (sql: string) => {
         if (sql.includes('FROM revalidation_tasks') && sql.includes('FOR UPDATE')) return [{ status: TaskStatus.OPEN }];
