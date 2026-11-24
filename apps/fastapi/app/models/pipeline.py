@@ -279,6 +279,19 @@ class RouteClassification(Base):
     spatial_buffer_meters: Mapped[int] = mapped_column(Integer, default=20)
 
 
+class FreshnessRule(Base):
+    __tablename__ = "freshness_rules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sign_category_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    freshness_period_days: Mapped[int] = mapped_column(Integer)
+    default_priority: Mapped[str] = mapped_column(TASK_PRIORITY_ENUM, default="MEDIUM")
+    max_proximity_meters: Mapped[int] = mapped_column(Integer, default=50)
+    daily_submission_limit: Mapped[int] = mapped_column(Integer, default=3)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class RevalidationTask(Base):
     __tablename__ = "revalidation_tasks"
 

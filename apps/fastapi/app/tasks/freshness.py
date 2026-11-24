@@ -36,6 +36,7 @@ from sqlalchemy import (
 
 from app.db_sync import get_sync_db
 from app.models.pipeline import (
+    FreshnessRule,
     RevalidationTask,
     RouteClassification,
     SignCategory,
@@ -90,6 +91,21 @@ _ROUTE_CLASSES_SQL = select(
     RouteClassification.spatial_buffer_meters,
 )
 
+_FRESHNESS_RULES_SQL = (
+    select(
+        FreshnessRule.id,
+        FreshnessRule.sign_category_id,
+        FreshnessRule.freshness_period_days,
+        FreshnessRule.default_priority,
+        FreshnessRule.max_proximity_meters,
+        FreshnessRule.daily_submission_limit,
+    )
+    .where(FreshnessRule.is_active.is_(True))
+    .order_by(FreshnessRule.id.asc())
+)
+
+_PRIORITY_RANK = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
+
 _CATEGORY_NAME_EXPR = (
     func.coalesce(SignCategory.name_en, "")
     + " "
@@ -97,7 +113,11 @@ _CATEGORY_NAME_EXPR = (
 )
 
 _AGE_DAYS_EXPR = (
-    func.extract("epoch", func.now() - VerifiedTrafficSign.last_verified_at) / 86400.0
+    func.extract(
+        "epoch",
+        func.now() - func.coalesce(VerifiedTrafficSign.last_verified_at, VerifiedTrafficSign.created_at),
+    )
+    / 86400.0
 )
 
 _EXISTING_REVAL_TASK_SUBQ = (
@@ -118,6 +138,7 @@ _ACTIVE_SIGNS_SQL = (
         VerifiedTrafficSign.route_classification_id,
         VerifiedTrafficSign.road_name,
         TrafficSignType.sign_code,
+        TrafficSignType.category_id.label("sign_category_id"),
         _CATEGORY_NAME_EXPR.label("category_name"),
         _AGE_DAYS_EXPR.label("age_days"),
     )
@@ -147,6 +168,7 @@ _INSERT_TASK_SQL = (
     insert(RevalidationTask)
     .values(
         verified_sign_id=bindparam("sign_id"),
+        freshness_rule_id=bindparam("freshness_rule_id"),
         priority=bindparam("priority"),
         reward_credits=bindparam("reward_credits"),
         urgency=bindparam("urgency"),
@@ -223,6 +245,26 @@ def resolve_sign_route_class(
     return classes_by_type.get("URBAN", DEFAULT_ROUTE_CLASSES["URBAN"])
 
 
+def resolve_freshness_rule(
+    sign_category_id: int | None,
+    rules_by_category: dict[int, dict[str, Any]],
+    default_rule: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Resolve active freshness_rule matching a sign's category, falling back to global rule."""
+    if sign_category_id is not None and int(sign_category_id) in rules_by_category:
+        return rules_by_category[int(sign_category_id)]
+    return default_rule
+
+
+def _elevate_priority(computed: str, rule_priority: str | None) -> str:
+    if not rule_priority:
+        return computed
+    norm_rule = str(rule_priority).upper()
+    if _PRIORITY_RANK.get(norm_rule, 0) > _PRIORITY_RANK.get(computed, 0):
+        return norm_rule
+    return computed
+
+
 @shared_task(
     name="app.tasks.freshness.task_check_freshness_and_spawn_revalidations",
     bind=True,
@@ -234,7 +276,7 @@ def task_check_freshness_and_spawn_revalidations(self) -> dict[str, Any]:  # typ
     """
     Flow 8 & Phase 5 — Route-aware sign decay, quest urgency calculation, and automatic delisting.
 
-    Scans active signs, compares Age against route-specific L_max and T_reval, and:
+    Scans active signs, combines freshness_rules and route_classifications (L_max, T_reval), and:
       1. Delists signs exceeding L_max to INACTIVE (freshness_score = 0.0).
       2. Marks signs within T_reval window as STALE, computes Urgency and Bounty, and spawns revalidation_tasks.
       3. Recalculates decaying freshness_score for active signs.
@@ -264,6 +306,21 @@ def task_check_freshness_and_spawn_revalidations(self) -> dict[str, Any]:  # typ
                 logger.warning("[freshness] route_classifications query failed, using built-in defaults: %s", exc)
                 classes_by_type = DEFAULT_ROUTE_CLASSES
 
+            # 1b. Load active freshness_rules (category-specific and global fallback)
+            rules_by_category: dict[int, dict[str, Any]] = {}
+            default_freshness_rule: dict[str, Any] | None = None
+            try:
+                fr_rows = db.execute(_FRESHNESS_RULES_SQL).mappings().all()
+                for fr in fr_rows:
+                    fr_dict = dict(fr)
+                    cat_id = fr_dict.get("sign_category_id")
+                    if cat_id is not None:
+                        rules_by_category.setdefault(int(cat_id), fr_dict)
+                    elif default_freshness_rule is None:
+                        default_freshness_rule = fr_dict
+            except Exception as exc:
+                logger.warning("[freshness] freshness_rules query failed, using route_classifications only: %s", exc)
+
             # 2. Fetch signs eligible for evaluation
             rows = db.execute(_ACTIVE_SIGNS_SQL).mappings().all()
             scanned = len(rows)
@@ -274,9 +331,24 @@ def task_check_freshness_and_spawn_revalidations(self) -> dict[str, Any]:  # typ
                 age_days = float(row["age_days"] or 0.0)
 
                 route_info = resolve_sign_route_class(dict(row), classes_by_id, classes_by_type)
-                l_max = int(route_info.get("default_lifetime_days", 30))
-                t_reval = int(route_info.get("revalidation_threshold_days", 7))
+                route_l_max = int(route_info.get("default_lifetime_days", 30))
+                route_t_reval = int(route_info.get("revalidation_threshold_days", 7))
                 route_class_id = route_info.get("id")
+
+                freshness_rule = resolve_freshness_rule(
+                    row.get("sign_category_id"),
+                    rules_by_category,
+                    default_freshness_rule,
+                )
+                freshness_rule_id = freshness_rule.get("id") if freshness_rule else None
+                rule_period_days = (
+                    int(freshness_rule["freshness_period_days"])
+                    if freshness_rule and freshness_rule.get("freshness_period_days")
+                    else None
+                )
+                l_max = min(route_l_max, rule_period_days) if (rule_period_days and rule_period_days > 0) else route_l_max
+                t_reval = max(1, min(route_t_reval, l_max - 1)) if l_max > 1 else 1
+                rule_default_priority = freshness_rule.get("default_priority") if freshness_rule else None
 
                 lifetime_remaining = l_max - age_days
 
@@ -306,7 +378,8 @@ def task_check_freshness_and_spawn_revalidations(self) -> dict[str, Any]:  # typ
                         freshness_score = max(0.0, min(1.0, round(lifetime_remaining / l_max, 4)))
                         urgency = max(0.0, min(1.0, round(1.0 - (lifetime_remaining / t_reval), 4)))
                         bounty_reward = BASE_BOUNTY_REWARD + math.floor(urgency * MAX_BOUNTY_BONUS)
-                        priority = "HIGH" if urgency >= 0.7 else ("MEDIUM" if urgency >= 0.3 else "LOW")
+                        computed_priority = "HIGH" if urgency >= 0.7 else ("MEDIUM" if urgency >= 0.3 else "LOW")
+                        priority = _elevate_priority(computed_priority, rule_default_priority)
                         remaining_days = max(1, int(lifetime_remaining))
 
                         db.execute(_UPDATE_SIGN_STALE_SQL, {"sign_id": sign_id, "freshness_score": freshness_score})
@@ -324,6 +397,7 @@ def task_check_freshness_and_spawn_revalidations(self) -> dict[str, Any]:  # typ
                             _INSERT_TASK_SQL,
                             {
                                 "sign_id": sign_id,
+                                "freshness_rule_id": freshness_rule_id,
                                 "priority": priority,
                                 "reward_credits": bounty_reward,
                                 "urgency": urgency,
