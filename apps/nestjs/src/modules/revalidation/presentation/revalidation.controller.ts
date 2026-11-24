@@ -133,14 +133,12 @@ export class RevalidationController {
   @ApiConsumes('multipart/form-data')
   @Post('revalidation/tasks/:taskId/evidence')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 20 * 1024 * 1024 } }))
-  @Roles('SURVEYOR', 'ADMIN')
   submitEvidence(@Param('taskId', ParseUUIDPipe) taskId: string, @CurrentUser() user: any, @Body() dto: SubmitEvidenceDto, @UploadedFile() file?: Express.Multer.File) { return this.svc.submitEvidence(taskId, user.id, dto, file); }
 
   @ApiBearerAuth()
   @Roles('STAFF', 'ADMIN')
   @ApiOperation({ summary: 'Finalize revalidation task', description: 'Staff/Admin manually finalizes task status and awards bounty credits' })
   @Post('revalidation/tasks/:taskId/finalize')
-  @Roles('STAFF', 'ADMIN')
   finalizeTask(@Param('taskId', ParseUUIDPipe) taskId: string, @CurrentUser() user: any) { return this.svc.finalizeTask(taskId, user.id); }
 
   @ApiBearerAuth()
@@ -155,14 +153,12 @@ export class RevalidationController {
   @Roles('REVIEWER', 'ADMIN')
   @ApiOperation({ summary: 'Vote on evidence', description: 'Reviewers validate or reject submitted on-site evidence' })
   @Post('revalidation/evidence/:evidenceId/vote')
-  @Roles('REVIEWER', 'ADMIN')
   vote(@Param('evidenceId', ParseUUIDPipe) evidenceId: string, @CurrentUser() user: any, @Body() dto: EvidenceVoteDto) { return this.svc.voteOnEvidence(evidenceId, user.id, dto); }
 
   @ApiBearerAuth()
   @Roles('REVIEWER', 'ADMIN')
   @ApiOperation({ summary: 'Reviewer evidence queue', description: 'Paginated queue of evidence awaiting decision, excluding items the reviewer has already judged' })
   @Get('revalidation/evidence/queue')
-  @Roles('REVIEWER', 'ADMIN')
   evidenceQueue(@CurrentUser() user: any, @Query('page') page?: string, @Query('pageSize') pageSize?: string) {
     const p = page ? parseInt(page, 10) : 1, n = pageSize ? parseInt(pageSize, 10) : 20;
     return this.svc.listEvidenceQueue(user.id, Number.isNaN(p) ? 1 : p, Number.isNaN(n) ? 20 : n);

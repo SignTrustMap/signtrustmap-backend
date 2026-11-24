@@ -619,6 +619,7 @@ export class RevalidationService {
         ? 'CHANGED'
         : 'STILL_ACTIVE';
     const id = randomUUID();
+    let effectiveRecentCount = recentCount;
     await this.dataSource.transaction(async (manager) => {
       // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const lockedTasks: any[] = await manager.query(
@@ -640,10 +641,30 @@ export class RevalidationService {
         [taskId],
       );
       const lockedRecentCount = Number(lockedRecentRows[0]?.cnt ?? 0);
+      effectiveRecentCount = lockedRecentCount;
       if (lockedRecentCount >= dailySubmissionLimit) {
         throw new HttpException(
           `Daily submission limit of ${dailySubmissionLimit} evidences per task exceeded (last 24h: ${lockedRecentCount})`,
           HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+      // Re-check duplicate active evidence inside FOR UPDATE lock to prevent parallel double-submit race conditions
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
+      const lockedDupRows: any[] = await manager.query(
+        `SELECT ev.id
+         FROM revalidation_evidences ev
+         WHERE ev.task_id = $1
+           AND ev.user_id = $2
+           AND NOT EXISTS (
+             SELECT 1 FROM revalidation_decisions rd
+             WHERE rd.evidence_id = ev.id AND rd.decision IN ('UNCLEAR', 'INVALID')
+           )
+         LIMIT 1`,
+        [taskId, userId],
+      );
+      if (Array.isArray(lockedDupRows) && lockedDupRows.some((row) => row?.id != null)) {
+        throw new ConflictException(
+          'You have already submitted active evidence for this revalidation task (duplicate submission rejected)',
         );
       }
       // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
@@ -710,7 +731,7 @@ export class RevalidationService {
       distanceMeters: Math.round(distanceMeters * 100) / 100,
       maxProximityMeters,
       dailySubmissionLimit,
-      remainingDailySubmissions: Math.max(0, dailySubmissionLimit - (recentCount + 1)),
+      remainingDailySubmissions: Math.max(0, dailySubmissionLimit - (effectiveRecentCount + 1)),
     };
   }
 
@@ -1414,6 +1435,7 @@ export class RevalidationService {
     const activeCount = (counts.get(RevalDecision.UNCHANGED) || 0) + (counts.get(RevalDecision.STILL_ACTIVE) || 0);
     const removedCount = (counts.get(RevalDecision.MISSING) || 0) + (counts.get(RevalDecision.REMOVED) || 0);
     const changedCount = counts.get(RevalDecision.CHANGED) || 0;
+    const unclearInvalidCount = (counts.get(RevalDecision.UNCLEAR) || 0) + (counts.get(RevalDecision.INVALID) || 0);
 
     const voteCounts = Object.fromEntries(counts);
     let winningDecision: RevalDecision | null = null;
@@ -1449,6 +1471,14 @@ export class RevalidationService {
 
     const top = groups[0];
     const second = groups[1];
+    if (unclearInvalidCount >= top.count) {
+      await this.escalateToModeration(
+        task,
+        `Revalidation consensus conflict: UNCLEAR/INVALID votes (${unclearInvalidCount}) outweigh or tie leading decision ${top.name} (${top.count})`,
+        manager,
+      );
+      return { evaluated: true, reason: 'CONFLICT', totalVotes: decisionRows.length, minVotesRequired: minVotes, voteCounts, escalatedToModeration: true, taskId: task.id };
+    }
     if (second && top.count === second.count) {
       await this.escalateToModeration(task, `Revalidation consensus conflict: tie between ${top.name} (${top.count}) and ${second.name} (${second.count})`, manager);
       return { evaluated: true, reason: 'CONFLICT', totalVotes: decisionRows.length, minVotesRequired: minVotes, voteCounts, escalatedToModeration: true, taskId: task.id };
@@ -1931,15 +1961,32 @@ export class RevalidationService {
 
     if (photoUrl) {
       const evidenceId = randomUUID();
-      const lat = location?.latitude ?? 0;
-      const lon = location?.longitude ?? 0;
+      let lat = location?.latitude ?? null;
+      let lon = location?.longitude ?? null;
+      if ((lat == null || lon == null) && typeof this.dataSource?.query === 'function') {
+        try {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
+          const signCoords: any[] = await this.dataSource.query(
+            `SELECT ST_Y(location::geometry) AS lat, ST_X(location::geometry) AS lon FROM verified_traffic_signs WHERE id = $1`,
+            [signId],
+          );
+          if (signCoords[0]?.lat != null && signCoords[0]?.lon != null) {
+            lat = Number(signCoords[0].lat);
+            lon = Number(signCoords[0].lon);
+          }
+        } catch {}
+      }
+      const evidenceType =
+        _note && (/\[WRONG_INFO\]/i.test(_note) || /\[OUTDATED\]/i.test(_note))
+          ? 'CHANGED'
+          : 'REMOVED';
       const s3PhotoUrl = this.toS3Url(photoUrl, task.id);
       try {
         // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await this.dataSource.query(
-          `INSERT INTO revalidation_evidences (id, task_id, user_id, media_url, location)
-           VALUES ($1, $2, $3, $4, ST_SetSRID(ST_MakePoint($5, $6), 4326))`,
-          [evidenceId, task.id, userId, s3PhotoUrl, lon, lat],
+          `INSERT INTO revalidation_evidences (id, task_id, user_id, media_url, location, evidence_type)
+           VALUES ($1, $2, $3, $4, ST_SetSRID(ST_MakePoint($5, $6), 4326), $7)`,
+          [evidenceId, task.id, userId, s3PhotoUrl, lon ?? 0, lat ?? 0, evidenceType],
         );
       } catch (e: any) {
         this.logger.warn(`Failed to attach evidence for dispute task ${task.id}: ${e?.message}`);

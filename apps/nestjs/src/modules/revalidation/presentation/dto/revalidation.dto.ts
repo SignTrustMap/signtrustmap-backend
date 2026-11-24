@@ -1,6 +1,6 @@
 import { IsString, IsOptional, IsNumber, Min, Max, IsInt, IsISO8601, IsIn, IsBoolean } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 
 export class SubmitEvidenceDto {
   // One of mediaUrl (already uploaded) OR file upload via multipart; DTO keeps non-file fields
@@ -26,7 +26,7 @@ export class SubmitEvidenceDto {
 
   @ApiPropertyOptional({ description: 'Whether evidence was captured directly on-site using live camera', default: false, example: true })
   @IsOptional()
-  @Type(() => Boolean)
+  @Transform(({ value }) => value === true || value === 'true' || value === 1 || value === '1')
   @IsBoolean()
   isLiveCapture?: boolean;
 
