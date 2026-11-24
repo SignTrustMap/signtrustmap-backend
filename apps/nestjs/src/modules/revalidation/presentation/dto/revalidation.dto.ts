@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsNumber, Min, Max, IsInt, IsISO8601, IsIn, IsBoolean } from 'class-validator';
+import { IsString, IsOptional, IsNumber, Min, Max, IsInt, IsISO8601, IsIn, IsBoolean, IsUUID, MaxLength } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 
@@ -99,5 +99,67 @@ export class ConfirmAmbiguousTargetDto {
   @ApiPropertyOptional({ description: 'Reviewer or surveyor confirmation note' })
   @IsOptional()
   @IsString()
+  note?: string;
+}
+
+export class CreateRevalidationTaskDto {
+  @ApiProperty({ description: 'Verified traffic sign UUID requiring field revalidation' })
+  @IsUUID()
+  verifiedSignId: string;
+
+  @ApiPropertyOptional({ enum: ['LOW', 'MEDIUM', 'HIGH'], default: 'HIGH', description: 'Task urgency priority' })
+  @IsOptional()
+  @IsIn(['LOW', 'MEDIUM', 'HIGH'])
+  priority?: 'LOW' | 'MEDIUM' | 'HIGH';
+
+  @ApiPropertyOptional({ description: 'Bounty reward credits for valid completion', default: 20, minimum: 1, maximum: 500 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(500)
+  rewardCredits?: number;
+
+  @ApiPropertyOptional({ description: 'Optional freshness rule ID to govern proximity & daily limits' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  freshnessRuleId?: number;
+
+  @ApiPropertyOptional({ description: 'Days until task expiration', default: 14, minimum: 1, maximum: 90 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(90)
+  expiresInDays?: number;
+
+  @ApiPropertyOptional({ description: 'Operational reason for creating this manual revalidation task', maxLength: 500 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
+}
+
+export class ResolveRevalidationTaskDto {
+  @ApiProperty({
+    enum: ['STILL_ACTIVE', 'UNCHANGED', 'REMOVED', 'MISSING', 'CHANGED', 'INVALID'],
+    description: 'Authoritative Staff/Admin verdict for a disputed or escalated revalidation task',
+  })
+  @IsIn(['STILL_ACTIVE', 'UNCHANGED', 'REMOVED', 'MISSING', 'CHANGED', 'INVALID'])
+  decision: 'STILL_ACTIVE' | 'UNCHANGED' | 'REMOVED' | 'MISSING' | 'CHANGED' | 'INVALID';
+
+  @ApiPropertyOptional({ description: 'Required replacement traffic_sign_types ID when decision is CHANGED' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  suggestedSignTypeId?: number;
+
+  @ApiPropertyOptional({ description: 'Staff resolution rationale recorded in moderation_cases and lifecycle events', maxLength: 500 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
   note?: string;
 }

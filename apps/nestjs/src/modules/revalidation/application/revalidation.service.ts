@@ -1303,6 +1303,243 @@ export class RevalidationService {
     });
   }
 
+  /**
+   * UC #32 — Staff/Admin manually creates an ad-hoc field revalidation task for a verified sign.
+   */
+  async createManualTask(
+    dto: {
+      verifiedSignId: string;
+      priority?: 'LOW' | 'MEDIUM' | 'HIGH';
+      rewardCredits?: number;
+      freshnessRuleId?: number;
+      expiresInDays?: number;
+      note?: string;
+    },
+    createdBy?: string,
+  ): Promise<RevalidationTask> {
+    if (typeof this.dataSource?.query === 'function') {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: PostGIS verified sign existence check
+      const signRows: any[] = await this.dataSource.query(
+        'SELECT id FROM verified_traffic_signs WHERE id = $1',
+        [dto.verifiedSignId],
+      );
+      if (signRows.length === 0) {
+        throw new NotFoundException(`VerifiedTrafficSign ${dto.verifiedSignId} not found`);
+      }
+    }
+
+    const existing = await this.tasks.findOne({
+      where: {
+        verifiedSignId: dto.verifiedSignId,
+        status: In([TaskStatus.OPEN, TaskStatus.EVALUATING]),
+      },
+    });
+    if (existing) {
+      throw new ConflictException(
+        `An active revalidation task (${existing.id}) already exists for sign ${dto.verifiedSignId}`,
+      );
+    }
+
+    const priority = (dto.priority as TaskPriority) ?? TaskPriority.HIGH;
+    const rewardCredits = dto.rewardCredits ?? 20;
+    const urgency = priority === TaskPriority.HIGH ? 0.9 : priority === TaskPriority.MEDIUM ? 0.5 : 0.2;
+    const expiresInDays = dto.expiresInDays ?? 14;
+    const expiredAt = new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000);
+
+    const created = this.tasks.create({
+      verifiedSignId: dto.verifiedSignId,
+      freshnessRuleId: dto.freshnessRuleId ?? null,
+      priority,
+      rewardCredits,
+      urgency,
+      status: TaskStatus.OPEN,
+      expiredAt,
+    });
+    const saved = await this.tasks.save(created);
+
+    if (typeof this.dataSource?.query === 'function') {
+      try {
+        const note = dto.note?.trim()
+          ? `Manual revalidation task created (${saved.id}): ${dto.note.trim()}`
+          : `Manual revalidation task created (${saved.id}) with priority=${priority}, bounty=${rewardCredits}`;
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: lifecycle audit log insert
+        await this.dataSource.query(
+          `INSERT INTO sign_lifecycle_events (verified_sign_id, event_type, triggered_by, note)
+           VALUES ($1, 'MANUAL_REVALIDATION_CREATED', $2, $3)`,
+          [dto.verifiedSignId, createdBy ?? null, note],
+        );
+      } catch (e: any) {
+        this.logger.warn(`Failed to log MANUAL_REVALIDATION_CREATED event for ${dto.verifiedSignId}: ${e?.message}`);
+      }
+    }
+
+    return saved;
+  }
+
+  /**
+   * Operational KPI summary for Web Operations Portal Revalidation Tasks screen (Report 3 §3.10).
+   */
+  async getTasksSummary(): Promise<{
+    activeTasks: number;
+    openTasks: number;
+    evaluatingTasks: number;
+    escalatedTasks: number;
+    completedTasks: number;
+    expiredTasks: number;
+    criticalStaleOver180Days: number;
+    totalEvidencesSubmitted: number;
+  }> {
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: aggregate KPI summary across revalidation_tasks and verified_traffic_signs
+    const rows: any[] = await this.dataSource.query(`
+      SELECT
+        COUNT(*) FILTER (WHERE rt.status IN ('OPEN', 'EVALUATING'))::int AS active_tasks,
+        COUNT(*) FILTER (WHERE rt.status = 'OPEN')::int AS open_tasks,
+        COUNT(*) FILTER (WHERE rt.status = 'EVALUATING')::int AS evaluating_tasks,
+        COUNT(*) FILTER (WHERE rt.status = 'ESCALATED_MODERATION')::int AS escalated_tasks,
+        COUNT(*) FILTER (WHERE rt.status = 'COMPLETED')::int AS completed_tasks,
+        COUNT(*) FILTER (WHERE rt.status = 'EXPIRED')::int AS expired_tasks,
+        COUNT(*) FILTER (
+          WHERE rt.status IN ('OPEN', 'EVALUATING', 'ESCALATED_MODERATION')
+            AND COALESCE(vts.last_verified_at, vts.created_at) <= now() - interval '180 days'
+        )::int AS critical_stale_over_180_days,
+        (SELECT COUNT(*)::int FROM revalidation_evidences) AS total_evidences_submitted
+      FROM revalidation_tasks rt
+      LEFT JOIN verified_traffic_signs vts ON vts.id = rt.verified_sign_id
+    `);
+    const r = rows[0] ?? {};
+    return {
+      activeTasks: Number(r.active_tasks ?? 0),
+      openTasks: Number(r.open_tasks ?? 0),
+      evaluatingTasks: Number(r.evaluating_tasks ?? 0),
+      escalatedTasks: Number(r.escalated_tasks ?? 0),
+      completedTasks: Number(r.completed_tasks ?? 0),
+      expiredTasks: Number(r.expired_tasks ?? 0),
+      criticalStaleOver180Days: Number(r.critical_stale_over_180_days ?? 0),
+      totalEvidencesSubmitted: Number(r.total_evidences_submitted ?? 0),
+    };
+  }
+
+  /**
+   * UC #33 — Staff/Admin resolves a disputed or ESCALATED_MODERATION revalidation task
+   * with an authoritative verdict and closes any linked pending moderation_cases.
+   */
+  async resolveEscalatedTask(
+    taskId: string,
+    staffId: string,
+    dto: {
+      decision: 'STILL_ACTIVE' | 'UNCHANGED' | 'REMOVED' | 'MISSING' | 'CHANGED' | 'INVALID';
+      suggestedSignTypeId?: number;
+      note?: string;
+    },
+  ): Promise<RevalidationConsensusSummary & { resolvedBy: string; moderationCasesClosed: number }> {
+    const decision = this.assertDecision(dto.decision);
+    if (decision === RevalDecision.CHANGED) {
+      if (dto.suggestedSignTypeId == null) {
+        throw new BadRequestException('suggestedSignTypeId is required when resolving a revalidation task as CHANGED');
+      }
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: validate suggestedSignTypeId exists
+      const typeRows: any[] = await this.dataSource.query(
+        'SELECT id FROM traffic_sign_types WHERE id=$1',
+        [dto.suggestedSignTypeId],
+      );
+      if (typeRows.length === 0) {
+        throw new BadRequestException('suggestedSignTypeId ' + dto.suggestedSignTypeId + ' does not exist');
+      }
+    }
+
+    return this.dataSource.transaction(async (manager) => {
+      const task = await this.lockTaskForConsensus(manager, taskId);
+      if (![TaskStatus.OPEN, TaskStatus.EVALUATING, TaskStatus.ESCALATED_MODERATION].includes(task.status)) {
+        throw new BadRequestException(`Task ${taskId} cannot be resolved in status ${task.status}`);
+      }
+
+      const { evidenceRows, decisions } = await this.loadTaskEvidenceAndDecisions(taskId, manager);
+      const resolutionNote = dto.note?.trim() || `Resolved by staff (${decision})`;
+
+      // Close linked pending moderation_cases for this revalidation_task
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: close linked moderation_cases inside transaction
+      const closedCases: any[] = await manager.query(
+        `UPDATE moderation_cases
+         SET status = 'RESOLVED',
+             assigned_staff_id = $2,
+             resolution_note = $3,
+             resolved_at = now()
+         WHERE target_entity_type = 'revalidation_task'
+           AND target_entity_id = $1
+           AND status IN ('PENDING', 'IN_REVIEW')
+         RETURNING id`,
+        [task.id, staffId, resolutionNote],
+      );
+      const moderationCasesClosed = Array.isArray(closedCases) ? closedCases.length : 0;
+
+      // Rejecting sub-standard evidence (INVALID): reopen task for fresh evidence without altering sign or paying rewards
+      if (decision === RevalDecision.INVALID) {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: reopen task after rejecting invalid evidence
+        await manager.query(
+          `UPDATE revalidation_tasks SET status = 'OPEN' WHERE id = $1`,
+          [task.id],
+        );
+        return {
+          evaluated: true,
+          reason: 'EVIDENCE_REJECTED_REOPENED',
+          winningDecision: RevalDecision.INVALID,
+          signAction: 'NO_CHANGE',
+          creditedSubmitters: 0,
+          creditedReviewers: 0,
+          creditedReporters: 0,
+          rewardPerSubmitter: 0,
+          taskId: task.id,
+          resolvedBy: staffId,
+          moderationCasesClosed,
+        };
+      }
+
+      const latestEvidence = evidenceRows[0];
+      const signAction = await this.applySignOutcome(
+        task,
+        decision,
+        dto.suggestedSignTypeId ?? null,
+        latestEvidence,
+        null,
+        manager,
+      );
+      const rewards = await this.creditRewards(task, decisions, evidenceRows, decision);
+
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: mark resolved task COMPLETED
+      await manager.query(
+        `UPDATE revalidation_tasks
+         SET status = 'COMPLETED'
+         WHERE id = $1 AND status IN ('OPEN', 'EVALUATING', 'ESCALATED_MODERATION')`,
+        [task.id],
+      );
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: close remaining active tasks for same sign
+      await manager.query(
+        `UPDATE revalidation_tasks
+         SET status = 'COMPLETED'
+         WHERE verified_sign_id = $1 AND id != $2 AND status IN ('OPEN', 'EVALUATING', 'ESCALATED_MODERATION')`,
+        [task.verifiedSignId, task.id],
+      );
+
+      await this.notifySubmitters(task.id, evidenceRows, decision, rewards.rewardPerSubmitter);
+
+      return {
+        evaluated: true,
+        reason: 'STAFF_RESOLVED',
+        totalVotes: decisions.length,
+        winningDecision: decision,
+        signAction,
+        creditedSubmitters: rewards.creditedSubmitters,
+        creditedReviewers: rewards.creditedReviewers,
+        creditedReporters: rewards.creditedReporters,
+        rewardPerSubmitter: rewards.rewardPerSubmitter,
+        rewardPolicy: rewards.rewardPolicy,
+        taskId: task.id,
+        resolvedBy: staffId,
+        moderationCasesClosed,
+      };
+    });
+  }
+
   // ---------------------------------------------------------------------------
   // HELPERS
   // ---------------------------------------------------------------------------

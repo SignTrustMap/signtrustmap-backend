@@ -4,7 +4,15 @@ import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagg
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RevalidationService } from '../application/revalidation.service';
-import { SubmitEvidenceDto, EvidenceVoteDto, EarlyClassifyDto, RequestEvidenceRecaptureDto, CheckInEligibilityDto } from './dto/revalidation.dto';
+import {
+  SubmitEvidenceDto,
+  EvidenceVoteDto,
+  EarlyClassifyDto,
+  RequestEvidenceRecaptureDto,
+  CheckInEligibilityDto,
+  CreateRevalidationTaskDto,
+  ResolveRevalidationTaskDto,
+} from './dto/revalidation.dto';
 
 @ApiTags('Revalidation')
 @Controller()
@@ -86,6 +94,28 @@ export class RevalidationController {
     return this.svc.listTasks(Number.isNaN(p) ? 1 : p, Number.isNaN(n) ? 20 : n, status, sort, spatial);
   }
 
+  @ApiBearerAuth()
+  @Roles('STAFF', 'ADMIN')
+  @ApiOperation({
+    summary: 'Create manual field revalidation task',
+    description: 'Staff/Admin manually creates an ad-hoc revalidation task for a verified traffic sign (UC #32)',
+  })
+  @Post('revalidation/tasks')
+  createTask(@CurrentUser() user: any, @Body() dto: CreateRevalidationTaskDto) {
+    return this.svc.createManualTask(dto, user?.id);
+  }
+
+  @ApiBearerAuth()
+  @Roles('STAFF', 'ADMIN')
+  @ApiOperation({
+    summary: 'Get operational KPI summary for revalidation tasks',
+    description: 'Aggregates active, open, evaluating, escalated, completed, and critical stale (>180 days) task metrics for the Web Ops dashboard',
+  })
+  @Get('revalidation/tasks/summary')
+  getTasksSummary() {
+    return this.svc.getTasksSummary();
+  }
+
   @ApiOperation({ summary: 'Get revalidation task detail', description: 'Fetch task coordinates, target sign, and current verification progress' })
   @Get('revalidation/tasks/:taskId')
   getTask(@Param('taskId', ParseUUIDPipe) taskId: string) { return this.svc.getTask(taskId); }
@@ -153,6 +183,21 @@ export class RevalidationController {
   @ApiOperation({ summary: 'Finalize revalidation task', description: 'Staff/Admin manually finalizes task status and awards bounty credits' })
   @Post('revalidation/tasks/:taskId/finalize')
   finalizeTask(@Param('taskId', ParseUUIDPipe) taskId: string, @CurrentUser() user: any) { return this.svc.finalizeTask(taskId, user.id); }
+
+  @ApiBearerAuth()
+  @Roles('STAFF', 'ADMIN')
+  @ApiOperation({
+    summary: 'Resolve disputed or escalated revalidation task',
+    description: 'Staff/Admin records an authoritative verdict (STILL_ACTIVE, REMOVED, CHANGED, or INVALID) for an escalated or evaluating revalidation task and closes linked moderation cases (UC #33)',
+  })
+  @Post('revalidation/tasks/:taskId/resolve')
+  resolveTask(
+    @Param('taskId', ParseUUIDPipe) taskId: string,
+    @CurrentUser() user: any,
+    @Body() dto: ResolveRevalidationTaskDto,
+  ) {
+    return this.svc.resolveEscalatedTask(taskId, user.id, dto);
+  }
 
   @ApiBearerAuth()
   @Roles('STAFF', 'ADMIN', 'REVIEWER')
