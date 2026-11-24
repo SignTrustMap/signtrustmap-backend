@@ -11,6 +11,7 @@ import {
   TaskPriority,
   TaskStatus,
 } from '../infrastructure/persistence/revalidation-task.entity';
+import { QuestClaimStatus, QuestTargetType } from '../../reviews/infrastructure/persistence/reviewer-quest-claim.entity';
 import { RevalidationService } from './revalidation.service';
 
 describe('RevalidationService', () => {
@@ -1543,6 +1544,142 @@ describe('RevalidationService', () => {
       const decs = await service.listDecisions('ev-1');
       expect(decs).toHaveLength(1);
       expect(decs[0].decision).toBe('UNCHANGED');
+    });
+  });
+
+  describe('Revalidation Quest Timeout & Completion', () => {
+    it('submitEvidence() rejects and marks claim EXPIRED when expiresAt is in the past', async () => {
+      const task = { id: 'task-exp', status: TaskStatus.OPEN, verifiedSignId: 'sign-1' };
+      const tasks = { findOne: jest.fn().mockResolvedValue(task) } as any;
+      const expiredClaim = {
+        id: 'claim-reval-exp',
+        reviewerId: 'user-late',
+        targetId: 'task-exp',
+        targetType: QuestTargetType.REVALIDATION_TASK,
+        status: QuestClaimStatus.CLAIMED,
+        timeLimitMinutes: 120,
+        expiresAt: new Date(Date.now() - 60000),
+        penaltyApplied: false,
+      };
+      const questClaims = {
+        findOne: jest.fn().mockResolvedValue(expiredClaim),
+        save: jest.fn().mockResolvedValue(expiredClaim),
+      } as any;
+      const dataSource = {
+        query: jest.fn().mockResolvedValue([]),
+      } as any;
+      const paramService = {
+        getNumber: jest.fn().mockResolvedValue(5.0),
+        getString: jest.fn().mockResolvedValue('ALIGNED_ONLY'),
+      } as any;
+
+      const service = new RevalidationService(
+        tasks,
+        {} as any,
+        {} as any,
+        dataSource,
+        {} as any,
+        {} as any,
+        {} as any,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        paramService,
+        questClaims,
+      );
+
+      await expect(
+        service.submitEvidence('task-exp', 'user-late', {
+          latitude: 10.77,
+          longitude: 106.69,
+          questClaimId: 'claim-reval-exp',
+        }),
+      ).rejects.toThrow('Quest claim has expired. You cannot submit late results.');
+
+      expect(expiredClaim.status).toBe(QuestClaimStatus.EXPIRED);
+      expect(expiredClaim.penaltyApplied).toBe(true);
+      expect(questClaims.save).toHaveBeenCalledWith(expiredClaim);
+      expect(dataSource.query).toHaveBeenCalledWith(
+        expect.stringContaining('UPDATE reviewer_profiles'),
+        [5.0, 'user-late'],
+      );
+    });
+
+    it('submitEvidence() completes active quest claim on-time', async () => {
+      const task = { id: 'task-good', status: TaskStatus.OPEN, verifiedSignId: 'sign-1' };
+      const tasks = { findOne: jest.fn().mockResolvedValue(task) } as any;
+      const validClaim = {
+        id: 'claim-reval-good',
+        reviewerId: 'user-good',
+        targetId: 'task-good',
+        targetType: QuestTargetType.REVALIDATION_TASK,
+        status: QuestClaimStatus.CLAIMED,
+        timeLimitMinutes: 120,
+        expiresAt: new Date(Date.now() + 600000),
+        completedAt: null,
+      };
+      const questClaims = {
+        findOne: jest.fn().mockResolvedValue(validClaim),
+        save: jest.fn().mockResolvedValue(validClaim),
+      } as any;
+      const managerQuery = jest.fn().mockImplementation(async (sql: string) => {
+        if (sql.includes('FROM revalidation_tasks') && sql.includes('FOR UPDATE')) {
+          return [{ id: 'task-good', status: TaskStatus.OPEN }];
+        }
+        if (sql.includes('COUNT(*)::int AS cnt')) return [{ cnt: 0 }];
+        return [];
+      });
+      const dataSource = {
+        query: jest.fn().mockImplementation(async (sql: string) => {
+          if (sql.includes('ST_DistanceSphere')) return [{ distance_meters: 10 }];
+          return [];
+        }),
+        transaction: jest.fn(async (cb: any) => cb({ query: managerQuery })),
+      } as any;
+      const evidences = {
+        findOne: jest.fn().mockResolvedValue({ id: 'ev-saved', taskId: 'task-good' }),
+      } as any;
+
+      const service = new RevalidationService(
+        tasks,
+        evidences,
+        {} as any,
+        dataSource,
+        { uploadDirect: jest.fn() } as any,
+        {} as any,
+        {} as any,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        questClaims,
+      );
+
+      const res = await service.submitEvidence('task-good', 'user-good', {
+        latitude: 10.77,
+        longitude: 106.69,
+        mediaUrl: 'https://storage/img.jpg',
+        questClaimId: 'claim-reval-good',
+      });
+
+      expect(res).toBeDefined();
+      expect(validClaim.status).toBe(QuestClaimStatus.COMPLETED);
+      expect(validClaim.completedAt).toBeInstanceOf(Date);
+      expect(questClaims.save).toHaveBeenCalledWith(validClaim);
     });
   });
 });

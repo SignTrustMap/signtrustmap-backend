@@ -14,6 +14,7 @@ import { ModerationCase } from '../moderation/infrastructure/persistence/moderat
 import { SurveyorProfile } from '../survey/infrastructure/persistence/surveyor-profile.entity';
 import { TrafficSignType } from '../catalog/traffic-sign-type.entity';
 import { ConsensusConfig } from '../consensus/infrastructure/persistence/consensus-config.entity';
+import { ReviewerQuestClaim } from '../reviews/infrastructure/persistence/reviewer-quest-claim.entity';
 import { WalletModule } from '../wallet/wallet.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { DailyTasksModule } from '../daily-tasks/daily-tasks.module';
@@ -34,6 +35,7 @@ import { AiInferenceModule } from '../../integrations/ai-inference/ai-inference.
       SurveyorProfile,
       TrafficSignType,
       ConsensusConfig,
+      ReviewerQuestClaim,
     ]),
     WalletModule,
     NotificationsModule,

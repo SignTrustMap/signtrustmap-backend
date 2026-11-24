@@ -1,4 +1,4 @@
-import { Controller, Body, Param, ParseUUIDPipe, Post, Put, Query, Get, Patch, Delete, UseGuards, UseInterceptors, UploadedFiles, ForbiddenException, Optional } from '@nestjs/common';
+import { Controller, Body, Param, ParseUUIDPipe, Post, Put, Query, Get, Patch, Delete, UseGuards, UseInterceptors, UploadedFiles, ForbiddenException, BadRequestException, Optional } from '@nestjs/common';
 import { FileFieldsInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
@@ -20,7 +20,7 @@ import {
   CanNotIdentifyDto,
   ReviewerCandidatesQueryDto,
 } from './dto/vote.dto';
-import { UpdateVoteDto } from './dto/bounty-board.dto';
+import { UpdateVoteDto, CheckInCandidateDto } from './dto/bounty-board.dto';
 import { InternalTokenGuard } from '../../../common/guards/internal-token.guard';
 
 @ApiTags('Reviews')
@@ -168,6 +168,48 @@ export class ReviewsController {
   @Get('candidates/:candidateId')
   async getCandidate(@Param('candidateId', ParseUUIDPipe) candidateId: string) {
     return this.reviewsService.getCandidateDetail(candidateId);
+  }
+
+  @ApiBearerAuth()
+  @Roles('REVIEWER', 'ADMIN')
+  @ApiOperation({
+    summary: 'Check on-site check-in eligibility for sign candidate',
+    description: 'Verify if reviewer GPS position is within allowed proximity of target sign candidate before unlocking live camera capture/voting',
+  })
+  @Post('candidates/:candidateId/check-in')
+  checkInEligibility(
+    @Param('candidateId', ParseUUIDPipe) candidateId: string,
+    @CurrentUser() user: any,
+    @Body() dto: CheckInCandidateDto,
+  ) {
+    return this.reviewsService.checkInEligibility(candidateId, user.id, dto);
+  }
+
+  @ApiBearerAuth()
+  @Roles('REVIEWER', 'ADMIN')
+  @ApiOperation({
+    summary: 'Query on-site check-in eligibility for sign candidate via GET',
+    description: 'Poll whether current device coordinates are within allowed proximity of target sign candidate to enable camera capture button',
+  })
+  @Get('candidates/:candidateId/check-in')
+  queryCheckInEligibility(
+    @Param('candidateId', ParseUUIDPipe) candidateId: string,
+    @CurrentUser() user: any,
+    @Query('lat') lat: string,
+    @Query('lon') lon: string,
+    @Query('accuracyMeters') accuracyMeters?: string,
+  ) {
+    const parsedLat = parseFloat(lat);
+    const parsedLon = parseFloat(lon);
+    if (Number.isNaN(parsedLat) || Number.isNaN(parsedLon) || parsedLat < -90 || parsedLat > 90 || parsedLon < -180 || parsedLon > 180) {
+      throw new BadRequestException('lat and lon query parameters must be valid GPS coordinates');
+    }
+    const parsedAcc = accuracyMeters ? parseFloat(accuracyMeters) : undefined;
+    return this.reviewsService.checkInEligibility(candidateId, user.id, {
+      latitude: parsedLat,
+      longitude: parsedLon,
+      accuracyMeters: parsedAcc && !Number.isNaN(parsedAcc) ? parsedAcc : undefined,
+    });
   }
 
   @ApiBearerAuth()

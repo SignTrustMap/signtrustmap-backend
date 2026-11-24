@@ -119,3 +119,25 @@ export class UpdateVoteDto {
   @MaxLength(500)
   declineNote?: string;
 }
+
+export class CheckInCandidateDto {
+  @ApiProperty({ description: 'Current latitude of reviewer', example: 10.77689 })
+  @Type(() => Number)
+  @IsNumber()
+  @Min(-90)
+  @Max(90)
+  latitude: number;
+
+  @ApiProperty({ description: 'Current longitude of reviewer', example: 106.7009 })
+  @Type(() => Number)
+  @IsNumber()
+  @Min(-180)
+  @Max(180)
+  longitude: number;
+
+  @ApiPropertyOptional({ description: 'Current horizontal GPS accuracy in meters reported by device', example: 5.0 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  accuracyMeters?: number;
+}

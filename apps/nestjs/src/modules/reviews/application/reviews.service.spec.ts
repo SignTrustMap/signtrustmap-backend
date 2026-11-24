@@ -7,6 +7,7 @@ import {
   UnverifiedSignCandidate,
 } from '../../survey/infrastructure/persistence/unverified-sign-candidate.entity';
 import { CandidateReview } from '../infrastructure/persistence/candidate-review.entity';
+import { QuestClaimStatus } from '../infrastructure/persistence/reviewer-quest-claim.entity';
 import { ReviewsService } from './reviews.service';
 
 describe('ReviewsService queue', () => {
@@ -1556,6 +1557,238 @@ describe('ReviewsService', () => {
       expect(res.items[0].reviewer).toEqual({ id: 'reviewer-99', email: 'rev99@stm.dev', fullName: 'Reviewer #reviewer' });
       expect(countQb.where).not.toHaveBeenCalled();
       expect(mainQb.where).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('ReviewsService Quest Timeout & Check-In', () => {
+    it('vote() rejects and marks claim EXPIRED when expiresAt is in the past', async () => {
+      const candidateRepo = {
+        findOne: jest.fn().mockResolvedValue({
+          id: 'cand-quest-1',
+          status: CandidateStatus.PENDING_REVIEW,
+          submission: { surveyorId: 'surv-diff' },
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      } as any;
+      const reviewRepo = {
+        findOne: jest.fn().mockResolvedValue(null),
+        create: jest.fn((dto) => dto),
+        save: jest.fn().mockResolvedValue({ id: 'rev-1' }),
+      } as any;
+      const expiredClaim = {
+        id: 'claim-exp-1',
+        reviewerId: 'rev-late',
+        targetId: 'cand-quest-1',
+        status: QuestClaimStatus.CLAIMED,
+        timeLimitMinutes: 120,
+        expiresAt: new Date(Date.now() - 60000), // 1 min ago
+        penaltyApplied: false,
+      };
+      const questClaimRepo = {
+        findOne: jest.fn().mockResolvedValue(expiredClaim),
+        save: jest.fn().mockResolvedValue(expiredClaim),
+      } as any;
+      const dataSource = {
+        query: jest.fn().mockResolvedValue([]),
+      } as any;
+      const paramService = {
+        getNumber: jest.fn().mockResolvedValue(5.0),
+        getBoolean: jest.fn().mockResolvedValue(false),
+      } as any;
+
+      const service = new ReviewsService(
+        candidateRepo,
+        reviewRepo,
+        { findOne: jest.fn() } as any,
+        { evaluate: jest.fn() } as any,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        dataSource,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        questClaimRepo,
+        paramService,
+      );
+
+      await expect(
+        service.vote('rev-late', 'cand-quest-1', { vote: 1, questClaimId: 'claim-exp-1' }),
+      ).rejects.toThrow('Quest claim has expired. You cannot submit late results.');
+
+      expect(expiredClaim.status).toBe(QuestClaimStatus.EXPIRED);
+      expect(expiredClaim.penaltyApplied).toBe(true);
+      expect(questClaimRepo.save).toHaveBeenCalledWith(expiredClaim);
+      expect(dataSource.query).toHaveBeenCalledWith(
+        expect.stringContaining('UPDATE reviewer_profiles'),
+        [5.0, 'rev-late'],
+      );
+      expect(reviewRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('vote() completes active quest claim on-time', async () => {
+      const candidateRepo = {
+        findOne: jest.fn().mockResolvedValue({
+          id: 'cand-quest-2',
+          status: CandidateStatus.PENDING_REVIEW,
+          submission: { surveyorId: 'surv-diff' },
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      } as any;
+      const reviewRepo = {
+        findOne: jest.fn().mockResolvedValue(null),
+        create: jest.fn((dto) => dto),
+        save: jest.fn().mockResolvedValue({ id: 'rev-saved' }),
+      } as any;
+      const validClaim = {
+        id: 'claim-valid-1',
+        reviewerId: 'rev-good',
+        targetId: 'cand-quest-2',
+        status: QuestClaimStatus.CLAIMED,
+        timeLimitMinutes: 120,
+        expiresAt: new Date(Date.now() + 6000000), // 100 min in future
+        completedAt: null,
+      };
+      const questClaimRepo = {
+        findOne: jest.fn().mockResolvedValue(validClaim),
+        save: jest.fn().mockResolvedValue(validClaim),
+      } as any;
+      const paramService = {
+        getNumber: jest.fn().mockResolvedValue(50.0),
+        getBoolean: jest.fn().mockResolvedValue(false),
+      } as any;
+
+      const service = new ReviewsService(
+        candidateRepo,
+        reviewRepo,
+        { findOne: jest.fn() } as any,
+        { evaluate: jest.fn() } as any,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        questClaimRepo,
+        paramService,
+      );
+
+      const res = await service.vote('rev-good', 'cand-quest-2', { vote: 1, questClaimId: 'claim-valid-1' });
+      expect(res.review).toBeDefined();
+      expect(validClaim.status).toBe(QuestClaimStatus.COMPLETED);
+      expect(validClaim.completedAt).toBeInstanceOf(Date);
+      expect(questClaimRepo.save).toHaveBeenCalledWith(validClaim);
+    });
+
+    it('checkInEligibility() returns eligible: true when distance <= geofence radius', async () => {
+      const candidateRepo = {
+        findOne: jest.fn().mockResolvedValue({
+          id: 'cand-checkin-1',
+          status: CandidateStatus.PENDING_REVIEW,
+        }),
+      } as any;
+      const dataSource = {
+        query: jest.fn().mockResolvedValue([
+          { distance_meters: '25.4', target_lat: '21.0285', target_lon: '105.8542' },
+        ]),
+      } as any;
+      const paramService = {
+        getBoolean: jest.fn().mockResolvedValue(true),
+        getNumber: jest.fn().mockResolvedValue(50.0),
+      } as any;
+
+      const service = new ReviewsService(
+        candidateRepo,
+        {} as any,
+        {} as any,
+        {} as any,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        dataSource,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        paramService,
+      );
+
+      const res = await service.checkInEligibility('cand-checkin-1', 'user-1', {
+        latitude: 21.0286,
+        longitude: 105.8543,
+      });
+
+      expect(res.eligible).toBe(true);
+      expect(res.canVote).toBe(true);
+      expect(res.distanceMeters).toBe(25.4);
+      expect(res.isWithinProximity).toBe(true);
+      expect(res.remainingDistanceMeters).toBe(0);
+    });
+
+    it('checkInEligibility() returns eligible: false and remaining distance when distance > geofence radius', async () => {
+      const candidateRepo = {
+        findOne: jest.fn().mockResolvedValue({
+          id: 'cand-checkin-2',
+          status: CandidateStatus.PENDING_REVIEW,
+        }),
+      } as any;
+      const dataSource = {
+        query: jest.fn().mockResolvedValue([
+          { distance_meters: '85.5', target_lat: '21.0285', target_lon: '105.8542' },
+        ]),
+      } as any;
+      const paramService = {
+        getBoolean: jest.fn().mockResolvedValue(true),
+        getNumber: jest.fn().mockResolvedValue(50.0),
+      } as any;
+
+      const service = new ReviewsService(
+        candidateRepo,
+        {} as any,
+        {} as any,
+        {} as any,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        dataSource,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        paramService,
+      );
+
+      const res = await service.checkInEligibility('cand-checkin-2', 'user-1', {
+        latitude: 21.0295,
+        longitude: 105.8555,
+      });
+
+      expect(res.eligible).toBe(false);
+      expect(res.canVote).toBe(false);
+      expect(res.distanceMeters).toBe(85.5);
+      expect(res.isWithinProximity).toBe(false);
+      expect(res.remainingDistanceMeters).toBe(35.5);
     });
   });
 });

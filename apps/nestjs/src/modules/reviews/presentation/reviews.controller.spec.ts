@@ -24,6 +24,7 @@ describe('ReviewsController', () => {
     getRecapturesForCandidate: jest.Mock;
     getMyRecaptures: jest.Mock;
     getReviewedCandidates: jest.Mock;
+    checkInEligibility: jest.Mock;
   };
 
   const mockUser = { id: 'rev-1', email: 'reviewer@stm.dev' };
@@ -49,6 +50,7 @@ describe('ReviewsController', () => {
       getRecapturesForCandidate: jest.fn(),
       getMyRecaptures: jest.fn(),
       getReviewedCandidates: jest.fn(),
+      checkInEligibility: jest.fn(),
     };
     controller = new ReviewsController(service as unknown as ReviewsService);
   });
@@ -371,6 +373,32 @@ describe('ReviewsController', () => {
         'reviewedAt',
         'DESC',
       );
+    });
+
+    it('checkInEligibility delegates to service', async () => {
+      service.checkInEligibility.mockResolvedValue({ eligible: true });
+      const res = await controller.checkInEligibility('cand-uuid-1', mockUser, {
+        latitude: 21.0285,
+        longitude: 105.8542,
+        accuracyMeters: 5.0,
+      });
+      expect(res).toEqual({ eligible: true });
+      expect(service.checkInEligibility).toHaveBeenCalledWith('cand-uuid-1', mockUser.id, {
+        latitude: 21.0285,
+        longitude: 105.8542,
+        accuracyMeters: 5.0,
+      });
+    });
+
+    it('queryCheckInEligibility parses coordinates and delegates to service', async () => {
+      service.checkInEligibility.mockResolvedValue({ eligible: true });
+      const res = await controller.queryCheckInEligibility('cand-uuid-1', mockUser, '21.0285', '105.8542', '4.5');
+      expect(res).toEqual({ eligible: true });
+      expect(service.checkInEligibility).toHaveBeenCalledWith('cand-uuid-1', mockUser.id, {
+        latitude: 21.0285,
+        longitude: 105.8542,
+        accuracyMeters: 4.5,
+      });
     });
   });
 });

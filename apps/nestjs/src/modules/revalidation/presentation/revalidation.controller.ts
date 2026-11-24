@@ -129,7 +129,7 @@ export class RevalidationController {
   listEvidencesForSign(@Param('signId', ParseUUIDPipe) signId: string) { return this.svc.listEvidencesForSign(signId); }
 
   @ApiBearerAuth()
-  @Roles('SURVEYOR', 'ADMIN')
+  @Roles('SURVEYOR', 'ADMIN', 'REVIEWER')
   @ApiOperation({
     summary: 'Check on-site check-in eligibility',
     description: 'Verify if surveyor GPS position is within allowed proximity of target sign before unlocking live camera capture',
@@ -144,7 +144,7 @@ export class RevalidationController {
   }
 
   @ApiBearerAuth()
-  @Roles('SURVEYOR', 'ADMIN')
+  @Roles('SURVEYOR', 'ADMIN', 'REVIEWER')
   @ApiOperation({
     summary: 'Query on-site check-in eligibility via GET',
     description: 'Poll whether current device coordinates are within allowed proximity of target sign to enable camera capture button',
@@ -171,7 +171,7 @@ export class RevalidationController {
   }
 
   @ApiBearerAuth()
-  @Roles('SURVEYOR', 'ADMIN')
+  @Roles('SURVEYOR', 'ADMIN', 'REVIEWER')
   @ApiOperation({ summary: 'Submit task evidence', description: 'Upload photo evidence and location verification from on-site inspection' })
   @ApiConsumes('multipart/form-data')
   @Post('revalidation/tasks/:taskId/evidence')

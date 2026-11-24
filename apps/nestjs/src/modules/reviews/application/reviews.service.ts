@@ -328,6 +328,64 @@ export class ReviewsService {
       }
     }
 
+    // Quest Claim Guard & Strict Timeout Check
+    let matchedClaim: ReviewerQuestClaim | null = null;
+    if (this.questClaimRepo) {
+      if (dto.questClaimId) {
+        matchedClaim = await this.questClaimRepo.findOne({
+          where: { id: dto.questClaimId, reviewerId },
+        });
+        if (!matchedClaim) {
+          throw new NotFoundException(`Quest claim '${dto.questClaimId}' not found.`);
+        }
+      } else {
+        matchedClaim = await this.questClaimRepo.findOne({
+          where: {
+            targetId: candidateId,
+            reviewerId,
+            status: QuestClaimStatus.CLAIMED,
+          },
+        });
+      }
+
+      if (matchedClaim) {
+        if (matchedClaim.status === QuestClaimStatus.EXPIRED) {
+          throw new BadRequestException('Quest claim has expired. You cannot submit late results.');
+        }
+        if (matchedClaim.status !== QuestClaimStatus.CLAIMED) {
+          throw new BadRequestException(`Quest claim is already ${matchedClaim.status.toLowerCase()}.`);
+        }
+
+        // Strict Timeout Guard: Check if claim has expired
+        if (new Date() > new Date(matchedClaim.expiresAt)) {
+          matchedClaim.status = QuestClaimStatus.EXPIRED;
+          matchedClaim.penaltyApplied = true;
+          const penaltyScore = this.paramService
+            ? await this.paramService.getNumber('reviewer.quest_timeout_penalty_score', 5.0)
+            : 5.0;
+          matchedClaim.penaltyNotes = `Quest expired uncompleted after ${matchedClaim.timeLimitMinutes} minutes. Penalty: -${penaltyScore} score.`;
+          await this.questClaimRepo.save(matchedClaim);
+
+          try {
+            if (this.dataSource && typeof this.dataSource.query === 'function') {
+              // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
+              await this.dataSource.query(
+                `UPDATE reviewer_profiles 
+                 SET reliability_score = GREATEST(0, reliability_score - $1),
+                     updated_at = NOW()
+                 WHERE user_id = $2`,
+                [penaltyScore, reviewerId],
+              );
+            }
+          } catch (e: any) {
+            this.logger.warn(`Failed to penalize reviewer ${reviewerId}: ${e?.message}`);
+          }
+
+          throw new BadRequestException('Quest claim has expired. You cannot submit late results.');
+        }
+      }
+    }
+
     const review: any = this.reviewRepo.create({
       candidateId,
       reviewerId,
@@ -340,7 +398,7 @@ export class ReviewsService {
           ? () => `ST_SetSRID(ST_MakePoint(${dto.longitude}, ${dto.latitude}), 4326)`
           : null,
       accuracyMeters: dto.accuracyMeters ?? null,
-      questClaimId: dto.questClaimId ?? null,
+      questClaimId: matchedClaim ? matchedClaim.id : (dto.questClaimId ?? null),
     } as any);
     let saved: any;
     try { saved = await this.reviewRepo.save(review); } catch (err: any) {
@@ -349,24 +407,15 @@ export class ReviewsService {
     }
 
     // Complete active bounty quest claim if applicable
-    try {
-      if (this.questClaimRepo) {
-        const claim = dto.questClaimId
-          ? await this.questClaimRepo.findOne({ where: { id: dto.questClaimId, reviewerId } })
-          : await this.questClaimRepo.findOne({
-              where: {
-                targetId: candidateId,
-                reviewerId,
-                status: QuestClaimStatus.CLAIMED,
-              },
-            });
-        if (claim && claim.status === QuestClaimStatus.CLAIMED) {
-          claim.status = QuestClaimStatus.COMPLETED;
-          claim.completedAt = new Date();
-          await this.questClaimRepo.save(claim);
-        }
+    if (matchedClaim && matchedClaim.status === QuestClaimStatus.CLAIMED) {
+      try {
+        matchedClaim.status = QuestClaimStatus.COMPLETED;
+        matchedClaim.completedAt = new Date();
+        await this.questClaimRepo.save(matchedClaim);
+      } catch (err: any) {
+        this.logger.warn(`Failed to mark quest claim ${matchedClaim.id} completed: ${err?.message}`);
       }
-    } catch {}
+    }
 
     // Track candidate votes count and bounty promotion
     try {
@@ -392,6 +441,109 @@ export class ReviewsService {
     }
 
     return { review: saved, consensusLog };
+  }
+
+  /**
+   * Pre-flight GPS proximity check to determine if reviewer is eligible to trigger on-site verification camera.
+   * Mirrors revalidation check-in behavior.
+   */
+  async checkInEligibility(
+    candidateId: string,
+    reviewerId: string,
+    coords: { latitude: number; longitude: number; accuracyMeters?: number },
+  ) {
+    const candidate = await this.candidateRepo.findOne({
+      where: { id: candidateId },
+    });
+    if (!candidate) throw new NotFoundException('Candidate ' + candidateId + ' not found');
+
+    if (
+      candidate.status !== CandidateStatus.PENDING_REVIEW &&
+      candidate.status !== CandidateStatus.IN_CONSENSUS
+    ) {
+      return {
+        eligible: false,
+        canVote: false,
+        candidateId,
+        candidateStatus: candidate.status,
+        isWithinProximity: false,
+        distanceMeters: null,
+        maxGeofenceRadius: null,
+        remainingDistanceMeters: null,
+        message: `Biển báo #${candidateId} hiện không ở trạng thái chờ đánh giá (trạng thái: ${candidate.status}).`,
+      };
+    }
+
+    const isGpsEnforced = this.paramService
+      ? await this.paramService.getBoolean('reviewer.gps_enforcement_enabled', false)
+      : false;
+    const maxGeofenceRadius = this.paramService
+      ? await this.paramService.getNumber('reviewer.gps_geofence_radius_meters', 50.0)
+      : 50.0;
+
+    let distanceMeters: number | null = null;
+    let targetLocation: { latitude: number; longitude: number } | null = null;
+
+    if (this.dataSource && typeof this.dataSource.query === 'function') {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
+      const geoRows: any[] = await this.dataSource.query(
+        `SELECT ST_DistanceSphere(
+           ST_SetSRID(ST_MakePoint($1, $2), 4326),
+           sign_location
+         ) AS distance_meters,
+         ST_Y(sign_location::geometry) AS target_lat,
+         ST_X(sign_location::geometry) AS target_lon
+         FROM candidate_geo_estimations
+         WHERE candidate_id = $3`,
+        [coords.longitude, coords.latitude, candidateId],
+      );
+
+      if (geoRows.length > 0 && geoRows[0].distance_meters != null) {
+        distanceMeters = Math.round(parseFloat(geoRows[0].distance_meters) * 10) / 10;
+        if (geoRows[0].target_lat != null && geoRows[0].target_lon != null) {
+          targetLocation = {
+            latitude: parseFloat(geoRows[0].target_lat),
+            longitude: parseFloat(geoRows[0].target_lon),
+          };
+        }
+      }
+    }
+
+    const isWithinProximity = distanceMeters == null || !isGpsEnforced || distanceMeters <= maxGeofenceRadius;
+    const remainingDistanceMeters =
+      distanceMeters != null && distanceMeters > maxGeofenceRadius
+        ? Math.round((distanceMeters - maxGeofenceRadius) * 10) / 10
+        : 0;
+
+    const eligible = isWithinProximity;
+    let message = '';
+    if (!isGpsEnforced) {
+      message = 'GPS enforcement is currently disabled by system configuration.';
+    } else if (distanceMeters == null) {
+      message = 'Sign candidate has no estimated geographic location.';
+    } else if (isWithinProximity) {
+      message = `Vị trí hợp lệ để xác thực tại hiện trường (cách biển báo ${distanceMeters}m <= ${maxGeofenceRadius}m).`;
+    } else {
+      message = `Bạn đang cách biển báo ${distanceMeters}m. Vui lòng di chuyển lại gần thêm ${remainingDistanceMeters}m (tối đa ${maxGeofenceRadius}m) để mở máy ảnh/xác thực.`;
+    }
+
+    return {
+      eligible,
+      canVote: eligible,
+      candidateId,
+      candidateStatus: candidate.status,
+      distanceMeters,
+      maxGeofenceRadius,
+      isWithinProximity,
+      remainingDistanceMeters,
+      targetLocation,
+      reviewerLocation: {
+        latitude: coords.latitude,
+        longitude: coords.longitude,
+      },
+      accuracyMeters: coords.accuracyMeters ?? null,
+      message,
+    };
   }
 
   /**

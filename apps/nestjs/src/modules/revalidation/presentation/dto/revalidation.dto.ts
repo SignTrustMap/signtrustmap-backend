@@ -48,6 +48,11 @@ export class SubmitEvidenceDto {
   @IsOptional()
   @IsString()
   confirmedSignId?: string;
+
+  @ApiPropertyOptional({ description: 'Optional associated Bounty Quest Claim ID', format: 'uuid' })
+  @IsOptional()
+  @IsUUID()
+  questClaimId?: string;
 }
 
 export class CheckInEligibilityDto {
@@ -72,9 +77,14 @@ export class CheckInEligibilityDto {
   accuracyMeters?: number;
 }
 export class EvidenceVoteDto {
+  @ApiProperty({ description: 'Reviewer decision on evidence' })
   @IsString() decision: string;
+  @ApiPropertyOptional({ description: 'Suggested replacement sign type ID if CHANGED', example: 12 })
   @IsOptional() @IsInt() suggestedSignTypeId?: number;
+  @ApiPropertyOptional({ description: 'Reviewer note' })
   @IsOptional() @IsString() note?: string;
+  @ApiPropertyOptional({ description: 'Optional associated Bounty Quest Claim ID', format: 'uuid' })
+  @IsOptional() @IsUUID() questClaimId?: string;
 }
 export class EvidenceQueryDto {
   @IsOptional() @IsInt() @Min(1) page?: number;

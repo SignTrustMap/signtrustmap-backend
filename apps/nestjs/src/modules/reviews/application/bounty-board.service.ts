@@ -6,6 +6,7 @@ import {
   ConflictException,
   ForbiddenException,
 } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import {
@@ -330,6 +331,47 @@ export class BountyBoardService {
     claim.status = QuestClaimStatus.ABANDONED;
     claim.penaltyNotes = reason || 'Abandoned voluntarily by reviewer.';
     return this.questRepo.save(claim);
+  }
+
+  /**
+   * Expire a single quest claim immediately with timeout reputation deduction
+   */
+  async expireSingleClaim(claim: ReviewerQuestClaim): Promise<ReviewerQuestClaim> {
+    const penaltyScore = await this.paramService.getNumber('reviewer.quest_timeout_penalty_score', 5.0);
+    claim.status = QuestClaimStatus.EXPIRED;
+    claim.penaltyApplied = true;
+    claim.penaltyNotes = `Quest expired uncompleted after ${claim.timeLimitMinutes} minutes. Penalty: -${penaltyScore} score.`;
+    const saved = await this.questRepo.save(claim);
+
+    try {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
+      await this.dataSource.query(
+        `UPDATE reviewer_profiles 
+         SET reliability_score = GREATEST(0, reliability_score - $1),
+             updated_at = NOW()
+         WHERE user_id = $2`,
+        [penaltyScore, claim.reviewerId],
+      );
+    } catch (err: any) {
+      this.logger.warn(`Failed to penalize reviewer ${claim.reviewerId}: ${err?.message}`);
+    }
+
+    return saved;
+  }
+
+  /**
+   * Automatic recurring background cron task to scan and expire stale quest claims every 5 minutes
+   */
+  @Cron(CronExpression.EVERY_5_MINUTES)
+  async handleCronExpireStaleClaims(): Promise<void> {
+    try {
+      const result = await this.expireStaleClaims();
+      if (result.expiredCount > 0) {
+        this.logger.log(`[Cron] Automatically expired ${result.expiredCount} stale quest claims.`);
+      }
+    } catch (err: any) {
+      this.logger.error(`[Cron] Failed to process scheduled stale claim expiration: ${err?.message}`);
+    }
   }
 
   /**

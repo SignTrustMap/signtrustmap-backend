@@ -19,6 +19,7 @@ import { ModerationCase } from '../../moderation/infrastructure/persistence/mode
 import { SurveyorProfile } from '../../survey/infrastructure/persistence/surveyor-profile.entity';
 import { TrafficSignType } from '../../catalog/traffic-sign-type.entity';
 import { ConsensusConfig } from '../../consensus/infrastructure/persistence/consensus-config.entity';
+import { ReviewerQuestClaim, QuestClaimStatus, QuestTargetType } from '../../reviews/infrastructure/persistence/reviewer-quest-claim.entity';
 import { SystemParametersService } from '../../system-parameters/system-parameters.service';
 import { decodeMedia, validateFileSignature } from '../../survey/domain/media-validator';
 import { MediaFileType } from '../../survey/domain/submission-contract';
@@ -84,6 +85,7 @@ export class RevalidationService {
     @Optional() @InjectRepository(TrafficSignType) private readonly signTypes?: Repository<TrafficSignType>,
     @Optional() @InjectRepository(ConsensusConfig) private readonly consensusConfigs?: Repository<ConsensusConfig>,
     @Optional() private readonly paramService?: SystemParametersService,
+    @Optional() @InjectRepository(ReviewerQuestClaim) private readonly questClaims?: Repository<ReviewerQuestClaim>,
   ) {}
   async listTasks(
     page = 1,
@@ -473,6 +475,7 @@ export class RevalidationService {
       accuracyMeters?: number;
       headingDegrees?: number;
       confirmedSignId?: string;
+      questClaimId?: string;
     },
     file?: Express.Multer.File,
   ) {
@@ -481,6 +484,65 @@ export class RevalidationService {
     if (task.status !== TaskStatus.OPEN && task.status !== TaskStatus.EVALUATING) throw new BadRequestException('Task ' + taskId + ' is not open for new evidence (status=' + task.status + ')');
     const lat = dto.latitude, lon = dto.longitude;
     if (typeof lat !== 'number' || typeof lon !== 'number' || lat < -90 || lat > 90 || lon < -180 || lon > 180) throw new BadRequestException('Invalid latitude/longitude');
+
+    // Quest Claim Guard & Strict Timeout Check
+    let matchedClaim: ReviewerQuestClaim | null = null;
+    if (this.questClaims) {
+      if (dto.questClaimId) {
+        matchedClaim = await this.questClaims.findOne({
+          where: { id: dto.questClaimId, reviewerId: userId },
+        });
+        if (!matchedClaim) {
+          throw new NotFoundException(`Quest claim '${dto.questClaimId}' not found.`);
+        }
+      } else {
+        matchedClaim = await this.questClaims.findOne({
+          where: {
+            targetType: QuestTargetType.REVALIDATION_TASK,
+            targetId: taskId,
+            reviewerId: userId,
+            status: QuestClaimStatus.CLAIMED,
+          },
+        });
+      }
+
+      if (matchedClaim) {
+        if (matchedClaim.status === QuestClaimStatus.EXPIRED) {
+          throw new BadRequestException('Quest claim has expired. You cannot submit late results.');
+        }
+        if (matchedClaim.status !== QuestClaimStatus.CLAIMED) {
+          throw new BadRequestException(`Quest claim is already ${matchedClaim.status.toLowerCase()}.`);
+        }
+
+        // Strict Timeout Guard: Check if claim has expired
+        if (new Date() > new Date(matchedClaim.expiresAt)) {
+          matchedClaim.status = QuestClaimStatus.EXPIRED;
+          matchedClaim.penaltyApplied = true;
+          const penaltyScore = this.paramService
+            ? await this.paramService.getNumber('reviewer.quest_timeout_penalty_score', 5.0)
+            : 5.0;
+          matchedClaim.penaltyNotes = `Quest expired uncompleted after ${matchedClaim.timeLimitMinutes} minutes. Penalty: -${penaltyScore} score.`;
+          await this.questClaims.save(matchedClaim);
+
+          try {
+            if (this.dataSource && typeof this.dataSource.query === 'function') {
+              // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
+              await this.dataSource.query(
+                `UPDATE reviewer_profiles 
+                 SET reliability_score = GREATEST(0, reliability_score - $1),
+                     updated_at = NOW()
+                 WHERE user_id = $2`,
+                [penaltyScore, userId],
+              );
+            }
+          } catch (e: any) {
+            this.logger.warn(`Failed to penalize reviewer ${userId}: ${e?.message}`);
+          }
+
+          throw new BadRequestException('Quest claim has expired. You cannot submit late results.');
+        }
+      }
+    }
 
     // ---- GPS proximity guardrail (PostGIS) ----
     const { maxProximityMeters } = await this.resolveRuleLimits(task);
@@ -697,6 +759,17 @@ export class RevalidationService {
     });
     if (this.dailyTasksService) {
       this.dailyTasksService.recordProgress(userId, 'REVALIDATE', 1).catch(() => {});
+    }
+
+    // Complete active bounty quest claim if applicable
+    if (matchedClaim && matchedClaim.status === QuestClaimStatus.CLAIMED) {
+      try {
+        matchedClaim.status = QuestClaimStatus.COMPLETED;
+        matchedClaim.completedAt = new Date();
+        await this.questClaims!.save(matchedClaim);
+      } catch (err: any) {
+        this.logger.warn(`Failed to mark revalidation quest claim ${matchedClaim.id} completed: ${err?.message}`);
+      }
     }
 
     if (evidenceType === 'CHANGED' && mediaUrl && this.aiInferenceService) {
@@ -1075,12 +1148,61 @@ export class RevalidationService {
     return { items, total, page: p, pageSize: ps, totalPages: Math.ceil(total / ps) };
   }
 
-  async voteOnEvidence(evidenceId: string, reviewerId: string, dto: { decision: string; suggestedSignTypeId?: number; note?: string }) {
+  async voteOnEvidence(
+    evidenceId: string,
+    reviewerId: string,
+    dto: { decision: string; suggestedSignTypeId?: number; note?: string; questClaimId?: string },
+  ) {
     const ev = await this.evidences.findOne({ where: { id: evidenceId } });
     if (!ev) throw new NotFoundException('RevalidationEvidence ' + evidenceId + ' not found');
     if (ev.userId === reviewerId) {
       throw new ForbiddenException('You cannot vote on your own submitted evidence');
     }
+
+    let matchedClaim: ReviewerQuestClaim | null = null;
+    if (this.questClaims && dto.questClaimId) {
+      matchedClaim = await this.questClaims.findOne({
+        where: { id: dto.questClaimId, reviewerId },
+      });
+      if (!matchedClaim) {
+        throw new NotFoundException(`Quest claim '${dto.questClaimId}' not found.`);
+      }
+
+      if (matchedClaim.status === QuestClaimStatus.EXPIRED) {
+        throw new BadRequestException('Quest claim has expired. You cannot submit late results.');
+      }
+      if (matchedClaim.status !== QuestClaimStatus.CLAIMED) {
+        throw new BadRequestException(`Quest claim is already ${matchedClaim.status.toLowerCase()}.`);
+      }
+
+      if (new Date() > new Date(matchedClaim.expiresAt)) {
+        matchedClaim.status = QuestClaimStatus.EXPIRED;
+        matchedClaim.penaltyApplied = true;
+        const penaltyScore = this.paramService
+          ? await this.paramService.getNumber('reviewer.quest_timeout_penalty_score', 5.0)
+          : 5.0;
+        matchedClaim.penaltyNotes = `Quest expired uncompleted after ${matchedClaim.timeLimitMinutes} minutes. Penalty: -${penaltyScore} score.`;
+        await this.questClaims.save(matchedClaim);
+
+        try {
+          if (this.dataSource && typeof this.dataSource.query === 'function') {
+            // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
+            await this.dataSource.query(
+              `UPDATE reviewer_profiles 
+               SET reliability_score = GREATEST(0, reliability_score - $1),
+                   updated_at = NOW()
+               WHERE user_id = $2`,
+              [penaltyScore, reviewerId],
+            );
+          }
+        } catch (e: any) {
+          this.logger.warn(`Failed to penalize reviewer ${reviewerId}: ${e?.message}`);
+        }
+
+        throw new BadRequestException('Quest claim has expired. You cannot submit late results.');
+      }
+    }
+
     const decision = this.assertDecision(dto.decision);
     if (dto.suggestedSignTypeId != null) {
       // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
@@ -1109,9 +1231,20 @@ export class RevalidationService {
         decision,
         suggestedSignTypeId: dto.suggestedSignTypeId ?? null,
         note: dto.note ?? null,
+        questClaimId: matchedClaim ? matchedClaim.id : (dto.questClaimId ?? null),
       } as any);
       return manager.save(RevalidationDecision, row);
     });
+
+    if (matchedClaim && matchedClaim.status === QuestClaimStatus.CLAIMED) {
+      try {
+        matchedClaim.status = QuestClaimStatus.COMPLETED;
+        matchedClaim.completedAt = new Date();
+        await this.questClaims!.save(matchedClaim);
+      } catch (err: any) {
+        this.logger.warn(`Failed to mark quest claim ${matchedClaim.id} completed: ${err?.message}`);
+      }
+    }
     if (this.dailyTasksService) {
       this.dailyTasksService.recordProgress(reviewerId, 'REVIEW', 1).catch(() => {});
     }
