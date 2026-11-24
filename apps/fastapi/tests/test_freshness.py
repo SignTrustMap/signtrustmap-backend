@@ -221,3 +221,88 @@ class RouteAwareFreshnessTests(unittest.TestCase):
         self.assertEqual(summary["spawned"], 0)
         self.assertEqual(summary["delisted"], 1)
         self.assertEqual(summary["errors"], 0)
+
+    @patch("app.tasks.freshness.get_sync_db")
+    def test_freshness_worker_applies_freshness_rules_and_links_rule_id(self, mock_get_db: MagicMock) -> None:
+        db = MagicMock()
+        mock_get_db.return_value.__enter__.return_value = db
+
+        rc_mappings = MagicMock()
+        rc_mappings.all.return_value = [
+            {
+                "id": 3,
+                "name": "National Expressways & Highways",
+                "road_type": "HIGHWAY",
+                "default_lifetime_days": 180,
+                "revalidation_threshold_days": 30,
+            }
+        ]
+
+        # Category-specific freshness rule shortens effective lifetime from 180d -> 20d with HIGH priority
+        fr_mappings = MagicMock()
+        fr_mappings.all.return_value = [
+            {
+                "id": 9,
+                "sign_category_id": 4,
+                "freshness_period_days": 20,
+                "default_priority": "HIGH",
+                "max_proximity_meters": 35,
+                "daily_submission_limit": 2,
+            }
+        ]
+
+        sign_mappings = MagicMock()
+        sign_mappings.all.return_value = [
+            {
+                "sign_id": "sign-rule-1",
+                "last_verified_at": "2026-09-01T00:00:00Z",
+                "status": "ACTIVE",
+                "freshness_score": 0.8,
+                "route_classification_id": 3,
+                "road_name": "Cao tốc Pháp Vân",
+                "sign_code": "W.201",
+                "sign_category_id": 4,
+                "category_name": "Warning",
+                "age_days": 15.0,
+            }
+        ]
+
+        existing_task_res = MagicMock()
+        existing_task_res.first.return_value = None
+
+        inserted_task = MagicMock()
+        inserted_task.first.return_value = {"id": "task-rule-1"}
+        inserted_params = None
+
+        def execute_side_effect(sql: Any, params: Any = None) -> Any:
+            nonlocal inserted_params
+            sql_str = str(sql)
+            res = MagicMock()
+            if "FROM route_classifications" in sql_str:
+                res.mappings.return_value = rc_mappings
+                return res
+            if "FROM freshness_rules" in sql_str:
+                res.mappings.return_value = fr_mappings
+                return res
+            if "FROM verified_traffic_signs" in sql_str:
+                res.mappings.return_value = sign_mappings
+                return res
+            if "FROM revalidation_tasks" in sql_str:
+                return existing_task_res
+            if "INSERT INTO revalidation_tasks" in sql_str:
+                inserted_params = params
+                res.mappings.return_value = inserted_task
+                return res
+            return res
+
+        db.execute.side_effect = execute_side_effect
+
+        summary = task_check_freshness_and_spawn_revalidations.apply().get()
+
+        self.assertEqual(summary["scanned"], 1)
+        self.assertEqual(summary["spawned"], 1)
+        self.assertEqual(summary["delisted"], 0)
+        self.assertEqual(summary["errors"], 0)
+        self.assertIsNotNone(inserted_params)
+        self.assertEqual(inserted_params["freshness_rule_id"], 9)
+        self.assertEqual(inserted_params["priority"], "HIGH")

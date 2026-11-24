@@ -4,7 +4,15 @@ import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagg
 import { Roles } from '../../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RevalidationService } from '../application/revalidation.service';
-import { SubmitEvidenceDto, EvidenceVoteDto, EarlyClassifyDto, RequestEvidenceRecaptureDto, CheckInEligibilityDto } from './dto/revalidation.dto';
+import {
+  SubmitEvidenceDto,
+  EvidenceVoteDto,
+  EarlyClassifyDto,
+  RequestEvidenceRecaptureDto,
+  CheckInEligibilityDto,
+  CreateRevalidationTaskDto,
+  ResolveRevalidationTaskDto,
+} from './dto/revalidation.dto';
 
 @ApiTags('Revalidation')
 @Controller()
@@ -62,15 +70,50 @@ export class RevalidationController {
     @Query('radiusMeters') radiusMeters?: string,
   ) {
     const p = page ? parseInt(page, 10) : 1, n = ps ? parseInt(ps, 10) : 20;
-    const parsedLat = lat != null ? parseFloat(lat) : undefined;
-    const parsedLon = lon != null ? parseFloat(lon) : undefined;
-    const parsedRadius = radiusMeters != null ? parseFloat(radiusMeters) : 5000;
-    const spatial =
-      parsedLat != null && parsedLon != null && !Number.isNaN(parsedLat) && !Number.isNaN(parsedLon)
-        ? { lat: parsedLat, lon: parsedLon, radiusMeters: Number.isNaN(parsedRadius) ? 5000 : parsedRadius }
-        : undefined;
+    const anySpatial = lat != null || lon != null;
+    let spatial: { lat: number; lon: number; radiusMeters: number } | undefined;
+    if (anySpatial) {
+      if (lat == null || lon == null) {
+        throw new BadRequestException('Both lat and lon query parameters are required for spatial filtering');
+      }
+      const parsedLat = parseFloat(lat);
+      const parsedLon = parseFloat(lon);
+      if (Number.isNaN(parsedLat) || Number.isNaN(parsedLon)) {
+        throw new BadRequestException('lat and lon must be valid numbers');
+      }
+      if (parsedLat < -90 || parsedLat > 90 || parsedLon < -180 || parsedLon > 180) {
+        throw new BadRequestException('lat must be between -90 and 90 and lon must be between -180 and 180');
+      }
+      const parsedRadius = radiusMeters != null ? parseFloat(radiusMeters) : 5000;
+      if (Number.isNaN(parsedRadius) || parsedRadius <= 0) {
+        throw new BadRequestException('radiusMeters must be a positive number');
+      }
+      spatial = { lat: parsedLat, lon: parsedLon, radiusMeters: parsedRadius };
+    }
 
     return this.svc.listTasks(Number.isNaN(p) ? 1 : p, Number.isNaN(n) ? 20 : n, status, sort, spatial);
+  }
+
+  @ApiBearerAuth()
+  @Roles('STAFF', 'ADMIN')
+  @ApiOperation({
+    summary: 'Create manual field revalidation task',
+    description: 'Staff/Admin manually creates an ad-hoc revalidation task for a verified traffic sign (UC #32)',
+  })
+  @Post('revalidation/tasks')
+  createTask(@CurrentUser() user: any, @Body() dto: CreateRevalidationTaskDto) {
+    return this.svc.createManualTask(dto, user?.id);
+  }
+
+  @ApiBearerAuth()
+  @Roles('STAFF', 'ADMIN')
+  @ApiOperation({
+    summary: 'Get operational KPI summary for revalidation tasks',
+    description: 'Aggregates active, open, evaluating, escalated, completed, and critical stale (>180 days) task metrics for the Web Ops dashboard',
+  })
+  @Get('revalidation/tasks/summary')
+  getTasksSummary() {
+    return this.svc.getTasksSummary();
   }
 
   @ApiOperation({ summary: 'Get revalidation task detail', description: 'Fetch task coordinates, target sign, and current verification progress' })
@@ -133,15 +176,28 @@ export class RevalidationController {
   @ApiConsumes('multipart/form-data')
   @Post('revalidation/tasks/:taskId/evidence')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 20 * 1024 * 1024 } }))
-  @Roles('SURVEYOR', 'ADMIN')
   submitEvidence(@Param('taskId', ParseUUIDPipe) taskId: string, @CurrentUser() user: any, @Body() dto: SubmitEvidenceDto, @UploadedFile() file?: Express.Multer.File) { return this.svc.submitEvidence(taskId, user.id, dto, file); }
 
   @ApiBearerAuth()
   @Roles('STAFF', 'ADMIN')
   @ApiOperation({ summary: 'Finalize revalidation task', description: 'Staff/Admin manually finalizes task status and awards bounty credits' })
   @Post('revalidation/tasks/:taskId/finalize')
-  @Roles('STAFF', 'ADMIN')
   finalizeTask(@Param('taskId', ParseUUIDPipe) taskId: string, @CurrentUser() user: any) { return this.svc.finalizeTask(taskId, user.id); }
+
+  @ApiBearerAuth()
+  @Roles('STAFF', 'ADMIN')
+  @ApiOperation({
+    summary: 'Resolve disputed or escalated revalidation task',
+    description: 'Staff/Admin records an authoritative verdict (STILL_ACTIVE, REMOVED, CHANGED, or INVALID) for an escalated or evaluating revalidation task and closes linked moderation cases (UC #33)',
+  })
+  @Post('revalidation/tasks/:taskId/resolve')
+  resolveTask(
+    @Param('taskId', ParseUUIDPipe) taskId: string,
+    @CurrentUser() user: any,
+    @Body() dto: ResolveRevalidationTaskDto,
+  ) {
+    return this.svc.resolveEscalatedTask(taskId, user.id, dto);
+  }
 
   @ApiBearerAuth()
   @Roles('STAFF', 'ADMIN', 'REVIEWER')
@@ -155,14 +211,12 @@ export class RevalidationController {
   @Roles('REVIEWER', 'ADMIN')
   @ApiOperation({ summary: 'Vote on evidence', description: 'Reviewers validate or reject submitted on-site evidence' })
   @Post('revalidation/evidence/:evidenceId/vote')
-  @Roles('REVIEWER', 'ADMIN')
   vote(@Param('evidenceId', ParseUUIDPipe) evidenceId: string, @CurrentUser() user: any, @Body() dto: EvidenceVoteDto) { return this.svc.voteOnEvidence(evidenceId, user.id, dto); }
 
   @ApiBearerAuth()
   @Roles('REVIEWER', 'ADMIN')
   @ApiOperation({ summary: 'Reviewer evidence queue', description: 'Paginated queue of evidence awaiting decision, excluding items the reviewer has already judged' })
   @Get('revalidation/evidence/queue')
-  @Roles('REVIEWER', 'ADMIN')
   evidenceQueue(@CurrentUser() user: any, @Query('page') page?: string, @Query('pageSize') pageSize?: string) {
     const p = page ? parseInt(page, 10) : 1, n = pageSize ? parseInt(pageSize, 10) : 20;
     return this.svc.listEvidenceQueue(user.id, Number.isNaN(p) ? 1 : p, Number.isNaN(n) ? 20 : n);

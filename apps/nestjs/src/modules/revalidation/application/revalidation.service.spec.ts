@@ -924,6 +924,25 @@ describe('RevalidationService', () => {
         ['task-id'],
       );
     });
+
+    it('escalates to moderation when UNCLEAR/INVALID votes form the majority over valid votes', async () => {
+      const { service, query, wallet } = consensusHarness([
+        { decision: 'UNCLEAR', reviewer_id: 'r1', evidence_id: 'evidence-id', suggested_sign_type_id: null },
+        { decision: 'INVALID', reviewer_id: 'r2', evidence_id: 'evidence-id', suggested_sign_type_id: null },
+        { decision: 'STILL_ACTIVE', reviewer_id: 'r3', evidence_id: 'evidence-id', suggested_sign_type_id: null },
+      ]);
+      const result = await service.evaluateRevalidationConsensus('task-id');
+      expect(result).toMatchObject({ reason: 'CONFLICT', escalatedToModeration: true });
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining('INSERT INTO moderation_cases'),
+        ['task-id', expect.stringContaining('UNCLEAR/INVALID')],
+      );
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining("SET status = 'ESCALATED_MODERATION'"),
+        ['task-id'],
+      );
+      expect(wallet.creditUser).not.toHaveBeenCalled();
+    });
   });
 
   describe('Phase 5 Route-Aware Freshness & Spatial Tasks', () => {
