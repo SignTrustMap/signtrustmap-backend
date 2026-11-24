@@ -458,6 +458,11 @@ class RevalidationTestDatabase {
     }
 
     // 9. UPDATE revalidation_tasks status
+    if (norm.startsWith("UPDATE revalidation_tasks SET status = 'OPEN'")) {
+      const task = this.tasks.get(String(params[0]));
+      if (task) task.status = TaskStatus.OPEN;
+      return [];
+    }
     if (norm.startsWith("UPDATE revalidation_tasks SET status = 'EVALUATING'")) {
       const task = this.tasks.get(String(params[0]));
       if (task && task.status === TaskStatus.OPEN) task.status = TaskStatus.EVALUATING;
@@ -465,7 +470,12 @@ class RevalidationTestDatabase {
     }
     if (norm.startsWith("UPDATE revalidation_tasks SET status = 'COMPLETED' WHERE id = $1")) {
       const task = this.tasks.get(String(params[0]));
-      if (task && (task.status === TaskStatus.OPEN || task.status === TaskStatus.EVALUATING)) {
+      if (
+        task &&
+        (task.status === TaskStatus.OPEN ||
+          task.status === TaskStatus.EVALUATING ||
+          task.status === TaskStatus.ESCALATED_MODERATION)
+      ) {
         task.status = TaskStatus.COMPLETED;
       }
       return [];
@@ -476,7 +486,9 @@ class RevalidationTestDatabase {
         if (
           t.verifiedSignId === signId &&
           t.id !== excludeTaskId &&
-          (t.status === TaskStatus.OPEN || t.status === TaskStatus.EVALUATING)
+          (t.status === TaskStatus.OPEN ||
+            t.status === TaskStatus.EVALUATING ||
+            t.status === TaskStatus.ESCALATED_MODERATION)
         ) {
           t.status = TaskStatus.COMPLETED;
         }
@@ -487,6 +499,47 @@ class RevalidationTestDatabase {
       const task = this.tasks.get(String(params[0]));
       if (task) task.status = TaskStatus.ESCALATED_MODERATION;
       return [];
+    }
+    if (norm.startsWith("UPDATE moderation_cases SET status = 'RESOLVED'")) {
+      const targetId = String(params[0]);
+      const closed: Array<{ id: string }> = [];
+      for (const mc of this.moderationCases) {
+        if (
+          mc.target_entity_type === 'revalidation_task' &&
+          mc.target_entity_id === targetId &&
+          (mc.status === 'PENDING' || mc.status === 'IN_REVIEW')
+        ) {
+          mc.status = 'RESOLVED';
+          mc.resolution_note = String(params[2]);
+          closed.push({ id: `mc-${closed.length + 1}` });
+        }
+      }
+      return closed;
+    }
+    if (norm === 'SELECT id FROM verified_traffic_signs WHERE id = $1') {
+      const s = this.signs.get(String(params[0]));
+      return s ? [{ id: s.id }] : [];
+    }
+    if (norm.includes('AS active_tasks') && norm.includes('AS critical_stale_over_180_days')) {
+      const allTasks = [...this.tasks.values()];
+      const cutoff = Date.now() - 180 * 24 * 60 * 60 * 1000;
+      const critical = allTasks.filter((t) => {
+        if (![TaskStatus.OPEN, TaskStatus.EVALUATING, TaskStatus.ESCALATED_MODERATION].includes(t.status)) return false;
+        const s = this.signs.get(t.verifiedSignId);
+        return s ? s.last_verified_at.getTime() <= cutoff : false;
+      }).length;
+      return [
+        {
+          active_tasks: allTasks.filter((t) => t.status === TaskStatus.OPEN || t.status === TaskStatus.EVALUATING).length,
+          open_tasks: allTasks.filter((t) => t.status === TaskStatus.OPEN).length,
+          evaluating_tasks: allTasks.filter((t) => t.status === TaskStatus.EVALUATING).length,
+          escalated_tasks: allTasks.filter((t) => t.status === TaskStatus.ESCALATED_MODERATION).length,
+          completed_tasks: allTasks.filter((t) => t.status === TaskStatus.COMPLETED).length,
+          expired_tasks: allTasks.filter((t) => t.status === TaskStatus.EXPIRED).length,
+          critical_stale_over_180_days: critical,
+          total_evidences_submitted: this.evidences.size,
+        },
+      ];
     }
 
     // 10. Evidences & decisions lookups for getTask / consensus
@@ -727,8 +780,20 @@ describe('Flow 3: Traffic Sign Revalidation — Supertest Integration Suite (Rep
         {
           provide: getRepositoryToken(RevalidationTask),
           useValue: {
-            findOne: jest.fn(async ({ where }: any) => db.tasks.get(where.id) ?? null),
-            create: jest.fn((v: any) => v),
+            findOne: jest.fn(async ({ where }: any) => {
+              if (where.id) return db.tasks.get(where.id) ?? null;
+              if (where.verifiedSignId) {
+                return (
+                  [...db.tasks.values()].find(
+                    (t) =>
+                      t.verifiedSignId === where.verifiedSignId &&
+                      (t.status === TaskStatus.OPEN || t.status === TaskStatus.EVALUATING),
+                  ) ?? null
+                );
+              }
+              return null;
+            }),
+            create: jest.fn((v: any) => ({ id: `manual-task-${db.tasks.size + 1}`, ...v })),
             save: jest.fn(async (v: any) => {
               db.tasks.set(v.id, v);
               return v;
@@ -1258,6 +1323,139 @@ describe('Flow 3: Traffic Sign Revalidation — Supertest Integration Suite (Rep
       });
       expect(db.tasks.get(TASK_OPEN)?.status).toBe(TaskStatus.COMPLETED);
       expect(db.creditTransactions).toHaveLength(2);
+    });
+  });
+
+  // =========================================================================
+  // 5. STAFF MANUAL TASK CREATION (UC #32), KPI SUMMARY & ESCALATED RESOLUTION (UC #33)
+  // =========================================================================
+  describe('5. Staff Operations: Manual Task Creation, KPI Summary & Escalated Resolution', () => {
+    it('TC-REV-18 [PASS]: Staff creates a manual revalidation task for a sign without active tasks, and blocks duplicate active tasks with 409', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/revalidation/tasks')
+        .set('x-test-user-id', STAFF_USER)
+        .set('x-test-user-role', 'STAFF')
+        .send({
+          verifiedSignId: SIGN_CLOSED,
+          priority: 'HIGH',
+          rewardCredits: 40,
+          expiresInDays: 7,
+          note: 'Citizen reported missing school zone warning sign',
+        })
+        .expect(201);
+
+      expect(res.body).toMatchObject({
+        verifiedSignId: SIGN_CLOSED,
+        priority: 'HIGH',
+        rewardCredits: 40,
+        status: TaskStatus.OPEN,
+      });
+
+      // Second manual task for same sign while active -> 409 Conflict
+      await request(app.getHttpServer())
+        .post('/api/v1/revalidation/tasks')
+        .set('x-test-user-id', STAFF_USER)
+        .set('x-test-user-role', 'STAFF')
+        .send({ verifiedSignId: SIGN_CLOSED })
+        .expect(409);
+    });
+
+    it('TC-REV-19 [PASS]: GET /api/v1/revalidation/tasks/summary returns operational KPI metrics', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/revalidation/tasks/summary')
+        .set('x-test-user-id', STAFF_USER)
+        .set('x-test-user-role', 'STAFF')
+        .expect(200);
+
+      expect(res.body).toMatchObject({
+        activeTasks: 2,
+        openTasks: 2,
+        evaluatingTasks: 0,
+        escalatedTasks: 0,
+        completedTasks: 1,
+        expiredTasks: 1,
+        totalEvidencesSubmitted: 0,
+      });
+    });
+
+    it('TC-REV-20 [PASS]: Staff resolves an ESCALATED_MODERATION task as CHANGED, updates sign, credits rewards, and closes moderation_cases', async () => {
+      db.minVotesRequired = 2;
+      const evRes = await request(app.getHttpServer())
+        .post(`/api/v1/revalidation/tasks/${TASK_OPEN}/evidence`)
+        .set('x-test-user-id', SURVEYOR_1)
+        .set('x-test-user-role', 'SURVEYOR')
+        .field('latitude', '10.7769')
+        .field('longitude', '106.7009')
+        .field('evidenceType', 'CHANGED')
+        .attach('file', VALID_PNG_BUFFER, { filename: 'changed-tie.png', contentType: 'image/png' })
+        .expect(201);
+
+      // Create tie -> ESCALATED_MODERATION + PENDING moderation_case
+      await request(app.getHttpServer())
+        .post(`/api/v1/revalidation/evidence/${evRes.body.id}/vote`)
+        .set('x-test-user-id', REVIEWER_1)
+        .set('x-test-user-role', 'REVIEWER')
+        .send({ decision: 'STILL_ACTIVE' })
+        .expect(201);
+      await request(app.getHttpServer())
+        .post(`/api/v1/revalidation/evidence/${evRes.body.id}/vote`)
+        .set('x-test-user-id', REVIEWER_2)
+        .set('x-test-user-role', 'REVIEWER')
+        .send({ decision: 'REMOVED' })
+        .expect(201);
+
+      expect(db.tasks.get(TASK_OPEN)?.status).toBe(TaskStatus.ESCALATED_MODERATION);
+      expect(db.moderationCases[0]?.status).toBe('PENDING');
+
+      const resolveRes = await request(app.getHttpServer())
+        .post(`/api/v1/revalidation/tasks/${TASK_OPEN}/resolve`)
+        .set('x-test-user-id', STAFF_USER)
+        .set('x-test-user-role', 'STAFF')
+        .send({
+          decision: 'CHANGED',
+          suggestedSignTypeId: 42,
+          note: 'Verified replacement speed limit 50 sign',
+        })
+        .expect(201);
+
+      expect(resolveRes.body).toMatchObject({
+        evaluated: true,
+        reason: 'STAFF_RESOLVED',
+        winningDecision: 'CHANGED',
+        signAction: 'UPDATED_TYPE',
+        resolvedBy: STAFF_USER,
+        moderationCasesClosed: 1,
+      });
+      expect(db.tasks.get(TASK_OPEN)?.status).toBe(TaskStatus.COMPLETED);
+      expect(db.signs.get(SIGN_NEAR)?.sign_type_id).toBe(42);
+      expect(db.moderationCases[0]?.status).toBe('RESOLVED');
+    });
+
+    it('TC-REV-21 [PASS]: Staff resolving escalated task as INVALID rejects evidence and reopens task to OPEN without paying rewards', async () => {
+      db.tasks.get(TASK_OPEN)!.status = TaskStatus.ESCALATED_MODERATION;
+      db.moderationCases.push({
+        case_type: 'REVIEW_CONFLICT',
+        target_entity_type: 'revalidation_task',
+        target_entity_id: TASK_OPEN,
+        status: 'PENDING',
+        resolution_note: 'All votes UNCLEAR',
+      });
+
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/revalidation/tasks/${TASK_OPEN}/resolve`)
+        .set('x-test-user-id', STAFF_USER)
+        .set('x-test-user-role', 'STAFF')
+        .send({ decision: 'INVALID', note: 'Blurry photo, reopen for fresh capture' })
+        .expect(201);
+
+      expect(res.body).toMatchObject({
+        reason: 'EVIDENCE_REJECTED_REOPENED',
+        signAction: 'NO_CHANGE',
+        moderationCasesClosed: 1,
+      });
+      expect(db.tasks.get(TASK_OPEN)?.status).toBe(TaskStatus.OPEN);
+      expect(db.moderationCases[0]?.status).toBe('RESOLVED');
+      expect(db.creditTransactions).toHaveLength(0);
     });
   });
 });
