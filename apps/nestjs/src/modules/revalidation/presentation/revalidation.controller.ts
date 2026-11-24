@@ -62,13 +62,26 @@ export class RevalidationController {
     @Query('radiusMeters') radiusMeters?: string,
   ) {
     const p = page ? parseInt(page, 10) : 1, n = ps ? parseInt(ps, 10) : 20;
-    const parsedLat = lat != null ? parseFloat(lat) : undefined;
-    const parsedLon = lon != null ? parseFloat(lon) : undefined;
-    const parsedRadius = radiusMeters != null ? parseFloat(radiusMeters) : 5000;
-    const spatial =
-      parsedLat != null && parsedLon != null && !Number.isNaN(parsedLat) && !Number.isNaN(parsedLon)
-        ? { lat: parsedLat, lon: parsedLon, radiusMeters: Number.isNaN(parsedRadius) ? 5000 : parsedRadius }
-        : undefined;
+    const anySpatial = lat != null || lon != null;
+    let spatial: { lat: number; lon: number; radiusMeters: number } | undefined;
+    if (anySpatial) {
+      if (lat == null || lon == null) {
+        throw new BadRequestException('Both lat and lon query parameters are required for spatial filtering');
+      }
+      const parsedLat = parseFloat(lat);
+      const parsedLon = parseFloat(lon);
+      if (Number.isNaN(parsedLat) || Number.isNaN(parsedLon)) {
+        throw new BadRequestException('lat and lon must be valid numbers');
+      }
+      if (parsedLat < -90 || parsedLat > 90 || parsedLon < -180 || parsedLon > 180) {
+        throw new BadRequestException('lat must be between -90 and 90 and lon must be between -180 and 180');
+      }
+      const parsedRadius = radiusMeters != null ? parseFloat(radiusMeters) : 5000;
+      if (Number.isNaN(parsedRadius) || parsedRadius <= 0) {
+        throw new BadRequestException('radiusMeters must be a positive number');
+      }
+      spatial = { lat: parsedLat, lon: parsedLon, radiusMeters: parsedRadius };
+    }
 
     return this.svc.listTasks(Number.isNaN(p) ? 1 : p, Number.isNaN(n) ? 20 : n, status, sort, spatial);
   }
