@@ -1,5 +1,3 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { getRepositoryToken } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { BountyBoardService } from './bounty-board.service';
 import {
@@ -59,19 +57,14 @@ describe('BountyBoardService', () => {
       query: jest.fn().mockResolvedValue([]),
     };
 
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        BountyBoardService,
-        { provide: getRepositoryToken(ReviewerQuestClaim), useValue: questRepo },
-        { provide: getRepositoryToken(UnverifiedSignCandidate), useValue: candidateRepo },
-        { provide: getRepositoryToken(RevalidationTask), useValue: taskRepo },
-        { provide: getRepositoryToken(ReviewerProfile), useValue: profileRepo },
-        { provide: SystemParametersService, useValue: paramService },
-        { provide: DataSource, useValue: dataSource },
-      ],
-    }).compile();
-
-    service = module.get<BountyBoardService>(BountyBoardService);
+    service = new BountyBoardService(
+      questRepo,
+      candidateRepo,
+      taskRepo,
+      profileRepo,
+      paramService,
+      dataSource,
+    );
   });
 
   describe('claimQuest', () => {
