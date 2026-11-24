@@ -212,11 +212,13 @@ async def create_navigation_session(
             tok = _os2.environ.get("INTERNAL_API_TOKEN", "")
             fee = 1
             try:
-                from sqlalchemy import text as sa_text
-                fee_rows = await db.execute(sa_text("SELECT value FROM system_parameters WHERE key = 'navigation_credit_fee' LIMIT 1"))
-                fr = fee_rows.mappings().first()
-                if fr and fr["value"]:
-                    fee = int(float(fr["value"]))
+                from app.models.pipeline import SystemParameter
+                fee_rows = await db.execute(
+                    select(SystemParameter.value).where(SystemParameter.key == "navigation_credit_fee").limit(1)
+                )
+                param_val = fee_rows.scalar_one_or_none()
+                if param_val:
+                    fee = int(float(param_val))
             except Exception:
                 pass
             _sid = str(row["id"]) if row else "unknown"

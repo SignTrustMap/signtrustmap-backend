@@ -78,3 +78,41 @@ The database uses PostGIS for spatial geometric calculations and pgvector for AI
 - Spatial queries must use standard ST functions (`ST_SetSRID`, `ST_MakePoint`, `ST_DWithin`, `ST_MakeEnvelope`).
 - Always use SRID **4326** (WGS 84 coordinate reference system: longitude, latitude).
 - AI vector searches must use cosine distance operator `<=>` or inner product `<#>` on indexed vector columns.
+
+---
+
+## 5. Strict Zero Raw SQL Policy (TypeORM & SQLAlchemy ORM)
+
+### Rule:
+- **Never** invoke `.query()` on `DataSource`, `EntityManager`, or `Repository` in NestJS.
+- **Never** invoke `sa_text()` or `text()` for standard table queries in FastAPI.
+- **Never** execute raw database queries in Controllers. Controllers must delegate persistence to Services.
+
+### Why:
+Raw SQL queries bypass TypeScript entity types, skip TypeORM lifecycle hooks/subscribers, cause `snake_case` vs `camelCase` DTO mapping errors, and risk SQL injection vulnerabilities through manual string concatenation.
+
+### Approved Patterns:
+1. **Basic CRUD**: Inject and use TypeORM `Repository<T>` (`findOne`, `find`, `save`, `update`, `delete`).
+2. **PostGIS Spatial Queries**: Use TypeORM `createQueryBuilder` with parameter binding or `SpatialQueryHelper`:
+   ```typescript
+   // ✅ RECOMMENDED:
+   return await this.verifiedSignRepo
+     .createQueryBuilder('vts')
+     .where('ST_DWithin(vts.location::geography, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)::geography, :radius)', {
+       lon,
+       lat,
+       radius,
+     })
+     .getMany();
+
+   // ❌ FORBIDDEN:
+   return await this.dataSource.query('SELECT * FROM verified_traffic_signs WHERE ST_DWithin(...)');
+   ```
+3. **Dynamic Conditions**: Use `qb.andWhere()` chaining with named parameters. Never assemble SQL using string concatenation (`${whereClause}`).
+4. **Mandatory Raw SQL Exceptions**: For Postgres maintenance operations where no ORM construct exists (e.g., `REFRESH MATERIALIZED VIEW` or writable `WITH ... MATERIALIZED` CTEs), an explicit ESLint disable comment with documented rationale is required:
+   ```typescript
+   // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: PostgreSQL materialized view refresh cannot be performed via TypeORM ORM
+   await this.dataSource.query('REFRESH MATERIALIZED VIEW CONCURRENTLY mv_community_leaderboard');
+   ```
+5. **Unit Tests**: Always mock repositories using `createMockRepository<T>()` from `common/test/mock-repository`. Never omit repository mocks and force services to fall back to `dataSource.query`.
+

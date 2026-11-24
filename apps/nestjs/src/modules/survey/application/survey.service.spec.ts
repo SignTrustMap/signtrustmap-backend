@@ -1002,4 +1002,73 @@ describe('SurveyService submission contract', () => {
       submissionId,
     );
   });
+
+  it('rejects video exceeding configurable survey.max_video_duration_seconds during validateMediaIntegrity', async () => {
+    const ftyp = Buffer.alloc(12);
+    ftyp.writeUInt32BE(12, 0);
+    ftyp.write('ftyp', 4, 'ascii');
+    ftyp.write('isom', 8, 'ascii');
+    const mvhd = Buffer.alloc(32);
+    mvhd.writeUInt32BE(32, 0);
+    mvhd.write('mvhd', 4, 'ascii');
+    mvhd[8] = 0;
+    mvhd.writeUInt32BE(1000, 20);
+    mvhd.writeUInt32BE(1200000, 24); // 1200s > 900s
+    const moovHeader = Buffer.alloc(8);
+    moovHeader.writeUInt32BE(8 + mvhd.length, 0);
+    moovHeader.write('moov', 4, 'ascii');
+    const mp4Buf = Buffer.concat([ftyp, moovHeader, mvhd]);
+
+    (service as any).paramService = {
+      getNumber: jest.fn().mockResolvedValue(900),
+    };
+    storage.getObjectBuffer = jest.fn().mockResolvedValue(mp4Buf);
+    const manager = { save: jest.fn(async (_ent: any, entity: any) => entity) };
+    const mediaFile = {
+      id: 'mf-vid-1',
+      mediaType: MediaFileType.VIDEO,
+      fileUrl: 'stm-raw-videos/raw/s1/long.mp4',
+      durationSeconds: null,
+    } as any;
+
+    const result = await (service as any).validateMediaFiles(
+      submission,
+      [mediaFile],
+      manager,
+    );
+
+    expect(result.validationErrors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: SubmissionValidationCode.VIDEO_DURATION_EXCEEDED,
+          mediaType: MediaFileType.VIDEO,
+        }),
+      ]),
+    );
+    expect(result.correctionRequirements).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: CorrectionRequirementCode.REPLACE_FILE }),
+      ]),
+    );
+  });
+
+  it('enforces configurable survey.max_gpx_size_mb in initialize', async () => {
+    submission.submissionType = SubmissionType.VIDEO_GPX;
+    submissionRepo.findOne.mockResolvedValue(submission);
+    (service as any).paramService = {
+      getNumber: jest.fn().mockImplementation(async (key: string) => {
+        if (key === 'survey.max_gpx_size_mb') return 5;
+        return 50;
+      }),
+    };
+
+    await expect(
+      service.initialize(userId, submissionId, {
+        originalFilename: 'huge.gpx',
+        mediaType: MediaFileType.GPX,
+        totalSizeBytes: 6 * 1024 * 1024, // 6 MB > 5 MB
+        totalChunks: 1,
+      }),
+    ).rejects.toThrow('Total file size');
+  });
 });

@@ -76,6 +76,16 @@ export class VerifiedSignController {
     return this.verifiedSigns.confirmSign(user?.id ?? user?.sub, id, body);
   }
 
+  @Public()
+  @ApiOperation({
+    summary: 'Get verified sign version history and lifecycle events',
+    description: 'Retrieve immutable historical snapshots (previous sign type, location, crop URL) and lifecycle audit events for a verified traffic sign',
+  })
+  @Get(':id/history')
+  getHistory(@Param('id', ParseUUIDPipe) id: string) {
+    return this.verifiedSigns.getSignHistory(id);
+  }
+
   @ApiBearerAuth()
   @Roles('STAFF', 'ADMIN')
   @ApiOperation({ summary: 'Update verified sign', description: 'Staff/Admin updates status, type, or coordinates of an existing verified sign' })

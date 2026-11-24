@@ -82,6 +82,7 @@ export class AuthService {
             .orIgnore()
             .execute();
         } else {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           await manager.query(`INSERT INTO driver_profiles (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [savedUser.id]);
         }
       } else if (targetRoleCode === 'REVIEWER') {
@@ -95,6 +96,7 @@ export class AuthService {
             .orIgnore()
             .execute();
         } else {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           await manager.query(`INSERT INTO reviewer_profiles (user_id, reliability_score) VALUES ($1, 0.5) ON CONFLICT (user_id) DO NOTHING`, [savedUser.id]);
         }
       } else if (targetRoleCode === 'SURVEYOR') {
@@ -108,6 +110,7 @@ export class AuthService {
             .orIgnore()
             .execute();
         } else {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           await manager.query(`INSERT INTO surveyor_profiles (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [savedUser.id]);
         }
       }
@@ -176,6 +179,7 @@ export class AuthService {
       });
       linkedAccounts = records.map((r) => ({ user_id: r.userId, userId: r.userId }));
     } else {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       linkedAccounts = await this.dataSource.query(
         `SELECT "user_id" FROM "oauth_accounts" WHERE "provider" = $1 AND "provider_user_id" = $2 LIMIT 2`,
         [provider, googleUser.providerUserId],
@@ -206,6 +210,7 @@ export class AuthService {
               email: googleUser.email,
             });
           } else {
+            // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
             await manager.query(
               `INSERT INTO "oauth_accounts" ("user_id","provider","provider_user_id","email") VALUES ($1,$2,$3,$4)`,
               [saved.id, provider, googleUser.providerUserId, googleUser.email],
@@ -218,6 +223,7 @@ export class AuthService {
         const defaultRole = await manager.findOne(Role, { where: { code: 'DRIVER' } });
         if (defaultRole) await manager.save(manager.create(UserRole, { userId: saved.id, roleId: defaultRole.id, isActive: true }));
         if (defaultRole?.code === 'DRIVER') {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           await manager.query(
             `INSERT INTO driver_profiles (user_id)
              VALUES ($1)
@@ -237,6 +243,7 @@ export class AuthService {
               .orIgnore()
               .execute();
           } else {
+            // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
             await manager.query(
               `INSERT INTO surveyor_profiles (user_id)
                VALUES ($1)
@@ -261,6 +268,7 @@ export class AuthService {
       });
       existingLinks = records.map((r) => ({ providerUserId: r.providerUserId }));
     } else {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       existingLinks = await this.dataSource.query(
         `SELECT "provider_user_id" AS "providerUserId" FROM "oauth_accounts" WHERE "user_id" = $1 AND "provider" = $2 LIMIT 2`,
         [user.id, provider],
@@ -278,6 +286,7 @@ export class AuthService {
           email: googleUser.email,
         });
       } else {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await this.dataSource.query(
           `INSERT INTO "oauth_accounts" ("user_id","provider","provider_user_id","email") VALUES ($1,$2,$3,$4)`,
           [user.id, provider, googleUser.providerUserId, googleUser.email],
@@ -304,6 +313,7 @@ export class AuthService {
       if (wallet) {
         walletBalance = Number(wallet.balance);
       } else if (this.dataSource) {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const wRows: any[] = await this.dataSource.query('SELECT balance FROM wallets WHERE user_id=$1', [userId]);
         if (wRows.length) walletBalance = Number(wRows[0].balance);
       }
@@ -315,6 +325,7 @@ export class AuthService {
         const dProfile = await driverRepo.findOne({ where: { userId } });
         if (dProfile) profileStats.driver = dProfile;
       } else {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const dRows: any[] = await this.dataSource.query('SELECT * FROM driver_profiles WHERE user_id=$1', [userId]);
         if (dRows.length) profileStats.driver = dRows[0];
       }
@@ -325,6 +336,7 @@ export class AuthService {
         const sProfile = await surveyorRepo.findOne({ where: { userId } });
         if (sProfile) profileStats.surveyor = sProfile;
       } else {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const sRows: any[] = await this.dataSource.query('SELECT * FROM surveyor_profiles WHERE user_id=$1', [userId]);
         if (sRows.length) profileStats.surveyor = sRows[0];
       }
@@ -335,6 +347,7 @@ export class AuthService {
         const rProfile = await reviewerRepo.findOne({ where: { userId } });
         if (rProfile) profileStats.reviewer = rProfile;
       } else {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const rRows: any[] = await this.dataSource.query('SELECT * FROM reviewer_profiles WHERE user_id=$1', [userId]);
         if (rRows.length) profileStats.reviewer = rRows[0];
       }
@@ -366,6 +379,7 @@ export class AuthService {
       if (wallet) {
         walletBalance = Number(wallet.balance);
       } else if (this.dataSource) {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const wRows: any[] = await this.dataSource.query('SELECT balance FROM wallets WHERE user_id=$1', [userId]);
         if (wRows.length) walletBalance = Number(wRows[0].balance);
       }
@@ -377,6 +391,7 @@ export class AuthService {
         const dProfile = await driverRepo.findOne({ where: { userId } });
         if (dProfile) profileStats.driver = dProfile;
       } else {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const dRows: any[] = await this.dataSource.query('SELECT * FROM driver_profiles WHERE user_id=$1', [userId]);
         if (dRows.length) profileStats.driver = dRows[0];
       }
@@ -387,6 +402,7 @@ export class AuthService {
         const sProfile = await surveyorRepo.findOne({ where: { userId } });
         if (sProfile) profileStats.surveyor = sProfile;
       } else {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const sRows: any[] = await this.dataSource.query('SELECT * FROM surveyor_profiles WHERE user_id=$1', [userId]);
         if (sRows.length) profileStats.surveyor = sRows[0];
       }
@@ -397,6 +413,7 @@ export class AuthService {
         const rProfile = await reviewerRepo.findOne({ where: { userId } });
         if (rProfile) profileStats.reviewer = rProfile;
       } else {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const rRows: any[] = await this.dataSource.query('SELECT * FROM reviewer_profiles WHERE user_id=$1', [userId]);
         if (rRows.length) profileStats.reviewer = rRows[0];
       }
@@ -438,8 +455,10 @@ export class AuthService {
       }
 
       if (normalized === 'SURVEYOR') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await this.dataSource.query(`INSERT INTO surveyor_profiles (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [userId]);
       } else if (normalized === 'REVIEWER') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await this.dataSource.query(`INSERT INTO reviewer_profiles (user_id, reliability_score) VALUES ($1, 0.5) ON CONFLICT (user_id) DO NOTHING`, [userId]);
       }
     } else {
@@ -461,6 +480,7 @@ export class AuthService {
         } else {
           await this.userRoleRepo.save(this.userRoleRepo.create({ userId, roleId: driverRole.id, isActive: true }));
         }
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await this.dataSource.query(`INSERT INTO driver_profiles (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [userId]);
       }
       currentRoles = await this.getRolesForUser(userId);
@@ -486,7 +506,9 @@ export class AuthService {
         used: false,
       }));
     } else {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       await this.dataSource.query(`UPDATE auth_otp_tokens SET used = true WHERE email = $1 AND used = false`, [email]);
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       await this.dataSource.query(`INSERT INTO auth_otp_tokens (email, otp, expires_at) VALUES ($1,$2,$3)`, [email, otp, new Date(Date.now()+10*60*1000)]);
     }
     return { sent: true, message: 'OTP sent to email' };
@@ -503,6 +525,7 @@ export class AuthService {
       if (new Date(token.expiresAt) < new Date()) throw new BadRequestException('OTP expired');
       return { valid: true, email };
     }
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows: any[] = await this.dataSource.query(`SELECT id, expires_at FROM auth_otp_tokens WHERE email=$1 AND otp=$2 AND used=false ORDER BY created_at DESC LIMIT 1`, [email, otp]);
     if (rows.length === 0) throw new BadRequestException('Invalid OTP');
     if (new Date(rows[0].expires_at) < new Date()) throw new BadRequestException('OTP expired');
@@ -523,7 +546,9 @@ export class AuthService {
         used: false,
       }));
     } else {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       await this.dataSource.query(`UPDATE auth_otp_tokens SET used = true WHERE email = $1 AND used = false`, [email]);
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       await this.dataSource.query(`INSERT INTO auth_otp_tokens (email, otp, expires_at) VALUES ($1,$2,$3)`, [email, otp, new Date(Date.now() + 10 * 60 * 1000)]);
     }
     const isDev = process.env.NODE_ENV !== 'production';
@@ -546,6 +571,7 @@ export class AuthService {
       await otpRepo.update({ id: token.id }, { used: true });
       return { reset: true };
     }
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows: any[] = await this.dataSource.query(`SELECT id, expires_at FROM auth_otp_tokens WHERE email=$1 AND otp=$2 AND used=false ORDER BY created_at DESC LIMIT 1`, [email, otp]);
     if (rows.length === 0) throw new BadRequestException('Invalid OTP');
     if (new Date(rows[0].expires_at) < new Date()) throw new BadRequestException('OTP expired');
@@ -553,6 +579,7 @@ export class AuthService {
     if (!user) throw new BadRequestException('User not found');
     user.passwordHash = await bcrypt.hash(newPassword, 10);
     await this.userRepo.save(user);
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     await this.dataSource.query(`UPDATE auth_otp_tokens SET used=true WHERE id=$1`, [rows[0].id]);
     return { reset: true };
   }

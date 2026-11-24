@@ -284,6 +284,80 @@ describe('VerifiedSignService', () => {
       );
       expect(walletService.creditUser).not.toHaveBeenCalled();
     });
+
+    it('tags dispute note with explicit reportType (OUTDATED / WRONG_INFO)', async () => {
+      const targetSign = sign({ id: 'target-sign-2' });
+      repository.findById.mockResolvedValue(targetSign);
+      dataSource.query.mockResolvedValue([]);
+      revalidationService.createOrEscalateDisputeTask.mockResolvedValue({ id: 'reval-task-1000' });
+
+      const result = await testService.confirmSign('driver-2', 'target-sign-2', {
+        isPresent: false,
+        reportType: 'OUTDATED',
+        note: 'Speed limit changed from 50 to 60',
+      });
+
+      expect(result.reportType).toBe('OUTDATED');
+      expect(revalidationService.createOrEscalateDisputeTask).toHaveBeenCalledWith(
+        'target-sign-2',
+        'driver-2',
+        undefined,
+        undefined,
+        '[OUTDATED] Speed limit changed from 50 to 60',
+      );
+    });
+  });
+
+  describe('getSignHistory', () => {
+    it('throws NotFoundException when verified sign does not exist', async () => {
+      repository.findById.mockResolvedValue(null);
+      const historySvc = new VerifiedSignService(repository, catalog, { query: jest.fn() } as any);
+      await expect(historySvc.getSignHistory('missing-sign')).rejects.toThrow(NotFoundException);
+    });
+
+    it('returns full verified_sign_history snapshots and sign_lifecycle_events', async () => {
+      const targetSign = sign({ id: 'sign-hist-1' });
+      repository.findById.mockResolvedValue(targetSign);
+      const query = jest.fn()
+        .mockResolvedValueOnce([
+          {
+            id: '10',
+            verified_sign_id: 'sign-hist-1',
+            previous_sign_type_id: 2,
+            previous_sign_code: 'P.127',
+            previous_sign_name_vi: 'Tốc độ tối đa 50',
+            previous_sign_name_en: 'Max speed 50',
+            previous_latitude: 10.77,
+            previous_longitude: 106.69,
+            previous_traffic_direction: 180,
+            previous_crop_url: 'crops/old.jpg',
+            change_reason: 'REVALIDATION_UPDATE',
+            changed_at: new Date('2026-09-01T00:00:00Z'),
+          },
+        ])
+        .mockResolvedValueOnce([
+          {
+            id: '20',
+            verified_sign_id: 'sign-hist-1',
+            event_type: 'REVALIDATION_CHANGED',
+            triggered_by: 'u-1',
+            triggered_by_name: 'Nguyen Van A',
+            note: 'CHANGED: sign type updated to #3',
+            created_at: new Date('2026-09-01T00:00:00Z'),
+          },
+        ]);
+
+      const historySvc = new VerifiedSignService(repository, catalog, { query } as any);
+      const res = await historySvc.getSignHistory('sign-hist-1');
+
+      expect(res.signId).toBe('sign-hist-1');
+      expect(res.currentSign.id).toBe('sign-hist-1');
+      expect(res.history).toHaveLength(1);
+      expect(res.history[0].previousSignCode).toBe('P.127');
+      expect(res.history[0].previousCropUrl).toBe('crops/old.jpg');
+      expect(res.lifecycleEvents).toHaveLength(1);
+      expect(res.lifecycleEvents[0].eventType).toBe('REVALIDATION_CHANGED');
+    });
   });
 
 

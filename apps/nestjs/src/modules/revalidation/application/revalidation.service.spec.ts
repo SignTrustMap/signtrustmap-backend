@@ -8,6 +8,7 @@ import { RevalidationDecision } from '../infrastructure/persistence/revalidation
 import { RevalidationEvidence } from '../infrastructure/persistence/revalidation-evidence.entity';
 import {
   RevalidationTask,
+  TaskPriority,
   TaskStatus,
 } from '../infrastructure/persistence/revalidation-task.entity';
 import { RevalidationService } from './revalidation.service';
@@ -339,6 +340,11 @@ describe('RevalidationService', () => {
         }),
       });
 
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining('LEFT JOIN traffic_sign_types tst ON tst.id = vts.sign_type_id'),
+        expect.any(Array),
+      );
+
       // With explicit confirmation -> succeeds
       const txQuery = jest.fn(async (sql: string) => {
         if (sql.includes('FROM revalidation_tasks') && sql.includes('FOR UPDATE')) return [{ status: TaskStatus.OPEN }];
@@ -599,7 +605,7 @@ describe('RevalidationService', () => {
         if (sql.includes('FROM revalidation_evidences')) return evidenceRows ?? [{ id: 'evidence-id', user_id: 'surveyor-id', evidence_type: 'STILL_ACTIVE' }];
         if (sql.includes('SELECT decision, reviewer_id, evidence_id')) return decisionRows;
         if (sql.includes('min_votes_required')) return [];
-        if (/SELECT sign_type_id FROM verified_traffic_signs/.test(sql)) return [{ sign_type_id: 7 }];
+        if (/SELECT sign_type_id.*FROM verified_traffic_signs/s.test(sql)) return [{ sign_type_id: 7, location: null, traffic_direction: null, sign_crop_url: null }];
         if (sql.includes('SELECT id FROM traffic_sign_types')) return [{ id: 99 }];
         return [];
       });
@@ -673,7 +679,7 @@ describe('RevalidationService', () => {
       );
       expect(query).toHaveBeenCalledWith(
         expect.stringContaining('INSERT INTO verified_sign_history'),
-        ['sign-id', 7],
+        ['sign-id', 7, null, null, null],
       );
     });
 
@@ -917,6 +923,25 @@ describe('RevalidationService', () => {
         expect.stringContaining("SET status = 'ESCALATED_MODERATION'"),
         ['task-id'],
       );
+    });
+
+    it('escalates to moderation when UNCLEAR/INVALID votes form the majority over valid votes', async () => {
+      const { service, query, wallet } = consensusHarness([
+        { decision: 'UNCLEAR', reviewer_id: 'r1', evidence_id: 'evidence-id', suggested_sign_type_id: null },
+        { decision: 'INVALID', reviewer_id: 'r2', evidence_id: 'evidence-id', suggested_sign_type_id: null },
+        { decision: 'STILL_ACTIVE', reviewer_id: 'r3', evidence_id: 'evidence-id', suggested_sign_type_id: null },
+      ]);
+      const result = await service.evaluateRevalidationConsensus('task-id');
+      expect(result).toMatchObject({ reason: 'CONFLICT', escalatedToModeration: true });
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining('INSERT INTO moderation_cases'),
+        ['task-id', expect.stringContaining('UNCLEAR/INVALID')],
+      );
+      expect(query).toHaveBeenCalledWith(
+        expect.stringContaining("SET status = 'ESCALATED_MODERATION'"),
+        ['task-id'],
+      );
+      expect(wallet.creditUser).not.toHaveBeenCalled();
     });
   });
 
@@ -1252,6 +1277,272 @@ describe('RevalidationService', () => {
         service.requestEvidenceRecapture('ev-1', 'reviewer-id', { reason: 'BLURRY' }),
       ).rejects.toThrow('Revalidation task is closed to recapture requests');
       expect(manager.query).toHaveBeenCalledWith(expect.stringContaining('FOR UPDATE OF rt'), ['ev-1']);
+    });
+  });
+
+  describe('Phase 2 Governance: media validation, duplicate prevention, full history, reward policies & driver credit', () => {
+    it('rejects duplicate active evidence submission from the same surveyor on the same task', async () => {
+      const tasks = {
+        findOne: jest.fn().mockResolvedValue({ id: 'task-dup', verifiedSignId: 'sign-1', status: TaskStatus.EVALUATING }),
+      } as unknown as Repository<RevalidationTask>;
+      const dataSource = {
+        query: jest.fn().mockImplementation(async (sql: string) => {
+          if (sql.includes('ST_DWithin')) return [];
+          if (sql.includes('ST_DistanceSphere')) return [{ distance_meters: 10 }];
+          if (sql.includes('SELECT id, sign_type_id FROM verified_traffic_signs')) return [{ id: 'sign-1', sign_type_id: 1 }];
+          if (sql.includes('COUNT(*)::int AS cnt')) return [{ cnt: 1 }];
+          if (sql.includes('FROM revalidation_evidences ev')) return [{ id: 'existing-ev-1' }];
+          return [];
+        }),
+      } as any;
+      const service = new RevalidationService(tasks, {} as any, {} as any, dataSource, {} as any, {} as any, {} as any);
+
+      await expect(
+        service.submitEvidence('task-dup', 'surv-1', { latitude: 10.77, longitude: 106.69, mediaUrl: 'crops/a.jpg' }),
+      ).rejects.toThrow('already submitted active evidence');
+    });
+
+    it('rejects uploaded evidence file with invalid image magic signature', async () => {
+      const tasks = {
+        findOne: jest.fn().mockResolvedValue({ id: 'task-sig', verifiedSignId: 'sign-1', status: TaskStatus.OPEN }),
+      } as unknown as Repository<RevalidationTask>;
+      const dataSource = {
+        query: jest.fn().mockImplementation(async (sql: string) => {
+          if (sql.includes('ST_DWithin')) return [];
+          if (sql.includes('ST_DistanceSphere')) return [{ distance_meters: 5 }];
+          if (sql.includes('SELECT id, sign_type_id FROM verified_traffic_signs')) return [{ id: 'sign-1', sign_type_id: 1 }];
+          if (sql.includes('COUNT(*)::int AS cnt')) return [{ cnt: 0 }];
+          return [];
+        }),
+      } as any;
+      const service = new RevalidationService(tasks, {} as any, {} as any, dataSource, { putObject: jest.fn() } as any, {} as any, {} as any);
+      const fakeFile = {
+        originalname: 'fake.jpg',
+        mimetype: 'image/jpeg',
+        size: 16,
+        buffer: Buffer.from('not-an-image-buf'),
+      } as Express.Multer.File;
+
+      await expect(
+        service.submitEvidence('task-sig', 'surv-1', { latitude: 10.77, longitude: 106.69 }, fakeFile),
+      ).rejects.toThrow('accepted image signature');
+    });
+
+    it('snapshots full previous sign state into verified_sign_history on REMOVED and rewards original Driver reporter', async () => {
+      const wallet = {
+        resolveRewardAmount: jest.fn().mockResolvedValue(30),
+        creditUser: jest.fn().mockResolvedValue({}),
+      } as any;
+      const notifications = { createBulk: jest.fn().mockResolvedValue(undefined) } as any;
+      const paramService = {
+        getString: jest.fn().mockResolvedValue('SPLIT_EQUAL'),
+        getNumber: jest.fn().mockResolvedValue(15),
+      } as any;
+
+      const managerQuery = jest.fn().mockImplementation(async (sql: string) => {
+        if (sql.includes('SELECT verified_sign_id')) return [{ verified_sign_id: 'sign-rm' }];
+        if (sql.includes('FROM verified_traffic_signs') && sql.includes('FOR UPDATE')) return [{ id: 'sign-rm' }];
+        if (sql.includes('FROM revalidation_tasks') && sql.includes('FOR UPDATE')) {
+          return [{ id: 'task-rm', verified_sign_id: 'sign-rm', freshness_rule_id: null, reward_credits: 30, status: TaskStatus.EVALUATING }];
+        }
+        if (sql.includes('FROM revalidation_evidences')) {
+          return [
+            { id: 'ev-2', user_id: 'surv-2', media_url: 'crops/r2.jpg', evidence_type: 'REMOVED' },
+            { id: 'ev-1', user_id: 'surv-1', media_url: 'crops/r1.jpg', evidence_type: 'REMOVED' },
+            { id: 'ev-0', user_id: 'surv-wrong', media_url: 'crops/w.jpg', evidence_type: 'STILL_ACTIVE' },
+          ];
+        }
+        if (sql.includes('FROM revalidation_decisions')) {
+          return [{ decision: 'REMOVED', reviewer_id: 'rev-1', evidence_id: 'ev-1', suggested_sign_type_id: null }];
+        }
+        if (sql.includes('SELECT sign_type_id, location, traffic_direction, sign_crop_url')) {
+          return [{ sign_type_id: 5, location: 'POINT(106.69 10.77)', traffic_direction: 90, sign_crop_url: 'crops/orig.jpg' }];
+        }
+        return [];
+      });
+
+      const dataSource = {
+        query: jest.fn().mockImplementation(async (sql: string) => {
+          if (sql.includes('min_votes_required')) return [{ min_votes_required: 1 }];
+          if (sql.includes('FROM sign_confirmations')) return [{ user_id: 'driver-reporter-1' }];
+          return [];
+        }),
+        transaction: jest.fn(async (cb: any) => cb({ query: managerQuery })),
+      } as any;
+
+      const service = new RevalidationService(
+        {} as any,
+        {} as any,
+        {} as any,
+        dataSource,
+        {} as any,
+        wallet,
+        notifications,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        paramService,
+      );
+
+      const summary = await service.evaluateRevalidationConsensus('task-rm');
+
+      expect(summary.signAction).toBe('DECOMMISSIONED');
+      expect(summary.rewardPolicy).toBe('SPLIT_EQUAL');
+      expect(summary.creditedSubmitters).toBe(2); // only surv-1 & surv-2 (aligned REMOVED), NOT surv-wrong
+      expect(summary.rewardPerSubmitter).toBe(15); // 30 split equally among 2
+      expect(summary.creditedReporters).toBe(1); // driver-reporter-1
+      expect(managerQuery).toHaveBeenCalledWith(
+        expect.stringContaining('previous_crop_url'),
+        ['sign-rm', 5, 'POINT(106.69 10.77)', 90, 'crops/orig.jpg'],
+      );
+      expect(wallet.creditUser).toHaveBeenCalledWith(
+        'driver-reporter-1',
+        15,
+        'REVALIDATION_REWARD',
+        'revalidation_task',
+        'task-rm',
+        expect.stringContaining('Driver outdated/missing sign report verified'),
+        { idempotencyKey: 'revalidation-reporter:task-rm:driver-reporter-1' },
+      );
+    });
+
+    it('awards only the earliest aligned submitter under FIRST_VALID policy', async () => {
+      const wallet = {
+        resolveRewardAmount: jest.fn().mockResolvedValue(20),
+        creditUser: jest.fn().mockResolvedValue({}),
+      } as any;
+      const paramService = {
+        getString: jest.fn().mockResolvedValue('FIRST_VALID'),
+        getNumber: jest.fn().mockResolvedValue(0),
+      } as any;
+      const managerQuery = jest.fn().mockImplementation(async (sql: string) => {
+        if (sql.includes('SELECT verified_sign_id')) return [{ verified_sign_id: 'sign-fv' }];
+        if (sql.includes('FROM verified_traffic_signs') && sql.includes('FOR UPDATE')) return [{ id: 'sign-fv' }];
+        if (sql.includes('FROM revalidation_tasks') && sql.includes('FOR UPDATE')) {
+          return [{ id: 'task-fv', verified_sign_id: 'sign-fv', freshness_rule_id: null, reward_credits: 20, status: TaskStatus.EVALUATING }];
+        }
+        if (sql.includes('FROM revalidation_evidences')) {
+          // Ordered DESC by submitted_at, so surv-first is last in array (earliest chronologically)
+          return [
+            { id: 'ev-2', user_id: 'surv-second', media_url: 'crops/2.jpg', evidence_type: 'STILL_ACTIVE' },
+            { id: 'ev-1', user_id: 'surv-first', media_url: 'crops/1.jpg', evidence_type: 'STILL_ACTIVE' },
+          ];
+        }
+        if (sql.includes('FROM revalidation_decisions')) {
+          return [{ decision: 'UNCHANGED', reviewer_id: 'rev-1', evidence_id: 'ev-1', suggested_sign_type_id: null }];
+        }
+        return [];
+      });
+      const dataSource = {
+        query: jest.fn().mockResolvedValue([]),
+        transaction: jest.fn(async (cb: any) => cb({ query: managerQuery })),
+      } as any;
+
+      const service = new RevalidationService(
+        {} as any,
+        {} as any,
+        {} as any,
+        dataSource,
+        {} as any,
+        wallet,
+        { createBulk: jest.fn().mockResolvedValue(undefined) } as any,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        paramService,
+      );
+
+      const summary = await service.evaluateRevalidationConsensus('task-fv');
+      expect(summary.rewardPolicy).toBe('FIRST_VALID');
+      expect(summary.creditedSubmitters).toBe(1);
+      expect(wallet.creditUser).toHaveBeenCalledWith(
+        'surv-first',
+        20,
+        'REVALIDATION_REWARD',
+        'revalidation_task',
+        'task-fv',
+        expect.any(String),
+        { idempotencyKey: 'revalidation:task-fv:REVALIDATION_REWARD:surv-first' },
+      );
+    });
+
+    it('creates or escalates a HIGH-priority revalidation task via triggerDetectedChangeTask', async () => {
+      const tasks = {
+        findOne: jest.fn().mockResolvedValue(null),
+        create: jest.fn((v) => ({ id: 'task-det-1', ...v })),
+        save: jest.fn(async (v) => v),
+      } as any;
+      const dataSource = { query: jest.fn().mockResolvedValue([]) } as any;
+      const service = new RevalidationService(tasks, {} as any, {} as any, dataSource, {} as any, {} as any, {} as any);
+
+      const task = await service.triggerDetectedChangeTask('sign-99', 42, 'AI observed P.127 instead of P.102');
+      expect(task.priority).toBe(TaskPriority.HIGH);
+      expect(task.status).toBe(TaskStatus.OPEN);
+      expect(dataSource.query).toHaveBeenCalledWith(
+        expect.stringContaining('CHANGE_DETECTED'),
+        ['sign-99', 'AI observed P.127 instead of P.102'],
+      );
+    });
+
+    it('lists evidences for task, sign, reviewer queue, and decisions with full metadata mapping', async () => {
+      const validUuid = '11111111-2222-4333-8444-555555555555';
+      const tasks = {
+        findOne: jest.fn().mockResolvedValue({ id: validUuid, verifiedSignId: validUuid, status: TaskStatus.EVALUATING }),
+      } as any;
+      const evidences = {
+        findOne: jest.fn().mockResolvedValue({ id: 'ev-1', taskId: validUuid }),
+      } as any;
+      const decisions = {
+        find: jest.fn().mockResolvedValue([]),
+      } as any;
+      const dataSource = {
+        query: jest.fn().mockImplementation(async (sql: string) => {
+          if (sql.includes('COUNT(*)::int AS cnt')) return [{ cnt: 1 }];
+          if (sql.includes('FROM revalidation_evidences ev') && sql.includes('vts.sign_crop_url')) {
+            return [{ evidence_id: 'ev-1', task_id: validUuid, user_id: 'u-1', media_url: 'revalidation/a.jpg', evidence_type: 'STILL_ACTIVE', is_live_capture: true, accuracy_meters: 5, heading_degrees: 90, submitted_at: new Date(), latitude: 10.77, longitude: 106.69, distance_meters: 3.2, task_status: 'EVALUATING', reward_credits: 20, verified_sign_id: validUuid, sign_crop_url: 'crops/s.jpg', sign_code: 'P.102', name_vi: 'Cấm', name_en: 'No Entry', current_vote_count: 1 }];
+          }
+          if (sql.includes('FROM revalidation_evidences ev') && sql.includes('rt.verified_sign_id')) {
+            return [{ id: 'ev-1', task_id: validUuid, user_id: 'u-1', surveyor_name: 'Surv A', surveyor_email: 'a@stm.dev', media_url: 'revalidation/a.jpg', evidence_type: 'STILL_ACTIVE', is_live_capture: true, accuracy_meters: 4.5, heading_degrees: 90 }];
+          }
+          if (sql.includes('FROM revalidation_evidences ev')) {
+            return [{ id: 'ev-1', task_id: validUuid, user_id: 'u-1', surveyor_name: 'Surv A', surveyor_email: 'a@stm.dev', media_url: 'revalidation/a.jpg', evidence_type: 'STILL_ACTIVE', is_live_capture: true, accuracy_meters: 4.5, heading_degrees: 90 }];
+          }
+          if (sql.includes('FROM revalidation_decisions rd')) {
+            return [{ id: 'd-1', evidence_id: 'ev-1', reviewer_id: 'rev-1', reviewer_name: 'Rev A', reviewer_email: 'r@stm.dev', decision: 'UNCHANGED', suggested_sign_type_id: null, note: 'Clear', decided_at: new Date() }];
+          }
+          return [];
+        }),
+      } as any;
+      const service = new RevalidationService(tasks, evidences, decisions, dataSource, { getPublicUrl: (_b: string, k: string) => `https://s3.test/${k}` } as any, {} as any, {} as any);
+
+      const byTask = await service.listEvidencesForTask(validUuid);
+      expect(byTask).toHaveLength(1);
+      expect(byTask[0].decisions).toHaveLength(1);
+
+      const bySign = await service.listEvidencesForSign(validUuid);
+      expect(bySign).toHaveLength(1);
+
+      const queue = await service.listEvidenceQueue('rev-2', 1, 10);
+      expect(queue.total).toBe(1);
+      expect(queue.items[0].evidenceId).toBe('ev-1');
+
+      const decs = await service.listDecisions('ev-1');
+      expect(decs).toHaveLength(1);
+      expect(decs[0].decision).toBe('UNCHANGED');
     });
   });
 });

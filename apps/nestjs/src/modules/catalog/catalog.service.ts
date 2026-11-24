@@ -160,10 +160,12 @@ export class CatalogService {
       );
     }
     // Clean up foreign key references from new_sign_type_reports and freshness_rules before deletion
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     await this.dataSource.query(
       `UPDATE "new_sign_type_reports" SET "proposed_category_id" = NULL WHERE "proposed_category_id" = $1`,
       [id],
     );
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     await this.dataSource.query(
       `DELETE FROM "freshness_rules" WHERE "sign_category_id" = $1`,
       [id],
@@ -438,19 +440,15 @@ export class CatalogService {
   }
 
   async upsertParameter(key: string, dto: UpsertSystemParameterDto, by: string) {
-    let parameter = await this.parameters.findOne({ where: { key } });
-    if (parameter) {
-      parameter.value = dto.value;
-      if (dto.description !== undefined) parameter.description = dto.description;
-      parameter.updatedBy = by;
-      return this.parameters.save(parameter);
+    const parameter = await this.parameters.findOne({ where: { key } });
+    if (!parameter) {
+      throw new NotFoundException(
+        `System parameter "${key}" not found. Adding new variables to system configuration is not permitted; configuration is GET and PUT on existing variables only.`,
+      );
     }
-    parameter = this.parameters.create({
-      key,
-      value: dto.value,
-      description: dto.description ?? null,
-      updatedBy: by,
-    });
+    parameter.value = dto.value;
+    if (dto.description !== undefined) parameter.description = dto.description;
+    parameter.updatedBy = by;
     return this.parameters.save(parameter);
   }
 
@@ -622,6 +620,7 @@ export class CatalogService {
 
   private async validateSignCodePrefix(signCode: string): Promise<void> {
     const prefix = signCode.split('.')[0];
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: PostgreSQL POSIX regex operator (~) and split_part
     const prefixes: Array<{ prefix: string }> = await this.dataSource.query(
       `SELECT DISTINCT split_part(upper(sign_code), '.', 1) AS prefix
        FROM traffic_sign_types
@@ -807,6 +806,7 @@ export class CatalogService {
           .orderBy('c.createdAt', 'DESC')
           .limit(500);
         const res = await qb.getRawMany();
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         candidates = res !== undefined && res !== null ? res : await this.dataSource.query(
           `SELECT c.id, c.submission_id, c.confidence_score, c.status
            FROM unverified_sign_candidates c
@@ -816,6 +816,7 @@ export class CatalogService {
            LIMIT 500`,
         );
       } catch {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         candidates = await this.dataSource.query(
           `SELECT c.id, c.submission_id, c.confidence_score, c.status
            FROM unverified_sign_candidates c
@@ -826,6 +827,7 @@ export class CatalogService {
         );
       }
     } else {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       candidates = await this.dataSource.query(
         `SELECT c.id, c.submission_id, c.confidence_score, c.status
          FROM unverified_sign_candidates c
@@ -848,6 +850,7 @@ export class CatalogService {
               status: 'PENDING_REVIEW' as any,
             });
           } catch {
+            // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
             await this.dataSource.query(
               `UPDATE unverified_sign_candidates
                SET predicted_sign_type_id = $1, confidence_score = $2, status = 'PENDING_REVIEW'
@@ -856,6 +859,7 @@ export class CatalogService {
             );
           }
         } else {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           await this.dataSource.query(
             `UPDATE unverified_sign_candidates
              SET predicted_sign_type_id = $1, confidence_score = $2, status = 'PENDING_REVIEW'
@@ -873,6 +877,7 @@ export class CatalogService {
               note: `Auto-reprocessed candidate ${c.id} against new catalog sign type #${signTypeId} (${signType.signCode})`,
             });
           } catch {
+            // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
             await this.dataSource.query(
               `INSERT INTO submission_status_history (submission_id, old_status, new_status, note)
                VALUES ($1, $2::submission_status, 'PENDING_REVIEW'::submission_status, $3)`,
@@ -884,6 +889,7 @@ export class CatalogService {
             );
           }
         } else {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           await this.dataSource.query(
             `INSERT INTO submission_status_history (submission_id, old_status, new_status, note)
              VALUES ($1, $2::submission_status, 'PENDING_REVIEW'::submission_status, $3)`,

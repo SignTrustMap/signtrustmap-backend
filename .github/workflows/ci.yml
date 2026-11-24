@@ -76,6 +76,27 @@ jobs:
       - name: Python Syntax & Lint Pre-flight
         run: python -m py_compile app/main.py
 
+      - name: Raw SQL Guard (FastAPI)
+        run: |
+          python -c "
+          import os, re, sys
+          pattern = re.compile(r'\b(sa_text|text)\s*\(')
+          violations = []
+          for root, _, files in os.walk('app/api'):
+              for f in files:
+                  if f.endswith('.py'):
+                      path = os.path.join(root, f)
+                      with open(path) as src:
+                          for idx, line in enumerate(src, 1):
+                              if pattern.search(line) and '# approved-raw-sql' not in line:
+                                  violations.append(f'{path}:{idx}: {line.strip()}')
+          if violations:
+              print('🛑 Unapproved raw SQL found in FastAPI API endpoints:')
+              print('\n'.join(violations))
+              sys.exit(1)
+          print('✅ FastAPI raw SQL check passed.')
+          "
+
       - name: Run Pytest
         env:
           PYTHONPATH: .

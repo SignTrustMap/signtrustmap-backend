@@ -63,6 +63,7 @@ celery_app.conf.update(
         "app.tasks.ai_pipeline.*": {"queue": "ai_pipeline"},
         "app.tasks.catalog_sync.*": {"queue": "default"},
         "app.tasks.daily_tasks.*": {"queue": "default"},
+        "app.tasks.media_retention.*": {"queue": "default"},
         # "app.tasks.hazards.*": {"queue": "default"}, # TEMPORARILY DISABLED: Road hazard reporting feature
     },
     # Reliability — acknowledge late so a crashing worker re-queues the task.
@@ -77,6 +78,7 @@ celery_app.conf.update(
         "app.tasks.ai_pipeline",
         "app.tasks.catalog_sync",
         "app.tasks.daily_tasks",
+        "app.tasks.media_retention",
         # "app.tasks.hazards", # TEMPORARILY DISABLED: Road hazard reporting feature
     ],
 )
@@ -113,6 +115,12 @@ celery_app.conf.beat_schedule = {
     "daily-task-midnight-rollover": {
         "task": "app.tasks.daily_tasks.task_daily_task_midnight_rollover",
         "schedule": crontab(minute=0, hour=0),
+        "options": {"queue": "default"},
+    },
+    # Issue #7 — daily cleanup of raw videos/GPX past retention window & expired upload sessions.
+    "raw-media-retention-cleanup-daily": {
+        "task": "app.tasks.media_retention.task_cleanup_expired_raw_media",
+        "schedule": crontab(minute=30, hour=2),
         "options": {"queue": "default"},
     },
     # Flow 8 & Phase 6 — sweeps expired or dismissed roadside hazards every 5 minutes.

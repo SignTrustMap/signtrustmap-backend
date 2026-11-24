@@ -113,6 +113,7 @@ export class SpatialAdminService {
         } catch {}
       }
       if (rows.length === 0 && typeof this.dataSource?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         rows = await this.dataSource.query(
           `SELECT
              c.code AS commune_code,
@@ -184,6 +185,7 @@ export class SpatialAdminService {
         } catch {}
       }
       if (!row && typeof this.dataSource?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const rows: any[] = await this.dataSource.query(
           `SELECT code, name, type
            FROM admin_provinces
@@ -222,6 +224,7 @@ export class SpatialAdminService {
         } catch {}
       }
       if (!row && typeof this.dataSource?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const rows: any[] = await this.dataSource.query(
           `SELECT
              c.code AS commune_code,
@@ -270,6 +273,7 @@ export class SpatialAdminService {
         } catch {}
       }
       if (!row && typeof this.dataSource?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const rows: any[] = await this.dataSource.query(
           `SELECT
              c.code AS commune_code,
@@ -311,6 +315,7 @@ export class SpatialAdminService {
         } catch {}
       }
       if (!row && typeof this.dataSource?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const rows: any[] = await this.dataSource.query(
           `SELECT name, ref
            FROM osm_roads

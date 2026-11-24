@@ -1,6 +1,12 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsBoolean, IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsBoolean, IsEnum, IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
+
+export enum DriverSignReportType {
+  MISSING = 'MISSING',
+  OUTDATED = 'OUTDATED',
+  WRONG_INFO = 'WRONG_INFO',
+}
 
 export class ConfirmSignDto {
   @ApiProperty({
@@ -9,6 +15,15 @@ export class ConfirmSignDto {
   })
   @IsBoolean()
   isPresent: boolean;
+
+  @ApiPropertyOptional({
+    enum: DriverSignReportType,
+    description: 'Classification of the driver dispute report when isPresent is false (MISSING, OUTDATED, or WRONG_INFO)',
+    example: DriverSignReportType.MISSING,
+  })
+  @IsOptional()
+  @IsEnum(DriverSignReportType)
+  reportType?: DriverSignReportType;
 
   @ApiPropertyOptional({
     description: 'GPS latitude of the surveyor/driver at confirmation time',

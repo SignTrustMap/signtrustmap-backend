@@ -98,6 +98,7 @@ export class ModerationService {
             .where('c.id = :id', { id: dto.candidateId })
             .getOne();
         } else if (typeof manager.query === 'function') {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           const candidates: Array<{ id: string; status: CandidateStatus }> = await manager.query(
             `SELECT id, status
              FROM unverified_sign_candidates
@@ -122,6 +123,7 @@ export class ModerationService {
             })
             .getCount();
         } else if (typeof manager.query === 'function') {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           const activeReports: Array<{ id: string }> = await manager.query(
             `SELECT id
              FROM missing_sign_type_reports
@@ -170,6 +172,7 @@ export class ModerationService {
             .execute();
           affected = updateRes.affected ?? 0;
         } else if (typeof manager.query === 'function') {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           const updatedCandidates: Array<{ id: string }> = await manager.query(
             `UPDATE unverified_sign_candidates
              SET status = $2
@@ -457,6 +460,7 @@ export class ModerationService {
           };
         }
       } else if (typeof manager.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const reportRows: any[] = await manager.query(
           `SELECT id, candidate_id, reporter_id, proposed_name, status
            FROM missing_sign_type_reports
@@ -488,6 +492,7 @@ export class ModerationService {
             .where('c.id = :id', { id: report.candidateId })
             .getOne();
         } else if (typeof manager.query === 'function') {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           const candidates: any[] = await manager.query(
             `SELECT id, status FROM unverified_sign_candidates WHERE id = $1 FOR UPDATE`,
             [report.candidateId],
@@ -520,6 +525,7 @@ export class ModerationService {
           .execute();
         updateReportAffected = res.affected ?? 0;
       } else if (typeof manager.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const updatedReports: any[] = await manager.query(
           `UPDATE missing_sign_type_reports
            SET status = $2, merged_into_sign_type_id = $3,
@@ -550,6 +556,7 @@ export class ModerationService {
             .execute();
           updateCandAffected = res.affected ?? 0;
         } else if (typeof manager.query === 'function') {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           const candidateUpdate: any[] = await manager.query(
             `UPDATE unverified_sign_candidates
              SET status = $2, predicted_sign_type_id = COALESCE($3, predicted_sign_type_id)
@@ -583,6 +590,7 @@ export class ModerationService {
           note,
         }));
       } else if (typeof manager.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const caseRows: any[] = await manager.query(
           `INSERT INTO moderation_cases
              (case_type, target_entity_type, target_entity_id, assigned_staff_id, status, resolution_note, resolved_at)
@@ -592,6 +600,7 @@ export class ModerationService {
         );
         caseId = caseRows[0]?.id;
         if (!caseId) throw new Error('Failed to create report decision moderation case');
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await manager.query(
           `INSERT INTO moderation_actions (case_id, action_type, performed_by, note)
            VALUES ($1, $2, $3, $4)`,
@@ -626,6 +635,7 @@ export class ModerationService {
           .getOne();
         if (found) report = { id: found.id, status: found.status };
       } else if (typeof manager.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const reportRows: any[] = await manager.query(
           `SELECT id, status FROM missing_sign_type_reports WHERE id = $1 FOR UPDATE`,
           [reportId],
@@ -652,6 +662,7 @@ export class ModerationService {
           .execute();
         updateReportAffected = res.affected ?? 0;
       } else if (typeof manager.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const updatedReports: any[] = await manager.query(
           `UPDATE missing_sign_type_reports
            SET status = $2, staff_notes = $3, reviewed_by = $4, updated_at = NOW()
@@ -704,6 +715,7 @@ export class ModerationService {
           note,
         }));
       } else if (typeof manager.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const existingCases: any[] = await manager.query(
           `SELECT id, status FROM moderation_cases
            WHERE target_entity_type = 'missing_sign_type_report' AND target_entity_id = $1
@@ -712,6 +724,7 @@ export class ModerationService {
         );
         caseId = existingCases[0]?.id;
         if (caseId) {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           await manager.query(
             `UPDATE moderation_cases
              SET status = $2, assigned_staff_id = $3, resolution_note = $4, resolved_at = NULL
@@ -719,6 +732,7 @@ export class ModerationService {
             [caseId, ModerationStatus.PENDING, staffId, note],
           );
         } else {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           const caseRows: any[] = await manager.query(
             `INSERT INTO moderation_cases
                (case_type, target_entity_type, target_entity_id, assigned_staff_id, status, resolution_note)
@@ -729,6 +743,7 @@ export class ModerationService {
           caseId = caseRows[0]?.id;
         }
         if (!caseId) throw new Error('Failed to create admin escalation moderation case');
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await manager.query(
           `INSERT INTO moderation_actions (case_id, action_type, performed_by, note)
            VALUES ($1, 'ESCALATE_ADMIN', $2, $3)`,
@@ -793,6 +808,7 @@ export class ModerationService {
           };
         }
       } else if (typeof manager.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const reportRows: any[] = await manager.query(
           `SELECT id, candidate_id, reporter_id, proposed_name, status
            FROM missing_sign_type_reports
@@ -824,6 +840,7 @@ export class ModerationService {
             .where('c.id = :id', { id: report.candidateId })
             .getOne();
         } else if (typeof manager.query === 'function') {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           const candidates: any[] = await manager.query(
             `SELECT id, status FROM unverified_sign_candidates WHERE id = $1 FOR UPDATE`,
             [report.candidateId],
@@ -851,6 +868,7 @@ export class ModerationService {
             .where('candidateId = :candidateId AND completedAt IS NULL', { candidateId: candidate.id })
             .execute();
         } else if (typeof manager.query === 'function') {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           const updatedCandidates: any[] = await manager.query(
             `UPDATE unverified_sign_candidates SET status = $2
              WHERE id = $1 AND status = $3
@@ -858,6 +876,7 @@ export class ModerationService {
             [candidate.id, CandidateStatus.REJECTED, candidate.status],
           );
           updateCandAffected = getAffectedRowCount(updatedCandidates);
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           await manager.query(
             `UPDATE candidate_recapture_requests
              SET completed_at = NOW()
@@ -883,6 +902,7 @@ export class ModerationService {
           .execute();
         updateReportAffected = res.affected ?? 0;
       } else if (typeof manager.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const updatedReports: any[] = await manager.query(
           `UPDATE missing_sign_type_reports
            SET status = $2, staff_notes = $3, reviewed_by = $4, updated_at = NOW()
@@ -935,6 +955,7 @@ export class ModerationService {
           };
         }
       } else if (typeof manager.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const reportRows: any[] = await manager.query(
           `SELECT id, candidate_id, reporter_id, original_reporter_id, proposed_name, status, reviewed_by
            FROM missing_sign_type_reports
@@ -983,6 +1004,7 @@ export class ModerationService {
             targetRows = cand?.submission?.surveyorId ? [{ id: cand.submission.surveyorId }] : [];
           }
         } else {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           targetRows = await manager.query(
             `SELECT COALESCE(
                (SELECT r.surveyor_id
@@ -1028,6 +1050,7 @@ export class ModerationService {
           }
           targetRows = staffUserId ? [{ id: staffUserId }] : [];
         } else {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           targetRows = await manager.query(
             `SELECT COALESCE(
                (SELECT a.performed_by
@@ -1077,6 +1100,7 @@ export class ModerationService {
           .getOne();
         if (u) target = { id: u.id, status: u.status };
       } else if (typeof manager.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const eligibleUsers: any[] = await manager.query(
           `SELECT u.id, u.status
            FROM users u
@@ -1108,6 +1132,7 @@ export class ModerationService {
             .where('c.id = :id', { id: report.candidateId })
             .getOne();
         } else if (typeof manager.query === 'function') {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           const candidates: any[] = await manager.query(
             `SELECT id, status FROM unverified_sign_candidates WHERE id = $1 FOR UPDATE`,
             [report.candidateId],
@@ -1135,6 +1160,7 @@ export class ModerationService {
             .where('candidateId = :candidateId AND completedAt IS NULL', { candidateId: candidate.id })
             .execute();
         } else if (typeof manager.query === 'function') {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           const updatedCandidates: any[] = await manager.query(
             `UPDATE unverified_sign_candidates SET status = $2
              WHERE id = $1 AND status = $3
@@ -1142,6 +1168,7 @@ export class ModerationService {
             [candidate.id, CandidateStatus.REJECTED, candidate.status],
           );
           updateCandAffected = getAffectedRowCount(updatedCandidates);
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           await manager.query(
             `UPDATE candidate_recapture_requests
              SET completed_at = NOW()
@@ -1167,6 +1194,7 @@ export class ModerationService {
           .execute();
         updateReportAffected = res.affected ?? 0;
       } else if (typeof manager.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const updatedReports: any[] = await manager.query(
           `UPDATE missing_sign_type_reports
            SET status = $2, staff_notes = $3, reviewed_by = $4, updated_at = NOW()
@@ -1201,15 +1229,18 @@ export class ModerationService {
           newValues: { status: 'BANNED', reason, reportId, targetRole },
         }));
       } else if (typeof manager.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await manager.query(
           `UPDATE users SET status = 'BANNED', updated_at = NOW() WHERE id = $1`,
           [target.id],
         );
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await manager.query(
           `INSERT INTO user_status_history (user_id, old_status, new_status, reason, changed_by)
            VALUES ($1, $2::user_status, 'BANNED'::user_status, $3, $4)`,
           [target.id, target.status, reason, adminId],
         );
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await manager.query(
           `INSERT INTO audit_logs
              (user_id, action, resource_name, resource_id, old_values, new_values)
@@ -1298,6 +1329,7 @@ export class ModerationService {
       }));
       return caseId;
     }
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const caseRows: any[] = await manager.query(
       `SELECT id FROM moderation_cases
        WHERE target_entity_type = 'missing_sign_type_report' AND target_entity_id = $1
@@ -1306,6 +1338,7 @@ export class ModerationService {
     );
     caseId = caseRows[0]?.id;
     if (caseId) {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       await manager.query(
         `UPDATE moderation_cases
          SET status = $2, resolution_note = $3, resolved_at = NOW()
@@ -1313,6 +1346,7 @@ export class ModerationService {
         [caseId, ModerationStatus.RESOLVED, reason],
       );
     } else {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const insertedCases: any[] = await manager.query(
         `INSERT INTO moderation_cases
            (case_type, target_entity_type, target_entity_id, assigned_staff_id, status, resolution_note, resolved_at)
@@ -1323,6 +1357,7 @@ export class ModerationService {
       caseId = insertedCases[0]?.id;
     }
     if (!caseId) throw new Error('Failed to resolve admin report moderation case');
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     await manager.query(
       `INSERT INTO moderation_actions (case_id, action_type, performed_by, note)
        VALUES ($1, $2, $3, $4)`,
@@ -1339,6 +1374,7 @@ export class ModerationService {
     if (assignedSurveyorId) {
       let surveyorRows: any[] = [];
       if (typeof manager.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         surveyorRows = await manager.query(
           `SELECT u.id, u.full_name, u.email, u.status
            FROM users u
@@ -1378,6 +1414,7 @@ export class ModerationService {
     // Case A: Look up candidate's surveyor from survey_submissions
     let existingSurveyorRows: any[] = [];
     if (typeof manager.query === 'function') {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       existingSurveyorRows = await manager.query(
         `SELECT u.id, u.full_name, u.email, u.status
          FROM unverified_sign_candidates c
@@ -1410,6 +1447,7 @@ export class ModerationService {
       const meta = await this.systemSwitchService?.getMetadata<{ targetEmail?: string }>('AUTO_ASSIGN_RECAPTURE_EMAIL');
       const targetEmail = meta?.targetEmail || 'demo@stm.dev';
       try {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const demoSurveyorRows: Array<{ id: string; full_name?: string; email?: string }> = await manager.query(
           `SELECT u.id, u.full_name, u.email FROM users u
            JOIN user_roles ur ON ur.user_id = u.id AND ur.is_active = true
@@ -1435,6 +1473,7 @@ export class ModerationService {
     let randomSurveyorRows: any[] = [];
     if (typeof manager.query === 'function') {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         randomSurveyorRows = await manager.query(
           `SELECT u.id, u.full_name, u.email
            FROM users u
@@ -1502,6 +1541,7 @@ export class ModerationService {
           };
         }
       } else if (typeof manager.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const reportRows: any[] = await manager.query(
           `SELECT id, candidate_id, reporter_id, proposed_name, status
            FROM missing_sign_type_reports
@@ -1536,6 +1576,7 @@ export class ModerationService {
           .where('c.id = :id', { id: report.candidateId })
           .getOne();
       } else if (typeof manager.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const candidateRows: any[] = await manager.query(
           `SELECT id, status
            FROM unverified_sign_candidates
@@ -1561,6 +1602,7 @@ export class ModerationService {
           .getMany();
         activeRequestsCount = activeRequests.length;
       } else if (typeof manager.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const activeRequests: any[] = await manager.query(
           `SELECT id FROM candidate_recapture_requests
            WHERE candidate_id = $1 AND completed_at IS NULL
@@ -1596,6 +1638,7 @@ export class ModerationService {
           .execute();
         updateReportAffected = res.affected ?? 0;
       } else if (typeof manager.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const updatedReports: any[] = await manager.query(
           `UPDATE missing_sign_type_reports
            SET status = $2, staff_notes = COALESCE($3, staff_notes), reviewed_by = $4, updated_at = NOW()
@@ -1617,6 +1660,7 @@ export class ModerationService {
           .execute();
         updateCandAffected = res.affected ?? 0;
       } else if (typeof manager.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const updatedCandidates: any[] = await manager.query(
           `UPDATE unverified_sign_candidates
            SET status = $2
@@ -1644,6 +1688,7 @@ export class ModerationService {
           }));
         } else if (typeof manager.query === 'function') {
           if (surveyorId) {
+            // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
             await manager.query(
               `INSERT INTO candidate_recapture_requests
                  (candidate_id, reviewer_id, surveyor_id, missing_type_report_id, reason, note)
@@ -1651,6 +1696,7 @@ export class ModerationService {
               [candidate.id, staffId, surveyorId, reportId, recaptureNote],
             );
           } else {
+            // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
             await manager.query(
               `INSERT INTO candidate_recapture_requests
                  (candidate_id, reviewer_id, missing_type_report_id, reason, note)
@@ -1710,6 +1756,7 @@ export class ModerationService {
           note: actionAuditNote,
         }));
       } else if (typeof manager.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const reportCaseRows: any[] = await manager.query(
           `SELECT id FROM moderation_cases
            WHERE target_entity_type = 'missing_sign_type_report' AND target_entity_id = $1
@@ -1718,6 +1765,7 @@ export class ModerationService {
         );
         moderationCaseId = reportCaseRows[0]?.id;
         if (moderationCaseId) {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           await manager.query(
             `UPDATE moderation_cases
              SET status = $2, resolution_note = $3, resolved_at = NOW()
@@ -1725,6 +1773,7 @@ export class ModerationService {
             [moderationCaseId, ModerationStatus.RESOLVED, note],
           );
         } else {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           const caseRows: any[] = await manager.query(
             `INSERT INTO moderation_cases
                (case_type, target_entity_type, target_entity_id, assigned_staff_id, status, resolution_note, resolved_at)
@@ -1735,6 +1784,7 @@ export class ModerationService {
           moderationCaseId = caseRows[0]?.id;
         }
         if (!moderationCaseId) throw new Error('Failed to create recapture moderation case');
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await manager.query(
           `INSERT INTO moderation_actions (case_id, action_type, performed_by, note)
            VALUES ($1, 'REQUEST_RECAPTURE', $2, $3)`,
@@ -1793,6 +1843,7 @@ export class ModerationService {
       const userIds = [r.reporterId, r.reviewedBy].filter(Boolean);
       if (userIds.length > 0) {
         try {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           const userRows = await this.dataSource.query(
             `SELECT id, full_name, email, avatar_url FROM users WHERE id = ANY($1::uuid[])`,
             [userIds],
@@ -1812,6 +1863,7 @@ export class ModerationService {
     let recaptureRequest: any = null;
     if (this.dataSource) {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const recRows = await this.dataSource.query(
           `SELECT crr.id, crr.candidate_id, crr.reviewer_id, crr.surveyor_id,
                   crr.reason, crr.note, crr.created_at, crr.completed_at,
@@ -1841,6 +1893,7 @@ export class ModerationService {
             const otherIds = rawIds.filter((uid: string) => uid !== recRows[0].surveyor_id);
             if (otherIds.length > 0) {
               try {
+                // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
                 const moreSurveyors = await this.dataSource.query(
                   `SELECT id, full_name, email, avatar_url FROM users WHERE id = ANY($1::uuid[])`,
                   [otherIds],
@@ -2174,6 +2227,7 @@ export class ModerationService {
       );
       if (reportIds.length > 0) {
         try {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           const rows: any[] = await this.dataSource.query(
             `SELECT r.id, r.proposed_name, r.status, r.reporter_id,
                     u.full_name AS reporter_name, u.email AS reporter_email
@@ -2215,6 +2269,7 @@ export class ModerationService {
       );
       if (candidateIds.length > 0) {
         try {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           const candRows: any[] = await this.dataSource.query(
             `SELECT c.id, tst.name_vi, tst.sign_code
              FROM unverified_sign_candidates c
@@ -2249,6 +2304,7 @@ export class ModerationService {
       );
       if (staffIds.length > 0) {
         try {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           const staffRows: any[] = await this.dataSource.query(
             `SELECT id, full_name, email FROM users WHERE id = ANY($1::uuid[])`,
             [staffIds],
@@ -2337,6 +2393,7 @@ export class ModerationService {
     let assignedStaff: any = null;
     if (mc.assignedStaffId && this.dataSource) {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const staffRows = await this.dataSource.query(
           `SELECT id, full_name, email, avatar_url FROM users WHERE id = $1`,
           [mc.assignedStaffId],
@@ -2355,6 +2412,7 @@ export class ModerationService {
     let recaptureRequest: any = null;
     if (mc.targetEntityId && this.dataSource) {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const recRows = await this.dataSource.query(
           `SELECT crr.id, crr.candidate_id, crr.reviewer_id, crr.surveyor_id,
                   crr.reason, crr.note, crr.created_at, crr.completed_at,
@@ -2384,6 +2442,7 @@ export class ModerationService {
             const otherIds = rawIds.filter((uid: string) => uid !== recRows[0].surveyor_id);
             if (otherIds.length > 0) {
               try {
+                // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
                 const moreSurveyors = await this.dataSource.query(
                   `SELECT id, full_name, email, avatar_url FROM users WHERE id = ANY($1::uuid[])`,
                   [otherIds],
@@ -2435,6 +2494,7 @@ export class ModerationService {
     if (this.dataSource && mc.targetEntityId) {
       try {
         if (!reviewerUser) {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           const repRows = await this.dataSource.query(
             `SELECT u.id, u.full_name, u.email, u.avatar_url
              FROM new_sign_type_reports r
@@ -2452,6 +2512,7 @@ export class ModerationService {
           }
         }
         if (!surveyorUser) {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           const survRows = await this.dataSource.query(
             `SELECT u.id, u.full_name, u.email, u.avatar_url
              FROM new_sign_type_reports r
@@ -2471,6 +2532,7 @@ export class ModerationService {
           }
         }
         if (!staffUser) {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           const staffRows = await this.dataSource.query(
             `SELECT u.id, u.full_name, u.email, u.avatar_url
              FROM new_sign_type_reports r
@@ -2530,8 +2592,13 @@ export class ModerationService {
 
   async getUserProfile(userId: string) {
     let profile: any = null;
-    if (this.userRepo) {
-      const user = await this.userRepo.findOne({
+    const userRepo =
+      this.userRepo ??
+      (typeof this.dataSource?.getRepository === 'function'
+        ? this.dataSource.getRepository(User)
+        : null);
+    if (userRepo && typeof userRepo.findOne === 'function') {
+      const user = await userRepo.findOne({
         where: { id: userId },
         relations: ['userRoles', 'userRoles.role'],
       });
@@ -2552,33 +2619,6 @@ export class ModerationService {
           roles,
           createdAt: user.createdAt,
           created_at: user.createdAt,
-        };
-      }
-    }
-    if (!profile && this.dataSource) {
-      const rows = await this.dataSource.query(
-        `SELECT u.id, u.email, u.full_name, u.phone, u.avatar_url, u.status, u.created_at,
-                COALESCE(array_agg(r.code) FILTER (WHERE r.code IS NOT NULL AND ur.is_active = true), '{}') AS roles
-         FROM users u
-         LEFT JOIN user_roles ur ON ur.user_id = u.id
-         LEFT JOIN roles r ON r.id = ur.role_id
-         WHERE u.id = $1
-         GROUP BY u.id`,
-        [userId],
-      );
-      if (rows[0]) {
-        profile = {
-          id: rows[0].id,
-          email: rows[0].email,
-          fullName: rows[0].full_name,
-          full_name: rows[0].full_name,
-          phone: rows[0].phone,
-          avatarUrl: rows[0].avatar_url,
-          avatar_url: rows[0].avatar_url,
-          status: rows[0].status,
-          roles: rows[0].roles || [],
-          createdAt: rows[0].created_at,
-          created_at: rows[0].created_at,
         };
       }
     }
@@ -2608,6 +2648,7 @@ export class ModerationService {
     }
     sql += ` ORDER BY u.full_name ASC`;
     if (this.dataSource) {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       return this.dataSource.query(sql, params);
     }
     return [];
@@ -2647,6 +2688,7 @@ export class ModerationService {
         }
         if (!isCallerAdmin && typeof this.dataSource?.query === 'function') {
           try {
+            // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
             const rows = await this.dataSource.query(
               `SELECT r.code 
                FROM user_roles ur 
@@ -2742,6 +2784,7 @@ export class ModerationService {
           .getOne();
         if (found) moderationCase = { id: found.id, targetEntityId: found.targetEntityId, status: found.status };
       } else if (typeof manager.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const caseRows: any[] = await manager.query(
           `SELECT * FROM moderation_cases WHERE id = $1 FOR UPDATE`,
           [caseId],
@@ -2761,6 +2804,7 @@ export class ModerationService {
           .getOne();
         if (found) candidate = { id: found.id, status: found.status };
       } else if (typeof manager.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const candidateRows: any[] = await manager.query(
           `SELECT c.id, c.status
            FROM unverified_sign_candidates c
@@ -2786,6 +2830,7 @@ export class ModerationService {
           .getMany();
         activeRequestsCount = activeRequests.length;
       } else if (typeof manager.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const activeRows: any[] = await manager.query(
           `SELECT id FROM candidate_recapture_requests
            WHERE candidate_id = $1 AND completed_at IS NULL
@@ -2805,6 +2850,7 @@ export class ModerationService {
           .getMany();
         reportRows = reports.map((r) => ({ id: r.id }));
       } else if (typeof manager.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         reportRows = await manager.query(
           `SELECT id FROM missing_sign_type_reports
            WHERE candidate_id = $1 AND status = 'INCOMPLETE'
@@ -2840,6 +2886,7 @@ export class ModerationService {
           .execute();
         updateCandAffected = res.affected ?? 0;
       } else if (typeof manager.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const candidateUpdate = await manager.query(
           `UPDATE unverified_sign_candidates
            SET status = 'RECAPTURE_REQUESTED'
@@ -2863,6 +2910,7 @@ export class ModerationService {
           }));
         } else if (typeof manager.query === 'function') {
           if (surveyorId) {
+            // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
             await manager.query(
               `INSERT INTO candidate_recapture_requests
                  (candidate_id, reviewer_id, surveyor_id, missing_type_report_id, reason, note)
@@ -2870,6 +2918,7 @@ export class ModerationService {
               [candidate.id, staffId, surveyorId, reportRows[0].id, recaptureNote],
             );
           } else {
+            // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
             await manager.query(
               `INSERT INTO candidate_recapture_requests
                  (candidate_id, reviewer_id, missing_type_report_id, reason, note)
@@ -2906,6 +2955,7 @@ export class ModerationService {
           note: actionAuditNote,
         }));
       } else if (typeof manager.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const updatedCases: any[] = await manager.query(
           `UPDATE moderation_cases
            SET status = 'RESOLVED', resolution_note = $2, resolved_at = NOW(), assigned_staff_id = COALESCE(assigned_staff_id, $3)
@@ -2913,6 +2963,7 @@ export class ModerationService {
            RETURNING *`,
           [caseId, dto.resolutionNote ?? null, staffId],
         );
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await manager.query(
           `INSERT INTO moderation_actions (case_id, action_type, performed_by, note)
            VALUES ($1, $2, $3, $4)`,
@@ -2970,6 +3021,7 @@ export class ModerationService {
         repUrl = cand?.signCropUrl || cand?.bestFrameUrl || null;
       }
       if (!repUrl && typeof this.dataSource?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const candRows: any[] = await this.dataSource.query(
           'SELECT sign_crop_url, best_frame_url FROM unverified_sign_candidates WHERE id = $1',
           [report.candidateId],
@@ -2988,6 +3040,7 @@ export class ModerationService {
         isPrimary: true,
       }));
     } else if (typeof this.dataSource?.query === 'function') {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       await this.dataSource.query(
         `INSERT INTO sign_type_images (sign_type_id, image_url, image_type, is_primary, uploaded_at)
          VALUES ($1, $2, 'REPRESENTATIVE', true, now())`,
@@ -3076,6 +3129,7 @@ export class ModerationService {
     const [, rawPrefix, number, rawSuffix] = match;
     const prefix = rawPrefix.toUpperCase();
     const suffix = rawSuffix.toLowerCase();
+    // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: PostgreSQL POSIX regex operator (~) and split_part
     const existingPrefixes: Array<{ prefix: string }> = await this.dataSource.query(
       `SELECT DISTINCT split_part(upper(sign_code), '.', 1) AS prefix
        FROM traffic_sign_types
@@ -3123,6 +3177,7 @@ export class ModerationService {
 
   private async bumpCatalogVersion(staffId: string, signCode: string, signTypeId: number): Promise<void> {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: atomic PostgreSQL writable CTE (MATERIALIZED) not supported natively by TypeORM
       await this.dataSource.query(
         `WITH pinned AS MATERIALIZED (
            SELECT MAX(version_number) AS max_v FROM catalog_versions
@@ -3152,6 +3207,7 @@ export class ModerationService {
           { predictedSignTypeId: signTypeId, status: CandidateStatus.PENDING_REVIEW },
         );
       } else {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await this.dataSource.query(
           `UPDATE unverified_sign_candidates
            SET predicted_sign_type_id = $1, status = 'PENDING_REVIEW'
@@ -3209,6 +3265,7 @@ export class ModerationService {
       let rows: any[] = [];
       if (typeof this.dataSource?.query === 'function') {
         try {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           rows = await this.dataSource.query(
             `SELECT c.id, c.predicted_sign_type_id, c.confidence_score, c.best_frame_url, c.sign_crop_url, c.status,
                     COALESCE(ST_X(ge.sign_location::geometry), ST_X(ge.vehicle_location::geometry)) AS longitude,
@@ -3298,6 +3355,7 @@ export class ModerationService {
     const usersById = new Map<string, { id: string; fullName: string; email: string }>();
     if (userIds.length > 0 && typeof this.dataSource?.query === 'function') {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const uRows: any[] = await this.dataSource.query(
           `SELECT id, full_name, email FROM users WHERE id = ANY($1::uuid[])`,
           [userIds],
@@ -3314,6 +3372,7 @@ export class ModerationService {
     const recByReportId = new Map<string, any>();
     if (reportIds.length > 0 && typeof this.dataSource?.query === 'function') {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const recRows = await this.dataSource.query(
           `SELECT crr.id, crr.candidate_id, crr.reviewer_id, crr.surveyor_id,
                   crr.reason, crr.note, crr.created_at, crr.completed_at,
@@ -3435,14 +3494,17 @@ export class ModerationService {
         });
       }
     } else if (typeof this.dataSource?.query === 'function') {
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       const pRows = await this.dataSource.query('SELECT * FROM surveyor_profiles WHERE user_id = $1', [surveyorId]);
       if (pRows[0]) {
         surveyorProfile = pRows[0];
       } else {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await this.dataSource.query(
           'INSERT INTO surveyor_profiles (user_id, reliability_score) VALUES ($1, 1.0) ON CONFLICT (user_id) DO NOTHING',
           [surveyorId],
         );
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         const refetched = await this.dataSource.query('SELECT * FROM surveyor_profiles WHERE user_id = $1', [surveyorId]);
         surveyorProfile = refetched[0];
       }
@@ -3488,6 +3550,7 @@ export class ModerationService {
         surveyorProfile.consecutiveAnnotationErrors = 0;
         await this.surveyorProfileRepo.save(surveyorProfile);
       } else if (typeof this.dataSource?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await this.dataSource.query(
           `UPDATE surveyor_profiles
            SET reliability_score = $1,
@@ -3514,6 +3577,7 @@ export class ModerationService {
       // 4. Register to Active Learning dataset for retraining
       try {
         if (typeof this.dataSource?.query === 'function') {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           await this.dataSource.query(
             `INSERT INTO active_learning_selections (candidate_id, selection_reason, selected_at)
              VALUES ($1, 'UNCERTAIN', NOW())
@@ -3528,6 +3592,7 @@ export class ModerationService {
       // 5. Publish verified sign to map
       try {
         if (typeof this.dataSource?.query === 'function') {
+          // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           await this.dataSource.query(
             `INSERT INTO verified_traffic_signs (
                id, sign_type_id, origin_candidate_id, location,
@@ -3555,6 +3620,7 @@ export class ModerationService {
 
       // 7. Update survey submission
       if (candidate.submissionId && typeof this.dataSource?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await this.dataSource.query(
           `UPDATE survey_submissions SET manual_annotation_status = 'APPROVED', updated_at = NOW() WHERE id = $1`,
           [candidate.submissionId],
@@ -3629,6 +3695,7 @@ export class ModerationService {
         }
         await this.surveyorProfileRepo.save(surveyorProfile);
       } else if (typeof this.dataSource?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await this.dataSource.query(
           `UPDATE surveyor_profiles
            SET reliability_score = $1,
@@ -3661,6 +3728,7 @@ export class ModerationService {
 
       // 5. Update survey submission
       if (candidate.submissionId && typeof this.dataSource?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await this.dataSource.query(
           `UPDATE survey_submissions SET manual_annotation_status = 'REJECTED', updated_at = NOW() WHERE id = $1`,
           [candidate.submissionId],
@@ -3720,6 +3788,7 @@ export class ModerationService {
         });
         await this.surveyorReputationRepo.save(hist);
       } else if (typeof this.dataSource?.query === 'function') {
+        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await this.dataSource.query(
           `INSERT INTO surveyor_reputation_history (
              surveyor_id, previous_score, new_score, delta, change_reason,

@@ -60,8 +60,13 @@ export class NavigationController {
   async getPreferences(@CurrentUser() user: any) {
     const userId = user?.id ?? user?.sub;
     try {
-      if (this.driverProfileRepo && typeof this.driverProfileRepo.findOne === 'function') {
-        const profile = await this.driverProfileRepo.findOne({
+      const repo =
+        this.driverProfileRepo ??
+        (typeof this.dataSource?.getRepository === 'function'
+          ? this.dataSource.getRepository(DriverProfile)
+          : null);
+      if (repo && typeof repo.findOne === 'function') {
+        const profile = await repo.findOne({
           where: { userId },
           select: ['defaultVehicleType', 'enabledCategories'],
         });
@@ -69,18 +74,6 @@ export class NavigationController {
           return {
             vehicleType: profile.defaultVehicleType || 'CAR',
             enabledCategoryCodes: profile.enabledCategories || ['SPEED_LIMIT', 'WARNING', 'PROHIBITION', 'MANDATORY', 'INFORMATION'],
-          };
-        }
-      }
-      if (typeof this.dataSource?.query === 'function') {
-        const rows: any[] = await this.dataSource.query(
-          'SELECT default_vehicle_type, enabled_categories FROM driver_profiles WHERE user_id = $1',
-          [userId],
-        );
-        if (rows.length > 0) {
-          return {
-            vehicleType: rows[0].default_vehicle_type || 'CAR',
-            enabledCategoryCodes: rows[0].enabled_categories || ['SPEED_LIMIT', 'WARNING', 'PROHIBITION', 'MANDATORY', 'INFORMATION'],
           };
         }
       }
@@ -104,8 +97,13 @@ export class NavigationController {
     const vehicleType = dto.vehicleType || 'CAR';
     const enabledCategories = dto.enabledCategoryCodes || ['SPEED_LIMIT', 'WARNING', 'PROHIBITION', 'MANDATORY', 'INFORMATION'];
     try {
-      if (this.driverProfileRepo && typeof this.driverProfileRepo.createQueryBuilder === 'function') {
-        await this.driverProfileRepo
+      const repo =
+        this.driverProfileRepo ??
+        (typeof this.dataSource?.getRepository === 'function'
+          ? this.dataSource.getRepository(DriverProfile)
+          : null);
+      if (repo && typeof repo.createQueryBuilder === 'function') {
+        await repo
           .createQueryBuilder()
           .insert()
           .into(DriverProfile)
@@ -119,13 +117,6 @@ export class NavigationController {
           .setParameter('vType', vehicleType)
           .setParameter('cats', enabledCategories)
           .execute();
-      } else if (typeof this.dataSource?.query === 'function') {
-        await this.dataSource.query(
-          `INSERT INTO driver_profiles (user_id, default_vehicle_type, enabled_categories, updated_at)
-           VALUES ($1, $2, $3, now())
-           ON CONFLICT (user_id) DO UPDATE SET default_vehicle_type = $2, enabled_categories = $3, updated_at = now()`,
-          [userId, vehicleType, enabledCategories],
-        );
       }
     } catch (error: any) {
       this.logger.error(`Could not update driver preferences for ${userId}: ${error?.message || error}`);

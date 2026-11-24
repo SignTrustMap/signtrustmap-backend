@@ -60,4 +60,20 @@ describe('VerifiedSignController authorization', () => {
       { isPresent: true, latitude: 10.77, longitude: 106.69 },
     );
   });
+
+  it('keeps getHistory public and delegates to VerifiedSignService.getSignHistory', async () => {
+    expect(
+      Reflect.getMetadata(IS_PUBLIC_KEY, VerifiedSignController.prototype.getHistory),
+    ).toBe(true);
+    const routeSigns = {} as RouteSignQueryService;
+    const verifiedSigns = {
+      getSignHistory: jest.fn().mockResolvedValue({ signId: 'sign-123', history: [], lifecycleEvents: [] }),
+    } as unknown as VerifiedSignService;
+
+    const controller = new VerifiedSignController(routeSigns, verifiedSigns);
+    const res = await controller.getHistory('sign-123');
+
+    expect(verifiedSigns.getSignHistory).toHaveBeenCalledWith('sign-123');
+    expect(res.signId).toBe('sign-123');
+  });
 });

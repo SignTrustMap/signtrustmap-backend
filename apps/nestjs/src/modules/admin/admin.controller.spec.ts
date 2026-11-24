@@ -36,6 +36,9 @@ describe('AdminController (Phase 1 Ledger Adjustments & Admin Operations)', () =
       getUsersSummaryStatistics: jest.fn(),
       getTaskHistory: jest.fn(),
       listTaskHistory: jest.fn(),
+      compareModelVersion: jest.fn(),
+      promoteModelVersion: jest.fn(),
+      rollbackModelVersion: jest.fn(),
     } as unknown as jest.Mocked<AdminService>;
 
     walletService = {
@@ -464,6 +467,21 @@ describe('AdminController (Phase 1 Ledger Adjustments & Admin Operations)', () =
       const result = await controller.listTaskHistory(query);
       expect(adminService.listTaskHistory).toHaveBeenCalledWith(query);
       expect(result).toBe(expected);
+    });
+
+    it('compareModelVersion, promoteModelVersion, and rollbackModelVersion delegate to adminService', async () => {
+      (adminService.compareModelVersion as jest.Mock).mockResolvedValue({ eligibleForPromotion: true });
+      const cmp = await controller.compareModelVersion(50);
+      expect(adminService.compareModelVersion).toHaveBeenCalledWith(50);
+      expect(cmp.eligibleForPromotion).toBe(true);
+
+      (adminService.promoteModelVersion as jest.Mock).mockResolvedValue({ versionId: 50, isActive: true });
+      await controller.promoteModelVersion(50, mockAdmin, mockReq, { force: true, reason: 'Hotfix' });
+      expect(adminService.promoteModelVersion).toHaveBeenCalledWith(50, mockAdmin.id, '127.0.0.1', { force: true, reason: 'Hotfix' });
+
+      (adminService.rollbackModelVersion as jest.Mock).mockResolvedValue({ versionId: 50, rolledBack: true });
+      await controller.rollbackModelVersion(50, mockAdmin, mockReq, { targetVersionId: 49, reason: 'Revert' });
+      expect(adminService.rollbackModelVersion).toHaveBeenCalledWith(50, mockAdmin.id, '127.0.0.1', { targetVersionId: 49, reason: 'Revert' });
     });
   });
 });

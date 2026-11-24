@@ -338,6 +338,94 @@ describe('ReviewsService getMyStats (Phase 4 Governance)', () => {
     expect(stats.isProvisional).toBe(false);
     expect(stats.isSuspended).toBe(false);
     expect(stats.consecutiveErrors).toBe(0);
+    expect(stats.accuracyRate).toBe(0.925);
+  });
+
+  it('reads camelCase TypeORM ReviewerProfile fields for accuracyRate, currentStreak, and suspension metadata', async () => {
+    const suspendedUntil = new Date('2026-12-01T00:00:00.000Z');
+    const reviewerProfileRepo = {
+      findOne: jest.fn().mockResolvedValue({
+        userId: 'rev-camel',
+        reliabilityScore: 96.25,
+        totalCorrectVotes: 15,
+        totalFalseVotes: 1,
+        consecutiveErrors: 0,
+        isProvisional: false,
+        isReviewSuspended: false,
+        suspendedUntil,
+        suspensionReason: 'MANUAL_CHECK',
+        accuracyRate: 0.9375,
+        currentStreak: 7,
+      }),
+    } as any;
+    const candidates = {} as unknown as Repository<UnverifiedSignCandidate>;
+    const reviews = {
+      count: jest.fn().mockResolvedValue(16),
+      find: jest.fn().mockResolvedValue([]),
+    } as unknown as Repository<CandidateReview>;
+
+    const service = new ReviewsService(
+      candidates,
+      reviews,
+      {} as any,
+      {} as any,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      reviewerProfileRepo,
+    );
+
+    const stats = await service.getMyStats('rev-camel');
+    expect(stats.reliabilityScore).toBe(96.25);
+    expect(stats.accuracyRate).toBe(0.9375);
+    expect(stats.currentStreak).toBe(7);
+    expect(stats.suspendedUntil).toEqual(suspendedUntil);
+    expect(stats.suspensionReason).toBe('MANUAL_CHECK');
+  });
+
+  it('falls back to totalCorrect / totalVotes when stored accuracyRate is 0 on ReviewerProfile', async () => {
+    const reviewerProfileRepo = {
+      findOne: jest.fn().mockResolvedValue({
+        userId: 'rev-fallback',
+        reliabilityScore: 100,
+        totalCorrectVotes: 10,
+        totalFalseVotes: 0,
+        consecutiveErrors: 0,
+        isProvisional: false,
+        isReviewSuspended: false,
+        accuracyRate: 0,
+        currentStreak: 10,
+      }),
+    } as any;
+    const reviews = {
+      count: jest.fn().mockResolvedValue(10),
+      find: jest.fn().mockResolvedValue([]),
+    } as unknown as Repository<CandidateReview>;
+
+    const service = new ReviewsService(
+      {} as any,
+      reviews,
+      {} as any,
+      {} as any,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      reviewerProfileRepo,
+    );
+
+    const stats = await service.getMyStats('rev-fallback');
+    expect(stats.accuracyRate).toBe(1);
+    expect(stats.currentStreak).toBe(10);
   });
 });
 

@@ -291,16 +291,16 @@ export class WalletService {
     // Price rule: 1 credit = 1000 VND (configurable via credit_rules table)
     let pricePerCredit = 1000;
     try {
-      if (this.creditRuleRepo && typeof this.creditRuleRepo.findOne === 'function') {
-        const cRule = await this.creditRuleRepo.findOne({
+      const cRepo =
+        this.creditRuleRepo ??
+        (typeof this.dataSource?.getRepository === 'function'
+          ? this.dataSource.getRepository(CreditRule)
+          : null);
+      if (cRepo && typeof cRepo.findOne === 'function') {
+        const cRule = await cRepo.findOne({
           where: { transactionType: 'TOP_UP' as any, isActive: true },
         });
         if (cRule && Number(cRule.rewardAmount)) pricePerCredit = cRule.rewardAmount;
-      } else {
-        const rows: any[] = await this.dataSource.query(
-          `SELECT reward_amount::int AS price FROM credit_rules WHERE transaction_type='TOP_UP' AND is_active=true LIMIT 1`,
-        );
-        if (rows.length && Number(rows[0].price)) pricePerCredit = rows[0].price;
       }
     } catch {}
     const amountVnd = String(amount * pricePerCredit);
@@ -768,18 +768,16 @@ export class WalletService {
               ipAddress: ip ?? null,
             }),
           );
-        } else {
-          await manager.query(
-            `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, old_values, new_values, ip_address)
-             VALUES ($1, 'MANUAL_WALLET_ADJUSTMENT', 'wallets', $2, $3, $4, $5)`,
-            [
-              adminUserId,
-              wallet.id,
-              JSON.stringify({ balance: cur.toString() }),
-              JSON.stringify({ balance: newBal.toString(), amount, reason: dto.reason.trim() }),
-              ip ?? null,
-            ],
-          );
+        } else if (typeof manager.save === 'function') {
+          await manager.save(AuditLog, {
+            userId: adminUserId,
+            action: 'MANUAL_WALLET_ADJUSTMENT',
+            resourceName: 'wallets',
+            resourceId: wallet.id,
+            oldValues: { balance: cur.toString() },
+            newValues: { balance: newBal.toString(), amount, reason: dto.reason.trim() },
+            ipAddress: ip ?? null,
+          });
         }
       } catch {}
 
@@ -828,18 +826,16 @@ export class WalletService {
               ipAddress: ip ?? null,
             }),
           );
-        } else {
-          await manager.query(
-            `INSERT INTO audit_logs (user_id, action, resource_name, resource_id, old_values, new_values, ip_address)
-             VALUES ($1, 'FREEZE_WALLET', 'wallets', $2, $3, $4, $5)`,
-            [
-              adminUserId,
-              wallet.id,
-              JSON.stringify({ isFrozen: oldFrozen }),
-              JSON.stringify({ isFrozen: freeze, reason: reason ?? null }),
-              ip ?? null,
-            ],
-          );
+        } else if (typeof manager.save === 'function') {
+          await manager.save(AuditLog, {
+            userId: adminUserId,
+            action: 'FREEZE_WALLET',
+            resourceName: 'wallets',
+            resourceId: wallet.id,
+            oldValues: { isFrozen: oldFrozen },
+            newValues: { isFrozen: freeze, reason: reason ?? null },
+            ipAddress: ip ?? null,
+          });
         }
       } catch {}
 
@@ -866,30 +862,28 @@ export class WalletService {
       } catch {}
     }
     try {
-      if (this.rewardRuleRepo && typeof this.rewardRuleRepo.findOne === 'function') {
-        const rule = await this.rewardRuleRepo.findOne({
+      const rRepo =
+        this.rewardRuleRepo ??
+        (typeof this.dataSource?.getRepository === 'function'
+          ? this.dataSource.getRepository(RewardRule)
+          : null);
+      if (rRepo && typeof rRepo.findOne === 'function') {
+        const rule = await rRepo.findOne({
           where: { activityType: type as any, isActive: true },
         });
         if (rule && Number.isFinite(Number(rule.baseAmount))) return Number(rule.baseAmount);
-      } else {
-        const rows: any[] = await this.dataSource.query(
-          `SELECT base_amount AS reward_amount FROM reward_rules WHERE activity_type=$1 AND is_active=true LIMIT 1`,
-          [type],
-        );
-        if (rows.length && Number.isFinite(Number(rows[0].reward_amount))) return Number(rows[0].reward_amount);
       }
 
-      if (this.creditRuleRepo && typeof this.creditRuleRepo.findOne === 'function') {
-        const cRule = await this.creditRuleRepo.findOne({
+      const cRepo =
+        this.creditRuleRepo ??
+        (typeof this.dataSource?.getRepository === 'function'
+          ? this.dataSource.getRepository(CreditRule)
+          : null);
+      if (cRepo && typeof cRepo.findOne === 'function') {
+        const cRule = await cRepo.findOne({
           where: { transactionType: type, isActive: true },
         });
         if (cRule && Number.isFinite(Number(cRule.rewardAmount))) return Number(cRule.rewardAmount);
-      } else {
-        const rowsOld: any[] = await this.dataSource.query(
-          `SELECT reward_amount FROM credit_rules WHERE transaction_type=$1 AND is_active=true LIMIT 1`,
-          [type],
-        );
-        if (rowsOld.length && Number.isFinite(Number(rowsOld[0].reward_amount))) return Number(rowsOld[0].reward_amount);
       }
     } catch {
       // table may not have rows yet

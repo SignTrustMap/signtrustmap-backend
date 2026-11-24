@@ -325,10 +325,13 @@ export class SystemParametersService implements OnModuleInit {
     changedBy: string,
     ipAddress?: string | null,
     userAgent?: string | null,
+    description?: string,
   ): Promise<SystemParameter> {
     const param = await this.paramRepo.findOne({ where: { key } });
     if (!param) {
-      throw new NotFoundException(`System parameter '${key}' not found.`);
+      throw new NotFoundException(
+        `System parameter '${key}' not found. Adding new variables to system configuration is not permitted; configuration is GET and PUT on existing variables only.`,
+      );
     }
 
     if (!changeReason || changeReason.trim().length === 0) {
@@ -340,6 +343,9 @@ export class SystemParametersService implements OnModuleInit {
 
     const oldValue = param.value;
     param.value = value;
+    if (description !== undefined) {
+      param.description = description;
+    }
     param.updatedBy = changedBy;
     param.updatedAt = new Date();
     enrichParameter(param);
