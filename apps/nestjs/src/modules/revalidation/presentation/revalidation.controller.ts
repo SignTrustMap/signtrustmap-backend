@@ -217,9 +217,23 @@ export class RevalidationController {
   @Roles('REVIEWER', 'ADMIN')
   @ApiOperation({ summary: 'Reviewer evidence queue', description: 'Paginated queue of evidence awaiting decision, excluding items the reviewer has already judged' })
   @Get('revalidation/evidence/queue')
-  evidenceQueue(@CurrentUser() user: any, @Query('page') page?: string, @Query('pageSize') pageSize?: string) {
+  evidenceQueue(
+    @CurrentUser() user: any,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+    @Query('taskId') taskId?: string,
+  ) {
     const p = page ? parseInt(page, 10) : 1, n = pageSize ? parseInt(pageSize, 10) : 20;
-    return this.svc.listEvidenceQueue(user.id, Number.isNaN(p) ? 1 : p, Number.isNaN(n) ? 20 : n);
+    const safePage = Number.isNaN(p) ? 1 : p;
+    const safeSize = Number.isNaN(n) ? 20 : n;
+    if (taskId != null && taskId !== '') {
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(taskId);
+      if (!isUuid) {
+        throw new BadRequestException('taskId must be a valid UUID');
+      }
+      return this.svc.listEvidenceQueue(user.id, safePage, safeSize, taskId);
+    }
+    return this.svc.listEvidenceQueue(user.id, safePage, safeSize);
   }
 
   @ApiOperation({ summary: 'List evidence decisions', description: 'Retrieve history of consensus decisions for a specific evidence item' })

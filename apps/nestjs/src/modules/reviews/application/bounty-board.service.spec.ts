@@ -112,6 +112,112 @@ describe('BountyBoardService', () => {
         }),
       ).rejects.toThrow(BadRequestException);
     });
+
+    it('claims an EVALUATING revalidation task when eligible evidence exists', async () => {
+      taskRepo.findOne.mockResolvedValue({
+        id: 'task-eval-1',
+        status: 'EVALUATING',
+        rewardCredits: 25,
+      });
+      dataSource.query.mockResolvedValueOnce([{ id: 'ev-1' }]);
+
+      const claim = await service.claimQuest('reviewer-1', {
+        targetType: QuestTargetType.REVALIDATION_TASK,
+        targetId: 'task-eval-1',
+      });
+
+      expect(claim).toBeDefined();
+      expect(claim.targetType).toBe(QuestTargetType.REVALIDATION_TASK);
+      expect(claim.targetId).toBe('task-eval-1');
+      expect(claim.baseRewardCredits).toBe(25);
+      expect(dataSource.query).toHaveBeenCalledWith(
+        expect.stringContaining('FROM revalidation_evidences ev'),
+        ['task-eval-1', 'reviewer-1'],
+      );
+    });
+
+    it('rejects claiming a revalidation task that has no eligible evidence', async () => {
+      taskRepo.findOne.mockResolvedValue({
+        id: 'task-open-empty',
+        status: 'OPEN',
+        rewardCredits: 20,
+      });
+      dataSource.query.mockResolvedValueOnce([]);
+
+      await expect(
+        service.claimQuest('reviewer-1', {
+          targetType: QuestTargetType.REVALIDATION_TASK,
+          targetId: 'task-open-empty',
+        }),
+      ).rejects.toThrow('no eligible evidence');
+    });
+  });
+
+  describe('getAvailableQuests', () => {
+    it('populates displayAddress on candidate quests and filters revalidation tasks by eligible evidences', async () => {
+      dataSource.query
+        .mockResolvedValueOnce([
+          {
+            id: 'cand-avail-1',
+            submission_id: 'sub-1',
+            sign_crop_url: 'crops/c1.jpg',
+            best_frame_url: 'frames/c1.jpg',
+            confidence_score: 0.9,
+            spatial_confidence: 'HIGH',
+            bounty_credits: 15,
+            votes_count: 1,
+            is_promoted: true,
+            sign_type_id: 12,
+            sign_code: 'P.102',
+            sign_name: 'Cấm đi ngược chiều',
+            latitude: 10.7769,
+            longitude: 106.7009,
+          },
+        ])
+        .mockResolvedValueOnce([
+          {
+            id: 'task-eval-avail-1',
+            reward_credits: 30,
+            priority: 'HIGH',
+            votes_count: 0,
+            is_promoted: false,
+            verified_sign_id: 'sign-1',
+            sign_crop_url: 'crops/s1.jpg',
+            road_name: 'Đồng Khởi',
+            display_address: 'Đồng Khởi, Phường Sài Gòn, TP. Hồ Chí Minh',
+            sign_code: 'P.103',
+            sign_name: 'Cấm ô tô',
+            latitude: 10.775,
+            longitude: 106.702,
+          },
+        ]);
+
+      const quests = await service.getAvailableQuests('reviewer-1', {});
+
+      expect(quests).toHaveLength(2);
+      expect(quests[0]).toMatchObject({
+        targetType: QuestTargetType.CANDIDATE_VALIDATION,
+        targetId: 'cand-avail-1',
+        roadName: 'Đường Lê Lợi',
+        displayAddress: 'Đường Lê Lợi, Phường Bến Thành, TP. Hồ Chí Minh',
+      });
+      expect(quests[1]).toMatchObject({
+        targetType: QuestTargetType.REVALIDATION_TASK,
+        targetId: 'task-eval-avail-1',
+        displayAddress: 'Đồng Khởi, Phường Sài Gòn, TP. Hồ Chí Minh',
+      });
+      expect(spatialAdminService.resolveLocation).toHaveBeenCalledTimes(1);
+      expect(dataSource.query).toHaveBeenNthCalledWith(
+        2,
+        expect.stringContaining("rt.status IN ('OPEN', 'EVALUATING')"),
+        ['reviewer-1'],
+      );
+      expect(dataSource.query).toHaveBeenNthCalledWith(
+        2,
+        expect.stringContaining('FROM revalidation_evidences ev'),
+        ['reviewer-1'],
+      );
+    });
   });
 
   describe('expireStaleClaims & cronjob', () => {

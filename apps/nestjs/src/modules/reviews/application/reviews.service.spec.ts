@@ -7,7 +7,7 @@ import {
   UnverifiedSignCandidate,
 } from '../../survey/infrastructure/persistence/unverified-sign-candidate.entity';
 import { CandidateReview } from '../infrastructure/persistence/candidate-review.entity';
-import { QuestClaimStatus } from '../infrastructure/persistence/reviewer-quest-claim.entity';
+import { QuestClaimStatus, QuestTargetType } from '../infrastructure/persistence/reviewer-quest-claim.entity';
 import { ReviewsService } from './reviews.service';
 
 describe('ReviewsService queue', () => {
@@ -52,6 +52,43 @@ describe('ReviewsService queue', () => {
       expect.stringContaining('reviewer_skipped_candidates'),
       { reviewerId: 'reviewer-1' },
     );
+    expect(query.andWhere).toHaveBeenCalledWith(
+      expect.stringContaining('reviewer_quest_claims'),
+      { reviewerId: 'reviewer-1' },
+    );
+  });
+
+  it('prioritizes candidates claimed by the current reviewer at the top of queue()', async () => {
+    const query = {
+      addOrderBy: jest.fn().mockReturnThis(),
+      addSelect: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      getManyAndCount: jest.fn().mockResolvedValue([[{ id: 'claimed-cand-1' }], 1]),
+      leftJoinAndSelect: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+    } as unknown as SelectQueryBuilder<UnverifiedSignCandidate>;
+    const candidates = {
+      createQueryBuilder: jest.fn().mockReturnValue(query),
+    } as unknown as Repository<UnverifiedSignCandidate>;
+    const service = new ReviewsService(
+      candidates,
+      {} as Repository<CandidateReview>,
+      {} as Repository<TrafficSignType>,
+      {} as ConsensusService,
+    );
+
+    await service.queue('reviewer-1', 1, 20);
+
+    expect((query as any).addSelect).toHaveBeenCalledWith(
+      expect.stringContaining('my_claim.reviewer_id = :reviewerId'),
+      'is_claimed_by_me',
+    );
+    expect(query.orderBy).toHaveBeenCalledWith('is_claimed_by_me', 'DESC');
+    expect(query.addOrderBy).toHaveBeenCalledWith('candidate.activeLearningPriority', 'DESC');
+    expect(query.addOrderBy).toHaveBeenCalledWith('candidate.createdAt', 'ASC');
   });
 
   it('skipCandidate records the skip in database', async () => {
@@ -1689,6 +1726,73 @@ describe('ReviewsService', () => {
       expect(validClaim.status).toBe(QuestClaimStatus.COMPLETED);
       expect(validClaim.completedAt).toBeInstanceOf(Date);
       expect(questClaimRepo.save).toHaveBeenCalledWith(validClaim);
+    });
+
+    it('vote() rejects mismatched questClaimId and blocks voting when candidate is claimed by another reviewer', async () => {
+      const candidateRepo = {
+        findOne: jest.fn().mockResolvedValue({
+          id: 'cand-quest-3',
+          status: CandidateStatus.PENDING_REVIEW,
+          submission: { surveyorId: 'surv-diff' },
+        }),
+      } as any;
+      const reviewRepo = {
+        findOne: jest.fn().mockResolvedValue(null),
+      } as any;
+      const questClaimRepo = {
+        findOne: jest
+          .fn()
+          .mockResolvedValueOnce({
+            id: 'claim-wrong-target',
+            reviewerId: 'rev-1',
+            targetType: QuestTargetType.CANDIDATE_VALIDATION,
+            targetId: 'cand-other',
+            status: QuestClaimStatus.CLAIMED,
+            expiresAt: new Date(Date.now() + 60000),
+          })
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce({
+            id: 'claim-other-rev',
+            reviewerId: 'rev-2',
+            targetType: QuestTargetType.CANDIDATE_VALIDATION,
+            targetId: 'cand-quest-3',
+            status: QuestClaimStatus.CLAIMED,
+            expiresAt: new Date(Date.now() + 60000),
+          }),
+      } as any;
+      const paramService = {
+        getNumber: jest.fn().mockResolvedValue(50.0),
+        getBoolean: jest.fn().mockResolvedValue(false),
+      } as any;
+
+      const service = new ReviewsService(
+        candidateRepo,
+        reviewRepo,
+        { findOne: jest.fn() } as any,
+        { evaluate: jest.fn() } as any,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        questClaimRepo,
+        paramService,
+      );
+
+      await expect(
+        service.vote('rev-1', 'cand-quest-3', { vote: 1, questClaimId: 'claim-wrong-target' }),
+      ).rejects.toThrow('does not match candidate');
+
+      await expect(
+        service.vote('rev-1', 'cand-quest-3', { vote: 1 }),
+      ).rejects.toThrow('currently claimed by another reviewer');
     });
 
     it('checkInEligibility() returns eligible: true when distance <= geofence radius', async () => {

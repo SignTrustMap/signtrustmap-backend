@@ -495,6 +495,14 @@ export class RevalidationService {
         if (!matchedClaim) {
           throw new NotFoundException(`Quest claim '${dto.questClaimId}' not found.`);
         }
+        if (
+          (matchedClaim.targetType && matchedClaim.targetType !== QuestTargetType.REVALIDATION_TASK) ||
+          matchedClaim.targetId !== taskId
+        ) {
+          throw new BadRequestException(
+            `Quest claim '${dto.questClaimId}' does not match revalidation task '${taskId}'.`,
+          );
+        }
       } else {
         matchedClaim = await this.questClaims.findOne({
           where: {
@@ -1067,23 +1075,47 @@ export class RevalidationService {
 
   /**
    * Scenario #3 — reviewer evidence comparison queue (paginated).
-   * Excludes evidence the requesting reviewer has already judged.
+   * Excludes evidence the requesting reviewer has already judged and tasks actively claimed by another reviewer.
+   * Prioritizes evidences for tasks currently claimed by the requesting reviewer.
    */
-  async listEvidenceQueue(reviewerId: string, page = 1, pageSize = 20) {
+  async listEvidenceQueue(reviewerId: string, page = 1, pageSize = 20, taskId?: string) {
     const p = Math.max(1, page), ps = Math.min(Math.max(1, pageSize), 100);
     const notVotedClause = `NOT EXISTS (
       SELECT 1 FROM revalidation_decisions mine
       WHERE mine.evidence_id = ev.id AND mine.reviewer_id = $1
     )`;
+    const notClaimedByOtherClause = `NOT EXISTS (
+      SELECT 1 FROM reviewer_quest_claims rqc
+      WHERE rqc.target_id = ev.task_id
+        AND rqc.target_type = 'REVALIDATION_TASK'
+        AND rqc.status = 'CLAIMED'
+        AND rqc.expires_at > NOW()
+        AND rqc.reviewer_id != $1
+    )`;
+    const whereParts = [
+      `rt.status IN ('OPEN', 'EVALUATING')`,
+      notVotedClause,
+      notClaimedByOtherClause,
+      `(ev.user_id IS NULL OR ev.user_id != $1)`,
+    ];
+    const queryParams: any[] = [reviewerId];
+    if (taskId) {
+      queryParams.push(taskId);
+      whereParts.push(`ev.task_id = $${queryParams.length}`);
+    }
+    const whereClause = whereParts.join(' AND ');
+
     // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const countRows: any[] = await this.dataSource.query(
       `SELECT COUNT(*)::int AS cnt
        FROM revalidation_evidences ev
        JOIN revalidation_tasks rt ON rt.id = ev.task_id
-       WHERE rt.status IN ('OPEN', 'EVALUATING') AND ${notVotedClause} AND (ev.user_id IS NULL OR ev.user_id != $1)`,
-      [reviewerId],
+       WHERE ${whereClause}`,
+      queryParams,
     );
     const total = countRows[0]?.cnt ?? 0;
+    const limitIdx = queryParams.length + 1;
+    const offsetIdx = queryParams.length + 2;
     // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
     const rows: any[] = await this.dataSource.query(
       `SELECT
@@ -1113,10 +1145,19 @@ export class RevalidationService {
        JOIN revalidation_tasks rt ON rt.id = ev.task_id
        JOIN verified_traffic_signs vts ON vts.id = rt.verified_sign_id
        LEFT JOIN traffic_sign_types tst ON tst.id = vts.sign_type_id
-       WHERE rt.status IN ('OPEN', 'EVALUATING') AND ${notVotedClause} AND (ev.user_id IS NULL OR ev.user_id != $1)
-       ORDER BY ev.submitted_at ASC
-       LIMIT $2 OFFSET $3`,
-      [reviewerId, ps, (p - 1) * ps],
+       WHERE ${whereClause}
+       ORDER BY (
+         EXISTS (
+           SELECT 1 FROM reviewer_quest_claims mine_claim
+           WHERE mine_claim.target_id = ev.task_id
+             AND mine_claim.target_type = 'REVALIDATION_TASK'
+             AND mine_claim.status = 'CLAIMED'
+             AND mine_claim.expires_at > NOW()
+             AND mine_claim.reviewer_id = $1
+         )
+       ) DESC, ev.submitted_at ASC
+       LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+      [...queryParams, ps, (p - 1) * ps],
     );
     const items = rows.map((r) => ({
       evidenceId: r.evidence_id,
@@ -1160,46 +1201,82 @@ export class RevalidationService {
     }
 
     let matchedClaim: ReviewerQuestClaim | null = null;
-    if (this.questClaims && dto.questClaimId) {
-      matchedClaim = await this.questClaims.findOne({
-        where: { id: dto.questClaimId, reviewerId },
-      });
-      if (!matchedClaim) {
-        throw new NotFoundException(`Quest claim '${dto.questClaimId}' not found.`);
+    if (this.questClaims) {
+      if (dto.questClaimId) {
+        matchedClaim = await this.questClaims.findOne({
+          where: { id: dto.questClaimId, reviewerId },
+        });
+        if (!matchedClaim) {
+          throw new NotFoundException(`Quest claim '${dto.questClaimId}' not found.`);
+        }
+        if (
+          (matchedClaim.targetType && matchedClaim.targetType !== QuestTargetType.REVALIDATION_TASK) ||
+          matchedClaim.targetId !== ev.taskId
+        ) {
+          throw new BadRequestException(
+            `Quest claim '${dto.questClaimId}' does not match revalidation task '${ev.taskId}'.`,
+          );
+        }
+      } else {
+        matchedClaim = await this.questClaims.findOne({
+          where: {
+            targetType: QuestTargetType.REVALIDATION_TASK,
+            targetId: ev.taskId,
+            reviewerId,
+            status: QuestClaimStatus.CLAIMED,
+          },
+        });
       }
 
-      if (matchedClaim.status === QuestClaimStatus.EXPIRED) {
-        throw new BadRequestException('Quest claim has expired. You cannot submit late results.');
-      }
-      if (matchedClaim.status !== QuestClaimStatus.CLAIMED) {
-        throw new BadRequestException(`Quest claim is already ${matchedClaim.status.toLowerCase()}.`);
-      }
-
-      if (new Date() > new Date(matchedClaim.expiresAt)) {
-        matchedClaim.status = QuestClaimStatus.EXPIRED;
-        matchedClaim.penaltyApplied = true;
-        const penaltyScore = this.paramService
-          ? await this.paramService.getNumber('reviewer.quest_timeout_penalty_score', 5.0)
-          : 5.0;
-        matchedClaim.penaltyNotes = `Quest expired uncompleted after ${matchedClaim.timeLimitMinutes} minutes. Penalty: -${penaltyScore} score.`;
-        await this.questClaims.save(matchedClaim);
-
-        try {
-          if (this.dataSource && typeof this.dataSource.query === 'function') {
-            // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
-            await this.dataSource.query(
-              `UPDATE reviewer_profiles 
-               SET reliability_score = GREATEST(0, reliability_score - $1),
-                   updated_at = NOW()
-               WHERE user_id = $2`,
-              [penaltyScore, reviewerId],
-            );
-          }
-        } catch (e: any) {
-          this.logger.warn(`Failed to penalize reviewer ${reviewerId}: ${e?.message}`);
+      if (matchedClaim) {
+        if (matchedClaim.status === QuestClaimStatus.EXPIRED) {
+          throw new BadRequestException('Quest claim has expired. You cannot submit late results.');
+        }
+        if (matchedClaim.status !== QuestClaimStatus.CLAIMED) {
+          throw new BadRequestException(`Quest claim is already ${matchedClaim.status.toLowerCase()}.`);
         }
 
-        throw new BadRequestException('Quest claim has expired. You cannot submit late results.');
+        if (new Date() > new Date(matchedClaim.expiresAt)) {
+          matchedClaim.status = QuestClaimStatus.EXPIRED;
+          matchedClaim.penaltyApplied = true;
+          const penaltyScore = this.paramService
+            ? await this.paramService.getNumber('reviewer.quest_timeout_penalty_score', 5.0)
+            : 5.0;
+          matchedClaim.penaltyNotes = `Quest expired uncompleted after ${matchedClaim.timeLimitMinutes} minutes. Penalty: -${penaltyScore} score.`;
+          await this.questClaims.save(matchedClaim);
+
+          try {
+            if (this.dataSource && typeof this.dataSource.query === 'function') {
+              // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
+              await this.dataSource.query(
+                `UPDATE reviewer_profiles 
+                 SET reliability_score = GREATEST(0, reliability_score - $1),
+                     updated_at = NOW()
+                 WHERE user_id = $2`,
+                [penaltyScore, reviewerId],
+              );
+            }
+          } catch (e: any) {
+            this.logger.warn(`Failed to penalize reviewer ${reviewerId}: ${e?.message}`);
+          }
+
+          throw new BadRequestException('Quest claim has expired. You cannot submit late results.');
+        }
+      } else {
+        const otherActiveClaim = await this.questClaims.findOne({
+          where: {
+            targetType: QuestTargetType.REVALIDATION_TASK,
+            targetId: ev.taskId,
+            status: QuestClaimStatus.CLAIMED,
+          },
+        });
+        if (
+          otherActiveClaim &&
+          otherActiveClaim.reviewerId !== reviewerId &&
+          new Date(otherActiveClaim.expiresAt) > new Date()
+        ) {
+          throw new ConflictException('This revalidation task is currently claimed by another reviewer.');
+        }
       }
     }
 

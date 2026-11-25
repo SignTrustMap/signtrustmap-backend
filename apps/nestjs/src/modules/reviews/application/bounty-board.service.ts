@@ -75,15 +75,15 @@ export class BountyBoardService {
           t.id AS sign_type_id,
           t.sign_code AS sign_code,
           t.name_vi AS sign_name,
-          ST_Y(cge.sign_location) AS latitude,
-          ST_X(cge.sign_location) AS longitude
+          COALESCE(ST_Y(cge.sign_location::geometry), ST_Y(cge.vehicle_location::geometry)) AS latitude,
+          COALESCE(ST_X(cge.sign_location::geometry), ST_X(cge.vehicle_location::geometry)) AS longitude
           ${hasCoords ? `, ST_DistanceSphere(ST_SetSRID(ST_MakePoint($1, $2), 4326), cge.sign_location) AS distance_meters` : ''}
         FROM unverified_sign_candidates c
         LEFT JOIN traffic_sign_types t ON c.predicted_sign_type_id = t.id
         LEFT JOIN candidate_geo_estimations cge ON c.id = cge.candidate_id
         LEFT JOIN survey_submissions s ON c.submission_id = s.id
         WHERE c.status IN ('PENDING_REVIEW', 'IN_CONSENSUS')
-          AND s.surveyor_id != $${hasCoords ? 3 : 1}
+          AND (s.surveyor_id IS NULL OR s.surveyor_id != $${hasCoords ? 3 : 1})
           AND NOT EXISTS (
             SELECT 1 FROM candidate_reviews cr 
             WHERE cr.candidate_id = c.id AND cr.reviewer_id = $${hasCoords ? 3 : 1}
@@ -125,9 +125,11 @@ export class BountyBoardService {
           signName: row.sign_name,
           signCropUrl: row.sign_crop_url,
           bestFrameUrl: row.best_frame_url,
-          latitude: row.latitude ? parseFloat(row.latitude) : null,
-          longitude: row.longitude ? parseFloat(row.longitude) : null,
-          distanceMeters: row.distance_meters ? parseFloat(row.distance_meters) : null,
+          roadName: null,
+          displayAddress: null,
+          latitude: this.toFiniteNumber(row.latitude),
+          longitude: this.toFiniteNumber(row.longitude),
+          distanceMeters: this.toFiniteNumber(row.distance_meters),
           votesCount: n,
           isPromoted: row.is_promoted,
           baseRewardCredits: baseReward,
@@ -139,13 +141,17 @@ export class BountyBoardService {
 
     // 2. Fetch available revalidation tasks
     if (!query.targetType || query.targetType === QuestTargetType.REVALIDATION_TASK) {
+      const taskUserParamIdx = hasCoords ? 3 : 1;
       let taskSql = `
         SELECT 
           rt.id,
           rt.reward_credits,
           rt.priority,
+          rt.votes_count,
+          rt.is_promoted,
           v.id AS verified_sign_id,
           v.sign_crop_url,
+          v.road_name,
           v.display_address,
           t.sign_code AS sign_code,
           t.name_vi AS sign_name,
@@ -155,7 +161,16 @@ export class BountyBoardService {
         FROM revalidation_tasks rt
         JOIN verified_traffic_signs v ON rt.verified_sign_id = v.id
         LEFT JOIN traffic_sign_types t ON v.sign_type_id = t.id
-        WHERE rt.status = 'OPEN'
+        WHERE rt.status IN ('OPEN', 'EVALUATING')
+          AND EXISTS (
+            SELECT 1 FROM revalidation_evidences ev
+            WHERE ev.task_id = rt.id
+              AND (ev.user_id IS NULL OR ev.user_id != $${taskUserParamIdx})
+              AND NOT EXISTS (
+                SELECT 1 FROM revalidation_decisions rd
+                WHERE rd.evidence_id = ev.id AND rd.reviewer_id = $${taskUserParamIdx}
+              )
+          )
           AND NOT EXISTS (
             SELECT 1 FROM reviewer_quest_claims rqc 
             WHERE rqc.target_id = rt.id 
@@ -165,10 +180,10 @@ export class BountyBoardService {
           )
       `;
 
-      const taskParams: any[] = hasCoords ? [query.longitude, query.latitude] : [];
+      const taskParams: any[] = hasCoords ? [query.longitude, query.latitude, userId] : [userId];
 
       if (hasCoords) {
-        taskSql += ` AND v.location IS NOT NULL AND ST_DistanceSphere(ST_SetSRID(ST_MakePoint($1, $2), 4326), v.location) <= $3 ORDER BY distance_meters ASC LIMIT 50`;
+        taskSql += ` AND v.location IS NOT NULL AND ST_DistanceSphere(ST_SetSRID(ST_MakePoint($1, $2), 4326), v.location) <= $4 ORDER BY distance_meters ASC LIMIT 50`;
         taskParams.push(radiusMeters);
       } else {
         taskSql += ` ORDER BY rt.urgency DESC, rt.created_at DESC LIMIT 50`;
@@ -185,18 +200,21 @@ export class BountyBoardService {
           signCode: row.sign_code,
           signName: row.sign_name,
           signCropUrl: row.sign_crop_url,
-          displayAddress: row.display_address,
-          latitude: row.latitude ? parseFloat(row.latitude) : null,
-          longitude: row.longitude ? parseFloat(row.longitude) : null,
-          distanceMeters: row.distance_meters ? parseFloat(row.distance_meters) : null,
-          votesCount: 0,
-          isPromoted: false,
+          roadName: row.road_name ?? null,
+          displayAddress: row.display_address ?? null,
+          latitude: this.toFiniteNumber(row.latitude),
+          longitude: this.toFiniteNumber(row.longitude),
+          distanceMeters: this.toFiniteNumber(row.distance_meters),
+          votesCount: Number(row.votes_count ?? 0),
+          isPromoted: Boolean(row.is_promoted ?? false),
           baseRewardCredits: row.reward_credits || 10,
           escalatedBonusCredits: 0,
           totalRewardCredits: row.reward_credits || 10,
         });
       }
     }
+
+    await this.populateMissingAddresses(quests, false);
 
     return quests;
   }
@@ -453,20 +471,21 @@ export class BountyBoardService {
     };
   }
 
-  private async populateMissingAddresses(items: any[]): Promise<void> {
+  private async populateMissingAddresses(items: any[], onlyClaimed = true): Promise<void> {
     if (!this.spatialAdminService) {
       return;
     }
 
+    const maxTargets = onlyClaimed ? 20 : 50;
     const targets = items
       .filter(
         (item) =>
-          item.status === QuestClaimStatus.CLAIMED &&
+          (!onlyClaimed || item.status === QuestClaimStatus.CLAIMED) &&
           !item.displayAddress &&
           item.latitude != null &&
           item.longitude != null,
       )
-      .slice(0, 20);
+      .slice(0, maxTargets);
 
     if (targets.length === 0) {
       return;
@@ -607,8 +626,26 @@ export class BountyBoardService {
       if (!task) {
         throw new NotFoundException(`Revalidation task '${dto.targetId}' not found.`);
       }
-      if (task.status !== TaskStatus.OPEN) {
-        throw new BadRequestException(`Revalidation task is not open (status: ${task.status}).`);
+      if (task.status !== TaskStatus.OPEN && task.status !== TaskStatus.EVALUATING) {
+        throw new BadRequestException(`Revalidation task is not eligible for review (status: ${task.status}).`);
+      }
+      // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
+      const eligibleEvidences: any[] = await this.dataSource.query(
+        `SELECT ev.id
+         FROM revalidation_evidences ev
+         WHERE ev.task_id = $1
+           AND (ev.user_id IS NULL OR ev.user_id != $2)
+           AND NOT EXISTS (
+             SELECT 1 FROM revalidation_decisions rd
+             WHERE rd.evidence_id = ev.id AND rd.reviewer_id = $2
+           )
+         LIMIT 1`,
+        [dto.targetId, userId],
+      );
+      if (!Array.isArray(eligibleEvidences) || eligibleEvidences.length === 0) {
+        throw new BadRequestException(
+          'Revalidation task has no eligible evidence available for you to review.',
+        );
       }
       baseReward = task.rewardCredits || 10;
     }

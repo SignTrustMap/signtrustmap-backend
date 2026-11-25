@@ -144,6 +144,14 @@ describe('RevalidationController', () => {
       expect(service.listEvidenceQueue).toHaveBeenCalledWith(mockUser.id, 1, 10);
     });
 
+    it('evidenceQueue passes optional valid taskId to service.listEvidenceQueue and rejects invalid taskId', async () => {
+      const validTaskId = '11111111-2222-4333-8444-555555555555';
+      await controller.evidenceQueue(mockUser, '1', '10', validTaskId);
+      expect(service.listEvidenceQueue).toHaveBeenCalledWith(mockUser.id, 1, 10, validTaskId);
+
+      expect(() => controller.evidenceQueue(mockUser, '1', '10', 'not-a-uuid')).toThrow(BadRequestException);
+    });
+
     it('listDecisions calls service.listDecisions', async () => {
       const res = await controller.listDecisions('ev-1');
       expect(res).toEqual([]);

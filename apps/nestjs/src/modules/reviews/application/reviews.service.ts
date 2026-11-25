@@ -24,7 +24,7 @@ import { validateFileSignature, decodeMedia } from '../../survey/domain/media-va
 import { AiInferenceService, TopCandidateResult } from '../../../integrations/ai-inference/ai-inference.service';
 import { SignRemedySuggestion } from './sign-remedies.constants';
 import { SystemSwitchService } from '../../admin/system-switch.service';
-import { ReviewerQuestClaim, QuestClaimStatus } from '../infrastructure/persistence/reviewer-quest-claim.entity';
+import { ReviewerQuestClaim, QuestClaimStatus, QuestTargetType } from '../infrastructure/persistence/reviewer-quest-claim.entity';
 import { SystemParametersService } from '../../system-parameters/system-parameters.service';
 import { UpdateVoteDto } from '../presentation/dto/bounty-board.dto';
 
@@ -189,12 +189,53 @@ export class ReviewsService {
             WHERE rsc.candidate_id = candidate.id AND rsc.reviewer_id = :reviewerId
           )`,
           { reviewerId },
+        )
+        .andWhere(
+          `NOT EXISTS (
+            SELECT 1 FROM reviewer_quest_claims rqc
+            WHERE rqc.target_id = candidate.id
+              AND rqc.target_type = 'CANDIDATE_VALIDATION'
+              AND rqc.status = 'CLAIMED'
+              AND rqc.expires_at > NOW()
+              AND rqc.reviewer_id != :reviewerId
+          )`,
+          { reviewerId },
         );
+    } else {
+      query.andWhere(
+        `NOT EXISTS (
+          SELECT 1 FROM reviewer_quest_claims rqc
+          WHERE rqc.target_id = candidate.id
+            AND rqc.target_type = 'CANDIDATE_VALIDATION'
+            AND rqc.status = 'CLAIMED'
+            AND rqc.expires_at > NOW()
+        )`,
+      );
+    }
+
+    if (reviewerId && typeof (query as any).addSelect === 'function') {
+      query
+        .addSelect(
+          `CASE WHEN EXISTS (
+            SELECT 1 FROM reviewer_quest_claims my_claim
+            WHERE my_claim.target_id = candidate.id
+              AND my_claim.target_type = 'CANDIDATE_VALIDATION'
+              AND my_claim.status = 'CLAIMED'
+              AND my_claim.expires_at > NOW()
+              AND my_claim.reviewer_id = :reviewerId
+          ) THEN 1 ELSE 0 END`,
+          'is_claimed_by_me',
+        )
+        .orderBy('is_claimed_by_me', 'DESC')
+        .addOrderBy('candidate.activeLearningPriority', 'DESC')
+        .addOrderBy('candidate.createdAt', 'ASC');
+    } else {
+      query
+        .orderBy('candidate.activeLearningPriority', 'DESC')
+        .addOrderBy('candidate.createdAt', 'ASC');
     }
 
     query
-      .orderBy('candidate.activeLearningPriority', 'DESC')
-      .addOrderBy('candidate.createdAt', 'ASC')
       .skip((safePage - 1) * safeSize)
       .take(safeSize);
 
@@ -338,9 +379,18 @@ export class ReviewsService {
         if (!matchedClaim) {
           throw new NotFoundException(`Quest claim '${dto.questClaimId}' not found.`);
         }
+        if (
+          (matchedClaim.targetType && matchedClaim.targetType !== QuestTargetType.CANDIDATE_VALIDATION) ||
+          matchedClaim.targetId !== candidateId
+        ) {
+          throw new BadRequestException(
+            `Quest claim '${dto.questClaimId}' does not match candidate '${candidateId}'.`,
+          );
+        }
       } else {
         matchedClaim = await this.questClaimRepo.findOne({
           where: {
+            targetType: QuestTargetType.CANDIDATE_VALIDATION,
             targetId: candidateId,
             reviewerId,
             status: QuestClaimStatus.CLAIMED,
@@ -382,6 +432,21 @@ export class ReviewsService {
           }
 
           throw new BadRequestException('Quest claim has expired. You cannot submit late results.');
+        }
+      } else {
+        const otherActiveClaim = await this.questClaimRepo.findOne({
+          where: {
+            targetType: QuestTargetType.CANDIDATE_VALIDATION,
+            targetId: candidateId,
+            status: QuestClaimStatus.CLAIMED,
+          },
+        });
+        if (
+          otherActiveClaim &&
+          otherActiveClaim.reviewerId !== reviewerId &&
+          new Date(otherActiveClaim.expiresAt) > new Date()
+        ) {
+          throw new ConflictException('This candidate is currently claimed by another reviewer.');
         }
       }
     }

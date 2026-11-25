@@ -1681,5 +1681,103 @@ describe('RevalidationService', () => {
       expect(validClaim.completedAt).toBeInstanceOf(Date);
       expect(questClaims.save).toHaveBeenCalledWith(validClaim);
     });
+
+    it('listEvidenceQueue excludes tasks claimed by others, prioritizes own claims, and filters by taskId', async () => {
+      const dataSource = {
+        query: jest.fn().mockImplementation(async (sql: string) => {
+          if (sql.includes('COUNT(*)::int AS cnt')) return [{ cnt: 1 }];
+          return [];
+        }),
+      } as any;
+      const service = new RevalidationService(
+        {} as any,
+        {} as any,
+        {} as any,
+        dataSource,
+        {} as any,
+        {} as any,
+        {} as any,
+      );
+
+      await service.listEvidenceQueue('rev-1', 1, 10, 'task-target-1');
+
+      expect(dataSource.query).toHaveBeenNthCalledWith(
+        1,
+        expect.stringContaining("rqc.target_type = 'REVALIDATION_TASK'"),
+        ['rev-1', 'task-target-1'],
+      );
+      expect(dataSource.query).toHaveBeenNthCalledWith(
+        1,
+        expect.stringContaining('ev.task_id = $2'),
+        ['rev-1', 'task-target-1'],
+      );
+      expect(dataSource.query).toHaveBeenNthCalledWith(
+        2,
+        expect.stringContaining('mine_claim.reviewer_id = $1'),
+        ['rev-1', 'task-target-1', 10, 0],
+      );
+    });
+
+    it('voteOnEvidence rejects mismatched questClaimId and blocks voting when another reviewer holds an active claim', async () => {
+      const evidences = {
+        findOne: jest.fn().mockResolvedValue({ id: 'ev-1', taskId: 'task-1', userId: 'surv-1' }),
+      } as any;
+      const questClaims = {
+        findOne: jest
+          .fn()
+          .mockResolvedValueOnce({
+            id: 'claim-other-task',
+            reviewerId: 'rev-1',
+            targetType: QuestTargetType.REVALIDATION_TASK,
+            targetId: 'task-other',
+            status: QuestClaimStatus.CLAIMED,
+            expiresAt: new Date(Date.now() + 60000),
+          })
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce({
+            id: 'claim-held-by-other',
+            reviewerId: 'rev-2',
+            targetType: QuestTargetType.REVALIDATION_TASK,
+            targetId: 'task-1',
+            status: QuestClaimStatus.CLAIMED,
+            expiresAt: new Date(Date.now() + 60000),
+          }),
+      } as any;
+
+      const service = new RevalidationService(
+        {} as any,
+        evidences,
+        {} as any,
+        {} as any,
+        {} as any,
+        {} as any,
+        {} as any,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        questClaims,
+      );
+
+      await expect(
+        service.voteOnEvidence('ev-1', 'rev-1', {
+          decision: 'STILL_ACTIVE',
+          questClaimId: 'claim-other-task',
+        }),
+      ).rejects.toThrow('does not match revalidation task');
+
+      await expect(
+        service.voteOnEvidence('ev-1', 'rev-1', {
+          decision: 'STILL_ACTIVE',
+        }),
+      ).rejects.toThrow('currently claimed by another reviewer');
+    });
   });
 });
