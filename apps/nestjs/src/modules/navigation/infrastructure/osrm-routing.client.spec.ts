@@ -421,4 +421,156 @@ describe('OsrmRoutingClient', () => {
       );
     });
   });
+
+  describe('Per-vehicle routing (Valhalla & specialized OSRM overrides)', () => {
+    it('uses dedicated per-vehicle OSRM baseUrl when configured', async () => {
+      const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: async () => fixture,
+      } as Response);
+
+      const specializedClient = new OsrmRoutingClient(
+        new ConfigService({
+          routing: {
+            osrm: {
+              baseUrl: 'https://osrm-car.test',
+              bicycleBaseUrl: 'https://osrm-bike.test',
+              profile: 'driving',
+              timeoutMs: 1_000,
+            },
+          },
+        }),
+      );
+
+      await specializedClient.findDirections({ ...request, vehicleType: 'BICYCLE' }, 25, 3);
+      expect(String(fetchMock.mock.calls[0][0])).toContain('https://osrm-bike.test/route/v1/bike/');
+    });
+
+    it('routes specialized vehicles via Valhalla and falls back to OSRM if Valhalla fails', async () => {
+      // Polyline6 for (10.7769, 106.7009) -> (10.7725, 106.6980)
+      const encode6 = (pts: Array<[number, number]>) => {
+        let pLat = 0;
+        let pLng = 0;
+        let out = '';
+        const enc = (v: number) => {
+          let val = v < 0 ? ~(v << 1) : v << 1;
+          while (val >= 0x20) {
+            out += String.fromCharCode((0x20 | (val & 0x1f)) + 63);
+            val >>>= 5;
+          }
+          out += String.fromCharCode(val + 63);
+        };
+        for (const [la, ln] of pts) {
+          const iLat = Math.round(la * 1e6);
+          const iLng = Math.round(ln * 1e6);
+          enc(iLat - pLat);
+          enc(iLng - pLng);
+          pLat = iLat;
+          pLng = iLng;
+        }
+        return out;
+      };
+
+      const shape6 = encode6([
+        [10.7769, 106.7009],
+        [10.775, 106.6995],
+        [10.7725, 106.698],
+      ]);
+
+      const fetchMock = jest
+        .spyOn(global, 'fetch')
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            trip: {
+              summary: { length: 0.771, time: 185 },
+              legs: [
+                {
+                  shape: shape6,
+                  maneuvers: [
+                    {
+                      type: 1,
+                      length: 0.25,
+                      time: 60,
+                      begin_shape_index: 0,
+                      end_shape_index: 1,
+                      street_names: ['Lê Thánh Tôn'],
+                    },
+                    {
+                      type: 10,
+                      length: 0.521,
+                      time: 125,
+                      begin_shape_index: 1,
+                      end_shape_index: 2,
+                      street_names: ['Phan Chu Trinh'],
+                    },
+                    {
+                      type: 6,
+                      length: 0,
+                      time: 0,
+                      begin_shape_index: 2,
+                      end_shape_index: 2,
+                    },
+                  ],
+                },
+              ],
+            },
+          }),
+        } as Response)
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 503,
+        } as Response)
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          text: async () => fixture,
+        } as Response);
+
+      const valhallaClient = new OsrmRoutingClient(
+        new ConfigService({
+          routing: {
+            osrm: {
+              baseUrl: 'https://osrm-local.test',
+              profile: 'driving',
+              motorcycleProfile: 'motorcycle',
+              timeoutMs: 1_000,
+            },
+            valhalla: {
+              enabled: true,
+              baseUrl: 'https://valhalla.test',
+              timeoutMs: 1_000,
+            },
+          },
+        }),
+      );
+
+      const motoRes = await valhallaClient.findDirections(
+        { ...request, vehicleMode: 'MOTORCYCLE', vehicleType: 'MOTORCYCLE' },
+        25,
+        2,
+      );
+      expect(String(fetchMock.mock.calls[0][0])).toBe('https://valhalla.test/route');
+      expect(motoRes.shortestPath.distanceMeters).toBe(771);
+      expect(motoRes.shortestPath.durationSeconds).toBe(185);
+      expect(motoRes.shortestPath.geometry).toHaveLength(3);
+      expect(motoRes.shortestPath.steps[1]).toMatchObject({
+        type: 'turn',
+        instruction: 'Rẽ phải vào Phan Chu Trinh',
+        roadClass: 'motorcycle',
+      });
+
+      // Second specialized request (BICYCLE) hits Valhalla error -> falls back to local OSRM
+      const bikeRes = await valhallaClient.findDirections(
+        { ...request, vehicleMode: 'CYCLING', vehicleType: 'BICYCLE' },
+        25,
+        2,
+      );
+      expect(String(fetchMock.mock.calls[1][0])).toBe('https://valhalla.test/route');
+      expect(String(fetchMock.mock.calls[2][0])).toContain('https://osrm-local.test/route/v1/bike/');
+      expect(bikeRes.shortestPath.distanceMeters).toBe(1000);
+    });
+  });
 });

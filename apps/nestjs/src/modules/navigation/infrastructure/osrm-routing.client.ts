@@ -48,13 +48,26 @@ export class OsrmRoutingClient {
   private static readonly MOTORCYCLE_DURATION_FACTOR = 0.95;
 
   private readonly baseUrl: string;
+  private readonly motorcycleBaseUrl: string;
+  private readonly bicycleBaseUrl: string;
+  private readonly pedestrianBaseUrl: string;
   private readonly profile: string;
   private readonly motorcycleProfile: string;
   private readonly timeoutMs: number;
   private readonly motorcycleDurationFactor: number;
+  private readonly valhallaEnabled: boolean;
+  private readonly valhallaBaseUrl: string;
+  private readonly valhallaTimeoutMs: number;
+  private readonly valhallaCache = new Map<
+    string,
+    { response: RouteDirectionsResponse; expiresAt: number }
+  >();
 
   constructor(config: ConfigService) {
     this.baseUrl = config.get<string>('routing.osrm.baseUrl') ?? 'https://router.project-osrm.org';
+    this.motorcycleBaseUrl = (config.get<string>('routing.osrm.motorcycleBaseUrl') ?? '').trim();
+    this.bicycleBaseUrl = (config.get<string>('routing.osrm.bicycleBaseUrl') ?? '').trim();
+    this.pedestrianBaseUrl = (config.get<string>('routing.osrm.pedestrianBaseUrl') ?? '').trim();
     this.profile = config.get<string>('routing.osrm.profile') ?? 'driving';
     this.motorcycleProfile =
       config.get<string>('routing.osrm.motorcycleProfile') ?? 'motorcycle';
@@ -62,6 +75,11 @@ export class OsrmRoutingClient {
     this.motorcycleDurationFactor =
       config.get<number>('routing.osrm.motorcycleDurationFactor') ??
       OsrmRoutingClient.MOTORCYCLE_DURATION_FACTOR;
+    this.valhallaEnabled = config.get<boolean>('routing.valhalla.enabled') === true;
+    this.valhallaBaseUrl = (
+      config.get<string>('routing.valhalla.baseUrl') ?? 'https://valhalla1.openstreetmap.de'
+    ).trim();
+    this.valhallaTimeoutMs = config.get<number>('routing.valhalla.timeoutMs') ?? 6_000;
   }
 
   async findDirections(
@@ -71,21 +89,78 @@ export class OsrmRoutingClient {
   ): Promise<RouteDirectionsResponse> {
     const effectiveMode = request.vehicleMode ?? request._vehicleMode;
     const effectiveType = this.resolveVehicleType(request.vehicleType, effectiveMode);
+    const baseUrlOverride = this.resolveBaseUrlOverride(effectiveType, effectiveMode);
+    const valhallaCosting = this.resolveValhallaCosting(effectiveType, effectiveMode);
+
+    if (!baseUrlOverride && this.valhallaEnabled && valhallaCosting) {
+      try {
+        return await this.findDirectionsViaValhalla(
+          request,
+          valhallaCosting,
+          effectiveType,
+          thresholdPercent,
+          maxAlternatives,
+        );
+      } catch (error: any) {
+        this.logger.warn(
+          `Valhalla routing failed for ${valhallaCosting}, falling back to local OSRM: ${error?.message || error}`,
+        );
+      }
+    }
+
     const profile = this.resolveProfile(effectiveType, effectiveMode);
     let body: string;
     try {
-      body = await this.fetchResponse(this.routeUrl(request, maxAlternatives, profile));
+      body = await this.fetchResponse(
+        this.routeUrl(request, maxAlternatives, profile, baseUrlOverride),
+      );
     } catch (error) {
       // Do not silently turn a motorcycle request into a car request. A missing
       // motorcycle profile must be visible to the caller rather than returning
       // geometry calculated with the wrong vehicle model.
-      if (profile !== this.profile && effectiveType !== 'MOTORCYCLE') {
+      if (!baseUrlOverride && profile !== this.profile && effectiveType !== 'MOTORCYCLE') {
         body = await this.fetchResponse(this.routeUrl(request, maxAlternatives, this.profile));
       } else {
         throw error;
       }
     }
     return this.parseResponse(request, thresholdPercent, maxAlternatives, body);
+  }
+
+  private resolveBaseUrlOverride(
+    vehicleType?: VehicleType,
+    vehicleMode?: string,
+  ): string | undefined {
+    const effectiveType = this.resolveVehicleType(vehicleType, vehicleMode);
+    const mode = (vehicleMode ?? '').toString().toUpperCase();
+    if ((effectiveType === 'BICYCLE' || mode === 'CYCLING') && this.bicycleBaseUrl) {
+      return this.bicycleBaseUrl;
+    }
+    if ((effectiveType === 'PEDESTRIAN' || mode === 'WALKING') && this.pedestrianBaseUrl) {
+      return this.pedestrianBaseUrl;
+    }
+    if (effectiveType === 'MOTORCYCLE' && this.motorcycleBaseUrl) {
+      return this.motorcycleBaseUrl;
+    }
+    return undefined;
+  }
+
+  private resolveValhallaCosting(
+    vehicleType?: VehicleType,
+    vehicleMode?: string,
+  ): 'motorcycle' | 'bicycle' | 'pedestrian' | null {
+    const effectiveType = this.resolveVehicleType(vehicleType, vehicleMode);
+    const mode = (vehicleMode ?? '').toString().toUpperCase();
+    if (effectiveType === 'BICYCLE' || mode === 'CYCLING') {
+      return 'bicycle';
+    }
+    if (effectiveType === 'PEDESTRIAN' || mode === 'WALKING') {
+      return 'pedestrian';
+    }
+    if (effectiveType === 'MOTORCYCLE') {
+      return 'motorcycle';
+    }
+    return null;
   }
 
   private resolveVehicleType(
@@ -252,16 +327,18 @@ export class OsrmRoutingClient {
     request: RouteDirectionsRequest,
     maxAlternatives: number,
     profileOverride?: string,
+    baseUrlOverride?: string,
   ): URL {
     const effectiveMode = request.vehicleMode ?? request._vehicleMode;
     const effectiveType = this.resolveVehicleType(request.vehicleType, effectiveMode);
     const profile = profileOverride ?? this.resolveProfile(effectiveType, effectiveMode);
+    const base = (baseUrlOverride || this.baseUrl).replace(/\/$/, '');
     const coordinates = [
       `${request.originLongitude.toFixed(7)},${request.originLatitude.toFixed(7)}`,
       `${request.destinationLongitude.toFixed(7)},${request.destinationLatitude.toFixed(7)}`,
     ].join(';');
     const url = new URL(
-      `${this.baseUrl.replace(/\/$/, '')}/route/v1/${profile}/${coordinates}`,
+      `${base}/route/v1/${profile}/${coordinates}`,
     );
     url.searchParams.set('alternatives', maxAlternatives <= 0 ? 'false' : String(maxAlternatives));
     url.searchParams.set('steps', 'true');
@@ -593,5 +670,277 @@ export class OsrmRoutingClient {
 
   private isObject(value: unknown): value is JsonObject {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  private async findDirectionsViaValhalla(
+    request: RouteDirectionsRequest,
+    costing: 'motorcycle' | 'bicycle' | 'pedestrian',
+    effectiveType: VehicleType | undefined,
+    thresholdPercent: number,
+    maxAlternatives: number,
+  ): Promise<RouteDirectionsResponse> {
+    const cacheKey = [
+      costing,
+      request.originLatitude.toFixed(5),
+      request.originLongitude.toFixed(5),
+      request.destinationLatitude.toFixed(5),
+      request.destinationLongitude.toFixed(5),
+      maxAlternatives,
+      thresholdPercent,
+    ].join(':');
+    const cached = this.valhallaCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.response;
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.valhallaTimeoutMs);
+    let raw: unknown;
+    try {
+      const url = `${this.valhallaBaseUrl.replace(/\/$/, '')}/route`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'SignTrustMap/0.1',
+        },
+        body: JSON.stringify({
+          locations: [
+            { lat: request.originLatitude, lon: request.originLongitude },
+            { lat: request.destinationLatitude, lon: request.destinationLongitude },
+          ],
+          costing,
+          ...(maxAlternatives > 0 ? { alternates: Math.min(maxAlternatives, 3) } : {}),
+          directions_options: { units: 'kilometers', language: 'en-US' },
+        }),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        throw new BadGatewayException(`Valhalla returned HTTP ${response.status}`);
+      }
+      raw = await response.json();
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    if (!this.isObject(raw) || !this.isObject(raw.trip)) {
+      throw new BadGatewayException('Valhalla returned an invalid response');
+    }
+
+    const trips: JsonObject[] = [raw.trip];
+    if (Array.isArray(raw.alternates)) {
+      for (const alt of raw.alternates) {
+        if (this.isObject(alt) && this.isObject(alt.trip)) {
+          trips.push(alt.trip);
+        }
+      }
+    }
+
+    const parsedTrips = trips
+      .map((trip) => this.parseValhallaTrip(trip, costing))
+      .filter((t): t is { route: ParsedRoute; snappedOrigin: RouteSnapResponse; snappedDestination: RouteSnapResponse } => t !== null)
+      .sort((a, b) => a.route.distanceMeters - b.route.distanceMeters);
+
+    if (parsedTrips.length === 0) {
+      throw new NotFoundException('Valhalla did not return any route');
+    }
+
+    const shortestDistanceMeters = parsedTrips[0].route.distanceMeters;
+    const maxDistanceMeters = shortestDistanceMeters * (1 + thresholdPercent / 100);
+    const acceptedRoutes: RoutePathResponse[] = [];
+    for (const item of parsedTrips) {
+      if (item.route.distanceMeters > maxDistanceMeters) continue;
+      acceptedRoutes.push(
+        this.toResponse(item.route, acceptedRoutes.length, shortestDistanceMeters, effectiveType),
+      );
+      if (acceptedRoutes.length >= maxAlternatives + 1) break;
+    }
+
+    if (acceptedRoutes.length === 0) {
+      throw new NotFoundException('No route within the requested threshold');
+    }
+
+    const origin = {
+      latitude: request.originLatitude,
+      longitude: request.originLongitude,
+    };
+    const destination = {
+      latitude: request.destinationLatitude,
+      longitude: request.destinationLongitude,
+    };
+    const result: RouteDirectionsResponse = {
+      origin,
+      destination,
+      snappedOrigin: parsedTrips[0].snappedOrigin,
+      snappedDestination: parsedTrips[0].snappedDestination,
+      shortestPath: acceptedRoutes[0],
+      alternatives: acceptedRoutes.slice(1),
+    };
+
+    if (this.valhallaCache.size >= 500) {
+      const oldestKey = this.valhallaCache.keys().next().value as string | undefined;
+      if (oldestKey) this.valhallaCache.delete(oldestKey);
+    }
+    this.valhallaCache.set(cacheKey, { response: result, expiresAt: Date.now() + 60_000 });
+    return result;
+  }
+
+  private parseValhallaTrip(
+    trip: JsonObject,
+    costing: 'motorcycle' | 'bicycle' | 'pedestrian',
+  ): {
+    route: ParsedRoute;
+    snappedOrigin: RouteSnapResponse;
+    snappedDestination: RouteSnapResponse;
+  } | null {
+    const legs = Array.isArray(trip.legs) ? trip.legs : [];
+    if (legs.length === 0 || !this.isObject(legs[0])) {
+      return null;
+    }
+    const leg = legs[0] as JsonObject;
+    const shape = this.text(leg.shape) ?? '';
+    const decodedGeometry = this.decodePolyline6(shape);
+    if (decodedGeometry.length === 0) {
+      return null;
+    }
+
+    const maneuvers = Array.isArray(leg.maneuvers) ? leg.maneuvers : [];
+    const roadClass =
+      costing === 'pedestrian' ? 'walking' : costing === 'bicycle' ? 'cycling' : 'motorcycle';
+
+    const steps: RouteStepResponse[] = maneuvers
+      .filter((m): m is JsonObject => this.isObject(m))
+      .map((m) => {
+        const typeNum = this.numberOrZero(m.type);
+        const streetNames = Array.isArray(m.street_names)
+          ? m.street_names.map((s) => this.text(s)).filter((s): s is string => Boolean(s))
+          : [];
+        const roadName = streetNames[0] ?? null;
+        const beginIdx = Math.max(0, Math.min(decodedGeometry.length - 1, Math.floor(this.numberOrZero(m.begin_shape_index))));
+        const endIdx = Math.max(beginIdx, Math.min(decodedGeometry.length - 1, Math.floor(this.numberOrZero(m.end_shape_index))));
+        const stepGeometry = decodedGeometry.slice(beginIdx, endIdx + 1);
+        const mapped = this.valhallaManeuverToOsrm(typeNum);
+        const distanceKm = this.numberOrZero(m.length);
+        const durationSec = Math.round(this.numberOrZero(m.time));
+
+        return {
+          type: mapped.type,
+          instruction: this.instruction(mapped.type, mapped.modifier, roadName, m.roundabout_exit_count),
+          edgeId: null,
+          fromNodeId: null,
+          toNodeId: null,
+          roadName,
+          roadClass,
+          distanceMeters: Math.round(distanceKm * 1000 * 10) / 10,
+          durationSeconds: Math.max(0, durationSec),
+          geometry: stepGeometry.length > 0 ? stepGeometry : [decodedGeometry[beginIdx]],
+        };
+      });
+
+    const summary = this.isObject(trip.summary) ? trip.summary : {};
+    const totalDistanceMeters = Math.round(this.numberOrZero(summary.length || leg.summary?.['length']) * 1000 * 10) / 10;
+    const totalDurationSeconds = Math.max(1, Math.round(this.numberOrZero(summary.time || leg.summary?.['time'])));
+
+    const firstPt = decodedGeometry[0];
+    const lastPt = decodedGeometry[decodedGeometry.length - 1];
+    return {
+      route: {
+        distanceMeters: totalDistanceMeters,
+        durationSeconds: totalDurationSeconds,
+        geometry: decodedGeometry,
+        steps,
+      },
+      snappedOrigin: { nodeId: null, latitude: firstPt.latitude, longitude: firstPt.longitude, distanceMeters: 0 },
+      snappedDestination: { nodeId: null, latitude: lastPt.latitude, longitude: lastPt.longitude, distanceMeters: 0 },
+    };
+  }
+
+  private valhallaManeuverToOsrm(valhallaType: number): { type: string; modifier: string | null } {
+    switch (valhallaType) {
+      case 1:
+      case 2:
+      case 3:
+        return { type: 'depart', modifier: valhallaType === 2 ? 'right' : valhallaType === 3 ? 'left' : 'straight' };
+      case 4:
+      case 5:
+      case 6:
+        return { type: 'arrive', modifier: valhallaType === 5 ? 'right' : valhallaType === 6 ? 'left' : 'straight' };
+      case 9:
+        return { type: 'turn', modifier: 'slight right' };
+      case 10:
+        return { type: 'turn', modifier: 'right' };
+      case 11:
+        return { type: 'turn', modifier: 'sharp right' };
+      case 12:
+      case 13:
+        return { type: 'turn', modifier: 'uturn' };
+      case 14:
+        return { type: 'turn', modifier: 'sharp left' };
+      case 15:
+        return { type: 'turn', modifier: 'left' };
+      case 16:
+        return { type: 'turn', modifier: 'slight left' };
+      case 17:
+      case 18:
+      case 19:
+        return { type: 'on ramp', modifier: valhallaType === 18 ? 'right' : valhallaType === 19 ? 'left' : 'straight' };
+      case 20:
+      case 21:
+        return { type: 'off ramp', modifier: valhallaType === 20 ? 'right' : 'left' };
+      case 22:
+      case 23:
+      case 24:
+        return { type: 'fork', modifier: valhallaType === 23 ? 'right' : valhallaType === 24 ? 'left' : 'straight' };
+      case 25:
+      case 37:
+      case 38:
+      case 39:
+        return { type: 'merge', modifier: valhallaType === 37 ? 'right' : valhallaType === 38 ? 'left' : null };
+      case 26:
+        return { type: 'roundabout', modifier: null };
+      case 27:
+        return { type: 'exit roundabout', modifier: null };
+      default:
+        return { type: 'continue', modifier: 'straight' };
+    }
+  }
+
+  private decodePolyline6(encoded: string): RoutePointResponse[] {
+    if (!encoded) return [];
+    const points: RoutePointResponse[] = [];
+    let index = 0;
+    let lat = 0;
+    let lng = 0;
+
+    while (index < encoded.length) {
+      let b: number;
+      let shift = 0;
+      let result = 0;
+      do {
+        b = encoded.charCodeAt(index++) - 63;
+        result |= (b & 0x1f) << shift;
+        shift += 5;
+      } while (b >= 0x20 && index < encoded.length);
+      const dlat = (result & 1) !== 0 ? ~(result >> 1) : result >> 1;
+      lat += dlat;
+
+      if (index >= encoded.length) break;
+      shift = 0;
+      result = 0;
+      do {
+        b = encoded.charCodeAt(index++) - 63;
+        result |= (b & 0x1f) << shift;
+        shift += 5;
+      } while (b >= 0x20 && index < encoded.length);
+      const dlng = (result & 1) !== 0 ? ~(result >> 1) : result >> 1;
+      lng += dlng;
+
+      this.appendCoordinate(points, {
+        latitude: lat / 1_000_000,
+        longitude: lng / 1_000_000,
+      });
+    }
+
+    return points;
   }
 }

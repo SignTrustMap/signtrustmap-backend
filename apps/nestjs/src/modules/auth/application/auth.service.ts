@@ -15,7 +15,7 @@ import { SurveyorProfile } from '../../survey/infrastructure/persistence/surveyo
 import { ReviewerProfile } from '../../reviews/infrastructure/persistence/reviewer-profile.entity';
 import { OAuthAccount } from '../infrastructure/persistence/oauth-account.entity';
 import { AuthOtpToken } from '../infrastructure/persistence/auth-otp-token.entity';
-import { RegisterDto, LoginDto } from '../presentation/dto/auth.dto';
+import { RegisterDto, LoginDto, UpdateProfileDto } from '../presentation/dto/auth.dto';
 import { JwtPayload } from '../domain/auth.types';
 
 type GoogleUserProfile = {
@@ -46,6 +46,17 @@ export class AuthService {
   private async getRolesForUser(userId: string): Promise<string[]> {
     const rows = await this.userRoleRepo.find({ where: { userId, isActive: true }, relations: ['role'] });
     return rows.map((r) => r.role.code);
+  }
+
+  private async getRegisteredRolesForUser(userId: string): Promise<string[]> {
+    const rows = await this.userRoleRepo.find({ where: { userId }, relations: ['role'] });
+    return Array.from(
+      new Set(
+        rows
+          .map((r) => r.role?.code)
+          .filter((code): code is string => Boolean(code)),
+      ),
+    );
   }
 
   private signToken(user: User, roles: string[]): string {
@@ -302,133 +313,89 @@ export class AuthService {
     return { user: { id: user.id, email: user.email, fullName: user.fullName, roles }, accessToken: this.signToken(user, roles) };
   }
 
-  async getProfile(userId: string) {
-    const user = await this.userRepo.findOne({ where: { id: userId } });
-    if (!user) throw new UnauthorizedException('User not found');
-    const roles = await this.getRolesForUser(userId);
-    // Enrich with wallet + profile stats (driver / surveyor / reviewer) when available
+  private async buildProfileResponse(user: User) {
+    const [roles, registeredRoles] = await Promise.all([
+      this.getRolesForUser(user.id),
+      this.getRegisteredRolesForUser(user.id),
+    ]);
+
     let walletBalance = 0;
     try {
-      const wallet = await this.walletRepo.findOne({ where: { userId } });
+      const wallet = await this.walletRepo.findOne({ where: { userId: user.id } });
       if (wallet) {
         walletBalance = Number(wallet.balance);
       } else if (this.dataSource) {
         // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
-        const wRows: any[] = await this.dataSource.query('SELECT balance FROM wallets WHERE user_id=$1', [userId]);
+        const wRows: any[] = await this.dataSource.query('SELECT balance FROM wallets WHERE user_id=$1', [user.id]);
         if (wRows.length) walletBalance = Number(wRows[0].balance);
       }
     } catch {}
+
     const profileStats: any = {};
     try {
       const driverRepo = this.driverProfileRepo ?? (typeof this.dataSource?.getRepository === 'function' ? this.dataSource.getRepository(DriverProfile) : null);
       if (driverRepo) {
-        const dProfile = await driverRepo.findOne({ where: { userId } });
+        const dProfile = await driverRepo.findOne({ where: { userId: user.id } });
         if (dProfile) profileStats.driver = dProfile;
       } else {
         // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
-        const dRows: any[] = await this.dataSource.query('SELECT * FROM driver_profiles WHERE user_id=$1', [userId]);
+        const dRows: any[] = await this.dataSource.query('SELECT * FROM driver_profiles WHERE user_id=$1', [user.id]);
         if (dRows.length) profileStats.driver = dRows[0];
       }
     } catch {}
     try {
       const surveyorRepo = this.surveyorProfileRepo ?? (typeof this.dataSource?.getRepository === 'function' ? this.dataSource.getRepository(SurveyorProfile) : null);
       if (surveyorRepo) {
-        const sProfile = await surveyorRepo.findOne({ where: { userId } });
+        const sProfile = await surveyorRepo.findOne({ where: { userId: user.id } });
         if (sProfile) profileStats.surveyor = sProfile;
       } else {
         // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
-        const sRows: any[] = await this.dataSource.query('SELECT * FROM surveyor_profiles WHERE user_id=$1', [userId]);
+        const sRows: any[] = await this.dataSource.query('SELECT * FROM surveyor_profiles WHERE user_id=$1', [user.id]);
         if (sRows.length) profileStats.surveyor = sRows[0];
       }
     } catch {}
     try {
       const reviewerRepo = this.reviewerProfileRepo ?? (typeof this.dataSource?.getRepository === 'function' ? this.dataSource.getRepository(ReviewerProfile) : null);
       if (reviewerRepo) {
-        const rProfile = await reviewerRepo.findOne({ where: { userId } });
+        const rProfile = await reviewerRepo.findOne({ where: { userId: user.id } });
         if (rProfile) profileStats.reviewer = rProfile;
       } else {
         // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
-        const rRows: any[] = await this.dataSource.query('SELECT * FROM reviewer_profiles WHERE user_id=$1', [userId]);
+        const rRows: any[] = await this.dataSource.query('SELECT * FROM reviewer_profiles WHERE user_id=$1', [user.id]);
         if (rRows.length) profileStats.reviewer = rRows[0];
       }
     } catch {}
+
     return {
       id: user.id,
       email: user.email,
       fullName: user.fullName,
-      phone: user.phone,
-      avatarUrl: user.avatarUrl,
+      phone: user.phone ?? null,
+      address: user.address ?? null,
+      avatarUrl: user.avatarUrl ?? null,
       status: user.status,
       roles,
+      registeredRoles,
       walletBalance,
       profileStats,
     };
   }
 
-  async updateProfile(userId: string, dto: { fullName?: string; phone?: string; avatarUrl?: string }) {
+  async getProfile(userId: string) {
+    const user = await this.userRepo.findOne({ where: { id: userId } });
+    if (!user) throw new UnauthorizedException('User not found');
+    return this.buildProfileResponse(user);
+  }
+
+  async updateProfile(userId: string, dto: UpdateProfileDto) {
     const user = await this.userRepo.findOne({ where: { id: userId } });
     if (!user) throw new UnauthorizedException('User not found');
     if (dto.fullName != null) user.fullName = dto.fullName;
     if (dto.phone !== undefined) user.phone = dto.phone || null;
+    if (dto.address !== undefined) user.address = dto.address || null;
     if (dto.avatarUrl !== undefined) user.avatarUrl = dto.avatarUrl || null;
     await this.userRepo.save(user);
-    const roles = await this.getRolesForUser(userId);
-    let walletBalance = 0;
-    try {
-      const wallet = await this.walletRepo.findOne({ where: { userId } });
-      if (wallet) {
-        walletBalance = Number(wallet.balance);
-      } else if (this.dataSource) {
-        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
-        const wRows: any[] = await this.dataSource.query('SELECT balance FROM wallets WHERE user_id=$1', [userId]);
-        if (wRows.length) walletBalance = Number(wRows[0].balance);
-      }
-    } catch {}
-    const profileStats: any = {};
-    try {
-      const driverRepo = this.driverProfileRepo ?? (typeof this.dataSource?.getRepository === 'function' ? this.dataSource.getRepository(DriverProfile) : null);
-      if (driverRepo) {
-        const dProfile = await driverRepo.findOne({ where: { userId } });
-        if (dProfile) profileStats.driver = dProfile;
-      } else {
-        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
-        const dRows: any[] = await this.dataSource.query('SELECT * FROM driver_profiles WHERE user_id=$1', [userId]);
-        if (dRows.length) profileStats.driver = dRows[0];
-      }
-    } catch {}
-    try {
-      const surveyorRepo = this.surveyorProfileRepo ?? (typeof this.dataSource?.getRepository === 'function' ? this.dataSource.getRepository(SurveyorProfile) : null);
-      if (surveyorRepo) {
-        const sProfile = await surveyorRepo.findOne({ where: { userId } });
-        if (sProfile) profileStats.surveyor = sProfile;
-      } else {
-        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
-        const sRows: any[] = await this.dataSource.query('SELECT * FROM surveyor_profiles WHERE user_id=$1', [userId]);
-        if (sRows.length) profileStats.surveyor = sRows[0];
-      }
-    } catch {}
-    try {
-      const reviewerRepo = this.reviewerProfileRepo ?? (typeof this.dataSource?.getRepository === 'function' ? this.dataSource.getRepository(ReviewerProfile) : null);
-      if (reviewerRepo) {
-        const rProfile = await reviewerRepo.findOne({ where: { userId } });
-        if (rProfile) profileStats.reviewer = rProfile;
-      } else {
-        // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
-        const rRows: any[] = await this.dataSource.query('SELECT * FROM reviewer_profiles WHERE user_id=$1', [userId]);
-        if (rRows.length) profileStats.reviewer = rRows[0];
-      }
-    } catch {}
-    return {
-      id: user.id,
-      email: user.email,
-      fullName: user.fullName,
-      phone: user.phone,
-      avatarUrl: user.avatarUrl,
-      status: user.status,
-      roles,
-      walletBalance,
-      profileStats,
-    };
+    return this.buildProfileResponse(user);
   }
 
   async toggleRole(userId: string, roleCode: string, enabled = true) {
@@ -485,9 +452,10 @@ export class AuthService {
       }
       currentRoles = await this.getRolesForUser(userId);
     }
+    const registeredRoles = await this.getRegisteredRolesForUser(userId);
 
     return {
-      user: { id: user.id, email: user.email, fullName: user.fullName, roles: currentRoles },
+      user: { id: user.id, email: user.email, fullName: user.fullName, roles: currentRoles, registeredRoles },
       accessToken: this.signToken(user, currentRoles),
     };
   }

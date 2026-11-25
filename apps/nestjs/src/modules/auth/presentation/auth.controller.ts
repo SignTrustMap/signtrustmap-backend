@@ -85,14 +85,14 @@ export class AuthController {
   }
 
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Get current user profile', description: 'Retrieve profile details, roles, and balance of authenticated user' })
+  @ApiOperation({ summary: 'Get current user profile', description: 'Retrieve profile details, active roles, registered roles, address, and balance of authenticated user' })
   @Get('me')
   async me(@CurrentUser() user: any) {
     return this.authService.getProfile(user.id);
   }
 
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Update current user profile', description: 'Update profile information such as full name or phone number' })
+  @ApiOperation({ summary: 'Update current user profile', description: 'Update profile information such as full name, phone number, address, or avatar URL' })
   @Patch('me')
   async updateMe(@CurrentUser() user: any, @Body() dto: UpdateProfileDto) {
     return this.authService.updateProfile(user.id, dto);

@@ -5,6 +5,9 @@ export default registerAs('routing', () => ({
   provider: process.env.ROUTING_PROVIDER || 'OSRM',
   osrm: {
     baseUrl: process.env.ROUTING_OSRM_BASE_URL || 'http://osrm-routed:5000',
+    motorcycleBaseUrl: process.env.ROUTING_OSRM_MOTORCYCLE_BASE_URL || '',
+    bicycleBaseUrl: process.env.ROUTING_OSRM_BICYCLE_BASE_URL || '',
+    pedestrianBaseUrl: process.env.ROUTING_OSRM_PEDESTRIAN_BASE_URL || '',
     profile: process.env.ROUTING_OSRM_PROFILE || 'driving',
     motorcycleProfile: process.env.ROUTING_OSRM_MOTORCYCLE_PROFILE || 'motorcycle',
     timeoutMs: durationMilliseconds(process.env.ROUTING_OSRM_TIMEOUT, 10_000),
@@ -14,6 +17,11 @@ export default registerAs('routing', () => ({
       0.1,
       2.0,
     ),
+  },
+  valhalla: {
+    enabled: process.env.ROUTING_VALHALLA_ENABLED !== 'false',
+    baseUrl: process.env.ROUTING_VALHALLA_BASE_URL || 'https://valhalla1.openstreetmap.de',
+    timeoutMs: durationMilliseconds(process.env.ROUTING_VALHALLA_TIMEOUT, 6_000),
   },
   routeSigns: {
     corridorWidthMeters: numberInRange(

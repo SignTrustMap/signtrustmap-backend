@@ -199,6 +199,7 @@ CREATE TABLE "users" (
   "password_hash" varchar(255),
   "full_name" varchar(100) NOT NULL,
   "phone" varchar(20),
+  "address" varchar(500),
   "avatar_url" varchar(500),
   "status" user_status NOT NULL DEFAULT 'ACTIVE',
   "created_at" timestamptz NOT NULL DEFAULT (now()),

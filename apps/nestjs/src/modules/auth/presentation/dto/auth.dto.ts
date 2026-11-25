@@ -68,16 +68,25 @@ export class LoginDto {
 }
 
 export class UpdateProfileDto {
+  @ApiPropertyOptional({ description: 'User full name', maxLength: 100 })
   @IsOptional()
   @IsString()
   @MaxLength(100)
   fullName?: string;
 
+  @ApiPropertyOptional({ description: 'Contact phone number', maxLength: 20 })
   @IsOptional()
   @IsString()
   @MaxLength(20)
   phone?: string;
 
+  @ApiPropertyOptional({ description: 'User street/home address', maxLength: 500 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  address?: string;
+
+  @ApiPropertyOptional({ description: 'Profile avatar URL', maxLength: 500 })
   @IsOptional()
   @IsString()
   @MaxLength(500)

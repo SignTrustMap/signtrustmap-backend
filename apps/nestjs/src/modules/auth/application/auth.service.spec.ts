@@ -357,29 +357,72 @@ describe('AuthService (Registration and Role Assignment)', () => {
       expect(res.id).toBe('user-1');
       expect(res.walletBalance).toBe(150);
       expect(res.roles).toEqual(['DRIVER']);
+      expect(res.registeredRoles).toEqual(['DRIVER']);
+      expect(res.address).toBeNull();
     });
 
-    it('updateProfile updates fields and returns refreshed user', async () => {
+    it('getProfile returns registeredRoles including inactive roles and user address', async () => {
+      mockUserRepo.findOne.mockResolvedValue({
+        id: 'user-1',
+        email: 'driver@test.dev',
+        fullName: 'Test Driver',
+        phone: '0901234567',
+        address: '123 Lê Lợi, Phường Bến Thành, TP.HCM',
+        avatarUrl: null,
+        status: 'ACTIVE',
+      });
+      mockUserRoleRepo.find.mockImplementation(async (opts: any) => {
+        if (opts?.where?.isActive === true) {
+          return [{ role: { code: 'DRIVER' }, isActive: true }];
+        }
+        return [
+          { role: { code: 'DRIVER' }, isActive: true },
+          { role: { code: 'SURVEYOR' }, isActive: false },
+          { role: { code: 'REVIEWER' }, isActive: false },
+        ];
+      });
+      mockDataSource.query.mockResolvedValue([]);
+
+      const res = await service.getProfile('user-1');
+      expect(res.address).toBe('123 Lê Lợi, Phường Bến Thành, TP.HCM');
+      expect(res.roles).toEqual(['DRIVER']);
+      expect(res.registeredRoles).toEqual(['DRIVER', 'SURVEYOR', 'REVIEWER']);
+    });
+
+    it('updateProfile updates fields including address and returns refreshed user with registeredRoles', async () => {
       const user = {
         id: 'user-1',
         email: 'driver@test.dev',
         fullName: 'Old Name',
         phone: null,
+        address: null,
         avatarUrl: null,
         status: 'ACTIVE',
       };
       mockUserRepo.findOne.mockResolvedValue(user);
       mockUserRepo.save.mockResolvedValue(user);
-      mockUserRoleRepo.find.mockResolvedValue([]);
+      mockUserRoleRepo.find.mockImplementation(async (opts: any) => {
+        if (opts?.where?.isActive === true) {
+          return [{ role: { code: 'DRIVER' }, isActive: true }];
+        }
+        return [
+          { role: { code: 'DRIVER' }, isActive: true },
+          { role: { code: 'SURVEYOR' }, isActive: false },
+        ];
+      });
 
       const res = await service.updateProfile('user-1', {
         fullName: 'New Name',
         phone: '0901234567',
+        address: '45 Nguyễn Huệ, TP.HCM',
         avatarUrl: 'https://s3/pic.jpg',
       });
       expect(res.fullName).toBe('New Name');
       expect(res.phone).toBe('0901234567');
+      expect(res.address).toBe('45 Nguyễn Huệ, TP.HCM');
       expect(res.avatarUrl).toBe('https://s3/pic.jpg');
+      expect(res.roles).toEqual(['DRIVER']);
+      expect(res.registeredRoles).toEqual(['DRIVER', 'SURVEYOR']);
       expect(mockUserRepo.save).toHaveBeenCalled();
     });
   });
