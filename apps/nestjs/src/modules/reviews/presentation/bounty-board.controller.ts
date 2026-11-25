@@ -15,6 +15,7 @@ import { BountyBoardService } from '../application/bounty-board.service';
 import {
   ClaimQuestDto,
   QueryAvailableQuestsDto,
+  QueryMyClaimsDto,
   AbandonQuestDto,
 } from './dto/bounty-board.dto';
 
@@ -39,12 +40,15 @@ export class BountyBoardController {
 
   @ApiOperation({
     summary: 'List current user quest claims',
-    description: 'Returns active and past bounty quest claims for the authenticated reviewer.',
+    description: 'Returns active and past bounty quest claims for the authenticated reviewer with enriched target sign, location, image, and reward details.',
   })
-  @ApiResponse({ status: 200, description: 'User quest claims' })
+  @ApiResponse({ status: 200, description: 'Enriched user quest claims' })
   @Get('my-claims')
-  async getMyClaims(@CurrentUser() user: any) {
-    return this.bountyService.getMyClaims(user.id);
+  async getMyClaims(
+    @CurrentUser() user: any,
+    @Query() query: QueryMyClaimsDto,
+  ) {
+    return this.bountyService.getMyClaims(user.id, query);
   }
 
   @ApiOperation({

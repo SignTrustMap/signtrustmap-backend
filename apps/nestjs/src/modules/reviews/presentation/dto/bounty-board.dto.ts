@@ -13,7 +13,10 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
-import { QuestTargetType } from '../../infrastructure/persistence/reviewer-quest-claim.entity';
+import {
+  QuestClaimStatus,
+  QuestTargetType,
+} from '../../infrastructure/persistence/reviewer-quest-claim.entity';
 
 export class ClaimQuestDto {
   @ApiProperty({
@@ -71,6 +74,42 @@ export class QueryAvailableQuestsDto {
   @IsOptional()
   @IsEnum(QuestTargetType)
   targetType?: QuestTargetType;
+}
+
+export class QueryMyClaimsDto {
+  @ApiPropertyOptional({
+    description: 'Filter claims by status (e.g., CLAIMED, COMPLETED, EXPIRED, ABANDONED)',
+    enum: QuestClaimStatus,
+    example: QuestClaimStatus.CLAIMED,
+  })
+  @IsOptional()
+  @IsEnum(QuestClaimStatus)
+  status?: QuestClaimStatus;
+
+  @ApiPropertyOptional({
+    description: 'Filter claims by target quest type',
+    enum: QuestTargetType,
+    example: QuestTargetType.CANDIDATE_VALIDATION,
+  })
+  @IsOptional()
+  @IsEnum(QuestTargetType)
+  targetType?: QuestTargetType;
+
+  @ApiPropertyOptional({ description: 'Reviewer current latitude (-90 to 90)', example: 10.7769 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(-90)
+  @Max(90)
+  latitude?: number;
+
+  @ApiPropertyOptional({ description: 'Reviewer current longitude (-180 to 180)', example: 106.7009 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(-180)
+  @Max(180)
+  longitude?: number;
 }
 
 export class AbandonQuestDto {

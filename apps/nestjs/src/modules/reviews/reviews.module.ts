@@ -8,7 +8,11 @@ import { ReviewsController } from './presentation/reviews.controller';
 import { CandidatesController } from './presentation/candidates.controller';
 import { BountyBoardController } from './presentation/bounty-board.controller';
 import { TrafficSignType } from '../catalog/traffic-sign-type.entity';
+import { SignCategory } from '../catalog/sign-category.entity';
 import { UnverifiedSignCandidate } from '../survey/infrastructure/persistence/unverified-sign-candidate.entity';
+import { CandidateGeoEstimation } from '../survey/infrastructure/persistence/candidate-geo-estimation.entity';
+import { SurveySubmission } from '../survey/infrastructure/persistence/survey-submission.entity';
+import { VerifiedSignOrmEntity } from '../sign-map/infrastructure/persistence/verified-sign.orm-entity';
 import { ConsensusModule } from '../consensus/consensus.module';
 import { SpatialAdminModule } from '../spatial-admin/spatial-admin.module';
 import { DailyTasksModule } from '../daily-tasks/daily-tasks.module';
@@ -25,9 +29,13 @@ import { AiInferenceModule } from '../../integrations/ai-inference/ai-inference.
   imports: [
     TypeOrmModule.forFeature([
       UnverifiedSignCandidate,
+      CandidateGeoEstimation,
+      SurveySubmission,
+      VerifiedSignOrmEntity,
       CandidateReview,
       ReviewFlag,
       TrafficSignType,
+      SignCategory,
       ReviewerSkippedCandidate,
       ReviewerProfile,
       CandidateRecaptureRequest,
