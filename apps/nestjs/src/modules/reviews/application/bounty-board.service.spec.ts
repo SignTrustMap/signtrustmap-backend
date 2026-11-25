@@ -200,11 +200,13 @@ describe('BountyBoardService', () => {
         targetId: 'cand-avail-1',
         roadName: 'Đường Lê Lợi',
         displayAddress: 'Đường Lê Lợi, Phường Bến Thành, TP. Hồ Chí Minh',
+        nearestLocation: 'Đường Lê Lợi, Phường Bến Thành, TP. Hồ Chí Minh',
       });
       expect(quests[1]).toMatchObject({
         targetType: QuestTargetType.REVALIDATION_TASK,
         targetId: 'task-eval-avail-1',
         displayAddress: 'Đồng Khởi, Phường Sài Gòn, TP. Hồ Chí Minh',
+        nearestLocation: 'Đồng Khởi, Phường Sài Gòn, TP. Hồ Chí Minh',
       });
       expect(spatialAdminService.resolveLocation).toHaveBeenCalledTimes(1);
       expect(dataSource.query).toHaveBeenNthCalledWith(
@@ -490,6 +492,99 @@ describe('BountyBoardService', () => {
       });
       // Expired claims should not trigger spatial resolution calls
       expect(spatialAdminService.resolveLocation).not.toHaveBeenCalled();
+    });
+
+    it('enriches active claims with nearestLocation from closest place reverse geocoding when roadName is missing', async () => {
+      const futureExpiry = new Date(Date.now() + 60 * 60 * 1000);
+      questRepo.find.mockResolvedValue([
+        {
+          id: 'claim-active-1',
+          reviewerId: 'reviewer-1',
+          targetType: QuestTargetType.REVALIDATION_TASK,
+          targetId: 'task-nearest-1',
+          status: QuestClaimStatus.CLAIMED,
+          timeLimitMinutes: 120,
+          claimedAt: new Date(),
+          expiresAt: futureExpiry,
+          completedAt: null,
+          baseRewardCredits: 120,
+          escalatedBonusCredits: 0,
+          penaltyApplied: false,
+          penaltyNotes: null,
+        },
+      ]);
+
+      taskRepo.createQueryBuilder.mockReturnValue(
+        makeQueryBuilderMock([
+          {
+            id: 'task-nearest-1',
+            verified_sign_id: 'vsign-nearest-1',
+            priority: 'HIGH',
+            target_status: 'EVALUATING',
+            road_name: null,
+            display_address: 'Phường Phú Thạnh, Thành phố Hồ Chí Minh',
+            sign_code: 'P.131a',
+            sign_name: 'Cấm đỗ xe',
+            latitude: 10.765122,
+            longitude: 106.6236,
+          },
+        ]),
+      );
+
+      spatialAdminService.resolveLocation.mockResolvedValue({
+        roadName: null,
+        communeName: 'Phường Phú Thạnh',
+        provinceName: 'Thành phố Hồ Chí Minh',
+        displayAddress: 'Phường Phú Thạnh, Thành phố Hồ Chí Minh',
+      });
+
+      const geocodingService = {
+        reverse: jest.fn().mockResolvedValue({
+          providerPlaceId: 1,
+          osmType: 'node',
+          osmId: 2,
+          name: '',
+          displayName: '186, Phan Anh, Phường Phú Thạnh, Thành phố Hồ Chí Minh, Việt Nam',
+          latitude: 10.76505,
+          longitude: 106.6236012,
+          category: 'place',
+          type: 'house',
+          importance: null,
+          boundingBox: null,
+          address: {
+            house_number: '186',
+            road: 'Phan Anh',
+            suburb: 'Phường Phú Thạnh',
+            city: 'Thành phố Hồ Chí Minh',
+          },
+        }),
+      } as any;
+
+      const enrichedService = new BountyBoardService(
+        questRepo,
+        candidateRepo,
+        taskRepo,
+        profileRepo,
+        paramService,
+        dataSource,
+        spatialAdminService,
+        geocodingService,
+      );
+
+      const res = await enrichedService.getMyClaims('reviewer-1', {
+        status: QuestClaimStatus.CLAIMED,
+      });
+
+      expect(res).toHaveLength(1);
+      expect(geocodingService.reverse).toHaveBeenCalledWith(10.765122, 106.6236);
+      expect(res[0]).toMatchObject({
+        id: 'claim-active-1',
+        latitude: 10.765122,
+        longitude: 106.6236,
+        roadName: 'Phan Anh',
+        displayAddress: '186 Phan Anh, Phường Phú Thạnh, Thành phố Hồ Chí Minh',
+        nearestLocation: '186 Phan Anh, Phường Phú Thạnh, Thành phố Hồ Chí Minh',
+      });
     });
   });
 });

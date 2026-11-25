@@ -121,4 +121,46 @@ describe('NominatimGeocodingClient', () => {
   it('rejects malformed upstream JSON', () => {
     expect(() => service().parseResponse('test', '{')).toThrow(BadGatewayException);
   });
+
+  it('reverse geocodes coordinates and caches identical lookups', async () => {
+    const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          place_id: 259457299,
+          osm_type: 'node',
+          osm_id: 6736753319,
+          name: '',
+          display_name: '186, Phan Anh, Phường Phú Thạnh, Thành phố Hồ Chí Minh, Việt Nam',
+          lat: '10.7650500',
+          lon: '106.6236012',
+          category: 'place',
+          type: 'house',
+          address: {
+            house_number: '186',
+            road: 'Phan Anh',
+            suburb: 'Phường Phú Thạnh',
+            city: 'Thành phố Hồ Chí Minh',
+          },
+        }),
+    } as Response);
+
+    const client = service();
+    const first = await client.reverse(10.765122, 106.6236);
+    const second = await client.reverse(10.765122, 106.6236);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/reverse?format=jsonv2&addressdetails=1&zoom=18');
+    expect(first).toMatchObject({
+      providerPlaceId: 259457299,
+      address: {
+        house_number: '186',
+        road: 'Phan Anh',
+        suburb: 'Phường Phú Thạnh',
+        city: 'Thành phố Hồ Chí Minh',
+      },
+    });
+    expect(second).toEqual(first);
+  });
 });

@@ -308,7 +308,7 @@ export class SpatialAdminService {
             .createQueryBuilder('r')
             .select(['r.name AS name', 'r.ref AS ref'])
             .where('r.name IS NOT NULL')
-            .andWhere('ST_DWithin(r.geometry, ST_SetSRID(ST_Point(:lon, :lat), 4326), 0.0005)', { lon: longitude, lat: latitude })
+            .andWhere('ST_DWithin(r.geometry, ST_SetSRID(ST_Point(:lon, :lat), 4326), 0.002)', { lon: longitude, lat: latitude })
             .orderBy('r.geometry <-> ST_SetSRID(ST_Point(:lon, :lat), 4326)')
             .limit(1)
             .getRawOne();
@@ -320,7 +320,7 @@ export class SpatialAdminService {
           `SELECT name, ref
            FROM osm_roads
            WHERE name IS NOT NULL
-             AND ST_DWithin(geometry, ST_SetSRID(ST_Point($1, $2), 4326), 0.0005)
+             AND ST_DWithin(geometry, ST_SetSRID(ST_Point($1, $2), 4326), 0.002)
            ORDER BY geometry <-> ST_SetSRID(ST_Point($1, $2), 4326)
            LIMIT 1`,
           [longitude, latitude],

@@ -25,6 +25,8 @@ import { SignCategory } from '../../catalog/sign-category.entity';
 import { ReviewerProfile } from '../infrastructure/persistence/reviewer-profile.entity';
 import { SystemParametersService } from '../../system-parameters/system-parameters.service';
 import { SpatialAdminService } from '../../spatial-admin/application/spatial-admin.service';
+import { GeocodingService } from '../../geocoding/application/geocoding.service';
+import { GeocodingResultResponse } from '../../geocoding/domain/geocoding.types';
 import { ClaimQuestDto, QueryAvailableQuestsDto, QueryMyClaimsDto } from '../presentation/dto/bounty-board.dto';
 
 @Injectable()
@@ -43,6 +45,7 @@ export class BountyBoardService {
     private readonly paramService: SystemParametersService,
     private readonly dataSource: DataSource,
     @Optional() private readonly spatialAdminService?: SpatialAdminService,
+    @Optional() private readonly geocodingService?: GeocodingService,
   ) {}
 
   /**
@@ -127,6 +130,7 @@ export class BountyBoardService {
           bestFrameUrl: row.best_frame_url,
           roadName: null,
           displayAddress: null,
+          nearestLocation: null,
           latitude: this.toFiniteNumber(row.latitude),
           longitude: this.toFiniteNumber(row.longitude),
           distanceMeters: this.toFiniteNumber(row.distance_meters),
@@ -202,6 +206,7 @@ export class BountyBoardService {
           signCropUrl: row.sign_crop_url,
           roadName: row.road_name ?? null,
           displayAddress: row.display_address ?? null,
+          nearestLocation: row.display_address ?? null,
           latitude: this.toFiniteNumber(row.latitude),
           longitude: this.toFiniteNumber(row.longitude),
           distanceMeters: this.toFiniteNumber(row.distance_meters),
@@ -452,6 +457,7 @@ export class BountyBoardService {
       distanceMeters,
       roadName: meta?.road_name ?? null,
       displayAddress: meta?.display_address ?? null,
+      nearestLocation: meta?.display_address ?? null,
       targetStatus: meta?.target_status ?? null,
       votesCount: Number(meta?.votes_count ?? 0),
       isPromoted: Boolean(meta?.is_promoted ?? false),
@@ -472,7 +478,7 @@ export class BountyBoardService {
   }
 
   private async populateMissingAddresses(items: any[], onlyClaimed = true): Promise<void> {
-    if (!this.spatialAdminService) {
+    if (!this.spatialAdminService && !this.geocodingService) {
       return;
     }
 
@@ -481,7 +487,7 @@ export class BountyBoardService {
       .filter(
         (item) =>
           (!onlyClaimed || item.status === QuestClaimStatus.CLAIMED) &&
-          !item.displayAddress &&
+          (!item.displayAddress || !item.roadName) &&
           item.latitude != null &&
           item.longitude != null,
       )
@@ -494,18 +500,138 @@ export class BountyBoardService {
     await Promise.allSettled(
       targets.map(async (item) => {
         try {
-          const resolved = await this.spatialAdminService!.resolveLocation(item.latitude, item.longitude);
-          if (resolved?.displayAddress) {
-            item.displayAddress = resolved.displayAddress;
+          const resolved = this.spatialAdminService
+            ? await this.spatialAdminService.resolveLocation(item.latitude, item.longitude).catch((err: any) => {
+                this.logger.warn(`Failed to resolve spatial address for quest ${item.id ?? item.targetId}: ${err?.message}`);
+                return null;
+              })
+            : null;
+
+          let reversePlace: GeocodingResultResponse | null = null;
+          if (onlyClaimed && this.geocodingService && (!resolved?.roadName || !item.displayAddress)) {
+            reversePlace = await this.geocodingService.reverse(item.latitude, item.longitude).catch((err: any) => {
+              this.logger.warn(`Failed to reverse geocode closest place for quest ${item.id ?? item.targetId}: ${err?.message}`);
+              return null;
+            });
           }
-          if (!item.roadName && resolved?.roadName) {
-            item.roadName = resolved.roadName;
+
+          const reverseRoad = this.extractReverseRoad(reversePlace);
+          const closestPlaceAddress = this.formatClosestPlaceAddress(reversePlace, resolved);
+
+          if (closestPlaceAddress) {
+            item.nearestLocation = closestPlaceAddress;
+            if (!item.displayAddress || (!item.roadName && (resolved?.roadName || reverseRoad))) {
+              item.displayAddress = closestPlaceAddress;
+            }
+          } else if (resolved?.displayAddress) {
+            if (!item.displayAddress) {
+              item.displayAddress = resolved.displayAddress;
+            }
+            item.nearestLocation = item.displayAddress;
+          }
+
+          if (!item.roadName && (resolved?.roadName || reverseRoad)) {
+            item.roadName = resolved?.roadName || reverseRoad;
           }
         } catch (err: any) {
-          this.logger.warn(`Failed to resolve address for claim ${item.id}: ${err?.message}`);
+          this.logger.warn(`Failed to resolve address for claim ${item.id ?? item.targetId}: ${err?.message}`);
         }
       }),
     );
+
+    for (const item of items) {
+      if (!item.nearestLocation && item.displayAddress) {
+        item.nearestLocation = item.displayAddress;
+      }
+    }
+  }
+
+  private extractReverseRoad(place: GeocodingResultResponse | null): string | null {
+    if (!place) {
+      return null;
+    }
+    const addr = place.address || {};
+    const road =
+      addr.road ||
+      addr.pedestrian ||
+      addr.footway ||
+      addr.path ||
+      addr.residential ||
+      null;
+    if (road && road.trim()) {
+      return road.trim();
+    }
+    return place.name && place.name.trim() ? place.name.trim() : null;
+  }
+
+  private formatClosestPlaceAddress(
+    place: GeocodingResultResponse | null,
+    spatialResolved: {
+      roadName?: string | null;
+      communeName?: string | null;
+      provinceName?: string | null;
+      displayAddress?: string | null;
+    } | null,
+  ): string | null {
+    if (!place) {
+      return spatialResolved?.displayAddress || null;
+    }
+
+    const addr = place.address || {};
+    const houseNumber = addr.house_number?.trim() || '';
+    const road =
+      addr.road?.trim() ||
+      addr.pedestrian?.trim() ||
+      addr.footway?.trim() ||
+      addr.path?.trim() ||
+      addr.residential?.trim() ||
+      spatialResolved?.roadName?.trim() ||
+      '';
+    const streetPart = houseNumber && road ? `${houseNumber} ${road}` : road;
+
+    const ward =
+      spatialResolved?.communeName?.trim() ||
+      addr.suburb?.trim() ||
+      addr.quarter?.trim() ||
+      addr.village?.trim() ||
+      addr.town?.trim() ||
+      addr.city_district?.trim() ||
+      '';
+    const city =
+      spatialResolved?.provinceName?.trim() ||
+      addr.city?.trim() ||
+      addr.state?.trim() ||
+      addr.province?.trim() ||
+      '';
+
+    const placeName = place.name?.trim() || '';
+    const parts: string[] = [];
+    const pushUnique = (val: string) => {
+      if (!val) return;
+      const lower = val.toLowerCase();
+      if (!parts.some((existing) => existing.toLowerCase() === lower)) {
+        parts.push(val);
+      }
+    };
+
+    if (
+      placeName &&
+      placeName.toLowerCase() !== road.toLowerCase() &&
+      placeName.toLowerCase() !== streetPart.toLowerCase() &&
+      placeName.toLowerCase() !== ward.toLowerCase() &&
+      placeName.toLowerCase() !== city.toLowerCase()
+    ) {
+      pushUnique(placeName);
+    }
+    pushUnique(streetPart);
+    pushUnique(ward);
+    pushUnique(city);
+
+    if (parts.length > 0) {
+      return parts.join(', ');
+    }
+
+    return place.displayName?.trim() || spatialResolved?.displayAddress || null;
   }
 
   private parseNoteGps(note: string): { lat: number; lon: number } | null {

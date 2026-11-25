@@ -9,4 +9,8 @@ export class GeocodingService {
   search(request: GeocodingSearchRequest) {
     return this.nominatim.search(request);
   }
+
+  reverse(latitude: number, longitude: number) {
+    return this.nominatim.reverse(latitude, longitude);
+  }
 }

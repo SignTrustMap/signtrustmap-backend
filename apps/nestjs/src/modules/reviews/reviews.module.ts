@@ -24,6 +24,7 @@ import { ReviewerQuestClaim } from './infrastructure/persistence/reviewer-quest-
 import { RevalidationTask } from '../revalidation/infrastructure/persistence/revalidation-task.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { AiInferenceModule } from '../../integrations/ai-inference/ai-inference.module';
+import { GeocodingModule } from '../geocoding/geocoding.module';
 
 @Module({
   imports: [
@@ -45,6 +46,7 @@ import { AiInferenceModule } from '../../integrations/ai-inference/ai-inference.
     ]),
     ConsensusModule,
     SpatialAdminModule,
+    GeocodingModule,
     DailyTasksModule,
     NotificationsModule,
     AiInferenceModule,

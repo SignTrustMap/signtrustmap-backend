@@ -16,6 +16,11 @@ interface CacheEntry {
   expiresAt: number;
 }
 
+interface ReverseCacheEntry {
+  response: GeocodingResultResponse | null;
+  expiresAt: number;
+}
+
 type JsonObject = Record<string, unknown>;
 
 @Injectable()
@@ -30,6 +35,7 @@ export class NominatimGeocodingClient {
   private readonly minimumRequestIntervalMs: number;
   private readonly maximumCacheEntries: number;
   private readonly cache = new Map<string, CacheEntry>();
+  private readonly reverseCache = new Map<string, ReverseCacheEntry>();
   private nextRequestAt = 0;
 
   constructor(config: ConfigService) {
@@ -56,6 +62,49 @@ export class NominatimGeocodingClient {
     const parsed = this.parseResponse(search.query, response);
     this.putCache(cacheKey, parsed);
     return parsed;
+  }
+
+  async reverse(latitude: number, longitude: number): Promise<GeocodingResultResponse | null> {
+    if (
+      !Number.isFinite(latitude) ||
+      !Number.isFinite(longitude) ||
+      latitude < -90 ||
+      latitude > 90 ||
+      longitude < -180 ||
+      longitude > 180
+    ) {
+      throw new BadRequestException('Valid latitude and longitude are required');
+    }
+
+    const cacheKey = `${latitude.toFixed(5)},${longitude.toFixed(5)}`;
+    const cached = this.reverseCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.response;
+    }
+
+    await this.awaitUpstreamRequestSlot();
+    const response = await this.fetchResponse(this.reverseUrl(latitude, longitude));
+    const parsed = this.parseReverseResponse(response);
+    this.putReverseCache(cacheKey, parsed);
+    return parsed;
+  }
+
+  parseReverseResponse(body: string): GeocodingResultResponse | null {
+    let root: unknown;
+    try {
+      root = JSON.parse(body);
+    } catch {
+      throw new BadGatewayException('Nominatim geocoding service returned invalid JSON');
+    }
+
+    if (!this.isObject(root)) {
+      throw new BadGatewayException('Nominatim geocoding service returned an invalid response');
+    }
+    if ('error' in root && root.error) {
+      return null;
+    }
+
+    return this.parsePlace(root);
   }
 
   parseResponse(query: string, body: string): GeocodingSearchResponse {
@@ -200,6 +249,16 @@ export class NominatimGeocodingClient {
     return url;
   }
 
+  private reverseUrl(latitude: number, longitude: number): URL {
+    const url = new URL(`${this.baseUrl.replace(/\/$/, '')}/reverse`);
+    url.searchParams.set('format', 'jsonv2');
+    url.searchParams.set('addressdetails', '1');
+    url.searchParams.set('zoom', '18');
+    url.searchParams.set('lat', latitude.toFixed(6));
+    url.searchParams.set('lon', longitude.toFixed(6));
+    return url;
+  }
+
   private async awaitUpstreamRequestSlot(): Promise<void> {
     const now = Date.now();
     const requestAt = Math.max(now, this.nextRequestAt);
@@ -218,6 +277,18 @@ export class NominatimGeocodingClient {
       if (oldestKey) this.cache.delete(oldestKey);
     }
     this.cache.set(key, { response, expiresAt: now + this.cacheTtlMs });
+  }
+
+  private putReverseCache(key: string, response: GeocodingResultResponse | null): void {
+    const now = Date.now();
+    for (const [cacheKey, entry] of this.reverseCache) {
+      if (entry.expiresAt <= now) this.reverseCache.delete(cacheKey);
+    }
+    if (this.reverseCache.size >= this.maximumCacheEntries) {
+      const oldestKey = this.reverseCache.keys().next().value as string | undefined;
+      if (oldestKey) this.reverseCache.delete(oldestKey);
+    }
+    this.reverseCache.set(key, { response, expiresAt: now + this.cacheTtlMs });
   }
 
   private cacheKey(search: NormalizedSearch): string {
