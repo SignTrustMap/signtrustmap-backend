@@ -1,14 +1,8 @@
-import { DataSource } from 'typeorm';
 import { BountyBoardService } from './bounty-board.service';
 import {
-  ReviewerQuestClaim,
   QuestTargetType,
   QuestClaimStatus,
 } from '../infrastructure/persistence/reviewer-quest-claim.entity';
-import { UnverifiedSignCandidate } from '../../survey/infrastructure/persistence/unverified-sign-candidate.entity';
-import { RevalidationTask } from '../../revalidation/infrastructure/persistence/revalidation-task.entity';
-import { ReviewerProfile } from '../infrastructure/persistence/reviewer-profile.entity';
-import { SystemParametersService } from '../../system-parameters/system-parameters.service';
 import { BadRequestException } from '@nestjs/common';
 
 describe('BountyBoardService', () => {
