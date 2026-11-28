@@ -315,6 +315,37 @@ describe('AdminService', () => {
       expect(result.approvalThreshold).toBe(3.0);
       expect(result.minVotesRequired).toBe(5);
     });
+
+    it('normalizes legacy positive rejection_threshold in getConsensusConfig and rejects non-negative values on update', async () => {
+      dataSource.query.mockResolvedValueOnce([
+        {
+          id: 1,
+          approval_threshold: 0.7,
+          rejection_threshold: 0.3,
+          min_votes_required: 3,
+          alpha_smoothing_factor: 0.1,
+          weight_correct: 1.0,
+          penalty_false: 2.0,
+          min_sample_baseline: 5,
+          min_reliability_threshold: 50.0,
+          consecutive_error_limit: 3,
+          suspension_cooldown_days: 7,
+          provisional_vote_weight: 0.5,
+          is_active: true,
+        },
+      ]);
+
+      const cfg = await service.getConsensusConfig();
+      expect(cfg.rejectionThreshold).toBe(-0.3);
+
+      await expect(
+        service.updateConsensusConfig({ rejectionThreshold: 0.3 }, 'admin-1'),
+      ).rejects.toThrow(BadRequestException);
+
+      await expect(
+        service.updateConsensusConfig({ rejectionThreshold: 0 }, 'admin-1'),
+      ).rejects.toThrow(BadRequestException);
+    });
   });
 
   describe('getRouteMatrix & updateRouteMatrix', () => {

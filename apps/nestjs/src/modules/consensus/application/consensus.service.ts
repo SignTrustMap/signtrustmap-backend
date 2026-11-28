@@ -112,6 +112,12 @@ export class ConsensusService {
       } as ConsensusConfig;
     }
 
+    if (config.rejectionThreshold > 0) {
+      config.rejectionThreshold = -Math.abs(config.rejectionThreshold);
+    } else if (config.rejectionThreshold > -0.1) {
+      config.rejectionThreshold = -0.5;
+    }
+
     const currentRound = candidate.reviewRound ?? 1;
     const reviews = await this.reviewRepo.find({ where: { candidateId, reviewRound: currentRound } });
     if (reviews.length < config.minVotesRequired) return null;

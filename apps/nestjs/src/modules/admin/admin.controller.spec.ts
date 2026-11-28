@@ -1,5 +1,8 @@
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
+import { UpdateConsensusConfigDto } from './dto/admin.dto';
 import { WalletService } from '../wallet/application/wallet.service';
 
 describe('AdminController (Phase 1 Ledger Adjustments & Admin Operations)', () => {
@@ -482,6 +485,20 @@ describe('AdminController (Phase 1 Ledger Adjustments & Admin Operations)', () =
       (adminService.rollbackModelVersion as jest.Mock).mockResolvedValue({ versionId: 50, rolledBack: true });
       await controller.rollbackModelVersion(50, mockAdmin, mockReq, { targetVersionId: 49, reason: 'Revert' });
       expect(adminService.rollbackModelVersion).toHaveBeenCalledWith(50, mockAdmin.id, '127.0.0.1', { targetVersionId: 49, reason: 'Revert' });
+    });
+
+    it('UpdateConsensusConfigDto enforces @Max(-0.1) on rejectionThreshold', async () => {
+      const positiveDto = plainToInstance(UpdateConsensusConfigDto, { rejectionThreshold: 0.3 });
+      const positiveErrors = await validate(positiveDto);
+      expect(positiveErrors.some((e) => e.property === 'rejectionThreshold' && Boolean(e.constraints?.max))).toBe(true);
+
+      const zeroDto = plainToInstance(UpdateConsensusConfigDto, { rejectionThreshold: 0 });
+      const zeroErrors = await validate(zeroDto);
+      expect(zeroErrors.some((e) => e.property === 'rejectionThreshold' && Boolean(e.constraints?.max))).toBe(true);
+
+      const validDto = plainToInstance(UpdateConsensusConfigDto, { rejectionThreshold: -0.3 });
+      const validErrors = await validate(validDto);
+      expect(validErrors).toHaveLength(0);
     });
   });
 });

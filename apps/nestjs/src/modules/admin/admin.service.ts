@@ -1387,6 +1387,16 @@ export class AdminService {
   }
 
   /**
+   * Normalize legacy positive/zero rejectionThreshold values stored in consensus_configs
+   * so score <= rejectionThreshold semantics are always preserved.
+   */
+  private normalizeRejectionThreshold(value: number): number {
+    if (value > 0) return -Math.abs(value);
+    if (value > -0.1) return -0.5;
+    return value;
+  }
+
+  /**
    * Retrieves current active consensus config parameters
    */
   async getConsensusConfig() {
@@ -1418,7 +1428,7 @@ export class AdminService {
       return {
         id: c.id,
         approvalThreshold: Number(c.approvalThreshold),
-        rejectionThreshold: Number(c.rejectionThreshold),
+        rejectionThreshold: this.normalizeRejectionThreshold(Number(c.rejectionThreshold)),
         minVotesRequired: Number(c.minVotesRequired),
         maxVotesLimit: Number(c.maxVotesLimit ?? 9),
         alphaSmoothingFactor: Number(c.alphaSmoothingFactor),
@@ -1466,7 +1476,7 @@ export class AdminService {
     return {
       id: c.id,
       approvalThreshold: Number(c.approval_threshold),
-      rejectionThreshold: Number(c.rejection_threshold),
+      rejectionThreshold: this.normalizeRejectionThreshold(Number(c.rejection_threshold)),
       minVotesRequired: Number(c.min_votes_required),
       maxVotesLimit: Number(c.max_votes_limit ?? 9),
       alphaSmoothingFactor: Number(c.alpha_smoothing_factor),
@@ -1490,9 +1500,15 @@ export class AdminService {
    * Updates consensus engine parameters, creates an audit log entry, and keeps history intact
    */
   async updateConsensusConfig(dto: UpdateConsensusConfigDto, adminUserId: string, ip?: string) {
+    if (
+      dto.rejectionThreshold !== undefined &&
+      (!Number.isFinite(dto.rejectionThreshold) || dto.rejectionThreshold > -0.1)
+    ) {
+      throw new BadRequestException('rejectionThreshold must be negative (<= -0.1).');
+    }
     const current = await this.getConsensusConfig();
     const approvalThreshold = dto.approvalThreshold ?? current.approvalThreshold;
-    const rejectionThreshold = dto.rejectionThreshold ?? current.rejectionThreshold;
+    const rejectionThreshold = dto.rejectionThreshold ?? this.normalizeRejectionThreshold(current.rejectionThreshold);
     const minVotesRequired = dto.minVotesRequired ?? current.minVotesRequired;
     const maxVotesLimit = dto.maxVotesLimit ?? current.maxVotesLimit ?? 9;
     const alphaSmoothingFactor = dto.alphaSmoothingFactor ?? current.alphaSmoothingFactor;

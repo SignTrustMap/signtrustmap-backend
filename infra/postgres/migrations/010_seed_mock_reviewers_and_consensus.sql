@@ -235,12 +235,12 @@ ON CONFLICT ("user_id") DO UPDATE SET
   "reliability_score" = EXCLUDED."reliability_score",
   "accuracy_rate" = EXCLUDED."accuracy_rate";
 
--- 5. Ensure Default Consensus Config (Rule: min 3 votes, threshold 0.70)
+-- 5. Ensure Default Consensus Config (Rule: min 3 votes, approval 0.70, rejection -0.30)
 INSERT INTO "consensus_configs" (
   "id", "approval_threshold", "rejection_threshold", "min_votes_required",
   "alpha_smoothing_factor", "is_active", "effective_from"
 ) VALUES (
-  1, 0.70, 0.30, 3, 0.10, true, now()
+  1, 0.70, -0.30, 3, 0.10, true, now()
 ) ON CONFLICT ("id") DO UPDATE SET
   "approval_threshold" = EXCLUDED."approval_threshold",
   "rejection_threshold" = EXCLUDED."rejection_threshold",

@@ -690,5 +690,56 @@ describe('ConsensusService', () => {
         'Review reward (consensus APPROVED)',
       );
     });
+
+    it('normalizes legacy positive rejectionThreshold so tie/weak-positive scores do not trigger REJECTED', async () => {
+      const configRepo = {
+        findOne: jest.fn().mockResolvedValue({
+          id: 1,
+          approvalThreshold: 0.7,
+          rejectionThreshold: 0.3,
+          minVotesRequired: 3,
+          alphaSmoothingFactor: 0.1,
+          weightCorrect: 1.0,
+          penaltyFalse: 2.0,
+          minSampleBaseline: 5,
+          minReliabilityThreshold: 50.0,
+          consecutiveErrorLimit: 3,
+          suspensionCooldownDays: 7,
+          provisionalVoteWeight: 0.5,
+        }),
+      } as unknown as Repository<ConsensusConfig>;
+      const candidateRepo = {
+        findOne: jest.fn().mockResolvedValue({
+          id: 'cand-pos-rej',
+          status: CandidateStatus.PENDING_REVIEW,
+          reviewRound: 1,
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      } as unknown as Repository<UnverifiedSignCandidate>;
+      const reviewRepo = {
+        find: jest.fn().mockResolvedValue([
+          { reviewerId: 'r1', vote: 1, suggestedSignTypeId: 10 },
+          { reviewerId: 'r2', vote: 1, suggestedSignTypeId: 10 },
+          { reviewerId: 'r3', vote: -1, suggestedSignTypeId: null },
+        ]),
+      } as unknown as Repository<CandidateReview>;
+
+      const service = new ConsensusService(
+        configRepo,
+        { create: jest.fn(), save: jest.fn() } as unknown as Repository<ConsensusLog>,
+        candidateRepo,
+        reviewRepo,
+        { query: jest.fn().mockResolvedValue([]) } as unknown as DataSource,
+        { creditUser: jest.fn() } as unknown as WalletService,
+        { create: jest.fn() } as unknown as NotificationsService,
+      );
+
+      // Weighted score = 0.5 + 0.5 - 0.5 = +0.5 (< 0.7 approval, > -0.3 normalized rejection) => stays IN_CONSENSUS
+      const res = await service.evaluate('cand-pos-rej');
+      expect(res).toBeNull();
+      expect(candidateRepo.update).toHaveBeenCalledWith('cand-pos-rej', {
+        status: CandidateStatus.IN_CONSENSUS,
+      });
+    });
   });
 });

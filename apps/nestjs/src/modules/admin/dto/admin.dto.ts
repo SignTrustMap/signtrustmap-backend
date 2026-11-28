@@ -74,10 +74,15 @@ export class UpdateConsensusConfigDto {
   @IsNumber()
   approvalThreshold?: number;
 
-  @ApiPropertyOptional({ description: 'Rejection threshold ratio', example: 0.33 })
+  @ApiPropertyOptional({
+    description: 'Negative weighted score threshold required to reject a sign candidate',
+    example: -0.5,
+    maximum: -0.1,
+  })
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
+  @Max(-0.1)
   rejectionThreshold?: number;
 
   @ApiPropertyOptional({ description: 'Minimum votes required for consensus', example: 3, minimum: 1 })
