@@ -7,6 +7,7 @@ import { CandidateReview } from '../reviews/infrastructure/persistence/candidate
 import { UnverifiedSignCandidate } from '../survey/infrastructure/persistence/unverified-sign-candidate.entity';
 import { ReviewerProfile } from '../reviews/infrastructure/persistence/reviewer-profile.entity';
 import { ReviewerReliabilityHistory } from '../reviews/infrastructure/persistence/reviewer-reliability-history.entity';
+import { ReviewerQuestClaim } from '../reviews/infrastructure/persistence/reviewer-quest-claim.entity';
 import { VerifiedSignOrmEntity } from '../sign-map/infrastructure/persistence/verified-sign.orm-entity';
 import { SignLifecycleEvent } from '../sign-map/infrastructure/persistence/sign-lifecycle-event.entity';
 import { VerifiedSignHistory } from '../sign-map/infrastructure/persistence/verified-sign-history.entity';
@@ -29,6 +30,7 @@ import { DailyTasksModule } from '../daily-tasks/daily-tasks.module';
       CandidateReview,
       ReviewerProfile,
       ReviewerReliabilityHistory,
+      ReviewerQuestClaim,
       VerifiedSignOrmEntity,
       SignLifecycleEvent,
       VerifiedSignHistory,

@@ -800,7 +800,14 @@ export class CatalogService {
       try {
         const qb = this.candidateRepo
           .createQueryBuilder('c')
-          .select(['c.id AS id', 'c.submissionId AS submission_id', 'c.confidenceScore AS confidence_score', 'c.status AS status'])
+          .select([
+            'c.id AS id',
+            'c.submissionId AS submission_id',
+            'c.confidenceScore AS confidence_score',
+            'c.status AS status',
+            'c.reviewRound AS review_round',
+            'c.bountyCredits AS bounty_credits',
+          ])
           .where("(c.status IN ('PENDING_REVIEW', 'NEW_TYPE_HOLD', 'MISSING_TYPE_HOLD') AND c.confidenceScore < 0.60)")
           .orWhere("c.status = 'REJECTED'")
           .orderBy('c.createdAt', 'DESC')
@@ -808,7 +815,7 @@ export class CatalogService {
         const res = await qb.getRawMany();
         // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         candidates = res !== undefined && res !== null ? res : await this.dataSource.query(
-          `SELECT c.id, c.submission_id, c.confidence_score, c.status
+          `SELECT c.id, c.submission_id, c.confidence_score, c.status, c.review_round, c.bounty_credits
            FROM unverified_sign_candidates c
            WHERE (c.status IN ('PENDING_REVIEW', 'NEW_TYPE_HOLD', 'MISSING_TYPE_HOLD') AND c.confidence_score < 0.60)
               OR (c.status = 'REJECTED')
@@ -818,7 +825,7 @@ export class CatalogService {
       } catch {
         // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         candidates = await this.dataSource.query(
-          `SELECT c.id, c.submission_id, c.confidence_score, c.status
+          `SELECT c.id, c.submission_id, c.confidence_score, c.status, c.review_round, c.bounty_credits
            FROM unverified_sign_candidates c
            WHERE (c.status IN ('PENDING_REVIEW', 'NEW_TYPE_HOLD', 'MISSING_TYPE_HOLD') AND c.confidence_score < 0.60)
               OR (c.status = 'REJECTED')
@@ -829,7 +836,7 @@ export class CatalogService {
     } else {
       // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
       candidates = await this.dataSource.query(
-        `SELECT c.id, c.submission_id, c.confidence_score, c.status
+        `SELECT c.id, c.submission_id, c.confidence_score, c.status, c.review_round, c.bounty_credits
          FROM unverified_sign_candidates c
          WHERE (c.status IN ('PENDING_REVIEW', 'NEW_TYPE_HOLD', 'MISSING_TYPE_HOLD') AND c.confidence_score < 0.60)
             OR (c.status = 'REJECTED')
@@ -842,29 +849,54 @@ export class CatalogService {
     for (const c of candidates) {
       const sim = 0.85; // Simulated prototype similarity score
       if (sim >= similarityThreshold) {
+        const nextRound = Number(c.review_round ?? 1) + 1;
+        const baseBounty = Math.max(1, Number(c.bounty_credits || 10));
+        const boostedBounty = baseBounty + Math.max(5, Math.round(baseBounty * 0.5));
         if (this.candidateRepo?.update) {
           try {
             await this.candidateRepo.update(c.id, {
               predictedSignTypeId: signTypeId,
               confidenceScore: sim,
               status: 'PENDING_REVIEW' as any,
+              reviewRound: nextRound,
+              votesCount: 0,
+              firstVotedAt: null,
+              bountyCredits: boostedBounty,
+              isPromoted: true,
+              promotedAt: new Date(),
             });
           } catch {
             // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
             await this.dataSource.query(
               `UPDATE unverified_sign_candidates
-               SET predicted_sign_type_id = $1, confidence_score = $2, status = 'PENDING_REVIEW'
+               SET predicted_sign_type_id = $1,
+                   confidence_score = $2,
+                   status = 'PENDING_REVIEW',
+                   review_round = COALESCE(review_round, 1) + 1,
+                   votes_count = 0,
+                   first_voted_at = NULL,
+                   bounty_credits = $4,
+                   is_promoted = true,
+                   promoted_at = NOW()
                WHERE id = $3`,
-              [signTypeId, sim, c.id],
+              [signTypeId, sim, c.id, boostedBounty],
             );
           }
         } else {
           // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           await this.dataSource.query(
             `UPDATE unverified_sign_candidates
-             SET predicted_sign_type_id = $1, confidence_score = $2, status = 'PENDING_REVIEW'
+             SET predicted_sign_type_id = $1,
+                 confidence_score = $2,
+                 status = 'PENDING_REVIEW',
+                 review_round = COALESCE(review_round, 1) + 1,
+                 votes_count = 0,
+                 first_voted_at = NULL,
+                 bounty_credits = $4,
+                 is_promoted = true,
+                 promoted_at = NOW()
              WHERE id = $3`,
-            [signTypeId, sim, c.id],
+            [signTypeId, sim, c.id, boostedBounty],
           );
         }
 

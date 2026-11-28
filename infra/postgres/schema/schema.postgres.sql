@@ -493,6 +493,7 @@ CREATE TABLE "unverified_sign_candidates" (
   "spatial_confidence" spatial_confidence_level NOT NULL DEFAULT 'HIGH',
   "active_learning_priority" float NOT NULL DEFAULT 0,
   "status" candidate_status NOT NULL DEFAULT 'PENDING_REVIEW',
+  "review_round" int NOT NULL DEFAULT 1,
   "created_at" timestamptz NOT NULL DEFAULT (now())
 );
 
@@ -574,6 +575,7 @@ CREATE TABLE "candidate_reviews" (
   "id" uuid PRIMARY KEY DEFAULT (gen_random_uuid()),
   "candidate_id" uuid NOT NULL,
   "reviewer_id" uuid NOT NULL,
+  "review_round" int NOT NULL DEFAULT 1,
   "vote" smallint NOT NULL,
   "suggested_sign_type_id" int,
   "decline_reason" varchar(50),
@@ -1058,7 +1060,7 @@ CREATE INDEX ON "candidate_geo_estimations" USING GIST ("sign_location");
 
 CREATE INDEX ON "candidate_embeddings" USING IVFFLAT ("clip_embedding");
 
-CREATE UNIQUE INDEX ON "candidate_reviews" ("candidate_id", "reviewer_id");
+CREATE UNIQUE INDEX ON "candidate_reviews" ("candidate_id", "reviewer_id", "review_round");
 
 CREATE INDEX ON "review_flags" ("review_id");
 

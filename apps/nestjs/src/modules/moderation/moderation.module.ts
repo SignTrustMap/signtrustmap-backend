@@ -11,6 +11,8 @@ import { UnverifiedSignCandidate } from '../survey/infrastructure/persistence/un
 import { SurveyorProfile } from '../survey/infrastructure/persistence/surveyor-profile.entity';
 import { SurveyorReputationHistory } from '../survey/infrastructure/persistence/surveyor-reputation-history.entity';
 import { CandidateRecaptureRequest } from '../reviews/infrastructure/persistence/candidate-recapture-request.entity';
+import { ReviewerQuestClaim } from '../reviews/infrastructure/persistence/reviewer-quest-claim.entity';
+import { ReviewerSkippedCandidate } from '../reviews/infrastructure/persistence/reviewer-skipped-candidate.entity';
 import { User } from '../auth/infrastructure/persistence/user.entity';
 import { SignTypeImage } from '../catalog/sign-type-image.entity';
 import { UserStatusHistory } from '../admin/user-status-history.entity';
@@ -34,6 +36,8 @@ import { WalletModule } from '../wallet/wallet.module';
       SurveyorProfile,
       SurveyorReputationHistory,
       CandidateRecaptureRequest,
+      ReviewerQuestClaim,
+      ReviewerSkippedCandidate,
       User,
       SignTypeImage,
       UserStatusHistory,

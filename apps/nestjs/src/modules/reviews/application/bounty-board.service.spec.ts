@@ -587,4 +587,55 @@ describe('BountyBoardService', () => {
       });
     });
   });
+
+  describe('review_round republishing', () => {
+    it('filters getAvailableQuests by current review_round so prior-round voters see republished quests', async () => {
+      await service.getAvailableQuests('reviewer-1', {});
+      expect(dataSource.query).toHaveBeenCalledWith(
+        expect.stringContaining('cr.review_round = c.review_round'),
+        ['reviewer-1'],
+      );
+    });
+
+    it('rejects claimQuest if reviewer already voted in current reviewRound, but allows claiming in a new round', async () => {
+      const reviewRepo = {
+        findOne: jest.fn().mockResolvedValueOnce({ id: 'rev-row-1' }).mockResolvedValueOnce(null),
+      };
+      const svc = new BountyBoardService(
+        questRepo,
+        candidateRepo,
+        taskRepo,
+        profileRepo,
+        paramService,
+        dataSource,
+        spatialAdminService,
+        undefined,
+        reviewRepo as any,
+      );
+
+      candidateRepo.findOne.mockResolvedValue({
+        id: 'cand-round',
+        status: 'PENDING_REVIEW',
+        reviewRound: 2,
+        bountyCredits: 15,
+        submission: { surveyorId: 'surveyor-other' },
+      });
+
+      await expect(
+        svc.claimQuest('reviewer-1', {
+          targetType: QuestTargetType.CANDIDATE_VALIDATION,
+          targetId: 'cand-round',
+        }),
+      ).rejects.toThrow('already voted on this candidate in the current review round');
+
+      const claim = await svc.claimQuest('reviewer-1', {
+        targetType: QuestTargetType.CANDIDATE_VALIDATION,
+        targetId: 'cand-round',
+      });
+      expect(claim.baseRewardCredits).toBe(15);
+      expect(reviewRepo.findOne).toHaveBeenCalledWith({
+        where: { candidateId: 'cand-round', reviewerId: 'reviewer-1', reviewRound: 2 },
+      });
+    });
+  });
 });

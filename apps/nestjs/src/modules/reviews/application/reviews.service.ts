@@ -166,7 +166,9 @@ export class ReviewsService {
       query.andWhere(
           `NOT EXISTS (
             SELECT 1 FROM candidate_reviews review
-            WHERE review.candidate_id = candidate.id AND review.reviewer_id = :reviewerId
+            WHERE review.candidate_id = candidate.id
+              AND review.reviewer_id = :reviewerId
+              AND review.review_round = candidate.review_round
           )`,
           { reviewerId },
         )
@@ -323,7 +325,8 @@ export class ReviewsService {
     }
 
     if (candidate.status !== CandidateStatus.PENDING_REVIEW && candidate.status !== CandidateStatus.IN_CONSENSUS) throw new BadRequestException('Candidate ' + candidateId + ' is not pending review (status=' + candidate.status + ')');
-    const existing = await this.reviewRepo.findOne({ where: { candidateId, reviewerId } });
+    const currentRound = candidate.reviewRound ?? 1;
+    const existing = await this.reviewRepo.findOne({ where: { candidateId, reviewerId, reviewRound: currentRound } });
     if (existing) throw new ConflictException('You have already voted on this candidate');
     if (dto.suggestedSignTypeId != null) {
       const typeExists = await this.signTypeRepo.findOne({ where: { id: dto.suggestedSignTypeId } });
@@ -454,6 +457,7 @@ export class ReviewsService {
     const review: any = this.reviewRepo.create({
       candidateId,
       reviewerId,
+      reviewRound: currentRound,
       vote: dto.vote,
       suggestedSignTypeId: dto.suggestedSignTypeId ?? null,
       declineReason: (dto as any).declineReason ?? null,
@@ -627,18 +631,6 @@ export class ReviewsService {
       throw new BadRequestException('Vote updates are currently disabled by platform administrator.');
     }
 
-    const existingReview = await this.reviewRepo.findOne({ where: { candidateId, reviewerId } });
-    if (!existingReview) {
-      throw new NotFoundException('No prior vote found to update.');
-    }
-
-    const elapsedMinutes = (Date.now() - new Date(existingReview.reviewedAt).getTime()) / (1000 * 60);
-    if (elapsedMinutes > maxWindowMinutes) {
-      throw new BadRequestException(
-        `Vote update window expired (${elapsedMinutes.toFixed(0)}m > ${maxWindowMinutes}m limit).`,
-      );
-    }
-
     const candidate = await this.candidateRepo.findOne({ where: { id: candidateId } });
     if (!candidate) {
       throw new NotFoundException(`Candidate '${candidateId}' not found.`);
@@ -649,6 +641,21 @@ export class ReviewsService {
       candidate.status !== CandidateStatus.IN_CONSENSUS
     ) {
       throw new BadRequestException('Consensus has already finalized for this candidate. Vote is locked.');
+    }
+
+    const currentRound = candidate.reviewRound ?? 1;
+    const existingReview = await this.reviewRepo.findOne({
+      where: { candidateId, reviewerId, reviewRound: currentRound },
+    });
+    if (!existingReview) {
+      throw new NotFoundException('No prior vote found to update.');
+    }
+
+    const elapsedMinutes = (Date.now() - new Date(existingReview.reviewedAt).getTime()) / (1000 * 60);
+    if (elapsedMinutes > maxWindowMinutes) {
+      throw new BadRequestException(
+        `Vote update window expired (${elapsedMinutes.toFixed(0)}m > ${maxWindowMinutes}m limit).`,
+      );
     }
 
     if (dto.suggestedSignTypeId != null) {
@@ -1703,7 +1710,10 @@ export class ReviewsService {
     if (candidate && candidate.status !== CandidateStatus.PENDING_REVIEW && candidate.status !== CandidateStatus.IN_CONSENSUS) {
       throw new BadRequestException('Cannot undo vote: candidate status is ' + candidate.status);
     }
-    await this.reviewRepo.delete({ candidateId, reviewerId } as any);
+    const deleteCriteria: any = candidate?.reviewRound != null
+      ? { candidateId, reviewerId, reviewRound: candidate.reviewRound }
+      : { candidateId, reviewerId };
+    await this.reviewRepo.delete(deleteCriteria);
     return { undone: true, candidateId, reviewerId };
   }
 
@@ -1744,11 +1754,12 @@ export class ReviewsService {
     if (candidate.status !== CandidateStatus.PENDING_REVIEW && candidate.status !== CandidateStatus.IN_CONSENSUS) {
       throw new BadRequestException('Candidate ' + candidateId + ' is not pending review (status=' + candidate.status + ')');
     }
-    const existing = await this.reviewRepo.findOne({ where: { candidateId, reviewerId } });
+    const currentRound = candidate.reviewRound ?? 1;
+    const existing = await this.reviewRepo.findOne({ where: { candidateId, reviewerId, reviewRound: currentRound } });
     if (existing) throw new ConflictException('You have already voted on this candidate');
     // UNSURE = vote 0
     const review: any = this.reviewRepo.create({
-      candidateId, reviewerId, vote: 0, suggestedSignTypeId: null,
+      candidateId, reviewerId, reviewRound: currentRound, vote: 0, suggestedSignTypeId: null,
       declineReason: 'Other', declineNote: note?.trim().slice(0, 500) ?? 'Cannot identify',
     } as any);
     let saved: any;
@@ -1848,13 +1859,16 @@ export class ReviewsService {
       await this.candidateRepo.update(candidateId, { status: CandidateStatus.PENDING_REVIEW });
     }
 
+    const currentRound = candidate.reviewRound ?? 1;
+
     // Delete any prior review from this reviewer to allow re-testing
-    await this.reviewRepo.delete({ candidateId, reviewerId } as any);
+    await this.reviewRepo.delete({ candidateId, reviewerId, reviewRound: currentRound } as any);
 
     // Save vote
     const review: any = this.reviewRepo.create({
       candidateId,
       reviewerId,
+      reviewRound: currentRound,
       vote: dto.vote,
       suggestedSignTypeId: dto.suggestedSignTypeId ?? null,
       declineReason: dto.declineReason ?? null,

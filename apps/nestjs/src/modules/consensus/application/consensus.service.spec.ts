@@ -593,4 +593,102 @@ describe('ConsensusService', () => {
       );
     });
   });
+
+  describe('Multi-round voting & boosted bounty payouts', () => {
+    it('evaluates only reviews in candidate.reviewRound and pays boosted bountyCredits', async () => {
+      const configRepo = {
+        findOne: jest.fn().mockResolvedValue({
+          id: 1,
+          approvalThreshold: 0.5,
+          rejectionThreshold: -0.5,
+          minVotesRequired: 1,
+          alphaSmoothingFactor: 0.1,
+        }),
+      } as unknown as Repository<ConsensusConfig>;
+      const logRepo = {
+        create: jest.fn((value) => value),
+        save: jest.fn(async (value) => ({ ...value, id: 'log-round-2' })),
+      } as unknown as Repository<ConsensusLog>;
+      const candidateRepo = {
+        findOne: jest.fn().mockResolvedValue({
+          id: 'cand-round-2',
+          status: CandidateStatus.PENDING_REVIEW,
+          predictedSignTypeId: 99,
+          signCropUrl: 'sign.jpg',
+          submissionId: 'sub-1',
+          reviewRound: 2,
+          bountyCredits: 15,
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      } as unknown as Repository<UnverifiedSignCandidate>;
+      const reviewRepo = {
+        find: jest.fn().mockResolvedValue([
+          { reviewerId: 'rev-round-2', vote: 1, reviewRound: 2, suggestedSignTypeId: null, questClaimId: 'claim-1' },
+        ]),
+      } as unknown as Repository<CandidateReview>;
+      const query = jest.fn(async (sql: string) => {
+        if (sql.includes('SELECT reliability_score')) {
+          return [{ reliability_score: 100, is_provisional: false, total_correct_votes: 10, total_false_votes: 0 }];
+        }
+        if (sql.includes('candidate_geo_estimations')) {
+          return [{ sign_wkt: 'POINT(106.80 10.85)', traffic_direction: 90 }];
+        }
+        if (sql.includes('SELECT id FROM verified_traffic_signs')) {
+          return [{ id: 'vsign-round-2' }];
+        }
+        return [];
+      });
+      const wallet = {
+        resolveRewardAmount: jest.fn().mockResolvedValue(5),
+        creditUser: jest.fn().mockResolvedValue(undefined),
+      } as unknown as WalletService;
+      const notifications = {
+        createBulk: jest.fn().mockResolvedValue(undefined),
+      } as unknown as NotificationsService;
+      const questClaimRepo = {
+        find: jest.fn().mockResolvedValue([
+          { id: 'claim-1', baseRewardCredits: 15, escalatedBonusCredits: 7 },
+        ]),
+      };
+
+      const service = new ConsensusService(
+        configRepo,
+        logRepo,
+        candidateRepo,
+        reviewRepo,
+        { query } as unknown as DataSource,
+        wallet,
+        notifications,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        questClaimRepo as any,
+      );
+
+      await service.evaluate('cand-round-2');
+
+      expect(reviewRepo.find).toHaveBeenCalledWith({
+        where: { candidateId: 'cand-round-2', reviewRound: 2 },
+      });
+      expect(wallet.creditUser).toHaveBeenCalledWith(
+        'rev-round-2',
+        22,
+        expect.anything(),
+        'consensus_log',
+        'log-round-2',
+        'Review reward (consensus APPROVED)',
+      );
+    });
+  });
 });

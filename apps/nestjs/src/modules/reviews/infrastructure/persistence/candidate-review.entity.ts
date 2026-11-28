@@ -12,7 +12,7 @@ import { User } from '../../../auth/infrastructure/persistence/user.entity';
 import { TrafficSignType } from '../../../catalog/traffic-sign-type.entity';
 
 @Entity('candidate_reviews')
-@Index(['candidateId', 'reviewerId'], { unique: true })
+@Index(['candidateId', 'reviewerId', 'reviewRound'], { unique: true })
 export class CandidateReview {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -22,6 +22,9 @@ export class CandidateReview {
 
   @Column({ name: 'reviewer_id', type: 'uuid' })
   reviewerId: string;
+
+  @Column({ name: 'review_round', type: 'int', default: 1 })
+  reviewRound: number;
 
   @Column({ type: 'smallint' })
   vote: number;

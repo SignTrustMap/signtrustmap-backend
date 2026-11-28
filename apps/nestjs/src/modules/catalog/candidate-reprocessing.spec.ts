@@ -96,8 +96,8 @@ describe('CandidateReprocessingSpec (Flow 10 & Req 4.10)', () => {
     await catalogService.reprocessUnknownCandidates(301, 0.70);
 
     expect(mockDataSource.query).toHaveBeenCalledWith(
-      expect.stringContaining('UPDATE unverified_sign_candidates'),
-      [301, 0.85, 'cand-upgrade-1'],
+      expect.stringContaining('review_round = COALESCE(review_round, 1) + 1'),
+      [301, 0.85, 'cand-upgrade-1', 15],
     );
   });
 

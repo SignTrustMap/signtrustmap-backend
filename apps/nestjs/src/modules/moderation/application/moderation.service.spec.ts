@@ -852,7 +852,18 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
     );
     expect(dataSource.query).toHaveBeenCalledWith(expect.stringContaining('SELECT DISTINCT split_part'));
     expect(dataSource.query).toHaveBeenCalledWith(expect.stringContaining('catalog_versions'), ['staff-1', expect.any(String), 42]);
-    expect(candRepo.update).toHaveBeenCalledWith({ id: 'C1', status: CandidateStatus.MISSING_TYPE_HOLD }, { predictedSignTypeId: 42, status: CandidateStatus.PENDING_REVIEW });
+    expect(candRepo.update).toHaveBeenCalledWith(
+      { id: 'C1', status: CandidateStatus.MISSING_TYPE_HOLD },
+      expect.objectContaining({
+        predictedSignTypeId: 42,
+        status: CandidateStatus.PENDING_REVIEW,
+        reviewRound: 2,
+        votesCount: 0,
+        firstVotedAt: null,
+        bountyCredits: 15,
+        isPromoted: true,
+      }),
+    );
     expect(missing.save).toHaveBeenCalledWith(expect.objectContaining({ status: MissingTypeStatus.APPROVED, mergedIntoSignTypeId: 42 }));
     expect(notifications.create).toHaveBeenCalledWith('U1', expect.stringContaining('MISSING_TYPE_APPROVED'), expect.any(String), expect.any(String), 'missing_sign_type_report', 'R1');
     expect(catalogSyncService.syncLabels).toHaveBeenCalledTimes(1);
@@ -1478,5 +1489,102 @@ describe('ModerationService (Scenario #4: missing sign type)', () => {
       ['%Nguyen%'],
     );
     expect(res).toEqual([{ id: 'surv-1', fullName: 'Nguyen Van A', email: 'a@stm.dev', avatarUrl: null }]);
+  });
+
+  it('approve-and-create-type increments reviewRound, boosts bountyCredits, clears skips, and abandons stale claims', async () => {
+    const cases = { findOne: jest.fn(), findAndCount: jest.fn().mockResolvedValue([[], 0]), find: jest.fn().mockResolvedValue([]), save: jest.fn((v: any) => v), create: jest.fn((v: any) => v), createQueryBuilder: jest.fn() };
+    const actions = { create: jest.fn((v: any) => v), save: jest.fn((v: any) => v), find: jest.fn().mockResolvedValue([]) };
+    const report = { id: 'R-BOOST', status: MissingTypeStatus.PENDING, candidateId: 'C-BOOST', proposedName: 'New Sign', proposedCategoryId: 1, reporterId: 'U1' };
+    const missing = { findOne: jest.fn().mockResolvedValue(report), save: jest.fn((v: any) => v) };
+    const catRepo = { findOne: jest.fn().mockResolvedValue({ id: 1, code: 'PROHIBITORY' }) };
+    const signTypeRepo = { findOne: jest.fn().mockResolvedValue(null) };
+    const candRepo = {
+      findOne: jest.fn().mockResolvedValue({
+        id: 'C-BOOST',
+        status: CandidateStatus.NEW_TYPE_HOLD,
+        reviewRound: 1,
+        bountyCredits: 10,
+        votesCount: 2,
+      }),
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
+    const dataSource = {
+      query: jest.fn().mockImplementation((sql: string) =>
+        sql.includes('SELECT DISTINCT split_part') ? [{ prefix: 'P' }] : [],
+      ),
+      transaction: jest.fn(),
+    };
+    const notifications = { create: jest.fn().mockResolvedValue(undefined) };
+    const catalogService = { createSignType: jest.fn().mockResolvedValue({ id: 99, signCode: 'P.140' }) };
+    const catalogSyncService = { syncLabels: jest.fn().mockResolvedValue(undefined) };
+    const minioStorageService = {
+      putObject: jest.fn().mockResolvedValue(undefined),
+      getPublicUrl: jest.fn((_b: string, o: string) => 'https://s3.test/' + o),
+      removeObject: jest.fn().mockResolvedValue(undefined),
+    };
+    const paramService = {
+      getBoolean: jest.fn().mockResolvedValue(true),
+      getNumber: jest.fn().mockResolvedValue(0.5),
+    };
+    const questClaimRepo = { update: jest.fn().mockResolvedValue({ affected: 1 }) };
+    const skippedRepo = { delete: jest.fn().mockResolvedValue({ affected: 2 }) };
+
+    const svc = new ModerationService(
+      cases as any,
+      actions as any,
+      missing as any,
+      catRepo as any,
+      signTypeRepo as any,
+      candRepo as any,
+      dataSource as any,
+      notifications as any,
+      catalogService as any,
+      catalogSyncService as any,
+      minioStorageService as any,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      paramService as any,
+      undefined,
+      undefined,
+      questClaimRepo as any,
+      skippedRepo as any,
+    );
+
+    await svc.approveAndCreateType('R-BOOST', 'ADMIN1', {
+      signCode: 'P.140',
+      nameVi: 'Bien moi',
+      nameEn: 'New Sign',
+      proposedCategoryId: 1,
+      allowedVehicles: ['CAR'],
+    }, representativeImage());
+
+    expect(candRepo.update).toHaveBeenCalledWith(
+      { id: 'C-BOOST', status: CandidateStatus.NEW_TYPE_HOLD },
+      expect.objectContaining({
+        predictedSignTypeId: 99,
+        status: CandidateStatus.PENDING_REVIEW,
+        reviewRound: 2,
+        votesCount: 0,
+        firstVotedAt: null,
+        bountyCredits: 15,
+        isPromoted: true,
+        promotedAt: expect.any(Date),
+      }),
+    );
+    expect(skippedRepo.delete).toHaveBeenCalledWith({ candidateId: 'C-BOOST' });
+    expect(questClaimRepo.update).toHaveBeenCalledWith(
+      {
+        targetId: 'C-BOOST',
+        targetType: 'CANDIDATE_VALIDATION',
+        status: 'CLAIMED',
+      },
+      expect.objectContaining({ status: 'ABANDONED' }),
+    );
   });
 });

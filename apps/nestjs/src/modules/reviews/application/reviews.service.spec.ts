@@ -1895,4 +1895,44 @@ describe('ReviewsService', () => {
       expect(res.remainingDistanceMeters).toBe(35.5);
     });
   });
+
+  describe('ReviewsService multi-round voting', () => {
+    it('scopes duplicate vote checks and saves vote under candidate.reviewRound', async () => {
+      const candidateRepo = {
+        findOne: jest.fn().mockResolvedValue({
+          id: 'cand-round-2',
+          status: CandidateStatus.PENDING_REVIEW,
+          reviewRound: 2,
+          votesCount: 0,
+          submission: { surveyorId: 'surveyor-1' },
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      } as any;
+      const reviewRepo = {
+        findOne: jest.fn().mockResolvedValue(null),
+        create: jest.fn((dto: any) => dto),
+        save: jest.fn(async (row: any) => ({ ...row, id: 'vote-round-2' })),
+      } as any;
+      const consensusService = {
+        evaluate: jest.fn().mockResolvedValue(null),
+      } as any;
+
+      const service = new ReviewsService(candidateRepo, reviewRepo, {} as any, consensusService);
+
+      const res = await service.vote('reviewer-1', 'cand-round-2', { vote: 1 }, true);
+
+      expect(reviewRepo.findOne).toHaveBeenCalledWith({
+        where: { candidateId: 'cand-round-2', reviewerId: 'reviewer-1', reviewRound: 2 },
+      });
+      expect(reviewRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          candidateId: 'cand-round-2',
+          reviewerId: 'reviewer-1',
+          reviewRound: 2,
+          vote: 1,
+        }),
+      );
+      expect(res.review.id).toBe('vote-round-2');
+    });
+  });
 });

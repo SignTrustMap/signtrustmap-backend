@@ -1,6 +1,6 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, In } from 'typeorm';
 import { ConsensusConfig } from '../infrastructure/persistence/consensus-config.entity';
 import { ConsensusLog, ConsensusOutcome } from '../infrastructure/persistence/consensus-log.entity';
 import {
@@ -14,6 +14,7 @@ import { NotificationsService } from '../../notifications/notifications.service'
 import { SpatialAdminService } from '../../spatial-admin/application/spatial-admin.service';
 import { ReviewerProfile } from '../../reviews/infrastructure/persistence/reviewer-profile.entity';
 import { ReviewerReliabilityHistory } from '../../reviews/infrastructure/persistence/reviewer-reliability-history.entity';
+import { ReviewerQuestClaim } from '../../reviews/infrastructure/persistence/reviewer-quest-claim.entity';
 import { DailyTasksService } from '../../daily-tasks/daily-tasks.service';
 import { VerifiedSignOrmEntity } from '../../sign-map/infrastructure/persistence/verified-sign.orm-entity';
 import { SignLifecycleEvent } from '../../sign-map/infrastructure/persistence/sign-lifecycle-event.entity';
@@ -52,6 +53,7 @@ export class ConsensusService {
     @Optional() @InjectRepository(ReviewerReliabilityHistory) private readonly reviewerHistoryRepo?: Repository<ReviewerReliabilityHistory>,
     @Optional() private readonly systemSwitchService?: SystemSwitchService,
     @Optional() private readonly paramService?: SystemParametersService,
+    @Optional() @InjectRepository(ReviewerQuestClaim) private readonly questClaimRepo?: Repository<ReviewerQuestClaim>,
   ) {}
 
   async evaluate(candidateId: string): Promise<ConsensusLog | null> {
@@ -110,11 +112,18 @@ export class ConsensusService {
       } as ConsensusConfig;
     }
 
-    const reviews = await this.reviewRepo.find({ where: { candidateId } });
+    const currentRound = candidate.reviewRound ?? 1;
+    const reviews = await this.reviewRepo.find({ where: { candidateId, reviewRound: currentRound } });
     if (reviews.length < config.minVotesRequired) return null;
 
     let score = 0;
-    const voterDetails: Array<{ reviewerId: string; weight: number; vote: number; suggestedSignTypeId: number | null }> = [];
+    const voterDetails: Array<{
+      reviewerId: string;
+      weight: number;
+      vote: number;
+      suggestedSignTypeId: number | null;
+      questClaimId?: string | null;
+    }> = [];
 
     for (const r of reviews) {
       let profile: any = null;
@@ -153,7 +162,13 @@ export class ConsensusService {
       }
 
       score += w * r.vote;
-      voterDetails.push({ reviewerId: r.reviewerId, weight: w, vote: r.vote, suggestedSignTypeId: r.suggestedSignTypeId });
+      voterDetails.push({
+        reviewerId: r.reviewerId,
+        weight: w,
+        vote: r.vote,
+        suggestedSignTypeId: r.suggestedSignTypeId,
+        questClaimId: r.questClaimId ?? null,
+      });
     }
 
     const maxVotes = config.maxVotesLimit ?? Math.max(config.minVotesRequired * 2, 9);
@@ -204,7 +219,13 @@ export class ConsensusService {
     score: number,
     outcome: ConsensusOutcome,
     winningVote: number | null,
-    voterDetails: Array<{ reviewerId: string; weight: number; vote: number; suggestedSignTypeId: number | null }>,
+    voterDetails: Array<{
+      reviewerId: string;
+      weight: number;
+      vote: number;
+      suggestedSignTypeId: number | null;
+      questClaimId?: string | null;
+    }>,
   ): Promise<ConsensusLog> {
     let verifiedSignTypeId: number | null = null;
     if (outcome === ConsensusOutcome.APPROVED) {
@@ -252,7 +273,13 @@ export class ConsensusService {
     candidate: UnverifiedSignCandidate,
     signTypeId: number,
     log: ConsensusLog,
-    voterDetails: Array<{ reviewerId: string; weight: number; vote: number; suggestedSignTypeId: number | null }>,
+    voterDetails: Array<{
+      reviewerId: string;
+      weight: number;
+      vote: number;
+      suggestedSignTypeId: number | null;
+      questClaimId?: string | null;
+    }>,
     winningVote: number,
     config: ConsensusConfig,
   ) {
@@ -493,38 +520,15 @@ export class ConsensusService {
       }
     }
 
-    const baseReward = await this.walletService.resolveRewardAmount(TransactionType.REVIEW_REWARD, 5);
-    for (const v of voterDetails) {
-      const aligned = v.vote === winningVote ? 1 : 0;
-      const profile = await this.updateReviewerProfile(v.reviewerId, aligned, config, log.id);
-      if (aligned === 1) {
-        try {
-          // Reputation-Weighted Review Reward Bonus Multiplier
-          const relScore = profile ? Number(profile.reliabilityScore ?? profile.reliability_score ?? 100) : 100;
-          const normalizedPct = relScore <= 1.0 ? relScore * 100 : relScore;
-          const isScalingEnabled = this.paramService
-            ? await this.paramService.getBoolean('reviewer.reward_scaling_enabled', true)
-            : true;
-          const floorPct = this.paramService
-            ? await this.paramService.getNumber('reviewer.reward_scaling_floor_pct', 10.0)
-            : 10.0;
-          const effPct = isScalingEnabled ? Math.max(floorPct, normalizedPct) : 100;
-          const multiplier = 0.5 + 0.5 * (effPct / 100);
-          const finalReward = Math.max(1, Math.round(baseReward * multiplier));
-
-          await this.walletService.creditUser(
-            v.reviewerId,
-            finalReward,
-            TransactionType.REVIEW_REWARD,
-            'consensus_log',
-            log.id,
-            'Review reward (consensus APPROVED)',
-          );
-        } catch (e: any) {
-          this.logger.warn('credit failed ' + v.reviewerId + ': ' + e?.message);
-        }
-      }
-    }
+    await this.rewardAndScoreVoters(
+      candidate,
+      voterDetails,
+      winningVote,
+      config,
+      log.id,
+      5,
+      'Review reward (consensus APPROVED)',
+    );
 
     await this.notifyVoters(candidate, voterDetails, winningVote, 'APPROVED', log.id);
     try {
@@ -571,26 +575,85 @@ export class ConsensusService {
 
   private async handleRejected(
     candidate: UnverifiedSignCandidate,
-    voterDetails: Array<{ reviewerId: string; weight: number; vote: number; suggestedSignTypeId: number | null }>,
+    voterDetails: Array<{
+      reviewerId: string;
+      weight: number;
+      vote: number;
+      suggestedSignTypeId: number | null;
+      questClaimId?: string | null;
+    }>,
     winningVote: number,
     config: ConsensusConfig,
     log: ConsensusLog,
   ) {
     await this.candidateRepo.update(candidate.id, { status: CandidateStatus.REJECTED });
-    const baseReward = await this.walletService.resolveRewardAmount(TransactionType.REVIEW_REWARD, 3);
+    await this.rewardAndScoreVoters(
+      candidate,
+      voterDetails,
+      winningVote,
+      config,
+      log.id,
+      3,
+      'Review reward (consensus REJECTED)',
+    );
+    await this.notifyVoters(candidate, voterDetails, winningVote, 'REJECTED', log.id);
+  }
+
+  private async rewardAndScoreVoters(
+    candidate: UnverifiedSignCandidate,
+    voterDetails: Array<{
+      reviewerId: string;
+      weight: number;
+      vote: number;
+      suggestedSignTypeId: number | null;
+      questClaimId?: string | null;
+    }>,
+    winningVote: number,
+    config: ConsensusConfig,
+    logId: string,
+    defaultRewardFallback: number,
+    creditDescription: string,
+  ): Promise<void> {
+    const systemBaseReward = await this.walletService.resolveRewardAmount(
+      TransactionType.REVIEW_REWARD,
+      defaultRewardFallback,
+    );
+    const candidateBaseReward =
+      candidate.bountyCredits != null && Number.isFinite(Number(candidate.bountyCredits))
+        ? Math.max(systemBaseReward, Number(candidate.bountyCredits))
+        : systemBaseReward;
+
+    const claimTotals = new Map<string, number>();
+    const claimIds = Array.from(
+      new Set(voterDetails.map((v) => v.questClaimId).filter((id): id is string => Boolean(id))),
+    );
+    if (claimIds.length > 0 && this.questClaimRepo && typeof this.questClaimRepo.find === 'function') {
+      try {
+        const claims = await this.questClaimRepo.find({ where: { id: In(claimIds) } });
+        for (const claim of claims) {
+          const total = Number(claim.baseRewardCredits || 0) + Number(claim.escalatedBonusCredits || 0);
+          if (total > 0) claimTotals.set(claim.id, total);
+        }
+      } catch {}
+    }
+
+    const isScalingEnabled = this.paramService
+      ? await this.paramService.getBoolean('reviewer.reward_scaling_enabled', true)
+      : true;
+    const floorPct = this.paramService
+      ? await this.paramService.getNumber('reviewer.reward_scaling_floor_pct', 10.0)
+      : 10.0;
+
     for (const v of voterDetails) {
       const aligned = v.vote === winningVote ? 1 : 0;
-      const profile = await this.updateReviewerProfile(v.reviewerId, aligned, config, log.id);
+      const profile = await this.updateReviewerProfile(v.reviewerId, aligned, config, logId);
       if (aligned === 1) {
         try {
+          const claimReward = v.questClaimId ? (claimTotals.get(v.questClaimId) ?? 0) : 0;
+          const baseReward = Math.max(candidateBaseReward, claimReward);
+          // Reputation-Weighted Review Reward Bonus Multiplier
           const relScore = profile ? Number(profile.reliabilityScore ?? profile.reliability_score ?? 100) : 100;
           const normalizedPct = relScore <= 1.0 ? relScore * 100 : relScore;
-          const isScalingEnabled = this.paramService
-            ? await this.paramService.getBoolean('reviewer.reward_scaling_enabled', true)
-            : true;
-          const floorPct = this.paramService
-            ? await this.paramService.getNumber('reviewer.reward_scaling_floor_pct', 10.0)
-            : 10.0;
           const effPct = isScalingEnabled ? Math.max(floorPct, normalizedPct) : 100;
           const multiplier = 0.5 + 0.5 * (effPct / 100);
           const finalReward = Math.max(1, Math.round(baseReward * multiplier));
@@ -600,20 +663,25 @@ export class ConsensusService {
             finalReward,
             TransactionType.REVIEW_REWARD,
             'consensus_log',
-            log.id,
-            'Review reward (consensus REJECTED)',
+            logId,
+            creditDescription,
           );
         } catch (e: any) {
           this.logger.warn('credit failed ' + v.reviewerId + ': ' + e?.message);
         }
       }
     }
-    await this.notifyVoters(candidate, voterDetails, winningVote, 'REJECTED', log.id);
   }
 
   private async handleEscalated(
     candidate: UnverifiedSignCandidate,
-    voterDetails: Array<{ reviewerId: string; weight: number; vote: number; suggestedSignTypeId: number | null }>,
+    voterDetails: Array<{
+      reviewerId: string;
+      weight: number;
+      vote: number;
+      suggestedSignTypeId: number | null;
+      questClaimId?: string | null;
+    }>,
     config: ConsensusConfig,
     log: ConsensusLog,
   ) {

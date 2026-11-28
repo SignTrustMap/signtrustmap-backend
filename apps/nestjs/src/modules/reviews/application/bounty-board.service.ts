@@ -23,6 +23,7 @@ import { VerifiedSignOrmEntity } from '../../sign-map/infrastructure/persistence
 import { TrafficSignType } from '../../catalog/traffic-sign-type.entity';
 import { SignCategory } from '../../catalog/sign-category.entity';
 import { ReviewerProfile } from '../infrastructure/persistence/reviewer-profile.entity';
+import { CandidateReview } from '../infrastructure/persistence/candidate-review.entity';
 import { SystemParametersService } from '../../system-parameters/system-parameters.service';
 import { SpatialAdminService } from '../../spatial-admin/application/spatial-admin.service';
 import { GeocodingService } from '../../geocoding/application/geocoding.service';
@@ -46,6 +47,7 @@ export class BountyBoardService {
     private readonly dataSource: DataSource,
     @Optional() private readonly spatialAdminService?: SpatialAdminService,
     @Optional() private readonly geocodingService?: GeocodingService,
+    @Optional() @InjectRepository(CandidateReview) private readonly reviewRepo?: Repository<CandidateReview>,
   ) {}
 
   /**
@@ -89,7 +91,9 @@ export class BountyBoardService {
           AND (s.surveyor_id IS NULL OR s.surveyor_id != $${hasCoords ? 3 : 1})
           AND NOT EXISTS (
             SELECT 1 FROM candidate_reviews cr 
-            WHERE cr.candidate_id = c.id AND cr.reviewer_id = $${hasCoords ? 3 : 1}
+            WHERE cr.candidate_id = c.id
+              AND cr.reviewer_id = $${hasCoords ? 3 : 1}
+              AND cr.review_round = c.review_round
           )
           AND NOT EXISTS (
             SELECT 1 FROM reviewer_quest_claims rqc 
@@ -737,6 +741,16 @@ export class BountyBoardService {
 
       if (candidate.submission?.surveyorId === userId) {
         throw new ForbiddenException('You cannot claim verification quests from your own survey submissions.');
+      }
+
+      if (this.reviewRepo && typeof this.reviewRepo.findOne === 'function') {
+        const currentRound = candidate.reviewRound ?? 1;
+        const alreadyVoted = await this.reviewRepo.findOne({
+          where: { candidateId: dto.targetId, reviewerId: userId, reviewRound: currentRound },
+        });
+        if (alreadyVoted) {
+          throw new ConflictException('You have already voted on this candidate in the current review round.');
+        }
       }
 
       baseReward = candidate.bountyCredits || 10;

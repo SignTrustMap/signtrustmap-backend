@@ -359,9 +359,9 @@ services:
       resources:
         limits:
           cpus: '1.5'
-          memory: 1536M
+          memory: 3072M
         reservations:
-          memory: 1024M
+          memory: 1536M
     healthcheck:
       test: ["CMD-SHELL", "/bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/5000 && echo -e \"GET /route/v1/driving/106.7,10.7;106.8,10.8?overview=false HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n\" >&3 && grep -q \"200 OK\" <&3' || exit 1"]
       interval: 15s

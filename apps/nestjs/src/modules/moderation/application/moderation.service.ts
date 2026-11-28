@@ -9,6 +9,12 @@ import { SignCategory } from '../../catalog/sign-category.entity';
 import { TrafficSignType } from '../../catalog/traffic-sign-type.entity';
 import { UnverifiedSignCandidate, CandidateStatus } from '../../survey/infrastructure/persistence/unverified-sign-candidate.entity';
 import { CandidateRecaptureRequest } from '../../reviews/infrastructure/persistence/candidate-recapture-request.entity';
+import {
+  ReviewerQuestClaim,
+  QuestTargetType,
+  QuestClaimStatus,
+} from '../../reviews/infrastructure/persistence/reviewer-quest-claim.entity';
+import { ReviewerSkippedCandidate } from '../../reviews/infrastructure/persistence/reviewer-skipped-candidate.entity';
 import { User, UserStatus } from '../../auth/infrastructure/persistence/user.entity';
 import { UserRole } from '../../auth/infrastructure/persistence/user-role.entity';
 import { Role } from '../../auth/infrastructure/persistence/role.entity';
@@ -77,6 +83,8 @@ export class ModerationService {
     @Optional() private readonly paramService?: SystemParametersService,
     @Optional() @InjectRepository(SurveyorProfile) private readonly surveyorProfileRepo?: Repository<SurveyorProfile>,
     @Optional() @InjectRepository(SurveyorReputationHistory) private readonly surveyorReputationRepo?: Repository<SurveyorReputationHistory>,
+    @Optional() @InjectRepository(ReviewerQuestClaim) private readonly questClaimRepo?: Repository<ReviewerQuestClaim>,
+    @Optional() @InjectRepository(ReviewerSkippedCandidate) private readonly skippedRepo?: Repository<ReviewerSkippedCandidate>,
   ) {}
 
   /**
@@ -184,6 +192,21 @@ export class ModerationService {
         }
         if (affected !== 1) {
           throw new ConflictException('Candidate ' + dto.candidateId + ' changed state while reporting a new sign');
+        }
+        if (typeof manager.getRepository === 'function') {
+          await manager.getRepository(ReviewerQuestClaim)
+            .createQueryBuilder()
+            .update(ReviewerQuestClaim)
+            .set({
+              status: QuestClaimStatus.ABANDONED,
+              penaltyNotes: 'Candidate placed on NEW_TYPE_HOLD for new sign type review',
+            })
+            .where('targetId = :candidateId AND targetType = :targetType AND status = :status', {
+              candidateId: dto.candidateId,
+              targetType: QuestTargetType.CANDIDATE_VALIDATION,
+              status: QuestClaimStatus.CLAIMED,
+            })
+            .execute();
         }
         this.logger.log('Parked candidate ' + dto.candidateId + ' on NEW_TYPE_HOLD (report ' + saved.id + ')');
       }
@@ -483,10 +506,10 @@ export class ModerationService {
         throw new BadRequestException('Report must be PENDING or INCOMPLETE to perform a staff action');
       }
 
+      let candidateSnapshot: { id: string; status: CandidateStatus; reviewRound?: number; bountyCredits?: number } | null = null;
       if (report.candidateId) {
-        let candidate: { id: string; status: CandidateStatus } | null = null;
         if (typeof manager.getRepository === 'function') {
-          candidate = await manager.getRepository(UnverifiedSignCandidate)
+          candidateSnapshot = await manager.getRepository(UnverifiedSignCandidate)
             .createQueryBuilder('c')
             .setLock('pessimistic_write')
             .where('c.id = :id', { id: report.candidateId })
@@ -497,10 +520,10 @@ export class ModerationService {
             `SELECT id, status FROM unverified_sign_candidates WHERE id = $1 FOR UPDATE`,
             [report.candidateId],
           );
-          candidate = candidates[0] ?? null;
+          candidateSnapshot = candidates[0] ?? null;
         }
-        if (!candidate) throw new NotFoundException('Candidate ' + report.candidateId + ' not found');
-        if (candidate.status !== CandidateStatus.NEW_TYPE_HOLD) {
+        if (!candidateSnapshot) throw new NotFoundException('Candidate ' + report.candidateId + ' not found');
+        if (candidateSnapshot.status !== CandidateStatus.NEW_TYPE_HOLD) {
           throw new ConflictException('Candidate must be on NEW_TYPE_HOLD to resolve this report');
         }
       }
@@ -542,19 +565,52 @@ export class ModerationService {
         const candidateStatus = decision === 'MERGE' ? CandidateStatus.PENDING_REVIEW : CandidateStatus.REJECTED;
         let updateCandAffected = 0;
         if (typeof manager.getRepository === 'function') {
+          const updateFields: Record<string, any> = {
+            status: candidateStatus,
+            ...(signTypeId != null ? { predictedSignTypeId: signTypeId } : {}),
+          };
+          if (decision === 'MERGE') {
+            const nextRound = (candidateSnapshot?.reviewRound ?? 1) + 1;
+            const boostedBounty = await this.computeRepublishedBountyCredits(candidateSnapshot?.bountyCredits);
+            Object.assign(updateFields, {
+              reviewRound: nextRound,
+              votesCount: 0,
+              firstVotedAt: null,
+              bountyCredits: boostedBounty,
+              isPromoted: true,
+              promotedAt: new Date(),
+            });
+          }
           const res = await manager.getRepository(UnverifiedSignCandidate)
             .createQueryBuilder()
             .update(UnverifiedSignCandidate)
-            .set({
-              status: candidateStatus,
-              ...(signTypeId != null ? { predictedSignTypeId: signTypeId } : {}),
-            })
+            .set(updateFields)
             .where('id = :id AND status = :status', {
               id: report.candidateId,
               status: CandidateStatus.NEW_TYPE_HOLD,
             })
             .execute();
           updateCandAffected = res.affected ?? 0;
+          if (updateCandAffected === 1) {
+            if (decision === 'MERGE') {
+              await manager.getRepository(ReviewerSkippedCandidate).delete({ candidateId: report.candidateId });
+            }
+            await manager.getRepository(ReviewerQuestClaim)
+              .createQueryBuilder()
+              .update(ReviewerQuestClaim)
+              .set({
+                status: QuestClaimStatus.ABANDONED,
+                penaltyNotes: decision === 'MERGE'
+                  ? 'Candidate merged and republished for new review round'
+                  : 'Candidate rejected on moderation report',
+              })
+              .where('targetId = :candidateId AND targetType = :targetType AND status = :status', {
+                candidateId: report.candidateId,
+                targetType: QuestTargetType.CANDIDATE_VALIDATION,
+                status: QuestClaimStatus.CLAIMED,
+              })
+              .execute();
+          }
         } else if (typeof manager.query === 'function') {
           // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
           const candidateUpdate: any[] = await manager.query(
@@ -3199,23 +3255,79 @@ export class ModerationService {
     }
   }
 
+  private async computeRepublishedBountyCredits(currentBountyCredits?: number | null): Promise<number> {
+    const baseBounty = Math.max(1, Number(currentBountyCredits || 10));
+    const escalationEnabled = this.paramService
+      ? await this.paramService.getBoolean('reviewer.bounty_escalation_enabled', true)
+      : true;
+    if (!escalationEnabled) {
+      return baseBounty;
+    }
+    const multiplier = this.paramService
+      ? await this.paramService.getNumber('reviewer.bounty_escalation_multiplier', 0.5)
+      : 0.5;
+    const bonus = Math.max(5, Math.round(baseBounty * multiplier));
+    return baseBounty + bonus;
+  }
+
   private async releaseCandidate(candidateId: string, signTypeId: number): Promise<void> {
     try {
+      const existing = await this.candRepo?.findOne?.({ where: { id: candidateId } });
+      const nextRound = (existing?.reviewRound ?? 1) + 1;
+      const boostedBounty = await this.computeRepublishedBountyCredits(existing?.bountyCredits);
+      const now = new Date();
+
       if (this.candRepo && typeof this.candRepo.update === 'function') {
         await this.candRepo.update(
           { id: candidateId, status: CandidateStatus.NEW_TYPE_HOLD },
-          { predictedSignTypeId: signTypeId, status: CandidateStatus.PENDING_REVIEW },
+          {
+            predictedSignTypeId: signTypeId,
+            status: CandidateStatus.PENDING_REVIEW,
+            reviewRound: nextRound,
+            votesCount: 0,
+            firstVotedAt: null,
+            bountyCredits: boostedBounty,
+            isPromoted: true,
+            promotedAt: now,
+          },
         );
       } else {
         // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
         await this.dataSource.query(
           `UPDATE unverified_sign_candidates
-           SET predicted_sign_type_id = $1, status = 'PENDING_REVIEW'
+           SET predicted_sign_type_id = $1,
+               status = 'PENDING_REVIEW',
+               review_round = COALESCE(review_round, 1) + 1,
+               votes_count = 0,
+               first_voted_at = NULL,
+               bounty_credits = $3,
+               is_promoted = true,
+               promoted_at = NOW()
            WHERE id = $2::uuid AND status IN ('NEW_TYPE_HOLD', 'MISSING_TYPE_HOLD')`,
-          [signTypeId, candidateId],
+          [signTypeId, candidateId, boostedBounty],
         );
       }
-      this.logger.log('Released candidate ' + candidateId + ' to PENDING_REVIEW (type #' + signTypeId + ')');
+
+      if (this.skippedRepo && typeof this.skippedRepo.delete === 'function') {
+        await this.skippedRepo.delete({ candidateId }).catch(() => undefined);
+      }
+      if (this.questClaimRepo && typeof this.questClaimRepo.update === 'function') {
+        await this.questClaimRepo.update(
+          {
+            targetId: candidateId,
+            targetType: QuestTargetType.CANDIDATE_VALIDATION,
+            status: QuestClaimStatus.CLAIMED,
+          },
+          {
+            status: QuestClaimStatus.ABANDONED,
+            penaltyNotes: 'Candidate released for new review round',
+          },
+        ).catch(() => undefined);
+      }
+
+      this.logger.log(
+        'Released candidate ' + candidateId + ' to PENDING_REVIEW (type #' + signTypeId + ', round ' + nextRound + ', bounty ' + boostedBounty + ')',
+      );
     } catch (e: any) {
       this.logger.warn('Failed to release candidate ' + candidateId + ': ' + (e as any)?.message);
     }

@@ -83,6 +83,9 @@ export class UnverifiedSignCandidate {
   @Column({ name: 'first_voted_at', type: 'timestamptz', nullable: true })
   firstVotedAt?: Date | null;
 
+  @Column({ name: 'review_round', type: 'int', default: 1 })
+  reviewRound: number;
+
   @Column({ name: 'is_manual_annotation', type: 'boolean', default: false })
   isManualAnnotation: boolean;
 
