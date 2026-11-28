@@ -56,6 +56,14 @@ describe('ReviewsService queue', () => {
       expect.stringContaining('reviewer_quest_claims'),
       { reviewerId: 'reviewer-1' },
     );
+    expect(query.andWhere).toHaveBeenCalledWith(
+      expect.stringContaining('rqc.reviewer_id = :reviewerId'),
+      { reviewerId: 'reviewer-1' },
+    );
+    expect(query.andWhere).toHaveBeenCalledWith(
+      expect.not.stringContaining('NOT EXISTS (\n            SELECT 1 FROM reviewer_quest_claims'),
+      { reviewerId: 'reviewer-1' },
+    );
   });
 
   it('prioritizes candidates claimed by the current reviewer at the top of queue()', async () => {
@@ -1728,7 +1736,7 @@ describe('ReviewsService', () => {
       expect(questClaimRepo.save).toHaveBeenCalledWith(validClaim);
     });
 
-    it('vote() rejects mismatched questClaimId and blocks voting when candidate is claimed by another reviewer', async () => {
+    it('vote() rejects mismatched questClaimId, blocks voting claimed by another reviewer, and rejects unclaimed candidates', async () => {
       const candidateRepo = {
         findOne: jest.fn().mockResolvedValue({
           id: 'cand-quest-3',
@@ -1758,7 +1766,9 @@ describe('ReviewsService', () => {
             targetId: 'cand-quest-3',
             status: QuestClaimStatus.CLAIMED,
             expiresAt: new Date(Date.now() + 60000),
-          }),
+          })
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(null),
       } as any;
       const paramService = {
         getNumber: jest.fn().mockResolvedValue(50.0),
@@ -1793,6 +1803,70 @@ describe('ReviewsService', () => {
       await expect(
         service.vote('rev-1', 'cand-quest-3', { vote: 1 }),
       ).rejects.toThrow('currently claimed by another reviewer');
+
+      await expect(
+        service.vote('rev-1', 'cand-quest-3', { vote: 1 }),
+      ).rejects.toThrow('accepted a quest for');
+    });
+
+    it('canNotIdentify() requires an active claimed quest and completes it upon saving', async () => {
+      const candidateRepo = {
+        findOne: jest.fn().mockResolvedValue({
+          id: 'cand-unsure-1',
+          status: CandidateStatus.PENDING_REVIEW,
+          reviewRound: 1,
+        }),
+      } as any;
+      const reviewRepo = {
+        findOne: jest.fn().mockResolvedValue(null),
+        create: jest.fn((dto: any) => dto),
+        save: jest.fn(async (row: any) => ({ ...row, id: 'rev-unsure-1' })),
+      } as any;
+      const activeClaim = {
+        id: 'claim-unsure-1',
+        reviewerId: 'rev-1',
+        targetType: QuestTargetType.CANDIDATE_VALIDATION,
+        targetId: 'cand-unsure-1',
+        status: QuestClaimStatus.CLAIMED,
+        expiresAt: new Date(Date.now() + 60000),
+        completedAt: null,
+      };
+      const questClaimRepo = {
+        findOne: jest
+          .fn()
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(activeClaim),
+        save: jest.fn().mockResolvedValue(activeClaim),
+      } as any;
+      const service = new ReviewsService(
+        candidateRepo,
+        reviewRepo,
+        {} as any,
+        { evaluate: jest.fn().mockResolvedValue(null) } as any,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        questClaimRepo,
+      );
+
+      await expect(
+        service.canNotIdentify('rev-1', 'cand-unsure-1', 'Obscured'),
+      ).rejects.toThrow('accepted a quest for');
+
+      const res = await service.canNotIdentify('rev-1', 'cand-unsure-1', 'Obscured');
+      expect(res.review.questClaimId).toBe('claim-unsure-1');
+      expect(activeClaim.status).toBe(QuestClaimStatus.COMPLETED);
+      expect(questClaimRepo.save).toHaveBeenCalledWith(activeClaim);
     });
 
     it('checkInEligibility() returns eligible: true when distance <= geofence radius', async () => {

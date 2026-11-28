@@ -193,13 +193,13 @@ export class ReviewsService {
           { reviewerId },
         )
         .andWhere(
-          `NOT EXISTS (
+          `EXISTS (
             SELECT 1 FROM reviewer_quest_claims rqc
             WHERE rqc.target_id = candidate.id
               AND rqc.target_type = 'CANDIDATE_VALIDATION'
               AND rqc.status = 'CLAIMED'
               AND rqc.expires_at > NOW()
-              AND rqc.reviewer_id != :reviewerId
+              AND rqc.reviewer_id = :reviewerId
           )`,
           { reviewerId },
         );
@@ -261,6 +261,118 @@ export class ReviewsService {
     }
     return { items, total, page: safePage, pageSize: safeSize, totalPages: Math.ceil(total / safeSize) };
   }
+
+  /**
+   * Resolve and validate an active CANDIDATE_VALIDATION quest claim for a reviewer.
+   * Rejects expired claims with reputation penalty, blocks claims held by others,
+   * and rejects reviewing when the reviewer has not claimed the quest.
+   */
+  private async resolveCandidateQuestClaim(
+    reviewerId: string,
+    candidateId: string,
+    questClaimId?: string,
+  ): Promise<ReviewerQuestClaim | null> {
+    if (!this.questClaimRepo) {
+      return null;
+    }
+
+    let matchedClaim: ReviewerQuestClaim | null = null;
+    if (questClaimId) {
+      matchedClaim = await this.questClaimRepo.findOne({
+        where: { id: questClaimId, reviewerId },
+      });
+      if (!matchedClaim) {
+        throw new NotFoundException(`Quest claim '${questClaimId}' not found.`);
+      }
+      if (
+        (matchedClaim.targetType && matchedClaim.targetType !== QuestTargetType.CANDIDATE_VALIDATION) ||
+        matchedClaim.targetId !== candidateId
+      ) {
+        throw new BadRequestException(
+          `Quest claim '${questClaimId}' does not match candidate '${candidateId}'.`,
+        );
+      }
+    } else {
+      matchedClaim = await this.questClaimRepo.findOne({
+        where: {
+          targetType: QuestTargetType.CANDIDATE_VALIDATION,
+          targetId: candidateId,
+          reviewerId,
+          status: QuestClaimStatus.CLAIMED,
+        },
+      });
+    }
+
+    if (matchedClaim) {
+      if (matchedClaim.status === QuestClaimStatus.EXPIRED) {
+        throw new BadRequestException('Quest claim has expired. You cannot submit late results.');
+      }
+      if (matchedClaim.status !== QuestClaimStatus.CLAIMED) {
+        throw new BadRequestException(`Quest claim is already ${matchedClaim.status.toLowerCase()}.`);
+      }
+
+      // Strict Timeout Guard: Check if claim has expired
+      if (new Date() > new Date(matchedClaim.expiresAt)) {
+        matchedClaim.status = QuestClaimStatus.EXPIRED;
+        matchedClaim.penaltyApplied = true;
+        const penaltyScore = this.paramService
+          ? await this.paramService.getNumber('reviewer.quest_timeout_penalty_score', 5.0)
+          : 5.0;
+        matchedClaim.penaltyNotes = `Quest expired uncompleted after ${matchedClaim.timeLimitMinutes} minutes. Penalty: -${penaltyScore} score.`;
+        await this.questClaimRepo.save(matchedClaim);
+
+        try {
+          if (this.dataSource && typeof this.dataSource.query === 'function') {
+            // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
+            await this.dataSource.query(
+              `UPDATE reviewer_profiles 
+               SET reliability_score = GREATEST(0, reliability_score - $1),
+                   updated_at = NOW()
+               WHERE user_id = $2`,
+              [penaltyScore, reviewerId],
+            );
+          }
+        } catch (e: any) {
+          this.logger.warn(`Failed to penalize reviewer ${reviewerId}: ${e?.message}`);
+        }
+
+        throw new BadRequestException('Quest claim has expired. You cannot submit late results.');
+      }
+
+      return matchedClaim;
+    }
+
+    const otherActiveClaim = await this.questClaimRepo.findOne({
+      where: {
+        targetType: QuestTargetType.CANDIDATE_VALIDATION,
+        targetId: candidateId,
+        status: QuestClaimStatus.CLAIMED,
+      },
+    });
+    if (
+      otherActiveClaim &&
+      otherActiveClaim.reviewerId !== reviewerId &&
+      new Date(otherActiveClaim.expiresAt) > new Date()
+    ) {
+      throw new ConflictException('This candidate is currently claimed by another reviewer.');
+    }
+
+    throw new ForbiddenException('You can only review signs that you have accepted a quest for.');
+  }
+
+  private async completeCandidateQuestClaim(matchedClaim: ReviewerQuestClaim | null): Promise<void> {
+    if (!matchedClaim || matchedClaim.status !== QuestClaimStatus.CLAIMED || !this.questClaimRepo) {
+      return;
+    }
+    try {
+      matchedClaim.status = QuestClaimStatus.COMPLETED;
+      matchedClaim.completedAt = new Date();
+      await this.questClaimRepo.save(matchedClaim);
+    } catch (err: any) {
+      this.logger.warn(`Failed to mark quest claim ${matchedClaim.id} completed: ${err?.message}`);
+    }
+  }
+
   async vote(reviewerId: string, candidateId: string, dto: VoteDto, allowSelfReview = false) {
     const candidate = await this.candidateRepo.findOne({
       where: { id: candidateId },
@@ -373,86 +485,7 @@ export class ReviewsService {
     }
 
     // Quest Claim Guard & Strict Timeout Check
-    let matchedClaim: ReviewerQuestClaim | null = null;
-    if (this.questClaimRepo) {
-      if (dto.questClaimId) {
-        matchedClaim = await this.questClaimRepo.findOne({
-          where: { id: dto.questClaimId, reviewerId },
-        });
-        if (!matchedClaim) {
-          throw new NotFoundException(`Quest claim '${dto.questClaimId}' not found.`);
-        }
-        if (
-          (matchedClaim.targetType && matchedClaim.targetType !== QuestTargetType.CANDIDATE_VALIDATION) ||
-          matchedClaim.targetId !== candidateId
-        ) {
-          throw new BadRequestException(
-            `Quest claim '${dto.questClaimId}' does not match candidate '${candidateId}'.`,
-          );
-        }
-      } else {
-        matchedClaim = await this.questClaimRepo.findOne({
-          where: {
-            targetType: QuestTargetType.CANDIDATE_VALIDATION,
-            targetId: candidateId,
-            reviewerId,
-            status: QuestClaimStatus.CLAIMED,
-          },
-        });
-      }
-
-      if (matchedClaim) {
-        if (matchedClaim.status === QuestClaimStatus.EXPIRED) {
-          throw new BadRequestException('Quest claim has expired. You cannot submit late results.');
-        }
-        if (matchedClaim.status !== QuestClaimStatus.CLAIMED) {
-          throw new BadRequestException(`Quest claim is already ${matchedClaim.status.toLowerCase()}.`);
-        }
-
-        // Strict Timeout Guard: Check if claim has expired
-        if (new Date() > new Date(matchedClaim.expiresAt)) {
-          matchedClaim.status = QuestClaimStatus.EXPIRED;
-          matchedClaim.penaltyApplied = true;
-          const penaltyScore = this.paramService
-            ? await this.paramService.getNumber('reviewer.quest_timeout_penalty_score', 5.0)
-            : 5.0;
-          matchedClaim.penaltyNotes = `Quest expired uncompleted after ${matchedClaim.timeLimitMinutes} minutes. Penalty: -${penaltyScore} score.`;
-          await this.questClaimRepo.save(matchedClaim);
-
-          try {
-            if (this.dataSource && typeof this.dataSource.query === 'function') {
-              // eslint-disable-next-line no-restricted-syntax -- approved-raw-sql: legacy query pending ORM refactoring
-              await this.dataSource.query(
-                `UPDATE reviewer_profiles 
-                 SET reliability_score = GREATEST(0, reliability_score - $1),
-                     updated_at = NOW()
-                 WHERE user_id = $2`,
-                [penaltyScore, reviewerId],
-              );
-            }
-          } catch (e: any) {
-            this.logger.warn(`Failed to penalize reviewer ${reviewerId}: ${e?.message}`);
-          }
-
-          throw new BadRequestException('Quest claim has expired. You cannot submit late results.');
-        }
-      } else {
-        const otherActiveClaim = await this.questClaimRepo.findOne({
-          where: {
-            targetType: QuestTargetType.CANDIDATE_VALIDATION,
-            targetId: candidateId,
-            status: QuestClaimStatus.CLAIMED,
-          },
-        });
-        if (
-          otherActiveClaim &&
-          otherActiveClaim.reviewerId !== reviewerId &&
-          new Date(otherActiveClaim.expiresAt) > new Date()
-        ) {
-          throw new ConflictException('This candidate is currently claimed by another reviewer.');
-        }
-      }
-    }
+    const matchedClaim = await this.resolveCandidateQuestClaim(reviewerId, candidateId, dto.questClaimId);
 
     const review: any = this.reviewRepo.create({
       candidateId,
@@ -476,15 +509,7 @@ export class ReviewsService {
     }
 
     // Complete active bounty quest claim if applicable
-    if (matchedClaim && matchedClaim.status === QuestClaimStatus.CLAIMED) {
-      try {
-        matchedClaim.status = QuestClaimStatus.COMPLETED;
-        matchedClaim.completedAt = new Date();
-        await this.questClaimRepo.save(matchedClaim);
-      } catch (err: any) {
-        this.logger.warn(`Failed to mark quest claim ${matchedClaim.id} completed: ${err?.message}`);
-      }
-    }
+    await this.completeCandidateQuestClaim(matchedClaim);
 
     // Track candidate votes count and bounty promotion
     try {
@@ -1757,16 +1782,19 @@ export class ReviewsService {
     const currentRound = candidate.reviewRound ?? 1;
     const existing = await this.reviewRepo.findOne({ where: { candidateId, reviewerId, reviewRound: currentRound } });
     if (existing) throw new ConflictException('You have already voted on this candidate');
+    const matchedClaim = await this.resolveCandidateQuestClaim(reviewerId, candidateId);
     // UNSURE = vote 0
     const review: any = this.reviewRepo.create({
       candidateId, reviewerId, reviewRound: currentRound, vote: 0, suggestedSignTypeId: null,
       declineReason: 'Other', declineNote: note?.trim().slice(0, 500) ?? 'Cannot identify',
+      questClaimId: matchedClaim ? matchedClaim.id : null,
     } as any);
     let saved: any;
     try { saved = await this.reviewRepo.save(review); } catch (err: any) {
       if (err?.code === '23505' || String(err?.message).includes('duplicate')) throw new ConflictException('You have already voted on this candidate');
       throw err;
     }
+    await this.completeCandidateQuestClaim(matchedClaim);
     // Consensus may still evaluate (but vote=0 usually does not tip the outcome)
     let consensusLog: any = null;
     try { consensusLog = await this.consensusService.evaluate(candidateId); } catch {}

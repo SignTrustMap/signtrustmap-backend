@@ -1682,7 +1682,7 @@ describe('RevalidationService', () => {
       expect(questClaims.save).toHaveBeenCalledWith(validClaim);
     });
 
-    it('listEvidenceQueue excludes tasks claimed by others, prioritizes own claims, and filters by taskId', async () => {
+    it('listEvidenceQueue restricts to tasks claimed by the reviewer and filters by taskId', async () => {
       const dataSource = {
         query: jest.fn().mockImplementation(async (sql: string) => {
           if (sql.includes('COUNT(*)::int AS cnt')) return [{ cnt: 1 }];
@@ -1708,6 +1708,11 @@ describe('RevalidationService', () => {
       );
       expect(dataSource.query).toHaveBeenNthCalledWith(
         1,
+        expect.stringContaining('rqc.reviewer_id = $1'),
+        ['rev-1', 'task-target-1'],
+      );
+      expect(dataSource.query).toHaveBeenNthCalledWith(
+        1,
         expect.stringContaining('ev.task_id = $2'),
         ['rev-1', 'task-target-1'],
       );
@@ -1718,7 +1723,7 @@ describe('RevalidationService', () => {
       );
     });
 
-    it('voteOnEvidence rejects mismatched questClaimId and blocks voting when another reviewer holds an active claim', async () => {
+    it('voteOnEvidence rejects mismatched questClaimId, blocks voting claimed by another reviewer, and rejects unclaimed tasks', async () => {
       const evidences = {
         findOne: jest.fn().mockResolvedValue({ id: 'ev-1', taskId: 'task-1', userId: 'surv-1' }),
       } as any;
@@ -1741,7 +1746,9 @@ describe('RevalidationService', () => {
             targetId: 'task-1',
             status: QuestClaimStatus.CLAIMED,
             expiresAt: new Date(Date.now() + 60000),
-          }),
+          })
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(null),
       } as any;
 
       const service = new RevalidationService(
@@ -1778,6 +1785,12 @@ describe('RevalidationService', () => {
           decision: 'STILL_ACTIVE',
         }),
       ).rejects.toThrow('currently claimed by another reviewer');
+
+      await expect(
+        service.voteOnEvidence('ev-1', 'rev-1', {
+          decision: 'STILL_ACTIVE',
+        }),
+      ).rejects.toThrow('accepted a quest for');
     });
   });
 });
